@@ -1,7 +1,7 @@
-import WebSocket from 'ws';
-import { createClient } from '@supabase/supabase-js';
-
+import { WebSocket } from 'ws';
 globalThis.WebSocket = WebSocket;
+
+import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
   process.env.SUPABASE_URL,

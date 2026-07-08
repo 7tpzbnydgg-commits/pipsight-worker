@@ -1,15 +1,11 @@
-import ws from 'ws';
+import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
+
+globalThis.WebSocket = WebSocket;
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY,
-  {
-    realtime: {
-      transport: ws
-    
-    }
-  }
+  process.env.SUPABASE_ANON_KEY
 );
 
 async function updatePrices() {

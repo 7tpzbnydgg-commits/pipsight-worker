@@ -1,3 +1,4 @@
+import ws from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
@@ -5,7 +6,10 @@ const supabase = createClient(
   process.env.SUPABASE_ANON_KEY,
   {
     realtime: {
-      enabled: false
+      transport: ws
+    }
+  }
+);
     }
   }
 );

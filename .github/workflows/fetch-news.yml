@@ -1,0 +1,33 @@
+name: PipSight Robot — fetch news
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"   # every 30 minutes
+  workflow_dispatch: {}        # lets you trigger it manually from the Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run robot
+        run: node fetch-news.js
+
+      - name: Commit updated feed
+        run: |
+          git config user.name "pipsight-robot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data/news-feed.json
+          git diff --quiet --cached || git commit -m "robot: refresh news feed"
+          git push

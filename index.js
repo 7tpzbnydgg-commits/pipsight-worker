@@ -1,11 +1,13 @@
-import { WebSocket } from 'ws';
-globalThis.WebSocket = WebSocket;
-
 import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY
+  process.env.SUPABASE_ANON_KEY,
+  {
+    realtime: {
+      enabled: false
+    }
+  }
 );
 
 async function updatePrices() {
@@ -29,7 +31,6 @@ async function updatePrices() {
       });
 
     console.log('Insert error:', error);
-    console.log('Price updated:', data.price);
   }
 }
 

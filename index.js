@@ -1,12 +1,13 @@
 import { createClient } from '@supabase/supabase-js';
 
-console.log('URL:', process.env.SUPABASE_URL);
-console.log('KEY EXISTS:', !!process.env.SUPABASE_ANON_KEY);
-console.log('TWELVE EXISTS:', !!process.env.TWELVE_DATA_API_KEY);
-
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY
+  process.env.SUPABASE_ANON_KEY,
+  {
+    realtime: {
+      enabled: false
+    }
+  }
 );
 
 async function updatePrices() {
@@ -18,8 +19,10 @@ async function updatePrices() {
 
   const data = await res.json();
 
+  console.log(data);
+
   if (data.price) {
-    await supabase
+    const { error } = await supabase
       .from('prices')
       .insert({
         symbol: 'XAUUSD',
@@ -27,9 +30,8 @@ async function updatePrices() {
         source: 'twelvedata'
       });
 
+    console.log('Insert error:', error);
     console.log('Price updated:', data.price);
-  } else {
-    console.log(data);
   }
 }
 

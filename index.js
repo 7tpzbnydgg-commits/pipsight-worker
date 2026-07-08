@@ -7,9 +7,7 @@ const supabase = createClient(
   {
     realtime: {
       transport: ws
-    }
-  }
-);
+    
     }
   }
 );

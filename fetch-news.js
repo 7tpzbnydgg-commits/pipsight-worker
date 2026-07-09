@@ -40,6 +40,21 @@ const BEARISH_WORDS = [
   "risk-off", "risk off",
 ];
 
+// Headlines matching these are tagged impact:"high" — the kind of event
+// (central bank decisions, jobs/inflation data) that can move price fast
+// enough to justify blocking a trade that runs straight into it.
+const HIGH_IMPACT_WORDS = [
+  "fed", "fomc", "federal reserve", "rate decision", "interest rate", "rate hike", "rate cut",
+  "nonfarm payrolls", "nfp", "jobs report", "unemployment rate", "cpi", "inflation report",
+  "gdp", "boe", "bank of england", "boj", "bank of japan", "ecb", "european central bank",
+  "powell", "central bank", "fomc minutes", "jackson hole",
+];
+
+function classifyImpact(text){
+  const t = text.toLowerCase();
+  return HIGH_IMPACT_WORDS.some(w => t.includes(w)) ? "high" : "normal";
+}
+
 function scoreSentiment(text){
   const t = text.toLowerCase();
   let score = 0;
@@ -75,7 +90,7 @@ async function main(){
         const date = entry.pubDate ? new Date(entry.pubDate) : new Date();
         const sentiment = scoreSentiment(text + " " + (entry.contentSnippet || ""));
         for(const pair of pairs){
-          items.push({ pair, date: fmtDate(date), sentiment, source: feed.source, text, ts: date.getTime() });
+          items.push({ pair, date: fmtDate(date), sentiment, source: feed.source, text, impact: classifyImpact(text), ts: date.getTime() });
         }
       }
     } catch(e){

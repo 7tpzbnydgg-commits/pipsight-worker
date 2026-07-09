@@ -1,0 +1,32 @@
+name: PipSight Robot — scalp candles (5m)
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # every 10 minutes (also triggered by cron-job.org)
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Fetch scalp candles
+        env:
+          TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
+        run: node fetch-scalp-candles.js
+
+      - name: Commit updated candles
+        run: |
+          git config user.name "pipsight-robot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data/scalp-candles.json
+          git diff --quiet --cached || git commit -m "robot: refresh scalp candles"
+          git push

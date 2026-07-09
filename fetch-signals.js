@@ -132,7 +132,28 @@ function computeMarketStructure(rows) {
 }
 
 // Same decision engine as pipsight.html's analyze() — kept in lockstep.
-function analyze(rows, pairLabel, newsScoreRaw) {
+function trendDirectionOf(rows) {
+  const closes = rows.map(r => r.close);
+  const n = closes.length;
+  if (n < 6) return null;
+  const lastClose = closes[n - 1];
+  const cap = n - 1;
+  const p200 = Math.min(200, cap);
+  const p100 = Math.min(100, Math.max(4, Math.floor(p200 * 0.5)));
+  const p50 = Math.min(50, Math.max(3, Math.floor(p100 * 0.6)));
+  const p20 = Math.min(20, Math.max(2, Math.floor(p50 * 0.5)));
+  const e20 = emaSeries(closes, p20), e50 = emaSeries(closes, p50), e100 = emaSeries(closes, p100), e200 = emaSeries(closes, p200);
+  const last = n - 1;
+  const v20 = e20[last], v50 = e50[last], v100 = e100[last], v200 = e200[last];
+  if (v20 == null || v50 == null || v100 == null || v200 == null) return null;
+  const bullFull = v20 > v50 && v50 > v100 && v100 > v200 && lastClose > v20;
+  const bearFull = v20 < v50 && v50 < v100 && v100 < v200 && lastClose < v20;
+  if (bullFull) return "BUY";
+  if (bearFull) return "SELL";
+  return null;
+}
+
+function analyze(rows, pairLabel, newsScoreRaw, htfRows, newsItems) {
   const closes = rows.map(r => r.close);
   const n = closes.length;
   const lastClose = closes[n - 1];
@@ -210,7 +231,40 @@ function analyze(rows, pairLabel, newsScoreRaw) {
     rsiDetail = `RSI(${rsiP}) = ${lastRsi.toFixed(1)} — ${rsiPassVal ? "inside" : "outside"} the ${leanDirection === "BUY" ? "45–65" : "35–55"} confirmation band`;
   }
   pass("RSI Confirmation", leanDirection ? (lastRsi != null && rsiPassVal) : false, rsiDetail);
+
+  let htfDetail, htfPassVal = false, htfDirection = null;
+  if (!leanDirection) { htfDetail = "No confirmed trend direction to test against"; }
+  else if (htfRows === null || htfRows === undefined) {
+    htfPassVal = true;
+    htfDetail = "Already viewing the highest timeframe available for this pair — no higher chart to confirm against";
+  } else {
+    htfDirection = trendDirectionOf(htfRows);
+    if (htfDirection == null) { htfDetail = "Higher-timeframe (weekly) trend isn't clearly aligned yet — mixed or insufficient EMA stack there"; }
+    else {
+      htfPassVal = htfDirection === leanDirection;
+      htfDetail = `Weekly-close trend is ${htfDirection} — ${htfPassVal ? "agrees with" : "conflicts with"} this ${leanDirection} lean`;
+    }
+  }
+  pass("Multi-Timeframe Confirmation", leanDirection ? htfPassVal : false, htfDetail);
   na("Candle Pattern", "Not available — only daily close prices here, no open/high/low candle data");
+
+  const recentNews = Array.isArray(newsItems) ? newsItems.filter(n => n.pair === pairLabel) : [];
+  let newsFilterDetail, newsFilterPassVal = false;
+  if (!leanDirection) { newsFilterDetail = "No confirmed trend direction to test against"; }
+  else {
+    const conflicting = recentNews.find(item => item.impact === "high" &&
+      ((leanDirection === "BUY" && item.sentiment <= -10) || (leanDirection === "SELL" && item.sentiment >= 10)));
+    if (conflicting) {
+      newsFilterPassVal = false;
+      const snippet = conflicting.text.length > 80 ? conflicting.text.slice(0, 80) + "…" : conflicting.text;
+      newsFilterDetail = `Conflicting high-impact headline: "${snippet}" (${conflicting.source})`;
+    } else {
+      const highCount = recentNews.filter(item => item.impact === "high").length;
+      newsFilterPassVal = true;
+      newsFilterDetail = highCount ? `${highCount} high-impact headline${highCount === 1 ? "" : "s"} tracked, none conflict with this ${leanDirection}` : "No high-impact catalysts currently flagged for this pair";
+    }
+  }
+  pass("High-Impact News Filter", leanDirection ? newsFilterPassVal : false, newsFilterDetail);
 
   const sr = computeSR(rows, lastClose);
   let srDetail, srPassVal = false;
@@ -281,7 +335,24 @@ function analyze(rows, pairLabel, newsScoreRaw) {
   const gatedSteps = pipeline.filter(p => p.status === "pass" || p.status === "fail");
   const passCount = gatedSteps.filter(p => p.status === "pass").length;
 
-  return { lastClose, n, pipeline, trendLabel, leanDirection, structure, sr, newsScore, signal, suppressionReason, tradePlan, passCount, gatedCount: gatedSteps.length };
+  let confidence = null;
+  if (leanDirection) {
+    let score = gatedSteps.length ? (passCount / gatedSteps.length) * 70 : 0;
+    if (structure.score > 0 && leanDirection === "BUY") score += 12;
+    else if (structure.score < 0 && leanDirection === "SELL") score += 12;
+    else if (structure.score !== 0) score -= 8;
+    if (newsScore >= 3 && leanDirection === "BUY") score += 9;
+    else if (newsScore <= -3 && leanDirection === "SELL") score += 9;
+    else if (Math.abs(newsScore) >= 3) score -= 9;
+    if (htfDirection && htfDirection === leanDirection) score += 9;
+    confidence = clamp(Math.round(score), 5, 97);
+  }
+  pipeline.push({ name: "Confidence Score", status: "info",
+    detail: confidence != null
+      ? `${confidence}% — composite of pipeline pass-rate, market structure, news alignment & multi-timeframe agreement (informational, doesn't gate the decision above)`
+      : "No confirmed trend direction yet to score" });
+
+  return { lastClose, n, pipeline, trendLabel, leanDirection, structure, sr, newsScore, confidence, signal, suppressionReason, tradePlan, passCount, gatedCount: gatedSteps.length };
 }
 
 // ---------------------------------------------------------- weekly resample
@@ -331,6 +402,14 @@ function readNewsSentiment() {
   } catch (e) { return {}; }
 }
 
+function readNewsItems() {
+  if (!fs.existsSync(NEWS_FEED_PATH)) return [];
+  try {
+    const raw = JSON.parse(fs.readFileSync(NEWS_FEED_PATH, "utf8"));
+    return Array.isArray(raw.items) ? raw.items : [];
+  } catch (e) { return []; }
+}
+
 // --------------------------------------------------------------- log logic
 function loadJson(p, fallback) {
   if (!fs.existsSync(p)) return fallback;
@@ -372,6 +451,7 @@ function resolveLogOutcomes(log, pairLabel, mode, rows) {
 // ------------------------------------------------------------------- main
 async function main() {
   const newsSentiment = readNewsSentiment();
+  const newsItems = readNewsItems();
   let log = loadJson(LOG_OUT_PATH, []);
   const snapshot = [];
 
@@ -391,7 +471,8 @@ async function main() {
     for (const mode of MODES) {
       const rows = rowsForMode(rawRows, mode);
       if (mode === "weekly" && rows.length < 8) continue;
-      const a = analyze(rows, pair.label, newsSentiment[pair.label]);
+      const htfRows = mode === "daily" ? resampleWeekly(rawRows) : null;
+      const a = analyze(rows, pair.label, newsSentiment[pair.label], htfRows, newsItems);
 
       log = logSignalIfNew(log, pair.label, mode, a);
       log = resolveLogOutcomes(log, pair.label, mode, rows);
@@ -403,6 +484,7 @@ async function main() {
         signal: a.signal,
         suppressionReason: a.suppressionReason,
         tradePlan: a.tradePlan,
+        confidence: a.confidence,
         passCount: a.passCount, gatedCount: a.gatedCount,
         trendLabel: a.trendLabel,
         structure: a.structure.label,

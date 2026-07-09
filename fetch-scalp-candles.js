@@ -24,7 +24,7 @@ const SYMBOLS = [
 const OUTPUT_PATH = path.join(__dirname, "data", "scalp-candles.json");
 
 async function fetchCandles(symbol) {
-  const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=5min&outputsize=100&apikey=${API_KEY}`;
+  const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=5min&outputsize=300&apikey=${API_KEY}`;
   const res = await fetch(url);
   const data = await res.json();
 

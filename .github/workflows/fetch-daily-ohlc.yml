@@ -1,0 +1,32 @@
+name: PipSight Robot — daily OHLC (ADX/candles)
+
+on:
+  schedule:
+    - cron: "0 */4 * * *"   # every 4 hours (also triggered by cron-job.org)
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Fetch daily OHLC
+        env:
+          TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
+        run: node fetch-daily-ohlc.js
+
+      - name: Commit updated OHLC
+        run: |
+          git config user.name "pipsight-robot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data/daily-ohlc.json
+          git diff --quiet --cached || git commit -m "robot: refresh daily OHLC"
+          git push

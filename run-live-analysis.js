@@ -18,7 +18,8 @@
 //   data/intraday-h1.json     — 1-hour candles (XAUUSD, GBPJPY)
 //   data/daily-ohlc.json      — daily candles (XAUUSD, GBPJPY)
 // Writes:
-//   data/live-analysis.json   — Swing + Intraday + Scalp + Master verdict, per pair
+//   data/live-analysis.json     — Swing + Intraday + Scalp + Master verdict, per pair
+//   data/analysis-history.json  — permanent, ever-growing WIN/LOSS track record for all 3 engines
 
 const fs = require("fs");
 const path = require("path");
@@ -428,11 +429,61 @@ function computeScalpTradeSignal(candles5m, decimals) {
   return { decision, reason, perTF, entry: fmt(entry), sl: fmt(sl), tp: fmt(tp), rr };
 }
 
+// ===================== Persistent history tracking =====================
+// Unlike the old browser-only trackers (which reset whenever localStorage
+// is cleared or a different device/URL is used), this lives in the repo
+// itself — data/analysis-history.json — and accumulates forever via the
+// same git-commit mechanism the other workers already use. It covers all
+// three engines (Scalp, Intraday, Swing) for both pairs, in one place.
+
+const HISTORY_PATH = path.join(DATA_DIR, "analysis-history.json");
+function loadHistory() {
+  if (!fs.existsSync(HISTORY_PATH)) return { open: {}, closed: [] };
+  try { return JSON.parse(fs.readFileSync(HISTORY_PATH, "utf8")); }
+  catch { return { open: {}, closed: [] }; }
+}
+
+// One position per (pair, engine) key at a time. Opens on a fresh BUY/SELL,
+// closes (WIN/LOSS) once price reaches the stop or the (first) target.
+function updateHistoryForEngine(history, pairKey, engine, decision, entry, stop, target, currentPrice) {
+  const key = `${pairKey}:${engine}`;
+  const existing = history.open[key];
+
+  if (existing) {
+    let outcome = null;
+    if (existing.direction === "BUY") {
+      if (currentPrice >= existing.target) outcome = "WIN";
+      else if (currentPrice <= existing.stop) outcome = "LOSS";
+    } else {
+      if (currentPrice <= existing.target) outcome = "WIN";
+      else if (currentPrice >= existing.stop) outcome = "LOSS";
+    }
+    if (outcome) {
+      history.closed.push({
+        pair: pairKey, engine, direction: existing.direction,
+        entry: existing.entry, stop: existing.stop, target: existing.target,
+        outcome, openedAt: existing.openedAt, closedAt: new Date().toISOString(),
+      });
+      delete history.open[key];
+    }
+  } else if ((decision === "BUY" || decision === "SELL") && stop != null && target != null) {
+    history.open[key] = { direction: decision, entry, stop, target, openedAt: new Date().toISOString() };
+  }
+}
+
+function historyStatsSummary(history) {
+  const wins = history.closed.filter(h => h.outcome === "WIN").length;
+  const losses = history.closed.filter(h => h.outcome === "LOSS").length;
+  const total = wins + losses;
+  return { totalClosed: total, wins, losses, winRate: total ? Math.round((wins / total) * 100) : null, openCount: Object.keys(history.open).length };
+}
+
 // ===================== Main =====================
 function main() {
   const scalpData = readJSON("scalp-candles.json");
   const intradayData = readJSON("intraday-h1.json");
   const dailyData = readJSON("daily-ohlc.json");
+  const history = loadHistory();
 
   const out = { updatedAt: new Date().toISOString(), pairs: {} };
 
@@ -446,6 +497,8 @@ function main() {
       if (htf.length >= 8) {
         const a = analyze(daily, key, htf, daily);
         result.swing = { signal: a.signal, suppressionReason: a.suppressionReason, tradePlan: a.tradePlan, passCount: a.passCount, gatedCount: a.gatedCount };
+        const tp = a.tradePlan;
+        updateHistoryForEngine(history, key, "swing", a.signal, tp ? tp.entry : null, tp ? tp.stop : null, tp ? tp.target1 : null, daily[daily.length - 1].close);
       }
     }
 
@@ -454,11 +507,15 @@ function main() {
       const h4 = aggregateCandles(h1, 4);
       const a = analyze(h1, key, h4, h1);
       result.intraday = { signal: a.signal, suppressionReason: a.suppressionReason, tradePlan: a.tradePlan, passCount: a.passCount, gatedCount: a.gatedCount };
+      const tp = a.tradePlan;
+      updateHistoryForEngine(history, key, "intraday", a.signal, tp ? tp.entry : null, tp ? tp.stop : null, tp ? tp.target1 : null, h1[h1.length - 1].close);
     }
 
     const c5 = scalpData ? scalpData[key] : null;
     if (c5 && c5.length >= 30) {
       result.scalp = computeScalpTradeSignal(c5, decimals);
+      const sc = result.scalp;
+      updateHistoryForEngine(history, key, "scalp", sc.decision, sc.entry, sc.sl, sc.tp, c5[c5.length - 1].close);
     }
 
     const votes = [
@@ -480,6 +537,17 @@ function main() {
 
   fs.writeFileSync(path.join(DATA_DIR, "live-analysis.json"), JSON.stringify(out, null, 2));
   console.log("Wrote data/live-analysis.json");
+
+  history.updatedAt = new Date().toISOString();
+  history.stats = {
+    overall: historyStatsSummary(history),
+  };
+  for (const engine of ["scalp", "intraday", "swing"]) {
+    const filtered = { open: {}, closed: history.closed.filter(h => h.engine === engine) };
+    history.stats[engine] = historyStatsSummary(filtered);
+  }
+  fs.writeFileSync(HISTORY_PATH, JSON.stringify(history, null, 2));
+  console.log(`History: ${history.stats.overall.totalClosed} closed (${history.stats.overall.winRate}% win rate), ${history.stats.overall.openCount} open`);
 }
 
 main();

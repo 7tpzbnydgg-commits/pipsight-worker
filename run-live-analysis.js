@@ -531,3 +531,83 @@ async function main() {
         const swingStateKey = `${key}:swing`;
         if (a.signal !== "HOLD" && notifyState[swingStateKey] !== a.signal) {
           await sendTelegram(
+            `🔔 PipSight — Swing\n${key} · D1+W1\n${a.signal === "BUY" ? "🟢" : "🔴"} ${a.signal}\n${fmtPlan(tp, decimals)}\nHold: 2–7 days`
+          );
+        }
+        notifyState[swingStateKey] = a.signal;
+      }
+    }
+
+    const h1 = intradayData ? intradayData[key] : null;
+    if (h1 && h1.length >= 210) {
+      const h4 = aggregateCandles(h1, 4);
+      const a = analyze(h1, key, h4, h1);
+      result.intraday = { signal: a.signal, suppressionReason: a.suppressionReason, tradePlan: a.tradePlan, passCount: a.passCount, gatedCount: a.gatedCount };
+      const tp = a.tradePlan;
+      updateHistoryForEngine(history, key, "intraday", a.signal, tp ? tp.entry : null, tp ? tp.stop : null, tp ? tp.target1 : null, h1[h1.length - 1].close);
+
+      const stateKey = `${key}:intraday`;
+      if (a.signal !== "HOLD" && notifyState[stateKey] !== a.signal) {
+        await sendTelegram(
+          `🔔 PipSight — Intraday\n${key} · H1+H4\n${a.signal === "BUY" ? "🟢" : "🔴"} ${a.signal}\n${fmtPlan(tp, decimals)}\nHold: 2–12 hours`
+        );
+      }
+      notifyState[stateKey] = a.signal;
+    }
+
+    const c5 = scalpData ? scalpData[key] : null;
+    if (c5 && c5.length >= 30) {
+      result.scalp = computeScalpTradeSignal(c5, decimals);
+      const sc = result.scalp;
+      updateHistoryForEngine(history, key, "scalp", sc.decision, sc.entry, sc.sl, sc.tp, c5[c5.length - 1].close);
+
+      const scalpStateKey = `${key}:scalp`;
+      if (sc.decision !== "HOLD" && notifyState[scalpStateKey] !== sc.decision) {
+        await sendTelegram(
+          `🔔 PipSight — Scalp\n${key} · 5/15/30m\n${sc.decision === "BUY" ? "🟢" : "🔴"} ${sc.decision}\nEntry: ${sc.entry}\nSL: ${sc.sl}\nTP: ${sc.tp}`
+        );
+      }
+      notifyState[scalpStateKey] = sc.decision;
+    }
+
+    const votes = [
+      { engine: "Scalp", signal: result.scalp ? result.scalp.decision : "HOLD" },
+      { engine: "Intraday", signal: result.intraday ? result.intraday.signal : "HOLD" },
+      { engine: "Swing", signal: result.swing ? result.swing.signal : "HOLD" },
+    ];
+    const buyCount = votes.filter(v => v.signal === "BUY").length;
+    const sellCount = votes.filter(v => v.signal === "SELL").length;
+    let verdict = "MIXED";
+    if (buyCount >= 2 && buyCount > sellCount) verdict = "BUY";
+    else if (sellCount >= 2 && sellCount > buyCount) verdict = "SELL";
+    else if (buyCount === 0 && sellCount === 0) verdict = "HOLD";
+    result.master = { verdict, votes };
+
+    const masterKey = `${key}:master`;
+    if ((verdict === "BUY" || verdict === "SELL") && notifyState[masterKey] !== verdict) {
+      const voteLines = votes.map(v => `${v.engine}: ${v.signal}`).join(" · ");
+      await sendTelegram(
+        `⭐ PipSight — Master Signal\n${key}\n${verdict === "BUY" ? "🟢" : "🔴"} ${verdict} (2+ engines agree)\n${voteLines}`
+      );
+    }
+    notifyState[masterKey] = verdict;
+
+    out.pairs[key] = result;
+    console.log(`${key}: swing=${result.swing ? result.swing.signal : "n/a"} intraday=${result.intraday ? result.intraday.signal : "n/a"} scalp=${result.scalp ? result.scalp.decision : "n/a"} master=${verdict}`);
+  }
+
+  fs.writeFileSync(path.join(DATA_DIR, "live-analysis.json"), JSON.stringify(out, null, 2));
+  console.log("Wrote data/live-analysis.json");
+  fs.writeFileSync(NOTIFY_STATE_PATH, JSON.stringify(notifyState, null, 2));
+
+  history.updatedAt = new Date().toISOString();
+  history.stats = { overall: historyStatsSummary(history) };
+  for (const engine of ["scalp", "intraday", "swing"]) {
+    const filtered = { open: {}, closed: history.closed.filter(h => h.engine === engine) };
+    history.stats[engine] = historyStatsSummary(filtered);
+  }
+  fs.writeFileSync(HISTORY_PATH, JSON.stringify(history, null, 2));
+  console.log(`History: ${history.stats.overall.totalClosed} closed (${history.stats.overall.winRate}% win rate), ${history.stats.overall.openCount} open`);
+}
+
+main().catch(e => { console.error("Fatal error:", e); process.exit(1); });

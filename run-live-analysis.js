@@ -3,15 +3,10 @@
 // Runs the SAME analysis engines the browser dashboard uses (Swing,
 // Intraday, Scalp), but server-side — so signals get computed every 15
 // minutes regardless of whether anyone has the dashboard open. This is a
-// faithful port of the functions in pipsight-D.html: emaSeries, rsiSeries,
-// computeADX, detectCandlePattern, computeSR, trendDirectionOf,
-// resampleWeekly, analyze(), aggregateCandles, analyzeScalp, and
-// computeScalpTradeSignal. The math is identical — only where it runs changed.
+// faithful port of the functions in pipsight-D.html.
 //
-// One simplification: the High-Impact News Filter is informational-only in
-// the pipeline (it can't block a signal either way), so this server-side
-// copy always treats "no news data" the same as "no conflicting news" —
-// it never affects the BUY/SELL/HOLD decision.
+// Also sends Telegram alerts on fresh Scalp/Intraday/Swing/Master signals,
+// and keeps a permanent WIN/LOSS history for all three engines.
 //
 // Reads (from this same repo checkout):
 //   data/scalp-candles.json   — 5-min candles (XAUUSD, GBPJPY)
@@ -20,6 +15,7 @@
 // Writes:
 //   data/live-analysis.json     — Swing + Intraday + Scalp + Master verdict, per pair
 //   data/analysis-history.json  — permanent, ever-growing WIN/LOSS track record for all 3 engines
+//   data/notify-state.json      — last-notified signal per (pair, engine), to avoid duplicate Telegram alerts
 
 const fs = require("fs");
 const path = require("path");
@@ -430,12 +426,6 @@ function computeScalpTradeSignal(candles5m, decimals) {
 }
 
 // ===================== Persistent history tracking =====================
-// Unlike the old browser-only trackers (which reset whenever localStorage
-// is cleared or a different device/URL is used), this lives in the repo
-// itself — data/analysis-history.json — and accumulates forever via the
-// same git-commit mechanism the other workers already use. It covers all
-// three engines (Scalp, Intraday, Swing) for both pairs, in one place.
-
 const HISTORY_PATH = path.join(DATA_DIR, "analysis-history.json");
 function loadHistory() {
   if (!fs.existsSync(HISTORY_PATH)) return { open: {}, closed: [] };
@@ -443,8 +433,6 @@ function loadHistory() {
   catch { return { open: {}, closed: [] }; }
 }
 
-// One position per (pair, engine) key at a time. Opens on a fresh BUY/SELL,
-// closes (WIN/LOSS) once price reaches the stop or the (first) target.
 function updateHistoryForEngine(history, pairKey, engine, decision, entry, stop, target, currentPrice) {
   const key = `${pairKey}:${engine}`;
   const existing = history.open[key];
@@ -478,12 +466,52 @@ function historyStatsSummary(history) {
   return { totalClosed: total, wins, losses, winRate: total ? Math.round((wins / total) * 100) : null, openCount: Object.keys(history.open).length };
 }
 
+// ===================== Telegram notifications =====================
+// Sends an alert only on a TRANSITION into a decisive BUY/SELL (any of the
+// 4 signal types) — not on every 15-minute run while the same signal is
+// still active, so it doesn't spam. Token/chat ID come from GitHub Secrets
+// (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID), never hardcoded here.
+
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const NOTIFY_STATE_PATH = path.join(DATA_DIR, "notify-state.json");
+
+function loadNotifyState() {
+  if (!fs.existsSync(NOTIFY_STATE_PATH)) return {};
+  try { return JSON.parse(fs.readFileSync(NOTIFY_STATE_PATH, "utf8")); } catch { return {}; }
+}
+
+async function sendTelegram(text) {
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+    console.log("Telegram not configured (missing secrets) — skipping notification:", text.split("\n")[0]);
+    return;
+  }
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text }),
+    });
+    if (!res.ok) console.error("Telegram send failed:", res.status, await res.text());
+    else console.log("Telegram notification sent:", text.split("\n")[0]);
+  } catch (e) {
+    console.error("Telegram send error:", e.message);
+  }
+}
+
+function fmtPlan(plan, decimals) {
+  if (!plan) return "";
+  const f = (v) => v.toFixed(decimals);
+  return `Entry: ${f(plan.entry)}\nStop: ${f(plan.stop)}\nTarget: ${f(plan.target1)}`;
+}
+
 // ===================== Main =====================
-function main() {
+async function main() {
   const scalpData = readJSON("scalp-candles.json");
   const intradayData = readJSON("intraday-h1.json");
   const dailyData = readJSON("daily-ohlc.json");
   const history = loadHistory();
+  const notifyState = loadNotifyState();
 
   const out = { updatedAt: new Date().toISOString(), pairs: {} };
 
@@ -499,55 +527,7 @@ function main() {
         result.swing = { signal: a.signal, suppressionReason: a.suppressionReason, tradePlan: a.tradePlan, passCount: a.passCount, gatedCount: a.gatedCount };
         const tp = a.tradePlan;
         updateHistoryForEngine(history, key, "swing", a.signal, tp ? tp.entry : null, tp ? tp.stop : null, tp ? tp.target1 : null, daily[daily.length - 1].close);
-      }
-    }
 
-    const h1 = intradayData ? intradayData[key] : null;
-    if (h1 && h1.length >= 210) {
-      const h4 = aggregateCandles(h1, 4);
-      const a = analyze(h1, key, h4, h1);
-      result.intraday = { signal: a.signal, suppressionReason: a.suppressionReason, tradePlan: a.tradePlan, passCount: a.passCount, gatedCount: a.gatedCount };
-      const tp = a.tradePlan;
-      updateHistoryForEngine(history, key, "intraday", a.signal, tp ? tp.entry : null, tp ? tp.stop : null, tp ? tp.target1 : null, h1[h1.length - 1].close);
-    }
-
-    const c5 = scalpData ? scalpData[key] : null;
-    if (c5 && c5.length >= 30) {
-      result.scalp = computeScalpTradeSignal(c5, decimals);
-      const sc = result.scalp;
-      updateHistoryForEngine(history, key, "scalp", sc.decision, sc.entry, sc.sl, sc.tp, c5[c5.length - 1].close);
-    }
-
-    const votes = [
-      { engine: "Scalp", signal: result.scalp ? result.scalp.decision : "HOLD" },
-      { engine: "Intraday", signal: result.intraday ? result.intraday.signal : "HOLD" },
-      { engine: "Swing", signal: result.swing ? result.swing.signal : "HOLD" },
-    ];
-    const buyCount = votes.filter(v => v.signal === "BUY").length;
-    const sellCount = votes.filter(v => v.signal === "SELL").length;
-    let verdict = "MIXED";
-    if (buyCount >= 2 && buyCount > sellCount) verdict = "BUY";
-    else if (sellCount >= 2 && sellCount > buyCount) verdict = "SELL";
-    else if (buyCount === 0 && sellCount === 0) verdict = "HOLD";
-    result.master = { verdict, votes };
-
-    out.pairs[key] = result;
-    console.log(`${key}: swing=${result.swing ? result.swing.signal : "n/a"} intraday=${result.intraday ? result.intraday.signal : "n/a"} scalp=${result.scalp ? result.scalp.decision : "n/a"} master=${verdict}`);
-  }
-
-  fs.writeFileSync(path.join(DATA_DIR, "live-analysis.json"), JSON.stringify(out, null, 2));
-  console.log("Wrote data/live-analysis.json");
-
-  history.updatedAt = new Date().toISOString();
-  history.stats = {
-    overall: historyStatsSummary(history),
-  };
-  for (const engine of ["scalp", "intraday", "swing"]) {
-    const filtered = { open: {}, closed: history.closed.filter(h => h.engine === engine) };
-    history.stats[engine] = historyStatsSummary(filtered);
-  }
-  fs.writeFileSync(HISTORY_PATH, JSON.stringify(history, null, 2));
-  console.log(`History: ${history.stats.overall.totalClosed} closed (${history.stats.overall.winRate}% win rate), ${history.stats.overall.openCount} open`);
-}
-
-main();
+        const swingStateKey = `${key}:swing`;
+        if (a.signal !== "HOLD" && notifyState[swingStateKey] !== a.signal) {
+          await sendTelegram(

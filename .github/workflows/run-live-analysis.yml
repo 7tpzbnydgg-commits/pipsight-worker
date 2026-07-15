@@ -19,13 +19,16 @@ jobs:
           node-version: 20
 
       - name: Run live analysis
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: node run-live-analysis.js
 
       - name: Commit updated analysis
         run: |
           git config user.name "pipsight-robot"
           git config user.email "actions@users.noreply.github.com"
-          git add data/live-analysis.json data/analysis-history.json
+          git add data/live-analysis.json data/analysis-history.json data/notify-state.json
           git diff --quiet --cached || git commit -m "robot: refresh live analysis"
           git pull --rebase origin main
           git push

@@ -480,6 +480,21 @@ function recordScalpSignal(pairKey, decision, entryPrice) {
   LAST_SCALP_SIGNAL[pairKey] = { signal: decision, price: entryPrice, time: Date.now() };
 }
 
+// Lightweight higher-timeframe trend bias (EMA9 vs EMA21) used purely to
+// confirm/veto the fast 5m momentum entry — not a full signal generator on
+// its own. Returns "BUY", "SELL", or null (not enough history / flat).
+function computeTimeframeTrendBias(candles) {
+  if (!candles || candles.length < 22) return null;
+  const closes = candles.map(c => c.close);
+  const ema9 = emaSeries(closes, 9), ema21 = emaSeries(closes, 21);
+  const last = closes.length - 1;
+  const v9 = ema9[last], v21 = ema21[last];
+  if (v9 == null || v21 == null) return null;
+  if (v9 > v21) return "BUY";
+  if (v9 < v21) return "SELL";
+  return null;
+}
+
 function computeScalpTradeSignal(pairKey, candles5m, decimals) {
   const fmt = (v) => v == null ? null : Number(v.toFixed(decimals));
 
@@ -496,6 +511,19 @@ function computeScalpTradeSignal(pairKey, candles5m, decimals) {
   const momentum = computeScalpMomentumSignal(candles5m);
 
   if (momentum.decision !== "HOLD") {
+    // Entry trigger stays on the fast 5m momentum read, but it must not be
+    // fighting the 15m trend, and — when there's enough history — the 30m
+    // trend either. This filters out counter-trend / choppy 5m noise.
+    const bias15 = computeTimeframeTrendBias(aggregateCandles(candles5m, 3));
+    const bias30 = computeTimeframeTrendBias(aggregateCandles(candles5m, 6));
+
+    if (bias15 != null && bias15 !== momentum.decision) {
+      return { decision: "HOLD", reason: "htf_conflict_15m", rsi: momentum.rsi, entry: fmt(entry), sl: null, tp: null };
+    }
+    if (bias30 != null && bias30 !== momentum.decision) {
+      return { decision: "HOLD", reason: "htf_conflict_30m", rsi: momentum.rsi, entry: fmt(entry), sl: null, tp: null };
+    }
+
     const tpsl = computeDynamicTPSL(entry, momentum.decision, candles5m);
     recordScalpSignal(pairKey, momentum.decision, entry);
     return {
@@ -503,6 +531,8 @@ function computeScalpTradeSignal(pairKey, candles5m, decimals) {
       reason: momentum.reason,
       rsi: momentum.rsi,
       strength: momentum.strength,
+      htf15: bias15,
+      htf30: bias30,
       entry: fmt(entry),
       sl: tpsl ? fmt(tpsl.stopLoss) : null,
       tp: tpsl ? fmt(tpsl.takeProfit) : null,

@@ -1,15 +1,11 @@
 // run-live-analysis.js
 //
-// Runs the SAME analysis engines the browser dashboard uses (Swing,
-// Intraday, Scalp), but server-side — so signals get computed every 15
-// minutes regardless of whether anyone has the dashboard open. This is a
-// faithful port of the functions in pipsight-D.html.
+// Runs Swing, Intraday, and Scalp analysis server-side.
+// Scalp now includes 5M, 15M, 30M signals with separate cooldown tracking.
+// Pip thresholds: 5M=30pips, 15M=50pips, 30M=70pips
 //
-// Also sends Telegram alerts on fresh Scalp/Intraday/Swing/Master signals,
-// and keeps a permanent WIN/LOSS history for all three engines.
-//
-// Cooldown tracking: Prevents repeat SELL/BUY signals within 15 minutes + 30 pips range.
-// Persisted to data/scalp-cooldown.json across workflow runs.
+// Sends Telegram alerts on fresh signals.
+// Keeps persistent WIN/LOSS history.
 
 const fs = require("fs");
 const path = require("path");
@@ -24,7 +20,7 @@ const readJSON = (file) => {
 const PAIR_KEYS = ["XAUUSD", "GBPJPY"];
 const DECIMALS = { XAUUSD: 2, GBPJPY: 3 };
 
-// Cooldown file paths
+// Cooldown persistence
 const COOLDOWN_PATH = path.join(DATA_DIR, "scalp-cooldown.json");
 
 function loadCooldown() {
@@ -196,7 +192,7 @@ function resampleWeekly(rows) {
   return Array.from(map.values());
 }
 
-// --- The core strict pipeline — identical logic to analyze() in pipsight-D.html ---
+// --- The core strict pipeline ---
 function analyze(rows, pairLabel, htfRows, ohlcRows) {
   const closes = rows.map(r => r.close);
   const n = closes.length;
@@ -223,26 +219,26 @@ function analyze(rows, pairLabel, htfRows, ohlcRows) {
     const last = n - 1;
     const v20 = e20[last], v50 = e50[last], v100 = e100[last], v200 = e200[last];
     const fullStack = cap >= 200;
-    const note = fullStack ? "" : " (adaptive periods — full EMA200 needs more history)";
+    const note = fullStack ? "" : " (adaptive periods)";
     if (v20 != null && v50 != null && v100 != null && v200 != null) {
       const bullFull = v20 > v50 && v50 > v100 && v100 > v200 && lastClose > v20;
       const bearFull = v20 < v50 && v50 < v100 && v100 < v200 && lastClose < v20;
       const bullCount = [v20 > v50, v50 > v100, v100 > v200, lastClose > v20].filter(Boolean).length;
       const bearCount = [v20 < v50, v50 < v100, v100 < v200, lastClose < v20].filter(Boolean).length;
-      if (bullFull) { leanDirection = "BUY"; trendLabel = `Bullish — full EMA stack ${p20}>${p50}>${p100}>${p200}${note}`; }
-      else if (bearFull) { leanDirection = "SELL"; trendLabel = `Bearish — full EMA stack ${p20}<${p50}<${p100}<${p200}${note}`; }
-      else if (bullCount >= 3) { trendLabel = `Partial bullish lean only (${bullCount}/4) — not enough to qualify${note}`; }
-      else if (bearCount >= 3) { trendLabel = `Partial bearish lean only (${bearCount}/4) — not enough to qualify${note}`; }
-      else { trendLabel = `Mixed EMA alignment — no clear trend${note}`; }
+      if (bullFull) { leanDirection = "BUY"; trendLabel = `Bullish — full EMA stack${note}`; }
+      else if (bearFull) { leanDirection = "SELL"; trendLabel = `Bearish — full EMA stack${note}`; }
+      else if (bullCount >= 3) { trendLabel = `Partial bullish lean (${bullCount}/4)${note}`; }
+      else if (bearCount >= 3) { trendLabel = `Partial bearish lean (${bearCount}/4)${note}`; }
+      else { trendLabel = `Mixed EMA alignment${note}`; }
     }
   }
   pass("Trend", !!leanDirection, trendLabel);
   pass("EMA Alignment", !!leanDirection,
-    leanDirection ? `Full EMA stack confirms ${leanDirection === "BUY" ? "bullish" : "bearish"} alignment` : "Stack is not fully aligned in order");
+    leanDirection ? `Full EMA confirms ${leanDirection}` : "Stack not aligned");
 
   const adxVal = ohlcRows ? computeADX(ohlcRows, 14) : null;
-  na("ADX > 25?", adxVal != null ? `Informational — ADX(14) = ${adxVal.toFixed(1)}` : "Not available");
-  na("Volume Confirmed?", "Not available — spot FX/gold has no centralized exchange volume feed");
+  na("ADX > 25?", adxVal != null ? `ADX(14) = ${adxVal.toFixed(1)}` : "Not available");
+  na("Volume Confirmed?", "Not available");
 
   const macdOk = n >= 35;
   let lastMacd = null, lastMacdSignal = null;
@@ -255,11 +251,11 @@ function analyze(rows, pairLabel, htfRows, ohlcRows) {
     lastMacdSignal = sig[sig.length - 1];
   }
   let macdDetail, macdPassVal = false;
-  if (!leanDirection) { macdDetail = "No confirmed trend direction to test against"; }
-  else if (!macdOk) { macdDetail = `Needs ${35 - n} more session(s) of history for MACD`; }
+  if (!leanDirection) { macdDetail = "No confirmed trend"; }
+  else if (!macdOk) { macdDetail = `Needs ${35 - n} more sessions`; }
   else {
     macdPassVal = leanDirection === "BUY" ? lastMacd > lastMacdSignal : lastMacd < lastMacdSignal;
-    macdDetail = `MACD ${lastMacd.toFixed(4)} vs signal ${lastMacdSignal.toFixed(4)} — ${macdPassVal ? "confirms" : "does not confirm"} ${leanDirection}`;
+    macdDetail = `MACD ${macdPassVal ? "confirms" : "does not confirm"} ${leanDirection}`;
   }
   pass("MACD Confirmation", leanDirection ? (macdOk && macdPassVal) : false, macdDetail);
 
@@ -269,8 +265,8 @@ function analyze(rows, pairLabel, htfRows, ohlcRows) {
   const rsiBuyOk = lastRsi != null && lastRsi >= 45 && lastRsi <= 65;
   const rsiSellOk = lastRsi != null && lastRsi >= 35 && lastRsi <= 55;
   let rsiDetail, rsiPassVal = false;
-  if (!leanDirection) { rsiDetail = "No confirmed trend direction to test against"; }
-  else if (lastRsi == null) { rsiDetail = "Not enough history for RSI yet"; }
+  if (!leanDirection) { rsiDetail = "No confirmed trend"; }
+  else if (lastRsi == null) { rsiDetail = "Not enough history"; }
   else {
     rsiPassVal = leanDirection === "BUY" ? rsiBuyOk : rsiSellOk;
     rsiDetail = `RSI(${rsiP}) = ${lastRsi.toFixed(1)}`;
@@ -278,19 +274,19 @@ function analyze(rows, pairLabel, htfRows, ohlcRows) {
   pass("RSI Confirmation", leanDirection ? (lastRsi != null && rsiPassVal) : false, rsiDetail);
 
   let htfDetail, htfPassVal = false, htfDirection = null;
-  if (!leanDirection) { htfDetail = "No confirmed trend direction to test against"; }
-  else if (htfRows === null || htfRows === undefined) {
+  if (!leanDirection) { htfDetail = "No confirmed trend"; }
+  else if (htfRows === null) {
     htfPassVal = true;
-    htfDetail = "Already viewing the highest timeframe available";
+    htfDetail = "Already highest timeframe";
   } else {
     htfDirection = trendDirectionOf(htfRows);
-    if (htfDirection == null) { htfDetail = "Higher-timeframe trend isn't clearly aligned yet"; }
+    if (htfDirection == null) { htfDetail = "HTF trend not aligned"; }
     else {
       htfPassVal = htfDirection === leanDirection;
-      htfDetail = `Higher-timeframe trend is ${htfDirection} — ${htfPassVal ? "agrees" : "conflicts"}`;
+      htfDetail = `HTF is ${htfDirection} — ${htfPassVal ? "agrees" : "conflicts"}`;
     }
   }
-  pass("Multi-Timeframe Confirmation", leanDirection ? htfPassVal : false, htfDetail);
+  pass("Multi-Timeframe", leanDirection ? htfPassVal : false, htfDetail);
 
   if (ohlcRows && leanDirection) {
     const cp = detectCandlePattern(ohlcRows, leanDirection);
@@ -299,26 +295,26 @@ function analyze(rows, pairLabel, htfRows, ohlcRows) {
     na("Candle Pattern", "Not available");
   }
 
-  na("High-Impact News Filter", "Informational — no server-side news feed here; shown for context only, doesn't block the signal");
+  na("High-Impact News", "Informational only");
 
   const sr = computeSR(rows, lastClose);
   let srDetail, srPassVal = false;
-  if (!leanDirection) { srDetail = "No confirmed trend direction to test against"; }
+  if (!leanDirection) { srDetail = "No confirmed trend"; }
   else if (leanDirection === "BUY") {
     const res = sr.resistances[0];
-    if (res == null) { srPassVal = true; srDetail = "No resistance detected nearby"; }
+    if (res == null) { srPassVal = true; srDetail = "No resistance"; }
     else {
       const d = (res - lastClose) / lastClose;
       srPassVal = d >= 0.003;
-      srDetail = srPassVal ? `Resistance ${(d * 100).toFixed(2)}% away` : `Resistance only ${(d * 100).toFixed(2)}% above spot`;
+      srDetail = srPassVal ? `Resistance ${(d * 100).toFixed(2)}% away` : `Resistance too close`;
     }
   } else {
     const sup = sr.supports[0];
-    if (sup == null) { srPassVal = true; srDetail = "No support detected nearby"; }
+    if (sup == null) { srPassVal = true; srDetail = "No support"; }
     else {
       const d = (lastClose - sup) / lastClose;
       srPassVal = d >= 0.003;
-      srDetail = srPassVal ? `Support ${(d * 100).toFixed(2)}% away` : `Support only ${(d * 100).toFixed(2)}% below spot`;
+      srDetail = srPassVal ? `Support ${(d * 100).toFixed(2)}% away` : `Support too close`;
     }
   }
   pass("Support/Resistance", leanDirection ? srPassVal : false, srDetail);
@@ -326,7 +322,7 @@ function analyze(rows, pairLabel, htfRows, ohlcRows) {
   const vol = computeVolatility(rows);
   const buffer = Math.max(vol * 0.5, 0.0004) * lastClose;
   if (leanDirection && alive) {
-    pipeline.push({ name: "ATR-style Stop Loss", status: "pass", detail: `Volatility-based buffer ≈ ${buffer.toFixed(lastClose > 100 ? 2 : 5)}` });
+    pipeline.push({ name: "ATR-style Stop Loss", status: "pass", detail: `Buffer ≈ ${buffer.toFixed(lastClose > 100 ? 2 : 5)}` });
   } else {
     pipeline.push({ name: "ATR-style Stop Loss", status: "skip", detail: "Not reached" });
   }
@@ -351,16 +347,16 @@ function analyze(rows, pairLabel, htfRows, ohlcRows) {
     risk = Math.abs(lastClose - stop);
     const reward1 = Math.abs(target1 - lastClose);
     const rr = risk > 0 ? reward1 / risk : 0;
-    const rrOk = pass("Risk:Reward ≥ 1:2", rr >= 2, `Risk:Reward to TP1 = 1:${rr.toFixed(1)}`);
+    const rrOk = pass("Risk:Reward ≥ 1:2", rr >= 2, `RR = 1:${rr.toFixed(1)}`);
     if (rrOk) { tradePlan = { direction: leanDirection, entry: lastClose, stop, target1, target2, target3, risk, rr }; }
   } else {
-    pass("Risk:Reward ≥ 1:2", false, "No confirmed trend direction yet");
+    pass("Risk:Reward ≥ 1:2", false, "No confirmed trend");
   }
 
   const signal = tradePlan ? tradePlan.direction : "HOLD";
   const failedStep = pipeline.find(p => p.status === "fail");
   const suppressionReason = signal === "HOLD"
-    ? (leanDirection ? `NO TRADE — stopped at "${failedStep ? failedStep.name : "an earlier step"}"` : "NO TRADE — no confirmed trend direction yet")
+    ? (leanDirection ? `NO TRADE — stopped at "${failedStep ? failedStep.name : "earlier"}"` : "NO TRADE — no trend")
     : null;
 
   const gatedSteps = pipeline.filter(p => p.status === "pass" || p.status === "fail");
@@ -369,7 +365,7 @@ function analyze(rows, pairLabel, htfRows, ohlcRows) {
   return { signal, suppressionReason, tradePlan, lastClose, passCount, gatedCount: gatedSteps.length };
 }
 
-// --- Scalp engine with COOLDOWN TRACKING (30 pips + 15 min buffer) ---
+// --- Scalp engine with 5M, 15M, 30M ---
 function aggregateCandles(candles5m, groupSize) {
   if (groupSize === 1) return candles5m;
   const out = [];
@@ -400,12 +396,15 @@ function calculateRSI(candles, period = 14) {
   return [rsi];
 }
 
-function shouldSkipDueToRecency(pairKey, currentPrice, decimals, cooldown) {
-  const last = cooldown[pairKey];
+function shouldSkipDueToRecency(pairKey, timeframe, currentPrice, decimals, cooldown) {
+  const key = `${pairKey}:${timeframe}`;
+  const last = cooldown[key];
   if (!last) return false;
   const timeSinceLastSignal = Date.now() - new Date(last.time).getTime();
+  const pipThresholds = { "5m": 30, "15m": 50, "30m": 70 };
+  const threshold = pipThresholds[timeframe] || 30;
   const pipDistance = Math.abs(currentPrice - last.price) / Math.pow(10, -decimals);
-  if (timeSinceLastSignal < 900000 && pipDistance < 30) return true;
+  if (timeSinceLastSignal < 900000 && pipDistance < threshold) return true;
   return false;
 }
 
@@ -477,8 +476,9 @@ function computeDynamicTPSL(entryPrice, signal, candles5m) {
   return null;
 }
 
-function recordScalpSignal(pairKey, decision, entryPrice, cooldown) {
-  cooldown[pairKey] = { signal: decision, price: entryPrice, time: new Date().toISOString() };
+function recordScalpSignal(pairKey, timeframe, decision, entryPrice, cooldown) {
+  const key = `${pairKey}:${timeframe}`;
+  cooldown[key] = { signal: decision, price: entryPrice, time: new Date().toISOString() };
 }
 
 function computeTimeframeTrendBias(candles) {
@@ -493,24 +493,24 @@ function computeTimeframeTrendBias(candles) {
   return null;
 }
 
-function computeScalpTradeSignal(pairKey, candles5m, decimals, cooldown) {
+function computeScalpSignalForTimeframe(pairKey, candles, timeframe, decimals, cooldown) {
   const fmt = (v) => v == null ? null : Number(v.toFixed(decimals));
 
-  if (!candles5m || candles5m.length < 30) {
+  if (!candles || candles.length < 30) {
     return { decision: "HOLD", reason: "insufficient_data" };
   }
 
-  const entry = candles5m[candles5m.length - 1].close;
+  const entry = candles[candles.length - 1].close;
 
-  if (shouldSkipDueToRecency(pairKey, entry, decimals, cooldown)) {
+  if (shouldSkipDueToRecency(pairKey, timeframe, entry, decimals, cooldown)) {
     return { decision: "HOLD", reason: "cooldown_active", entry: fmt(entry), sl: null, tp: null };
   }
 
-  const momentum = computeScalpMomentumSignal(candles5m);
+  const momentum = computeScalpMomentumSignal(candles);
 
   if (momentum.decision !== "HOLD") {
-    const bias15 = computeTimeframeTrendBias(aggregateCandles(candles5m, 3));
-    const bias30 = computeTimeframeTrendBias(aggregateCandles(candles5m, 6));
+    const bias15 = computeTimeframeTrendBias(aggregateCandles(candles, 3));
+    const bias30 = computeTimeframeTrendBias(aggregateCandles(candles, 6));
 
     if (bias15 != null && bias15 !== momentum.decision) {
       return { decision: "HOLD", reason: "htf_conflict_15m", rsi: momentum.rsi, entry: fmt(entry), sl: null, tp: null };
@@ -519,15 +519,15 @@ function computeScalpTradeSignal(pairKey, candles5m, decimals, cooldown) {
       return { decision: "HOLD", reason: "htf_conflict_30m", rsi: momentum.rsi, entry: fmt(entry), sl: null, tp: null };
     }
 
-    const tpsl = computeDynamicTPSL(entry, momentum.decision, candles5m);
-    recordScalpSignal(pairKey, momentum.decision, entry, cooldown);
+    const tpsl = computeDynamicTPSL(entry, momentum.decision, candles);
+    recordScalpSignal(pairKey, timeframe, momentum.decision, entry, cooldown);
+    
     return {
       decision: momentum.decision,
       reason: momentum.reason,
       rsi: momentum.rsi,
       strength: momentum.strength,
-      htf15: bias15,
-      htf30: bias30,
+      timeframe: timeframe,
       entry: fmt(entry),
       sl: tpsl ? fmt(tpsl.stopLoss) : null,
       tp: tpsl ? fmt(tpsl.takeProfit) : null,
@@ -535,10 +535,10 @@ function computeScalpTradeSignal(pairKey, candles5m, decimals, cooldown) {
     };
   }
 
-  return { decision: "HOLD", reason: momentum.reason, rsi: momentum.rsi, entry: fmt(entry), sl: null, tp: null };
+  return { decision: "HOLD", reason: momentum.reason, rsi: momentum.rsi, entry: fmt(entry), sl: null, tp: null, timeframe: timeframe };
 }
 
-// ===================== Persistent history tracking =====================
+// ===================== History tracking =====================
 const HISTORY_PATH = path.join(DATA_DIR, "analysis-history.json");
 function loadHistory() {
   if (!fs.existsSync(HISTORY_PATH)) return { open: {}, closed: [] };
@@ -579,7 +579,7 @@ function historyStatsSummary(history) {
   return { totalClosed: total, wins, losses, winRate: total ? Math.round((wins / total) * 100) : null, openCount: Object.keys(history.open).length };
 }
 
-// ===================== Telegram notifications =====================
+// ===================== Telegram =====================
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const NOTIFY_STATE_PATH = path.join(DATA_DIR, "notify-state.json");
@@ -591,7 +591,7 @@ function loadNotifyState() {
 
 async function sendTelegram(text) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-    console.log("Telegram not configured (missing secrets) — skipping notification:", text.split("\n")[0]);
+    console.log("Telegram not configured — skipping:", text.split("\n")[0]);
     return;
   }
   try {
@@ -600,10 +600,10 @@ async function sendTelegram(text) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text }),
     });
-    if (!res.ok) console.error("Telegram send failed:", res.status, await res.text());
-    else console.log("Telegram notification sent:", text.split("\n")[0]);
+    if (!res.ok) console.error("Telegram failed:", res.status);
+    else console.log("Telegram sent:", text.split("\n")[0]);
   } catch (e) {
-    console.error("Telegram send error:", e.message);
+    console.error("Telegram error:", e.message);
   }
 }
 
@@ -666,21 +666,60 @@ async function main() {
 
     const c5 = scalpData ? scalpData[key] : null;
     if (c5 && c5.length >= 30) {
-      result.scalp = computeScalpTradeSignal(key, c5, decimals, cooldown);
-      const sc = result.scalp;
-      updateHistoryForEngine(history, key, "scalp", sc.decision, sc.entry, sc.sl, sc.tp, c5[c5.length - 1].close);
+      const signal5m = computeScalpSignalForTimeframe(key, c5, "5m", decimals, cooldown);
+      const c15 = aggregateCandles(c5, 3);
+      const signal15m = computeScalpSignalForTimeframe(key, c15, "15m", decimals, cooldown);
+      const c30 = aggregateCandles(c5, 6);
+      const signal30m = computeScalpSignalForTimeframe(key, c30, "30m", decimals, cooldown);
 
-      const scalpStateKey = `${key}:scalp`;
-      if (sc.decision !== "HOLD" && notifyState[scalpStateKey] !== sc.decision) {
+      result.scalp = { signal5m, signal15m, signal30m, master: "HOLD" };
+
+      const decisions = [signal5m.decision, signal15m.decision, signal30m.decision].filter(d => d !== "HOLD");
+      const buyCount = decisions.filter(d => d === "BUY").length;
+      const sellCount = decisions.filter(d => d === "SELL").length;
+      if (buyCount >= 2) result.scalp.master = "BUY";
+      else if (sellCount >= 2) result.scalp.master = "SELL";
+
+      updateHistoryForEngine(history, key, "scalp-5m", signal5m.decision, signal5m.entry, signal5m.sl, signal5m.tp, c5[c5.length - 1].close);
+      updateHistoryForEngine(history, key, "scalp-15m", signal15m.decision, signal15m.entry, signal15m.sl, signal15m.tp, c15[c15.length - 1].close);
+      updateHistoryForEngine(history, key, "scalp-30m", signal30m.decision, signal30m.entry, signal30m.sl, signal30m.tp, c30[c30.length - 1].close);
+
+      const scalp5mKey = `${key}:scalp-5m`;
+      if (signal5m.decision !== "HOLD" && notifyState[scalp5mKey] !== signal5m.decision) {
         await sendTelegram(
-          `🔔 PipSight — Scalp\n${key} · 5/15/30m\n${sc.decision === "BUY" ? "🟢" : "🔴"} ${sc.decision}\nEntry: ${sc.entry}\nSL: ${sc.sl}\nTP: ${sc.tp}`
+          `🔔 PipSight — Scalp 5M\n${key}\n${signal5m.decision === "BUY" ? "🟢" : "🔴"} ${signal5m.decision}\nEntry: ${signal5m.entry}\nSL: ${signal5m.sl}\nTP: ${signal5m.tp}`
         );
       }
-      notifyState[scalpStateKey] = sc.decision;
+      notifyState[scalp5mKey] = signal5m.decision;
+
+      const scalp15mKey = `${key}:scalp-15m`;
+      if (signal15m.decision !== "HOLD" && notifyState[scalp15mKey] !== signal15m.decision) {
+        await sendTelegram(
+          `🔔 PipSight — Scalp 15M\n${key}\n${signal15m.decision === "BUY" ? "🟢" : "🔴"} ${signal15m.decision}\nEntry: ${signal15m.entry}\nSL: ${signal15m.sl}\nTP: ${signal15m.tp}`
+        );
+      }
+      notifyState[scalp15mKey] = signal15m.decision;
+
+      const scalp30mKey = `${key}:scalp-30m`;
+      if (signal30m.decision !== "HOLD" && notifyState[scalp30mKey] !== signal30m.decision) {
+        await sendTelegram(
+          `🔔 PipSight — Scalp 30M\n${key}\n${signal30m.decision === "BUY" ? "🟢" : "🔴"} ${signal30m.decision}\nEntry: ${signal30m.entry}\nSL: ${signal30m.sl}\nTP: ${signal30m.tp}`
+        );
+      }
+      notifyState[scalp30mKey] = signal30m.decision;
+
+      const scalpMasterKey = `${key}:scalp-master`;
+      if (result.scalp.master !== "HOLD" && notifyState[scalpMasterKey] !== result.scalp.master) {
+        const votes = `5M: ${signal5m.decision} · 15M: ${signal15m.decision} · 30M: ${signal30m.decision}`;
+        await sendTelegram(
+          `⭐ PipSight — Scalp Master\n${key}\n${result.scalp.master === "BUY" ? "🟢" : "🔴"} ${result.scalp.master} (2+ agree)\n${votes}`
+        );
+      }
+      notifyState[scalpMasterKey] = result.scalp.master;
     }
 
     const votes = [
-      { engine: "Scalp", signal: result.scalp ? result.scalp.decision : "HOLD" },
+      { engine: "Scalp", signal: result.scalp ? result.scalp.master : "HOLD" },
       { engine: "Intraday", signal: result.intraday ? result.intraday.signal : "HOLD" },
       { engine: "Swing", signal: result.swing ? result.swing.signal : "HOLD" },
     ];
@@ -702,7 +741,7 @@ async function main() {
     notifyState[masterKey] = verdict;
 
     out.pairs[key] = result;
-    console.log(`${key}: swing=${result.swing ? result.swing.signal : "n/a"} intraday=${result.intraday ? result.intraday.signal : "n/a"} scalp=${result.scalp ? result.scalp.decision : "n/a"} master=${verdict}`);
+    console.log(`${key}: swing=${result.swing ? result.swing.signal : "n/a"} intraday=${result.intraday ? result.intraday.signal : "n/a"} scalp=${result.scalp ? result.scalp.master : "n/a"} master=${verdict}`);
   }
 
   fs.writeFileSync(path.join(DATA_DIR, "live-analysis.json"), JSON.stringify(out, null, 2));
@@ -712,16 +751,17 @@ async function main() {
   console.log("Wrote data/notify-state.json");
 
   saveCooldown(cooldown);
-  console.log("Saved cooldown tracking to data/scalp-cooldown.json");
+  console.log("Saved cooldown to data/scalp-cooldown.json");
 
   history.updatedAt = new Date().toISOString();
   history.stats = { overall: historyStatsSummary(history) };
-  for (const engine of ["scalp", "intraday", "swing"]) {
+  for (const engine of ["scalp-5m", "scalp-15m", "scalp-30m", "intraday", "swing"]) {
     const filtered = { open: {}, closed: history.closed.filter(h => h.engine === engine) };
     history.stats[engine] = historyStatsSummary(filtered);
   }
   fs.writeFileSync(HISTORY_PATH, JSON.stringify(history, null, 2));
-  console.log(`History: ${history.stats.overall.totalClosed} closed (${history.stats.overall.winRate}% win rate), ${history.stats.overall.openCount} open`);
+  console.log(`History: ${history.stats.overall.totalClosed} closed (${history.stats.overall.winRate}% WR)`);
 }
 
-main().catch(e => console.error("Fatal error:", e));
+main().catch(e => console.error("Fatal:", e));
+

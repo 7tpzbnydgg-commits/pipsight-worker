@@ -8,14 +8,8 @@
 // Also sends Telegram alerts on fresh Scalp/Intraday/Swing/Master signals,
 // and keeps a permanent WIN/LOSS history for all three engines.
 //
-// Reads (from this same repo checkout):
-//   data/scalp-candles.json   — 5-min candles (XAUUSD, GBPJPY)
-//   data/intraday-h1.json     — 1-hour candles (XAUUSD, GBPJPY)
-//   data/daily-ohlc.json      — daily candles (XAUUSD, GBPJPY)
-// Writes:
-//   data/live-analysis.json     — Swing + Intraday + Scalp + Master verdict, per pair
-//   data/analysis-history.json  — permanent, ever-growing WIN/LOSS track record for all 3 engines
-//   data/notify-state.json      — last-notified signal per (pair, engine), to avoid duplicate Telegram alerts
+// Cooldown tracking: Prevents repeat SELL/BUY signals within 15 minutes + 30 pips range.
+// Persisted to data/scalp-cooldown.json across workflow runs.
 
 const fs = require("fs");
 const path = require("path");
@@ -29,6 +23,19 @@ const readJSON = (file) => {
 
 const PAIR_KEYS = ["XAUUSD", "GBPJPY"];
 const DECIMALS = { XAUUSD: 2, GBPJPY: 3 };
+
+// Cooldown file paths
+const COOLDOWN_PATH = path.join(DATA_DIR, "scalp-cooldown.json");
+
+function loadCooldown() {
+  if (!fs.existsSync(COOLDOWN_PATH)) return {};
+  try { return JSON.parse(fs.readFileSync(COOLDOWN_PATH, "utf8")); } catch { return {}; }
+}
+
+function saveCooldown(cooldown) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(COOLDOWN_PATH, JSON.stringify(cooldown, null, 2));
+}
 
 // ===================== Ported indicator/helper functions =====================
 
@@ -362,7 +369,7 @@ function analyze(rows, pairLabel, htfRows, ohlcRows) {
   return { signal, suppressionReason, tradePlan, lastClose, passCount, gatedCount: gatedSteps.length };
 }
 
-// --- Scalp engine (5m/15m/30m relaxed, decisive combiner) — identical to pipsight-D.html ---
+// --- Scalp engine with COOLDOWN TRACKING (30 pips + 15 min buffer) ---
 function aggregateCandles(candles5m, groupSize) {
   if (groupSize === 1) return candles5m;
   const out = [];
@@ -376,12 +383,6 @@ function aggregateCandles(candles5m, groupSize) {
   }
   return out;
 }
-
-// Improved scalp engine — momentum/candle-strength based with RSI extreme
-// filter, ATR-based dynamic TP/SL, and a recency cooldown to stop repeat
-// signals from firing on near-identical price/time. Ported from the
-// PipSight Robot "improved scalping" engine.
-let LAST_SCALP_SIGNAL = {};
 
 function calculateRSI(candles, period = 14) {
   if (candles.length < period + 1) return [];
@@ -399,12 +400,12 @@ function calculateRSI(candles, period = 14) {
   return [rsi];
 }
 
-function shouldSkipDueToRecency(pairKey, currentPrice, decimals) {
-  const last = LAST_SCALP_SIGNAL[pairKey];
+function shouldSkipDueToRecency(pairKey, currentPrice, decimals, cooldown) {
+  const last = cooldown[pairKey];
   if (!last) return false;
-  const timeSinceLastSignal = Date.now() - last.time;
+  const timeSinceLastSignal = Date.now() - new Date(last.time).getTime();
   const pipDistance = Math.abs(currentPrice - last.price) / Math.pow(10, -decimals);
-  if (timeSinceLastSignal < 900000 && pipDistance < 15) return true;
+  if (timeSinceLastSignal < 900000 && pipDistance < 30) return true;
   return false;
 }
 
@@ -476,13 +477,10 @@ function computeDynamicTPSL(entryPrice, signal, candles5m) {
   return null;
 }
 
-function recordScalpSignal(pairKey, decision, entryPrice) {
-  LAST_SCALP_SIGNAL[pairKey] = { signal: decision, price: entryPrice, time: Date.now() };
+function recordScalpSignal(pairKey, decision, entryPrice, cooldown) {
+  cooldown[pairKey] = { signal: decision, price: entryPrice, time: new Date().toISOString() };
 }
 
-// Lightweight higher-timeframe trend bias (EMA9 vs EMA21) used purely to
-// confirm/veto the fast 5m momentum entry — not a full signal generator on
-// its own. Returns "BUY", "SELL", or null (not enough history / flat).
 function computeTimeframeTrendBias(candles) {
   if (!candles || candles.length < 22) return null;
   const closes = candles.map(c => c.close);
@@ -495,7 +493,7 @@ function computeTimeframeTrendBias(candles) {
   return null;
 }
 
-function computeScalpTradeSignal(pairKey, candles5m, decimals) {
+function computeScalpTradeSignal(pairKey, candles5m, decimals, cooldown) {
   const fmt = (v) => v == null ? null : Number(v.toFixed(decimals));
 
   if (!candles5m || candles5m.length < 30) {
@@ -504,16 +502,13 @@ function computeScalpTradeSignal(pairKey, candles5m, decimals) {
 
   const entry = candles5m[candles5m.length - 1].close;
 
-  if (shouldSkipDueToRecency(pairKey, entry, decimals)) {
+  if (shouldSkipDueToRecency(pairKey, entry, decimals, cooldown)) {
     return { decision: "HOLD", reason: "cooldown_active", entry: fmt(entry), sl: null, tp: null };
   }
 
   const momentum = computeScalpMomentumSignal(candles5m);
 
   if (momentum.decision !== "HOLD") {
-    // Entry trigger stays on the fast 5m momentum read, but it must not be
-    // fighting the 15m trend, and — when there's enough history — the 30m
-    // trend either. This filters out counter-trend / choppy 5m noise.
     const bias15 = computeTimeframeTrendBias(aggregateCandles(candles5m, 3));
     const bias30 = computeTimeframeTrendBias(aggregateCandles(candles5m, 6));
 
@@ -525,7 +520,7 @@ function computeScalpTradeSignal(pairKey, candles5m, decimals) {
     }
 
     const tpsl = computeDynamicTPSL(entry, momentum.decision, candles5m);
-    recordScalpSignal(pairKey, momentum.decision, entry);
+    recordScalpSignal(pairKey, momentum.decision, entry, cooldown);
     return {
       decision: momentum.decision,
       reason: momentum.reason,
@@ -585,11 +580,6 @@ function historyStatsSummary(history) {
 }
 
 // ===================== Telegram notifications =====================
-// Sends an alert only on a TRANSITION into a decisive BUY/SELL (any of the
-// 4 signal types) — not on every 15-minute run while the same signal is
-// still active, so it doesn't spam. Token/chat ID come from GitHub Secrets
-// (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID), never hardcoded here.
-
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const NOTIFY_STATE_PATH = path.join(DATA_DIR, "notify-state.json");
@@ -630,6 +620,7 @@ async function main() {
   const dailyData = readJSON("daily-ohlc.json");
   const history = loadHistory();
   const notifyState = loadNotifyState();
+  const cooldown = loadCooldown();
 
   const out = { updatedAt: new Date().toISOString(), pairs: {} };
 
@@ -675,7 +666,7 @@ async function main() {
 
     const c5 = scalpData ? scalpData[key] : null;
     if (c5 && c5.length >= 30) {
-      result.scalp = computeScalpTradeSignal(key, c5, decimals);
+      result.scalp = computeScalpTradeSignal(key, c5, decimals, cooldown);
       const sc = result.scalp;
       updateHistoryForEngine(history, key, "scalp", sc.decision, sc.entry, sc.sl, sc.tp, c5[c5.length - 1].close);
 
@@ -716,7 +707,12 @@ async function main() {
 
   fs.writeFileSync(path.join(DATA_DIR, "live-analysis.json"), JSON.stringify(out, null, 2));
   console.log("Wrote data/live-analysis.json");
+  
   fs.writeFileSync(NOTIFY_STATE_PATH, JSON.stringify(notifyState, null, 2));
+  console.log("Wrote data/notify-state.json");
+
+  saveCooldown(cooldown);
+  console.log("Saved cooldown tracking to data/scalp-cooldown.json");
 
   history.updatedAt = new Date().toISOString();
   history.stats = { overall: historyStatsSummary(history) };
@@ -728,4 +724,4 @@ async function main() {
   console.log(`History: ${history.stats.overall.totalClosed} closed (${history.stats.overall.winRate}% win rate), ${history.stats.overall.openCount} open`);
 }
 
-main().catch(e => { console.error("Fatal error:", e); process.exit(1); });
+main().catch(e => console.error("Fatal error:", e));

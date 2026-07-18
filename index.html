@@ -760,7 +760,6 @@ function freshnessBadge(updatedAtISO, maxAgeMinutes, isStaleFlag){
   return `<span class="mono" style="font-size:10px;color:var(--hold);border:1px solid var(--hold);border-radius:6px;padding:2px 6px;white-space:nowrap;">⚠ stale · ${ageLabel}${isStaleFlag ? " · worker fallback" : ""}</span>`;
 }
 
-const SHARED_LIVE_TICK_URL = "https://raw.githubusercontent.com/7tpzbnydgg-commits/pipsight-worker/main/data/gbpjpy-live.json";
 let INTRADAY_H1_CACHE = null;
 let INTRADAY_H1_FETCHED_AT = 0;
 async function getIntradayH1(pairKey){
@@ -800,21 +799,25 @@ async function fetchForexRows(pair){
   const dates = Object.keys(data.rates).sort();
   const rows = dates.map(d=>({date:d, close:data.rates[d][pair.quote]}));
 
+  // Live GBP/JPY price used to come from a dedicated Twelve Data /price call
+  // (fetch-gbpjpy-live.js, ~144 credits/day on the free tier). That data was
+  // redundant: fetch-scalp-candles.js already pulls GBP/JPY 5-minute candles
+  // on the exact same 10-minute cadence, so the latest candle's close is the
+  // live price (at most ~5 min old) at zero extra API cost.
   try{
-    const liveRes = await fetch(SHARED_LIVE_TICK_URL + "?t=" + Date.now());
-    if(liveRes.ok){
-      const liveData = await liveRes.json();
-      if(liveData && typeof liveData.price === "number"){
-        const todayStr = new Date().toISOString().slice(0,10);
-        if(rows.length && rows[rows.length-1].date === todayStr){
-          rows[rows.length-1].close = liveData.price;
-        } else {
-          rows.push({ date: todayStr, close: liveData.price });
-        }
+    if(!SCALP_DATA) await fetchScalpCandles();
+    const candles = SCALP_DATA ? SCALP_DATA["GBPJPY"] : null;
+    const lastClose = candles && candles.length ? candles[candles.length - 1].close : null;
+    if(typeof lastClose === "number"){
+      const todayStr = new Date().toISOString().slice(0,10);
+      if(rows.length && rows[rows.length-1].date === todayStr){
+        rows[rows.length-1].close = lastClose;
+      } else {
+        rows.push({ date: todayStr, close: lastClose });
       }
     }
   }catch(e){
-    console.log('Live GBPJPY tick fetch failed:', e);
+    console.log('Live GBPJPY tick (from scalp candles) failed:', e);
   }
 
   if(rows.length<30) throw new Error("Not enough history returned for this pair");

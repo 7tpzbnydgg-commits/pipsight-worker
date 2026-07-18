@@ -742,6 +742,24 @@ function drawGauge(canvas,score,signal){
   ctx.fillStyle=color; ctx.beginPath(); ctx.arc(cx,cy,w*0.02,0,2*Math.PI); ctx.fill();
 }
 
+// Renders a small inline badge showing how old a worker-published data file
+// is. `isStaleFlag` comes straight from the "stale" map the worker writes
+// into scalp-candles.json / intraday-h1.json / daily-ohlc.json when a fetch
+// failed and it had to reuse the previous data for that symbol.
+function freshnessBadge(updatedAtISO, maxAgeMinutes, isStaleFlag){
+  if(!updatedAtISO){
+    return `<span class="mono" style="font-size:10px;color:var(--sell);border:1px solid var(--sell);border-radius:6px;padding:2px 6px;white-space:nowrap;">⚠ no data yet</span>`;
+  }
+  const ageMs = Date.now() - new Date(updatedAtISO).getTime();
+  const ageMin = Math.max(0, Math.round(ageMs / 60000));
+  const ageLabel = ageMin < 60 ? `${ageMin}m ago` : `${Math.round(ageMin / 60)}h ago`;
+  const warn = isStaleFlag || ageMin > maxAgeMinutes;
+  if(!warn){
+    return `<span class="mono" style="font-size:10px;color:var(--buy);opacity:.85;white-space:nowrap;">● live · ${ageLabel}</span>`;
+  }
+  return `<span class="mono" style="font-size:10px;color:var(--hold);border:1px solid var(--hold);border-radius:6px;padding:2px 6px;white-space:nowrap;">⚠ stale · ${ageLabel}${isStaleFlag ? " · worker fallback" : ""}</span>`;
+}
+
 const SHARED_LIVE_TICK_URL = "https://raw.githubusercontent.com/7tpzbnydgg-commits/pipsight-worker/main/data/gbpjpy-live.json";
 let INTRADAY_H1_CACHE = null;
 let INTRADAY_H1_FETCHED_AT = 0;
@@ -926,6 +944,7 @@ async function loadPair(idx){
 
     let rows, htfRows, ohlcRows, modeNote, tradeType, timeframesUsed, holdTime;
 
+    let freshnessHtml = "";
     if(mode === "daily"){
       const h1 = ohlcKey ? await getIntradayH1(ohlcKey) : null;
       if(!h1 || h1.length < 210){
@@ -936,6 +955,11 @@ async function loadPair(idx){
       ohlcRows = h1;
       modeNote = " (intraday — H1 confirmed by H4)";
       tradeType = "Intraday"; timeframesUsed = "H1 + H4"; holdTime = "2–12 hours";
+      // H1 worker runs every 15 min — flag anything older than 30 min.
+      freshnessHtml = freshnessBadge(
+        INTRADAY_H1_CACHE ? INTRADAY_H1_CACHE.updatedAt : null, 30,
+        !!(INTRADAY_H1_CACHE && INTRADAY_H1_CACHE.stale && INTRADAY_H1_CACHE.stale[ohlcKey])
+      );
     } else {
       rows = rawRows;
       htfRows = resampleWeekly(rawRows);
@@ -945,6 +969,11 @@ async function loadPair(idx){
       ohlcRows = ohlcKey ? await getDailyOHLC(ohlcKey) : null;
       modeNote = " (swing — D1 confirmed by W1)";
       tradeType = "Swing"; timeframesUsed = "D1 + W1"; holdTime = "2–7 days";
+      // Daily-OHLC worker runs every 4 hours — flag anything older than 5 hours.
+      freshnessHtml = freshnessBadge(
+        DAILY_OHLC_CACHE ? DAILY_OHLC_CACHE.updatedAt : null, 300,
+        !!(DAILY_OHLC_CACHE && DAILY_OHLC_CACHE.stale && DAILY_OHLC_CACHE.stale[ohlcKey])
+      );
     }
     const statusLabel = rawStatusLabel + modeNote;
     const a = analyze(rows, pair.label, htfRows, ohlcRows);
@@ -978,6 +1007,7 @@ async function loadPair(idx){
           <div class="row">
             <span class="badge ${badgeClass}">${a.signal}</span>
             <span class="mono" style="font-size:12px;color:var(--muted)">${a.passCount}/${a.gatedCount} required checks passed</span>
+            ${freshnessHtml}
           </div>
           <div class="mono" style="font-size:11px;color:var(--muted);margin-top:6px;">
             Trade Type: <b style="color:var(--text)">${tradeType}</b> · Timeframes Used: <b style="color:var(--text)">${timeframesUsed}</b> · Expected Hold: <b style="color:var(--text)">${holdTime}</b>
@@ -1410,12 +1440,17 @@ async function renderScalpPanel(){
     return;
   }
 
-  let html = `<div class="mono" style="opacity:.6;font-size:11px;margin-bottom:10px;">Candles updated: ${new Date(SCALP_DATA.updatedAt).toLocaleString()}</div>`;
+  let html = `<div class="mono" style="opacity:.6;font-size:11px;margin-bottom:10px;">Candles last published: ${new Date(SCALP_DATA.updatedAt).toLocaleString()}</div>`;
   html += `<div style="display:grid;grid-template-columns:1fr;gap:12px;">`;
 
   for(const pair of SCALP_PAIRS){
     const candles5m = SCALP_DATA[pair.key];
-    html += `<div class="card" style="padding:14px;"><div style="font-weight:600;margin-bottom:8px;">${pair.label}</div>`;
+    // 5m worker runs every 10 min — flag anything older than 20 min.
+    const scalpFreshness = freshnessBadge(
+      SCALP_DATA.updatedAt, 20,
+      !!(SCALP_DATA.stale && SCALP_DATA.stale[pair.key])
+    );
+    html += `<div class="card" style="padding:14px;"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:8px;"><div style="font-weight:600;">${pair.label}</div>${scalpFreshness}</div>`;
 
     if(!candles5m || !candles5m.length){
       html += `<div class="loading">No candle data for ${pair.label} yet</div></div>`;
@@ -1549,6 +1584,11 @@ async function renderMasterSignal(){
       </div>
       <div class="mono" style="font-size:11px;margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;">
         ${votes.map(v=>`<span style="padding:4px 8px;border-radius:6px;background:rgba(255,255,255,.04);border:1px solid var(--border);">${v.label}: ${v.available? v.decision : "n/a"}</span>`).join("")}
+      </div>
+      <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;">
+        ${freshnessBadge(SCALP_DATA ? SCALP_DATA.updatedAt : null, 20, !!(SCALP_DATA && SCALP_DATA.stale && SCALP_DATA.stale[ohlcKey]))}
+        ${freshnessBadge(INTRADAY_H1_CACHE ? INTRADAY_H1_CACHE.updatedAt : null, 30, !!(INTRADAY_H1_CACHE && INTRADAY_H1_CACHE.stale && INTRADAY_H1_CACHE.stale[ohlcKey]))}
+        ${freshnessBadge(DAILY_OHLC_CACHE ? DAILY_OHLC_CACHE.updatedAt : null, 300, !!(DAILY_OHLC_CACHE && DAILY_OHLC_CACHE.stale && DAILY_OHLC_CACHE.stale[ohlcKey]))}
       </div>
     </div>`;
   }

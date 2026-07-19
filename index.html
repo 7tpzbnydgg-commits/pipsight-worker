@@ -152,6 +152,68 @@ function persistLearner(){
   catch(e){ console.log("Learner data save failed:", e.message); }
 }
 
+// ── Learning-driven feedback gate ────────────────────────────────────────
+// This is what makes the system actually self-improve rather than just
+// report. Once a strategy or pair has enough resolved history (MIN_SAMPLE)
+// and its learned confidence has fallen below the floor (MIN_CONFIDENCE),
+// new signals of that type get suppressed to HOLD — the same way the
+// existing pipeline already suppresses on a failed check. Below the sample
+// floor, or once confidence is healthy, the original signal passes through
+// unchanged, so nothing here affects behaviour until real losing history
+// has accumulated.
+const LEARNER_GATE_MIN_SAMPLE = 10;
+const LEARNER_GATE_MIN_CONFIDENCE = 35;
+
+function worstLearnerConfidence(strategy, pairKey){
+  if(!pipLearner) return null;
+  const stats = pipLearner.getStats();
+  const stratStats = stats.strategies && stats.strategies[strategy];
+  const pairStats = stats.pairs && stats.pairs[pairKey];
+  let worst = null;
+  if(stratStats && stratStats.resolved>=LEARNER_GATE_MIN_SAMPLE && stratStats.confidence<LEARNER_GATE_MIN_CONFIDENCE){
+    worst = { label:`${strategy} strategy`, confidence:stratStats.confidence };
+  }
+  if(pairStats && pairStats.resolved>=LEARNER_GATE_MIN_SAMPLE && pairStats.confidence<LEARNER_GATE_MIN_CONFIDENCE){
+    if(!worst || pairStats.confidence<worst.confidence) worst = { label:`${pairKey} pair`, confidence:pairStats.confidence };
+  }
+  return worst;
+}
+
+// Gates a daily/weekly analyze() result in place. Appends one extra pipeline
+// step so the existing "Decision pipeline" card shows exactly why a signal
+// did or didn't get suppressed by learned history.
+function applyLearnerGate(a, strategy, pairKey){
+  if(!pipLearner || !a.tradePlan) return a;
+  const worst = worstLearnerConfidence(strategy, pairKey);
+  if(worst){
+    const reason = `Learning engine suppressed this ${a.signal} — ${worst.label} has only ${worst.confidence}% learned confidence after ${LEARNER_GATE_MIN_SAMPLE}+ resolved signals (floor: ${LEARNER_GATE_MIN_CONFIDENCE}%)`;
+    a.pipeline.push({name:"Learning Engine Gate", status:"fail", detail:reason});
+    a.signal = "HOLD";
+    a.tradePlan = null;
+    a.suppressionReason = reason;
+  } else {
+    const resolved = pipLearner.getStats().resolvedSignals || 0;
+    a.pipeline.push({name:"Learning Engine Gate", status: resolved>=LEARNER_GATE_MIN_SAMPLE ? "pass" : "skip",
+      detail: resolved>=LEARNER_GATE_MIN_SAMPLE
+        ? "Learned confidence for this strategy/pair is above the suppression floor — signal allowed through"
+        : `Not enough resolved history yet (${resolved}/${LEARNER_GATE_MIN_SAMPLE}) to gate on — signal allowed through by default`});
+  }
+  return a;
+}
+
+// Same idea for the scalp engine's plain decision object.
+function applyScalpLearnerGate(ts, pairKey){
+  if(!pipLearner || ts.decision==="HOLD") return ts;
+  const worst = worstLearnerConfidence("scalp", pairKey);
+  if(worst){
+    ts.reason = `Learning engine suppressed this ${ts.decision} — ${worst.label} has only ${worst.confidence}% learned confidence after ${LEARNER_GATE_MIN_SAMPLE}+ resolved signals (floor: ${LEARNER_GATE_MIN_CONFIDENCE}%)`;
+    ts.decision = "HOLD";
+    ts.rawSl = null;
+    ts.rawTp = null;
+  }
+  return ts;
+}
+
 const PAIRS = [
   { type: "metal", symbol: "XAU", quote: "USD", label: "XAU/USD", tvSymbol: "OANDA:XAUUSD" },
   { type: "forex", base: "GBP", quote: "JPY", label: "GBP/JPY", tvSymbol: "OANDA:GBPJPY" },
@@ -334,6 +396,51 @@ function detectCandlePattern(ohlcRows, leanDirection){
   }
 }
 
+// Independent candle-pattern vote — checks both bullish and bearish patterns
+// on their own merits instead of testing against an already-decided
+// direction, so this check can confirm BUY or SELL without waiting on
+// (or being blocked by) any other check in the pipeline.
+function detectCandleVote(ohlcRows){
+  const n = ohlcRows.length;
+  if(n<2) return { vote:null, detail:"Not enough candle history" };
+  const last = ohlcRows[n-1], prev = ohlcRows[n-2];
+  const range = last.high-last.low;
+  const body = Math.abs(last.close-last.open);
+  const bodyPct = range>0 ? body/range : 0;
+  const bullishEngulfing = prev.close<prev.open && last.close>last.open &&
+                            last.open<=prev.close && last.close>=prev.open;
+  const bearishEngulfing = prev.close>prev.open && last.close<last.open &&
+                            last.open>=prev.close && last.close<=prev.open;
+  if(bullishEngulfing) return { vote:"BUY", detail:"Bullish engulfing on the latest candle" };
+  if(bearishEngulfing) return { vote:"SELL", detail:"Bearish engulfing on the latest candle" };
+  if(last.close>last.open && bodyPct>0.6) return { vote:"BUY", detail:`Strong bullish candle (body ${(bodyPct*100).toFixed(0)}% of range)` };
+  if(last.close<last.open && bodyPct>0.6) return { vote:"SELL", detail:`Strong bearish candle (body ${(bodyPct*100).toFixed(0)}% of range)` };
+  return { vote:null, detail:"Latest candle doesn't show a decisive bullish or bearish pattern" };
+}
+
+// Independent Support/Resistance vote — looks at which side (room to
+// resistance vs room to support) is clearer, on its own, instead of only
+// checking the side that matches an already-decided direction.
+function detectSRVote(sr, lastClose){
+  const res = sr.resistances[0], sup = sr.supports[0];
+  const dRes = res!=null ? (res-lastClose)/lastClose : null;
+  const dSup = sup!=null ? (lastClose-sup)/lastClose : null;
+  const resRoom = dRes==null || dRes>=0.003;
+  const supRoom = dSup==null || dSup>=0.003;
+  const resTxt = dRes==null ? "no resistance detected" : `resistance ${(dRes*100).toFixed(2)}% away`;
+  const supTxt = dSup==null ? "no support detected" : `support ${(dSup*100).toFixed(2)}% away`;
+  if(resRoom && !supRoom) return { vote:"BUY", detail:`Clear room to resistance (${resTxt}); ${supTxt} — favors upside` };
+  if(supRoom && !resRoom) return { vote:"SELL", detail:`Clear room to support (${supTxt}); ${resTxt} — favors downside` };
+  if(resRoom && supRoom){
+    const rr = dRes==null ? Infinity : dRes, rs = dSup==null ? Infinity : dSup;
+    if(rr===rs) return { vote:null, detail:`Room is roughly equal both ways (${resTxt}, ${supTxt}) — no directional edge` };
+    return rr>rs
+      ? { vote:"BUY", detail:`More room to resistance than to support (${resTxt}, ${supTxt}) — favors upside` }
+      : { vote:"SELL", detail:`More room to support than to resistance (${resTxt}, ${supTxt}) — favors downside` };
+  }
+  return { vote:null, detail:`Both sides too tight — ${resTxt}, ${supTxt}` };
+}
+
 function computeSR(rows, lastClose){
   const closes = rows.map(r=>r.close);
   const n = closes.length;
@@ -492,8 +599,14 @@ function analyze(rows, pairLabel, htfRows, ohlcRows){
   }
   na("Volume Confirmed?", "Not available — spot FX/gold has no centralized exchange volume feed");
 
+  // ── Independent voting checks ────────────────────────────────────────
+  // Each check below decides BUY / SELL / no-vote purely from its own data.
+  // None of them wait on, or get blocked by, any other check. A check only
+  // shows "pass" once it has actually confirmed a direction; otherwise it
+  // shows "na" (either not enough data yet, or genuinely neutral).
+
   const macdOk = n>=35;
-  let lastMacd=null, lastMacdSignal=null;
+  let lastMacd=null, lastMacdSignal=null, macdVote=null;
   if(macdOk){
     const ema12=emaSeries(closes,12), ema26=emaSeries(closes,26);
     const macdLine = closes.map((_,i)=>(ema12[i]!=null&&ema26[i]!=null)?ema12[i]-ema26[i]:null);
@@ -501,48 +614,41 @@ function analyze(rows, pairLabel, htfRows, ohlcRows){
     const sig = emaSeries(macdVals,9);
     lastMacd = macdLine[n-1];
     lastMacdSignal = sig[sig.length-1];
+    if(lastMacd!=null && lastMacdSignal!=null && lastMacd!==lastMacdSignal){
+      macdVote = lastMacd>lastMacdSignal ? "BUY" : "SELL";
+    }
   }
-  let macdDetail, macdPassVal=false;
-  if(!leanDirection){ macdDetail = "No confirmed trend direction to test against"; }
-  else if(!macdOk){ macdDetail = `Needs ${35-n} more session${35-n===1?"":"s"} of history for MACD`; }
-  else {
-    macdPassVal = leanDirection==="BUY" ? lastMacd>lastMacdSignal : lastMacd<lastMacdSignal;
-    macdDetail = `MACD ${lastMacd.toFixed(4)} vs signal ${lastMacdSignal.toFixed(4)} — ${macdPassVal?"confirms":"does not confirm"} ${leanDirection}`;
-  }
-  pass("MACD Confirmation", leanDirection ? (macdOk && macdPassVal) : false, macdDetail);
+  if(!macdOk){ na("MACD Confirmation", `Needs ${35-n} more session${35-n===1?"":"s"} of history for MACD`); }
+  else if(macdVote){ pass("MACD Confirmation", true, `MACD ${lastMacd.toFixed(4)} vs signal ${lastMacdSignal.toFixed(4)} — independently confirms ${macdVote}`); }
+  else { na("MACD Confirmation", "MACD is flat against its signal line — no directional confirmation"); }
 
   const rsiP = Math.min(14, Math.max(4, n-2));
   const rsi = rsiSeries(closes, rsiP);
   const lastRsi = rsi[n-1];
-  const rsiBuyOk = lastRsi!=null && lastRsi>=45 && lastRsi<=65;
-  const rsiSellOk = lastRsi!=null && lastRsi>=35 && lastRsi<=55;
-  let rsiDetail, rsiPassVal=false;
-  if(!leanDirection){ rsiDetail = "No confirmed trend direction to test against"; }
-  else if(lastRsi==null){ rsiDetail = "Not enough history for RSI yet"; }
-  else {
-    rsiPassVal = leanDirection==="BUY" ? rsiBuyOk : rsiSellOk;
-    rsiDetail = `RSI(${rsiP}) = ${lastRsi.toFixed(1)} — ${rsiPassVal?"inside":"outside"} the ${leanDirection==="BUY"?"45–65":"35–55"} confirmation band`;
+  let rsiVote = null;
+  if(lastRsi!=null){
+    if(lastRsi>=55) rsiVote="BUY";
+    else if(lastRsi<=45) rsiVote="SELL";
   }
-  pass("RSI Confirmation", leanDirection ? (lastRsi!=null && rsiPassVal) : false, rsiDetail);
+  if(lastRsi==null){ na("RSI Confirmation", "Not enough history for RSI yet"); }
+  else if(rsiVote){ pass("RSI Confirmation", true, `RSI(${rsiP}) = ${lastRsi.toFixed(1)} — independently confirms ${rsiVote} (≥55 bullish / ≤45 bearish band)`); }
+  else { na("RSI Confirmation", `RSI(${rsiP}) = ${lastRsi.toFixed(1)} — neutral zone (45–55), no directional confirmation`); }
 
-  let htfDetail, htfPassVal=false, htfDirection=null;
-  if(!leanDirection){ htfDetail = "No confirmed trend direction to test against"; }
-  else if(htfRows===null || htfRows===undefined){
-    htfPassVal = true;
-    htfDetail = "Already viewing the highest timeframe available for this pair — no higher chart to confirm against";
+  let htfDirection=null;
+  if(htfRows===null || htfRows===undefined){
+    na("Multi-Timeframe Confirmation", "Already viewing the highest timeframe available for this pair — no higher chart to confirm against");
   } else {
     htfDirection = trendDirectionOf(htfRows);
-    if(htfDirection==null){ htfDetail = "Higher-timeframe (weekly) trend isn't clearly aligned yet — mixed or insufficient EMA stack there"; }
-    else {
-      htfPassVal = htfDirection===leanDirection;
-      htfDetail = `Weekly-close trend is ${htfDirection} — ${htfPassVal?"agrees with":"conflicts with"} this ${leanDirection} lean`;
-    }
+    if(htfDirection==null){ na("Multi-Timeframe Confirmation", "Higher-timeframe (weekly) trend isn't clearly aligned yet — mixed or insufficient EMA stack there"); }
+    else { pass("Multi-Timeframe Confirmation", true, `Weekly-close trend is ${htfDirection} — independently confirms ${htfDirection}`); }
   }
-  pass("Multi-Timeframe Confirmation", leanDirection ? htfPassVal : false, htfDetail);
 
-  if(ohlcRows && leanDirection){
-    const cp = detectCandlePattern(ohlcRows, leanDirection);
-    pass("Candle Pattern", cp.ok, cp.detail);
+  let candleVote = null;
+  if(ohlcRows){
+    const cv = detectCandleVote(ohlcRows);
+    candleVote = cv.vote;
+    if(cv.vote){ pass("Candle Pattern", true, cv.detail); }
+    else { na("Candle Pattern", cv.detail); }
   } else {
     na("Candle Pattern", "Not available — only daily close prices here, no open/high/low candle data");
   }
@@ -567,41 +673,42 @@ function analyze(rows, pairLabel, htfRows, ohlcRows){
   else { na("High-Impact News Filter", `Informational — ${newsFilterDetail}; shown for context, doesn't block the signal`); }
 
   const sr = computeSR(rows, lastClose);
-  let srDetail, srPassVal=false;
-  if(!leanDirection){ srDetail = "No confirmed trend direction to test against"; }
-  else if(leanDirection==="BUY"){
-    const res = sr.resistances[0];
-    if(res==null){ srPassVal=true; srDetail="No resistance detected nearby"; }
-    else {
-      const d=(res-lastClose)/lastClose;
-      srPassVal = d>=0.003;
-      srDetail = srPassVal ? `Resistance ${(d*100).toFixed(2)}% away — clear room to run` : `Resistance only ${(d*100).toFixed(2)}% above spot — too close to buy into`;
-    }
+  const srVoteResult = detectSRVote(sr, lastClose);
+  if(srVoteResult.vote){ pass("Support/Resistance", true, srVoteResult.detail); }
+  else { na("Support/Resistance", srVoteResult.detail); }
+
+  // ── Consensus ────────────────────────────────────────────────────────
+  // A signal only fires when every check that actually cast a vote agrees
+  // on the same direction. Checks that abstained (na) never block anything
+  // — they just don't add a vote either way.
+  const votes = [];
+  if(leanDirection) votes.push({name:"Trend/EMA", vote:leanDirection});
+  if(macdVote) votes.push({name:"MACD", vote:macdVote});
+  if(rsiVote) votes.push({name:"RSI", vote:rsiVote});
+  if(htfDirection) votes.push({name:"Multi-Timeframe", vote:htfDirection});
+  if(candleVote) votes.push({name:"Candle Pattern", vote:candleVote});
+  if(srVoteResult.vote) votes.push({name:"Support/Resistance", vote:srVoteResult.vote});
+
+  const distinctDirections = [...new Set(votes.map(v=>v.vote))];
+  let finalDirection = null, noConsensusReason = null;
+  if(votes.length===0){
+    noConsensusReason = "No confirmed direction from any check yet";
+  } else if(distinctDirections.length>1){
+    noConsensusReason = `Checks disagree — ${votes.map(v=>`${v.name}: ${v.vote}`).join(", ")}`;
   } else {
-    const sup = sr.supports[0];
-    if(sup==null){ srPassVal=true; srDetail="No support detected nearby"; }
-    else {
-      const d=(lastClose-sup)/lastClose;
-      srPassVal = d>=0.003;
-      srDetail = srPassVal ? `Support ${(d*100).toFixed(2)}% away — clear room to run` : `Support only ${(d*100).toFixed(2)}% below spot — too close to sell into`;
-    }
+    finalDirection = distinctDirections[0];
   }
-  pass("Support/Resistance", leanDirection ? srPassVal : false, srDetail);
 
   const vol = computeVolatility(rows);
   const buffer = Math.max(vol*0.5, 0.0004) * lastClose;
-  if(leanDirection){
-    pipeline.push({name:"ATR-style Stop Loss", status:"pass",
-      detail:`Volatility-based buffer ≈ ${buffer.toFixed(lastClose>100?2:5)} (avg daily move ${(vol*100).toFixed(2)}%) — a proxy for true ATR, since no intraday high/low feed exists here`});
-  } else {
-    pipeline.push({name:"ATR-style Stop Loss", status:"skip", detail:"No confirmed trend direction yet"});
-  }
+  pipeline.push({name:"ATR-style Stop Loss", status:"info",
+    detail:`Volatility-based buffer ≈ ${buffer.toFixed(lastClose>100?2:5)} (avg daily move ${(vol*100).toFixed(2)}%) — a proxy for true ATR, since no intraday high/low feed exists here`});
 
-  let tradePlan=null, rrDetail="No confirmed trend direction yet";
-  if(leanDirection){
+  let tradePlan=null;
+  if(finalDirection){
     const sup=sr.supports[0], res=sr.resistances[0];
     let stop, target1, target2, target3, risk;
-    if(leanDirection==="BUY"){
+    if(finalDirection==="BUY"){
       stop = sup!=null? sup-buffer : lastClose-buffer*3;
       risk = lastClose-stop;
       target1 = res!=null? res : lastClose+risk*2;
@@ -618,42 +725,43 @@ function analyze(rows, pairLabel, htfRows, ohlcRows){
     const reward1 = Math.abs(target1-lastClose);
     const rr = risk>0 ? reward1/risk : 0;
     const rrOk = pass("Risk:Reward ≥ 1:2", rr>=2, `Risk:Reward to TP1 = 1:${rr.toFixed(1)} — ${rr>=2?"meets":"below"} the 1:2 minimum`);
-    if(rrOk && alive){ tradePlan = {direction:leanDirection, entry:lastClose, stop, target1, target2, target3, risk, rr}; }
+    if(rrOk){ tradePlan = {direction:finalDirection, entry:lastClose, stop, target1, target2, target3, risk, rr}; }
   } else {
-    pass("Risk:Reward ≥ 1:2", false, rrDetail);
+    pipeline.push({name:"Risk:Reward ≥ 1:2", status:"skip", detail: noConsensusReason});
   }
 
   const signal = tradePlan ? tradePlan.direction : "HOLD";
-  const failedStep = pipeline.find(p=>p.status==="fail");
   const suppressionReason = signal==="HOLD"
-    ? (leanDirection ? `NO TRADE — stopped at "${failedStep ? failedStep.name : "an earlier step"}"` : "NO TRADE — no confirmed trend direction yet")
+    ? (finalDirection ? "NO TRADE — Risk:Reward to TP1 is below the 1:2 minimum" : `NO TRADE — ${noConsensusReason}`)
     : null;
 
   pipeline.push({name:"Final Decision", status: signal!=="HOLD"?"pass":"fail",
-    detail: signal!=="HOLD" ? `${signal} — every required check passed` : suppressionReason});
+    detail: signal!=="HOLD" ? `${signal} — every voting check that fired agreed, and Risk:Reward met the minimum` : suppressionReason});
 
   const structure = computeMarketStructure(rows);
   const newsScore = clamp(newsSentimentByPair()[pairLabel]||0, -10, 10);
 
-  const gatedSteps = pipeline.filter(p=>p.status==="pass"||p.status==="fail");
+  const votingSteps = ["MACD Confirmation","RSI Confirmation","Multi-Timeframe Confirmation","Candle Pattern","Support/Resistance"]
+    .map(name => pipeline.find(p=>p.name===name)).filter(Boolean);
+  const gatedSteps = [{status: leanDirection?"pass":"na"}, ...votingSteps];
   const passCount = gatedSteps.filter(p=>p.status==="pass").length;
 
   let confidence = null;
-  if(leanDirection){
+  if(finalDirection){
     let score = gatedSteps.length ? (passCount/gatedSteps.length)*70 : 0;
-    if(structure.score>0 && leanDirection==="BUY") score += 12;
-    else if(structure.score<0 && leanDirection==="SELL") score += 12;
+    if(structure.score>0 && finalDirection==="BUY") score += 12;
+    else if(structure.score<0 && finalDirection==="SELL") score += 12;
     else if(structure.score!==0) score -= 8;
-    if(newsScore>=3 && leanDirection==="BUY") score += 9;
-    else if(newsScore<=-3 && leanDirection==="SELL") score += 9;
+    if(newsScore>=3 && finalDirection==="BUY") score += 9;
+    else if(newsScore<=-3 && finalDirection==="SELL") score += 9;
     else if(Math.abs(newsScore)>=3) score -= 9;
-    if(htfDirection && htfDirection===leanDirection) score += 9;
+    if(htfDirection && htfDirection===finalDirection) score += 9;
     confidence = clamp(Math.round(score), 5, 97);
   }
   pipeline.push({name:"Confidence Score", status:"info",
     detail: confidence!=null
       ? `${confidence}% — composite of pipeline pass-rate, market structure, news alignment & multi-timeframe agreement (informational, doesn't gate the decision above)`
-      : "No confirmed trend direction yet to score"});
+      : "No consensus direction yet to score"});
 
   return {
     rows, lastClose, n, pipeline,
@@ -1006,7 +1114,7 @@ function renderLearnerCard(){
         ${rec.recommendation.map(r=>`<div class="scope-note" style="margin-bottom:4px;">• ${r}</div>`).join("")}
       </div>` : ""}
     <div style="margin-top:10px;font-size:10px;color:var(--muted);line-height:1.5;">
-      Learns from every signal this dashboard has logged (daily, weekly and scalp), saved locally on this device so it keeps maturing across sessions. Informational only — doesn't change the pipeline's own BUY/SELL/HOLD decision above.
+      Learns from every signal this dashboard has logged (daily, weekly and scalp), saved locally on this device so it keeps maturing across sessions. Once a strategy or pair has ${LEARNER_GATE_MIN_SAMPLE}+ resolved signals and its confidence drops below ${LEARNER_GATE_MIN_CONFIDENCE}%, new signals of that type are automatically suppressed to HOLD (see "Learning Engine Gate" in the decision pipeline above) — so this now actively feeds back into the BUY/SELL/HOLD decision, not just informational.
     </div>
   </div>`;
 }
@@ -1062,6 +1170,7 @@ async function loadPair(idx){
     }
     const statusLabel = rawStatusLabel + modeNote;
     const a = analyze(rows, pair.label, htfRows, ohlcRows);
+    applyLearnerGate(a, mode==="weekly" ? "weekly" : "daily", ohlcKey);
     const displayPrice = mode === "daily" ? rawRows[rawRows.length-1].close : a.lastClose;
     const relevantNews = NEWS.filter(n=>n.pair===pair.label);
     const badgeClass = a.signal==="BUY"?"badge-buy":a.signal==="SELL"?"badge-sell":"badge-hold";
@@ -1558,7 +1667,7 @@ async function renderScalpPanel(){
       continue;
     }
 
-    const ts = computeScalpTradeSignal(candles5m, pair.decimals);
+    const ts = applyScalpLearnerGate(computeScalpTradeSignal(candles5m, pair.decimals), pair.key);
     updateScalpTracker(pair.key, ts);
     html += `<div style="border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:12px;margin-bottom:12px;background:rgba(255,255,255,.02);">`;
     html += `<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">`;
@@ -1628,7 +1737,7 @@ async function getScalpDecisionForPair(pairKey, decimals){
   if(!SCALP_DATA) await fetchScalpCandles();
   const candles5m = SCALP_DATA ? SCALP_DATA[pairKey] : null;
   if(!candles5m || candles5m.length < 30) return { decision:"HOLD", label:"Scalp", available:false };
-  const ts = computeScalpTradeSignal(candles5m, decimals);
+  const ts = applyScalpLearnerGate(computeScalpTradeSignal(candles5m, decimals), pairKey);
   return { decision: ts.decision, label:"Scalp", available:true };
 }
 
@@ -1636,7 +1745,7 @@ async function getIntradayDecisionForPair(pair, ohlcKey){
   const h1 = ohlcKey ? await getIntradayH1(ohlcKey) : null;
   if(!h1 || h1.length < 210) return { decision:"HOLD", label:"Intraday", available:false };
   const h4 = aggregateCandles(h1, 4);
-  const a = analyze(h1, pair.label, h4, h1);
+  const a = applyLearnerGate(analyze(h1, pair.label, h4, h1), "daily", ohlcKey);
   return { decision: a.signal, label:"Intraday", available:true };
 }
 
@@ -1645,7 +1754,7 @@ async function getSwingDecisionForPair(pair, ohlcKey){
   const htfRows = resampleWeekly(rawRows);
   if(htfRows.length < 8) return { decision:"HOLD", label:"Swing", available:false };
   const ohlcRows = ohlcKey ? await getDailyOHLC(ohlcKey) : null;
-  const a = analyze(rawRows, pair.label, htfRows, ohlcRows);
+  const a = applyLearnerGate(analyze(rawRows, pair.label, htfRows, ohlcRows), "weekly", ohlcKey);
   return { decision: a.signal, label:"Swing", available:true };
 }
 

@@ -122,13 +122,15 @@
   <button class="mode-btn active" data-mode="daily" onclick="setMode('daily')">Short-term<small>Daily closes</small></button>
   <button class="mode-btn" data-mode="weekly" onclick="setMode('weekly')">Long-term<small>Weekly closes</small></button>
   <button class="mode-btn" data-mode="scalp" onclick="setMode('scalp')">Scalping<small>5/15/30 min</small></button>
+  <button class="tab" data-mode="patterns" onclick="loadPatternDetector()">Patterns</button>
 </div>
 
 <div class="container" id="container">
   <div class="loading" id="loading">Loading rate history…</div>
 </div>
 <div class="container" id="scalpContainer" style="display:none;"></div>
-
+<div class="container" id="patternContainer" style="display:none;"></div>
+  
 <script src="https://s3.tradingview.com/tv.js"></script>
 <script>
 const PAIRS = [
@@ -1605,6 +1607,217 @@ async function renderMasterSignal(){
 
 renderMasterSignal();
 setInterval(renderMasterSignal, 60000);
+// ============================================
+// PATTERN DETECTOR INTEGRATION
+// ============================================
+
+let PATTERN_DATA = null;
+let PATTERN_DATA_FETCHED_AT = 0;
+
+async function getPatternData() {
+  const now = Date.now();
+  // Refresh every 1 minute
+  if (!PATTERN_DATA || now - PATTERN_DATA_FETCHED_AT > 60000) {
+    try {
+      const res = await fetch('https://raw.githubusercontent.com/Detector-byte/pattern-detector-bot/main/data/pattern-signals.json?t=' + now);
+      if (res.ok) {
+        PATTERN_DATA = await res.json();
+        PATTERN_DATA_FETCHED_AT = now;
+      }
+    } catch (e) {
+      console.log('Pattern data fetch failed:', e.message);
+    }
+  }
+  return PATTERN_DATA;
+}
+
+async function loadPatternDetector() {
+  currentMode = 'patterns';
+  
+  // Update tab styling
+  document.querySelectorAll(".tab").forEach((t, i) => {
+    t.classList.toggle("active", t.dataset.mode === 'patterns');
+  });
+  
+  // Hide other containers, show pattern container
+  document.getElementById("container").style.display = "none";
+  document.getElementById("scalpContainer").style.display = "none";
+  document.getElementById("patternContainer").style.display = "";
+  
+  renderPatternPanel();
+}
+
+async function renderPatternPanel() {
+  const el = document.getElementById("patternContainer");
+  if (!el) return;
+
+  el.innerHTML = '<div class="loading">Loading pattern signals...</div>';
+
+  const data = await getPatternData();
+
+  if (!data || !data.signals || data.signals.length === 0) {
+    el.innerHTML = `
+      <div class="container">
+        <div class="loading">
+          Pattern bot is initializing...<br/>
+          <span style="font-size:11px;color:var(--muted);">First signals appear within 5-10 minutes</span>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  const signals = data.signals.filter(s => s && s.pair && s.timeframe);
+  const sortedSignals = signals.slice().reverse().slice(0, 50);
+
+  // Group by pair
+  const byPair = {};
+  for (const signal of sortedSignals) {
+    if (!byPair[signal.pair]) byPair[signal.pair] = [];
+    byPair[signal.pair].push(signal);
+  }
+
+  let html = `
+    <div class="container">
+      <div class="card">
+        <div class="row" style="justify-content:space-between;margin-top:0;">
+          <div class="label" style="margin-bottom:0;">AI Pattern Detector · Real-time Signals</div>
+          <div class="mono" style="font-size:10px;color:var(--muted);">
+            <span class="robot-dot robot-on"></span>Live · ${signals.length} total signals
+          </div>
+        </div>
+      </div>
+  `;
+
+  // Render each pair
+  for (const pair of ['XAUUSD', 'GBPJPY']) {
+    if (!byPair[pair]) continue;
+
+    const pairSignals = byPair[pair].slice(0, 10);
+    const stats = calculatePairStats(pairSignals);
+
+    html += `
+      <div class="card" style="margin-top:14px;">
+        <div class="row" style="justify-content:space-between;margin-top:0;margin-bottom:8px;">
+          <div class="label" style="margin-bottom:0;">${pair} · Pattern Signals</div>
+          <span class="mono" style="font-size:10px;color:var(--muted);">
+            ${stats.buy} BUY · ${stats.sell} SELL · Win Rate: ${stats.winRate}
+          </span>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr;gap:10px;">
+    `;
+
+    for (const signal of pairSignals) {
+      const badgeClass = signal.direction === 'BUY' ? 'badge-buy' : signal.direction === 'SELL' ? 'badge-sell' : 'badge-hold';
+      const timeAgo = getTimeAgo(new Date(signal.createdAt || signal.timestamp));
+      const riskColor = signal.riskReward >= 2 ? 'var(--buy)' : signal.riskReward >= 1.5 ? 'var(--hold)' : 'var(--sell)';
+
+      html += `
+        <div style="border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:12px;background:rgba(255,255,255,.02);">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+            <div>
+              <span style="font-weight:600;font-size:13px;">${signal.pattern}</span>
+              <span class="mono" style="font-size:10px;color:var(--muted);margin-left:8px;">${signal.timeframe}</span>
+            </div>
+            <span class="badge ${badgeClass}" style="font-size:12px;padding:4px 12px;">${signal.direction}</span>
+          </div>
+
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px;font-size:11px;">
+            <div style="background:rgba(255,255,255,.03);padding:8px;border-radius:4px;">
+              <div style="color:var(--muted);font-size:9px;margin-bottom:2px;">Entry</div>
+              <div class="mono" style="font-weight:600;">${signal.entry.toFixed(signal.pair === 'GBPJPY' ? 3 : 2)}</div>
+            </div>
+            <div style="background:rgba(255,255,255,.03);padding:8px;border-radius:4px;">
+              <div style="color:var(--muted);font-size:9px;margin-bottom:2px;">Stop</div>
+              <div class="mono" style="font-weight:600;">${signal.stopLoss.toFixed(signal.pair === 'GBPJPY' ? 3 : 2)}</div>
+            </div>
+            <div style="background:rgba(255,255,255,.03);padding:8px;border-radius:4px;">
+              <div style="color:var(--muted);font-size:9px;margin-bottom:2px;">TP1</div>
+              <div class="mono" style="font-weight:600;">${signal.takeProfit1.toFixed(signal.pair === 'GBPJPY' ? 3 : 2)}</div>
+            </div>
+            <div style="background:rgba(255,255,255,.03);padding:8px;border-radius:4px;">
+              <div style="color:var(--muted);font-size:9px;margin-bottom:2px;">R:R</div>
+              <div class="mono" style="font-weight:600;color:${riskColor};">1:${signal.riskReward.toFixed(1)}</div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+            <span class="badge" style="background:rgba(201,162,76,.13);color:var(--accent);border:1px solid rgba(201,162,76,.35);">Confidence: ${signal.confidence}%</span>
+            <span class="mono" style="font-size:9px;color:var(--muted);align-self:center;">
+              ${signal.strength ? '| Strength: ' + signal.strength.toFixed(0) + '%' : ''}
+            </span>
+          </div>
+
+          <div style="padding:10px;background:rgba(255,255,255,.03);border-radius:4px;font-size:11px;line-height:1.5;color:rgba(236,232,223,.85);">
+            <strong>Pattern:</strong> ${signal.description ? signal.description.substring(0, 120) + '...' : 'Pattern confirmed with strong signal.'}
+          </div>
+
+          <div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);">
+            <div class="mono" style="font-size:9px;color:var(--muted);">
+              Signal: ${timeAgo} · Status: ${signal.status || 'CONFIRMED'}
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    html += `</div></div>`;
+  }
+
+  // Add info card
+  html += `
+    <div class="card" style="margin-top:14px;">
+      <div class="label">About Pattern Detector</div>
+      <div class="scope-note">
+        <b>Standalone AI Bot</b> that detects 18+ chart patterns (Double Top/Bottom, Head & Shoulders, Triangles, Wedges, Pennants, etc.) 
+        across 5 timeframes (5m-4H). Runs independently every 5 minutes on GitHub Actions (free). 
+        <b>Self-learning system</b> - confidence improves based on historical accuracy. Only generates signals with &geq;70% confidence.
+        <br/><br/>
+        <b>Data Updated:</b> Every 5 minutes | <b>Source:</b> GitHub + Candle Data | <b>Status:</b> Fully Autonomous
+      </div>
+    </div>
+
+    <div style="padding:20px;text-align:center;color:var(--muted);font-size:10px;">
+      Pattern Detector Bot · Integrated with PipSight · Not financial advice
+    </div>
+  `;
+
+  el.innerHTML = html;
+}
+
+function calculatePairStats(signals) {
+  const buy = signals.filter(s => s.direction === 'BUY').length;
+  const sell = signals.filter(s => s.direction === 'SELL').length;
+  
+  // TODO: Add actual win rate calculation from resolved signals
+  const winRate = '—';
+
+  return { buy, sell, winRate };
+}
+
+function getTimeAgo(date) {
+  const now = new Date();
+  const diff = now - date;
+  const minutes = Math.floor(diff / 60000);
+  const hours = Math.floor(diff / 3600000);
+  const days = Math.floor(diff / 86400000);
+
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  if (hours < 24) return `${hours}h ago`;
+  return `${days}d ago`;
+}
+
+// Auto-refresh pattern data
+setInterval(() => {
+  if (currentMode === 'patterns') {
+    renderPatternPanel();
+  }
+}, 60000);
+
+// END PATTERN DETECTOR INTEGRATION
+// ============================================
 </script>
 </body>
 </html>

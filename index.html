@@ -132,7 +132,26 @@
 <div class="container" id="patternContainer" style="display:none;"></div>
   
 <script src="https://s3.tradingview.com/tv.js"></script>
+<script src="learner.js"></script>
 <script>
+// Self-learning engine instance — tracks every signal this dashboard issues
+// and its eventual WIN/LOSS outcome, so confidence scores can adapt over time.
+// Browser has no filesystem, so persistence uses localStorage instead of the
+// fs.writeFileSync data/*.json pattern from the Node.js integration guide.
+const PIPLEARNER_STORAGE_KEY = "pipsight_learning_v1";
+const pipLearner = (typeof PipSightLearner !== "undefined") ? new PipSightLearner() : null;
+if(pipLearner){
+  try{
+    const saved = localStorage.getItem(PIPLEARNER_STORAGE_KEY);
+    if(saved) pipLearner.importData(JSON.parse(saved));
+  }catch(e){ console.log("Learner data load failed:", e.message); }
+}
+function persistLearner(){
+  if(!pipLearner) return;
+  try{ localStorage.setItem(PIPLEARNER_STORAGE_KEY, JSON.stringify(pipLearner.exportData())); }
+  catch(e){ console.log("Learner data save failed:", e.message); }
+}
+
 const PAIRS = [
   { type: "metal", symbol: "XAU", quote: "USD", label: "XAU/USD", tvSymbol: "OANDA:XAUUSD" },
   { type: "forex", base: "GBP", quote: "JPY", label: "GBP/JPY", tvSymbol: "OANDA:GBPJPY" },
@@ -891,6 +910,19 @@ function logSignalIfNew(pairLabel, a, mode){
   let log = loadLog(mode);
   const last = [...log].reverse().find(e=>e.pair===pairLabel);
   if(last && !last.status && last.signal===a.signal) return;
+
+  let learnerId = null;
+  if(pipLearner){
+    learnerId = pipLearner.recordSignal({
+      pair: pairLabel.replace("/",""),
+      timeframe: mode==="weekly" ? "D1" : "H1",
+      strategy: mode==="weekly" ? "weekly" : "daily",
+      entry: a.tradePlan.entry,
+      indicators: ["EMA","RSI","MACD","Support/Resistance"].concat(ROBOT_STATUS.active ? ["News"] : []),
+    });
+    persistLearner();
+  }
+
   log.push({
     ts: new Date().toISOString(),
     pair: pairLabel,
@@ -900,6 +932,7 @@ function logSignalIfNew(pairLabel, a, mode){
     tp1: a.tradePlan.target1,
     rr: a.tradePlan.rr,
     status: null, closedAt: null, closePrice: null,
+    learnerId,
   });
   if(log.length>300) log = log.slice(log.length-300);
   saveLog(mode, log);
@@ -921,6 +954,11 @@ function resolveLogOutcomes(pairLabel, rows, mode){
         if(r.close<=e.tp1){ e.status="WIN"; e.closedAt=r.date; e.closePrice=r.close; changed=true; break; }
       }
     }
+    if(e.status && pipLearner && e.learnerId){
+      const profitPoints = e.status==="WIN" ? Math.abs(e.closePrice-e.entry) : -Math.abs(e.closePrice-e.entry);
+      pipLearner.resolveSignal(e.learnerId, e.status, profitPoints);
+      persistLearner();
+    }
     return e;
   });
   if(changed) saveLog(mode, log);
@@ -928,6 +966,50 @@ function resolveLogOutcomes(pairLabel, rows, mode){
 }
 
 function barColor(v){ return v>0 ? "var(--buy)" : v<0 ? "var(--sell)" : "var(--muted)"; }
+
+// Renders the self-learning engine's current read: best strategy/indicator,
+// performance trend, and its plain-language recommendations. Pulled straight
+// from pipLearner.getStats() / getRecommendation() — nothing here is faked.
+function renderLearnerCard(){
+  if(!pipLearner){
+    return `<div class="card">
+      <div class="label">Self-learning engine</div>
+      <div class="scope-note">learner.js not loaded — check the script tag.</div>
+    </div>`;
+  }
+  const stats = pipLearner.getStats();
+  const resolved = stats.resolvedSignals || 0;
+  if(resolved < 3){
+    return `<div class="card">
+      <div class="row" style="justify-content:space-between;margin-top:0;">
+        <div class="label" style="margin-bottom:0;">Self-learning engine</div>
+        <span class="robot-dot robot-off"></span>
+      </div>
+      <div class="scope-note">Tracking signals in the background (${resolved} resolved so far). Needs at least 3 resolved outcomes per category before confidence and recommendations become meaningful.</div>
+    </div>`;
+  }
+  const rec = pipLearner.getRecommendation();
+  const trendLabel = { improving:"Improving", declining:"Declining", stable:"Stable", "insufficient-data":"Not enough data yet" }[rec.trend] || rec.trend;
+  return `<div class="card">
+    <div class="row" style="justify-content:space-between;margin-top:0;">
+      <div class="label" style="margin-bottom:0;">Self-learning engine</div>
+      <span class="mono" style="font-size:10px;color:var(--muted);"><span class="robot-dot robot-on"></span>${resolved} signals resolved</span>
+    </div>
+    <div class="scope-note">
+      <b>Overall win rate:</b> ${(stats.winRate||0).toFixed(1)}% (${stats.wins||0}W / ${stats.losses||0}L)<br/>
+      ${rec.bestStrategy ? `<b>Best strategy:</b> ${rec.bestStrategy} (${rec.bestStrategyRate.toFixed(1)}%)<br/>` : ""}
+      ${rec.bestIndicator ? `<b>Most reliable indicator:</b> ${rec.bestIndicator} (${rec.bestIndicatorRate.toFixed(1)}%)<br/>` : ""}
+      <b>Performance trend:</b> ${trendLabel}
+    </div>
+    ${rec.recommendation && rec.recommendation.length ? `
+      <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">
+        ${rec.recommendation.map(r=>`<div class="scope-note" style="margin-bottom:4px;">• ${r}</div>`).join("")}
+      </div>` : ""}
+    <div style="margin-top:10px;font-size:10px;color:var(--muted);line-height:1.5;">
+      Learns from every signal this dashboard has logged (daily, weekly and scalp), saved locally on this device so it keeps maturing across sessions. Informational only — doesn't change the pipeline's own BUY/SELL/HOLD decision above.
+    </div>
+  </div>`;
+}
 
 async function loadPair(idx){
   currentIdx = idx;
@@ -1136,6 +1218,8 @@ async function loadPair(idx){
             : `<b>Offline / not yet connected.</b> ${ROBOT_STATUS.note || "Falling back to a static snapshot."} Deploy the worker (see worker/ADD-TO-EXISTING-REPO.md) to turn this live — no API key required.`}
         </div>
       </div>
+
+      ${renderLearnerCard()}
 
       <div class="card">
         <div class="label">What this model can and can't see</div>
@@ -1362,6 +1446,11 @@ function updateScalpTracker(pairKey, ts){
       else if(price>=existing.sl) outcome="LOSS";
     }
     if(outcome){
+      if(pipLearner && existing.learnerId){
+        const profitPoints = outcome==="WIN" ? Math.abs(price-existing.entry) : -Math.abs(price-existing.entry);
+        pipLearner.resolveSignal(existing.learnerId, outcome, profitPoints);
+        persistLearner();
+      }
       const history = loadScalpHistory();
       history.push({ pair:pairKey, direction:existing.direction, entry:existing.entry,
                       sl:existing.sl, tp:existing.tp, outcome, openedAt:existing.openedAt,
@@ -1371,8 +1460,16 @@ function updateScalpTracker(pairKey, ts){
       saveScalpOpen(open);
     }
   } else if(ts.decision!=="HOLD" && ts.rawSl!=null && ts.rawTp!=null){
+    const learnerId = pipLearner ? pipLearner.recordSignal({
+      pair: pairKey,
+      timeframe: "5m",
+      strategy: "scalp",
+      entry: price,
+      indicators: ["EMA","RSI","MACD"],
+    }) : null;
+    if(pipLearner) persistLearner();
     open[pairKey] = { direction:ts.decision, entry:price, sl:ts.rawSl, tp:ts.rawTp,
-                       openedAt:new Date().toISOString() };
+                       openedAt:new Date().toISOString(), learnerId };
     saveScalpOpen(open);
   }
 }

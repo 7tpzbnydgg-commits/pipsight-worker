@@ -7,7 +7,7 @@ const https = require('https');
 const fs = require('fs');
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
-const GITHUB_OWNER = 'YOUR_USERNAME_HERE';
+const GITHUB_OWNER = '7tpzbnydgg-commits';
 const GITHUB_REPO = 'pipsight-worker';
 const GITHUB_FILE_PATH = 'data/learning-engine-state.json';
 

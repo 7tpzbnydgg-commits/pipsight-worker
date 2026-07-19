@@ -122,6 +122,7 @@
   <button class="mode-btn active" data-mode="daily" onclick="setMode('daily')">Short-term<small>Daily closes</small></button>
   <button class="mode-btn" data-mode="weekly" onclick="setMode('weekly')">Long-term<small>Weekly closes</small></button>
   <button class="mode-btn" data-mode="scalp" onclick="setMode('scalp')">Scalping<small>5/15/30 min</small></button>
+  <button class="mode-btn" data-mode="patterns" onclick="loadPatternDetector()">Patterns<small>AI chart patterns</small></button>
 </div>
 
 <div class="container" id="container">
@@ -129,7 +130,7 @@
 </div>
 <div class="container" id="scalpContainer" style="display:none;"></div>
 <div class="container" id="patternContainer" style="display:none;"></div>
-
+  
 <script src="https://s3.tradingview.com/tv.js"></script>
 <script>
 const PAIRS = [
@@ -428,7 +429,6 @@ function analyze(rows, pairLabel, htfRows, ohlcRows){
   let alive = true;
 
   function pass(name, ok, detail){
-    if(!alive){ pipeline.push({name, status:"skip", detail:"Not reached — an earlier required step failed"}); return false; }
     pipeline.push({name, status: ok?"pass":"fail", detail});
     if(!ok) alive=false;
     return ok;
@@ -571,17 +571,15 @@ function analyze(rows, pairLabel, htfRows, ohlcRows){
 
   const vol = computeVolatility(rows);
   const buffer = Math.max(vol*0.5, 0.0004) * lastClose;
-  if(leanDirection && alive){
+  if(leanDirection){
     pipeline.push({name:"ATR-style Stop Loss", status:"pass",
       detail:`Volatility-based buffer ≈ ${buffer.toFixed(lastClose>100?2:5)} (avg daily move ${(vol*100).toFixed(2)}%) — a proxy for true ATR, since no intraday high/low feed exists here`});
-  } else if(leanDirection){
-    pipeline.push({name:"ATR-style Stop Loss", status:"skip", detail:"Not reached — an earlier required step failed"});
   } else {
     pipeline.push({name:"ATR-style Stop Loss", status:"skip", detail:"No confirmed trend direction yet"});
   }
 
   let tradePlan=null, rrDetail="No confirmed trend direction yet";
-  if(leanDirection && alive){
+  if(leanDirection){
     const sup=sr.supports[0], res=sr.resistances[0];
     let stop, target1, target2, target3, risk;
     if(leanDirection==="BUY"){
@@ -601,7 +599,7 @@ function analyze(rows, pairLabel, htfRows, ohlcRows){
     const reward1 = Math.abs(target1-lastClose);
     const rr = risk>0 ? reward1/risk : 0;
     const rrOk = pass("Risk:Reward ≥ 1:2", rr>=2, `Risk:Reward to TP1 = 1:${rr.toFixed(1)} — ${rr>=2?"meets":"below"} the 1:2 minimum`);
-    if(rrOk){ tradePlan = {direction:leanDirection, entry:lastClose, stop, target1, target2, target3, risk, rr}; }
+    if(rrOk && alive){ tradePlan = {direction:leanDirection, entry:lastClose, stop, target1, target2, target3, risk, rr}; }
   } else {
     pass("Risk:Reward ≥ 1:2", false, rrDetail);
   }
@@ -672,7 +670,6 @@ function setMode(mode){
   document.getElementById("container").style.display = mode==="scalp" ? "none" : "";
   document.getElementById("scalpContainer").style.display = mode==="scalp" ? "" : "none";
   document.getElementById("patternContainer").style.display = "none";
-  document.querySelectorAll(".tab").forEach(t=>{ if(t.dataset.mode==="patterns") t.classList.remove("active"); });
   if(mode==="scalp"){ renderScalpPanel(); return; }
   loadPair(currentIdx);
 }
@@ -745,6 +742,10 @@ function drawGauge(canvas,score,signal){
   ctx.fillStyle=color; ctx.beginPath(); ctx.arc(cx,cy,w*0.02,0,2*Math.PI); ctx.fill();
 }
 
+// Renders a small inline badge showing how old a worker-published data file
+// is. `isStaleFlag` comes straight from the "stale" map the worker writes
+// into scalp-candles.json / intraday-h1.json / daily-ohlc.json when a fetch
+// failed and it had to reuse the previous data for that symbol.
 function freshnessBadge(updatedAtISO, maxAgeMinutes, isStaleFlag){
   if(!updatedAtISO){
     return `<span class="mono" style="font-size:10px;color:var(--sell);border:1px solid var(--sell);border-radius:6px;padding:2px 6px;white-space:nowrap;">⚠ no data yet</span>`;
@@ -798,6 +799,11 @@ async function fetchForexRows(pair){
   const dates = Object.keys(data.rates).sort();
   const rows = dates.map(d=>({date:d, close:data.rates[d][pair.quote]}));
 
+  // Live GBP/JPY price used to come from a dedicated Twelve Data /price call
+  // (fetch-gbpjpy-live.js, ~144 credits/day on the free tier). That data was
+  // redundant: fetch-scalp-candles.js already pulls GBP/JPY 5-minute candles
+  // on the exact same 10-minute cadence, so the latest candle's close is the
+  // live price (at most ~5 min old) at zero extra API cost.
   try{
     if(!SCALP_DATA) await fetchScalpCandles();
     const candles = SCALP_DATA ? SCALP_DATA["GBPJPY"] : null;
@@ -952,6 +958,7 @@ async function loadPair(idx){
       ohlcRows = h1;
       modeNote = " (intraday — H1 confirmed by H4)";
       tradeType = "Intraday"; timeframesUsed = "H1 + H4"; holdTime = "2–12 hours";
+      // H1 worker runs every 15 min — flag anything older than 30 min.
       freshnessHtml = freshnessBadge(
         INTRADAY_H1_CACHE ? INTRADAY_H1_CACHE.updatedAt : null, 30,
         !!(INTRADAY_H1_CACHE && INTRADAY_H1_CACHE.stale && INTRADAY_H1_CACHE.stale[ohlcKey])
@@ -965,6 +972,7 @@ async function loadPair(idx){
       ohlcRows = ohlcKey ? await getDailyOHLC(ohlcKey) : null;
       modeNote = " (swing — D1 confirmed by W1)";
       tradeType = "Swing"; timeframesUsed = "D1 + W1"; holdTime = "2–7 days";
+      // Daily-OHLC worker runs every 4 hours — flag anything older than 5 hours.
       freshnessHtml = freshnessBadge(
         DAILY_OHLC_CACHE ? DAILY_OHLC_CACHE.updatedAt : null, 300,
         !!(DAILY_OHLC_CACHE && DAILY_OHLC_CACHE.stale && DAILY_OHLC_CACHE.stale[ohlcKey])
@@ -1184,12 +1192,6 @@ PAIRS.forEach((p,i)=>{
   btn.onclick = ()=>loadPair(i);
   tabsEl.appendChild(btn);
 });
-const patternTabBtn = document.createElement("button");
-patternTabBtn.className = "tab";
-patternTabBtn.dataset.mode = "patterns";
-patternTabBtn.textContent = "Patterns";
-patternTabBtn.onclick = ()=>loadPatternDetector();
-tabsEl.appendChild(patternTabBtn);
 const sessionChip = document.createElement("div");
 sessionChip.className = "session-chip";
 sessionChip.textContent = getSession();
@@ -1199,12 +1201,13 @@ Promise.all([fetchRobotNews(), fetchRobotSignalLog()]).then(()=>loadPair(0));
 
 setInterval(()=>{
   if(document.querySelector(".chart-fullscreen")) return;
+  if(currentMode==="scalp" || currentMode==="patterns") return;
   loadPair(currentIdx);
 }, 30000);
 
 setInterval(()=>{
   Promise.all([fetchRobotNews(), fetchRobotSignalLog()]).then(()=>{
-    if(!document.querySelector(".chart-fullscreen")) loadPair(currentIdx);
+    if(!document.querySelector(".chart-fullscreen") && currentMode!=="scalp" && currentMode!=="patterns") loadPair(currentIdx);
   });
 }, 300000);
 
@@ -1446,6 +1449,7 @@ async function renderScalpPanel(){
 
   for(const pair of SCALP_PAIRS){
     const candles5m = SCALP_DATA[pair.key];
+    // 5m worker runs every 10 min — flag anything older than 20 min.
     const scalpFreshness = freshnessBadge(
       SCALP_DATA.updatedAt, 20,
       !!(SCALP_DATA.stale && SCALP_DATA.stale[pair.key])
@@ -1602,7 +1606,7 @@ async function renderMasterSignal(){
 
 renderMasterSignal();
 setInterval(renderMasterSignal, 60000);
-
+  
 // ============================================
 // PATTERN DETECTOR INTEGRATION
 // ============================================
@@ -1630,9 +1634,9 @@ async function getPatternData() {
 async function loadPatternDetector() {
   currentMode = 'patterns';
   
-  // Update tab styling
-  document.querySelectorAll(".tab").forEach((t, i) => {
-    t.classList.toggle("active", t.dataset.mode === 'patterns');
+  // Update mode-btn active state (Patterns is now a mode-btn, matching Daily/Weekly/Scalping)
+  document.querySelectorAll(".mode-btn").forEach((b) => {
+    b.classList.toggle("active", b.dataset.mode === 'patterns');
   });
   
   // Hide other containers, show pattern container
@@ -1650,13 +1654,30 @@ async function renderPatternPanel() {
   el.innerHTML = '<div class="loading">Loading pattern signals...</div>';
 
   const data = await getPatternData();
+  // Genuine freshness check — bot runs every 5 minutes, so anything older
+  // than ~12 minutes means it has stopped running or can't be reached,
+  // not just "no qualifying pattern found yet".
+  const botFreshness = freshnessBadge(data ? data.updatedAt : null, 12, false);
+  const botIsLive = !!(data && data.updatedAt && (Date.now() - new Date(data.updatedAt).getTime()) <= 12*60000);
 
   if (!data || !data.signals || data.signals.length === 0) {
     el.innerHTML = `
       <div class="container">
+        <div class="card" style="margin-bottom:14px;">
+          <div class="row" style="justify-content:space-between;margin-top:0;">
+            <div class="label" style="margin-bottom:0;">AI Pattern Detector</div>
+            <span class="mono" style="font-size:10px;color:var(--muted);">
+              <span class="robot-dot ${botIsLive ? "robot-on" : "robot-off"}"></span>${botIsLive ? "live" : "not reachable"}
+            </span>
+          </div>
+        </div>
         <div class="loading">
-          Pattern bot is initializing...<br/>
-          <span style="font-size:11px;color:var(--muted);">First signals appear within 5-10 minutes</span>
+          ${botIsLive
+            ? "Bot is running — no qualifying pattern (≥70% confidence) found right now.<br/><span style='font-size:11px;color:var(--muted);'>This is normal, especially while the market is closed or quiet.</span>"
+            : data
+              ? "Bot hasn't reported in a while — check its GitHub Actions tab.<br/><span style='font-size:11px;color:var(--muted);'>Last update: " + new Date(data.updatedAt).toLocaleString() + "</span>"
+              : "Pattern bot is initializing or not reachable...<br/><span style='font-size:11px;color:var(--muted);'>First signals appear within 5-10 minutes of it going live</span>"
+          }
         </div>
       </div>
     `;
@@ -1679,7 +1700,7 @@ async function renderPatternPanel() {
         <div class="row" style="justify-content:space-between;margin-top:0;">
           <div class="label" style="margin-bottom:0;">AI Pattern Detector · Real-time Signals</div>
           <div class="mono" style="font-size:10px;color:var(--muted);">
-            <span class="robot-dot robot-on"></span>Live · ${signals.length} total signals
+            <span class="robot-dot ${botIsLive ? "robot-on" : "robot-off"}"></span>${botIsLive ? "Live" : "Last known"} · ${signals.length} total signals ${botFreshness}
           </div>
         </div>
       </div>

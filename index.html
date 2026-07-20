@@ -177,6 +177,43 @@ async function syncLearningEngineWithGitHub() {
 
 // Sync on page load
 window.addEventListener('load', syncLearningEngineWithGitHub);
+  // ── Export Learning Data for GitHub Sync ────────────────────────
+// Periodically export learning data to file (for GitHub Actions to pick up)
+function exportLearningDataForSync() {
+  if (!pipLearner) return;
+  
+  try {
+    const learningData = pipLearner.exportData();
+    const exportData = {
+      learning: learningData,
+      exportedAt: new Date().toISOString(),
+      device: navigator.userAgent.substring(0, 50)
+    };
+    
+    // Save to localStorage for persistence
+    localStorage.setItem('learning_export_pending', JSON.stringify(exportData));
+    console.log('✅ Learning data exported (ready for GitHub sync)');
+    console.log(`Total signals: ${learningData.signals.length}`);
+  } catch (e) {
+    console.error('Export failed:', e.message);
+  }
+}
+
+// Export learning data every 2 hours automatically
+setInterval(exportLearningDataForSync, 2 * 60 * 60 * 1000);
+
+// Also export when signals are resolved
+const originalResolveSignal = pipLearner ? pipLearner.resolveSignal.bind(pipLearner) : null;
+if (pipLearner && originalResolveSignal) {
+  pipLearner.resolveSignal = function(...args) {
+    const result = originalResolveSignal(...args);
+    setTimeout(exportLearningDataForSync, 1000); // Export after 1 second
+    return result;
+  };
+}
+
+// Export on page before close
+window.addEventListener('beforeunload', exportLearningDataForSync);
 // ── Learning-driven feedback gate ────────────────────────────────────────
 // This is what makes the system actually self-improve rather than just
 // report. Once a strategy or pair has enough resolved history (MIN_SAMPLE)

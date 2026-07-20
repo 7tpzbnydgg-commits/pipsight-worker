@@ -1,8 +1,8 @@
-name: Sync Learning Engine
+name: Sync Learning Engine State
 
 on:
   schedule:
-    - cron: '0 * * * *'
+    - cron: '0 */6 * * *'
   workflow_dispatch:
 
 permissions:
@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  sync:
+  sync-learning:
     runs-on: ubuntu-latest
 
     steps:
@@ -22,14 +22,23 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Sync Learning State
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Fetch and Save Learning State
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          node -e "
-          const https = require('https');
-          console.log('Learning engine sync check...');
-          "
+          echo "Checking for learning data exports..."
+
+          if [ -f "learning-export.json" ]; then
+            echo "Found learning export, saving to GitHub..."
+            node save-learning-state.js
+          else
+            echo "No learning export found yet"
+          fi
 
       - name: Log execution
         if: always()

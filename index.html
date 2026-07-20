@@ -151,7 +151,32 @@ function persistLearner(){
   try{ localStorage.setItem(PIPLEARNER_STORAGE_KEY, JSON.stringify(pipLearner.exportData())); }
   catch(e){ console.log("Learner data save failed:", e.message); }
 }
+  
+// ── GitHub Learning Engine Sync ────────────────────────────────
+// Load learning state from GitHub on startup
+async function syncLearningEngineWithGitHub() {
+  if (!pipLearner) return;
 
+  try {
+    const response = await fetch(
+      'https://raw.githubusercontent.com/7tpzbnydgg-commits/pipsight-worker/main/data/learning-engine-state.json?t=' + Date.now()
+    );
+    
+    if (response.ok) {
+      const gitHubData = await response.json();
+      if (gitHubData && gitHubData.learning && gitHubData.learning.signals) {
+        console.log(`Loading ${gitHubData.learning.signals.length} signals from GitHub...`);
+        pipLearner.importData(gitHubData.learning);
+        console.log('✅ Learning engine synced from GitHub!');
+      }
+    }
+  } catch (e) {
+    console.log('GitHub sync failed (offline?):', e.message);
+  }
+}
+
+// Sync on page load
+window.addEventListener('load', syncLearningEngineWithGitHub);
 // ── Learning-driven feedback gate ────────────────────────────────────────
 // This is what makes the system actually self-improve rather than just
 // report. Once a strategy or pair has enough resolved history (MIN_SAMPLE)

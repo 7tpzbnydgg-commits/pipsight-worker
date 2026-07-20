@@ -2,17 +2,25 @@ name: PipSight Robot — intraday H1 (H4 derived)
 
 on:
   schedule:
-    - cron: "*/15 * * * *"   # every 15 minutes (also triggered by cron-job.org)
+    - cron: "*/15 * * * *"
   workflow_dispatch: {}
 
 permissions:
   contents: write
 
+concurrency:
+  group: pipsight-robots
+  cancel-in-progress: false
+
 jobs:
   fetch:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/setup-node@v4
         with:
@@ -24,10 +32,29 @@ jobs:
         run: node fetch-intraday-h1.js
 
       - name: Commit updated H1 data
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "pipsight-robot"
           git config user.email "actions@users.noreply.github.com"
+
           git add data/intraday-h1.json
-          git diff --quiet --cached || git commit -m "robot: refresh intraday H1"
-          git pull --rebase origin main
-          git push
+
+          if [[ -n "$(git status --porcelain)" ]]; then
+            git commit -m "robot: refresh intraday H1"
+
+            # Sync with latest remote changes
+            git pull --rebase origin main
+
+            # Push changes
+            git push origin main
+          else
+            echo "No changes to commit"
+          fi
+
+      - name: Log execution
+        if: always()
+        run: |
+          echo "✅ Intraday H1 updated at $(date)"
+          echo "Repository: ${{ github.repository }}"
+          echo "Workflow completed successfully"

@@ -5,12 +5,23 @@ on:
     - cron: '0 * * * *'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
+concurrency:
+  group: pipsight-robots
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v3
-      
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Sync Learning State
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -19,3 +30,10 @@ jobs:
           const https = require('https');
           console.log('Learning engine sync check...');
           "
+
+      - name: Log execution
+        if: always()
+        run: |
+          echo "✅ Learning engine sync completed at $(date)"
+          echo "Repository: ${{ github.repository }}"
+          echo "Workflow completed successfully"

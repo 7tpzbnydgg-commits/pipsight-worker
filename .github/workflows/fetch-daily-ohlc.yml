@@ -2,17 +2,25 @@ name: PipSight Robot — daily OHLC (ADX/candles)
 
 on:
   schedule:
-    - cron: "0 */4 * * *"   # every 4 hours (also triggered by cron-job.org)
+    - cron: "0 */4 * * *"
   workflow_dispatch: {}
 
 permissions:
   contents: write
 
+concurrency:
+  group: pipsight-daily-ohlc
+  cancel-in-progress: false
+
 jobs:
   fetch:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/setup-node@v4
         with:
@@ -24,10 +32,29 @@ jobs:
         run: node fetch-daily-ohlc.js
 
       - name: Commit updated OHLC
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "pipsight-robot"
           git config user.email "actions@users.noreply.github.com"
+
           git add data/daily-ohlc.json
-          git diff --quiet --cached || git commit -m "robot: refresh daily OHLC"
-          git pull --rebase origin main
-          git push
+
+          if [[ -n "$(git status --porcelain)" ]]; then
+            git commit -m "robot: refresh daily OHLC"
+
+            # Sync with latest remote changes
+            git pull --rebase origin main
+
+            # Push changes
+            git push origin main
+          else
+            echo "No changes to commit"
+          fi
+
+      - name: Log execution
+        if: always()
+        run: |
+          echo "✅ Daily OHLC updated at $(date)"
+          echo "Repository: ${{ github.repository }}"
+          echo "Workflow completed successfully"

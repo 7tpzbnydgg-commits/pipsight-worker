@@ -110,8 +110,11 @@
       <div class="eyebrow">Gold &amp; FX · Signal Desk</div>
       <h1 class="display">PipSight</h1>
     </div>
-    <div class="disclaimer mono">
-      Not financial advice · no broker connected<br/>Gold: live spot + accumulating history · GBP/JPY: daily reference rate
+    <div style="text-align:right;">
+      <div class="disclaimer mono">
+        Not financial advice · no broker connected<br/>Gold: live spot + accumulating history · GBP/JPY: daily reference rate
+      </div>
+      <button class="iconbtn" onclick="exportLearnerBackup()" style="margin-top:8px;">📥 Backup Data</button>
     </div>
   </div>
 </div>
@@ -151,6 +154,34 @@ function persistLearner(){
   try{ localStorage.setItem(PIPLEARNER_STORAGE_KEY, JSON.stringify(pipLearner.exportData())); }
   catch(e){ console.log("Learner data save failed:", e.message); }
   exportLearnerToGitHub(false);
+}
+
+// Manual backup — downloads a JSON file with everything this device has
+// tracked so far. No token, no network call, no risk — pure client-side
+// export. User can save this file anywhere (Drive, email to self, USB)
+// and use it to manually restore data on a new device if this one is lost.
+function exportLearnerBackup(){
+  const data = {
+    learning: pipLearner ? pipLearner.exportData() : null,
+    dailyLog: loadLog("daily"),
+    weeklyLog: loadLog("weekly"),
+    scalpOpen: loadScalpOpen(),
+    scalpHistory: loadScalpHistory(),
+    goldHistory: loadGoldHistory(),
+    exportedAt: new Date().toISOString(),
+  };
+  try{
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `pipsight-backup-${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+  }catch(e){
+    alert("Backup failed: " + e.message);
+  }
 }
   
 // ── GitHub Learning Engine Sync ────────────────────────────────
@@ -217,7 +248,7 @@ let learnerExportInFlight = false;
 
 async function exportLearnerToGitHub(force){
   if(!pipLearner) return;
-  if(!GITHUB_EXPORT_TOKEN || GITHUB_EXPORT_TOKEN === "PASTE_YOUR_FINE_GRAINED_PAT_HERE") return; // not configured yet
+  if(!GITHUB_EXPORT_TOKEN || GITHUB_EXPORT_TOKEN === "PASTE-YOUR-TOKEN") return; // not configured yet
   const now = Date.now();
   if(!force && now - lastLearnerExportAt < LEARNER_EXPORT_MIN_INTERVAL_MS) return;
   if(learnerExportInFlight) return;

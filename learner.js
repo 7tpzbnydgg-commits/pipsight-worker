@@ -19,6 +19,7 @@ class LearningConfig {
     static MAX_CONFIDENCE = 95;
     static MIN_CONFIDENCE = 50;
     static DEFAULT_CONFIDENCE = 60;
+    static ACTIONABLE_CONFIDENCE_THRESHOLD = 65;
 
     static SUPPORTED_RESULTS = [
         "WIN",
@@ -349,6 +350,19 @@ class PipSightLearner {
             profitPoints: null,
             resultPercentage: null
         };
+
+        // -----------------------------
+        // Confidence-based Auto Filter
+        // -----------------------------
+        recordedSignal.confidence = this.calculateAdaptiveConfidence(recordedSignal);
+
+        const resolvedCount = this.data.signals.filter(s => s.outcome).length;
+        const enoughDataToFilter = resolvedCount >= LearningConfig.MIN_SIGNALS_FOR_CONFIDENCE;
+
+        recordedSignal.status =
+            !enoughDataToFilter || recordedSignal.confidence >= LearningConfig.ACTIONABLE_CONFIDENCE_THRESHOLD
+                ? "actionable"
+                : "filtered";
 
         this.data.signals.push(recordedSignal);
 
@@ -748,6 +762,55 @@ class PipSightLearner {
         }
 
         return optimization;
+    }
+
+    /**
+     * Get only signals that passed the confidence threshold (status === "actionable")
+     */
+    getActionableSignals() {
+        return this.data.signals.filter(s => s.status === "actionable");
+    }
+
+    /**
+     * Get signals that were auto-filtered out for being below the confidence threshold
+     */
+    getFilteredSignals() {
+        return this.data.signals.filter(s => s.status === "filtered");
+    }
+
+    /**
+     * All-in-one entry point: records the signal AND tells you in one call
+     * whether it should be executed. Use this in place of recordSignal()
+     * wherever your bot/EA decides to place a trade.
+     *
+     * Returns:
+     *   { execute: false, reason: "..." }                     -> validation/duplicate failure
+     *   { execute: true/false, id, confidence, status, signal } -> recorded successfully
+     */
+    processSignal(signal) {
+        const beforeCount = this.data.signals.length;
+        const id = this.recordSignal(signal);
+
+        if (id === false) {
+            return { execute: false, reason: "Signal was rejected (invalid or duplicate)." };
+        }
+
+        const recorded = this.getSignalById(id);
+
+        return {
+            execute: recorded.status === "actionable",
+            id: recorded.id,
+            confidence: recorded.confidence,
+            status: recorded.status,
+            signal: recorded
+        };
+    }
+
+    /**
+     * Helper used internally by processSignal (and available for direct use)
+     */
+    getSignalById(id) {
+        return this.data.signals.find(s => s.id === id);
     }
 
     /**

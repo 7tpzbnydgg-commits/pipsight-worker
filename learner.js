@@ -96,6 +96,163 @@ class LearningConfig {
 
 Object.freeze(LearningConfig);
 
+/* =====================================================================
+   PipSight Pro AI v2
+   MODULE 2 : Signal Validator Engine
+   Version : 2.0.0
+   ===================================================================== */
+
+class SignalValidator {
+
+    static validate(signal) {
+
+        const errors = [];
+
+        if (!signal || typeof signal !== "object") {
+            return {
+                valid: false,
+                errors: ["Signal is missing."]
+            };
+        }
+
+        // Required Fields
+        for (const field of LearningConfig.REQUIRED_SIGNAL_FIELDS) {
+
+            if (
+                signal[field] === undefined ||
+                signal[field] === null ||
+                signal[field] === ""
+            ) {
+                errors.push(`Missing required field: ${field}`);
+            }
+
+        }
+
+        // Pair Validation
+        if (
+            signal.pair &&
+            !LearningConfig.SUPPORTED_PAIRS.includes(signal.pair)
+        ) {
+            errors.push(`Unsupported pair: ${signal.pair}`);
+        }
+
+        // Strategy Validation
+        if (
+            signal.strategy &&
+            !LearningConfig.SUPPORTED_STRATEGIES.includes(signal.strategy)
+        ) {
+            errors.push(`Unsupported strategy: ${signal.strategy}`);
+        }
+
+        // Timeframe Validation
+        if (
+            signal.timeframe &&
+            !LearningConfig.SUPPORTED_TIMEFRAMES.includes(signal.timeframe)
+        ) {
+            errors.push(`Unsupported timeframe: ${signal.timeframe}`);
+        }
+
+        // Entry Validation
+        if (
+            signal.entry !== undefined &&
+            (
+                typeof signal.entry !== "number" ||
+                isNaN(signal.entry) ||
+                signal.entry <= 0
+            )
+        ) {
+            errors.push("Invalid entry price.");
+        }
+
+        // Stop Loss Validation
+        if (
+            signal.stopLoss !== undefined &&
+            (
+                typeof signal.stopLoss !== "number" ||
+                isNaN(signal.stopLoss)
+            )
+        ) {
+            errors.push("Invalid Stop Loss.");
+        }
+
+        // Take Profit Validation
+        if (
+            signal.takeProfit !== undefined &&
+            (
+                typeof signal.takeProfit !== "number" ||
+                isNaN(signal.takeProfit)
+            )
+        ) {
+            errors.push("Invalid Take Profit.");
+        }
+
+        // Confidence Validation
+        if (signal.confidence !== undefined) {
+
+            if (
+                typeof signal.confidence !== "number" ||
+                signal.confidence < 0 ||
+                signal.confidence > 100
+            ) {
+                errors.push("Confidence must be between 0 and 100.");
+            }
+
+        }
+
+        // Indicator Validation
+        if (
+            signal.indicators &&
+            !Array.isArray(signal.indicators)
+        ) {
+            errors.push("Indicators must be an array.");
+        }
+
+        // Direction Validation
+        if (
+            signal.direction &&
+            !["BUY","SELL","HOLD"].includes(signal.direction)
+        ) {
+            errors.push("Invalid signal direction.");
+        }
+
+        return {
+
+            valid: errors.length === 0,
+
+            errors
+
+        };
+
+    }
+
+    static isDuplicate(signal, signalList = []) {
+
+        if (!LearningConfig.DUPLICATE_CHECK) {
+            return false;
+        }
+
+        return signalList.some(existing => {
+
+            return (
+
+                existing.pair === signal.pair &&
+
+                existing.strategy === signal.strategy &&
+
+                existing.timeframe === signal.timeframe &&
+
+                existing.entry === signal.entry &&
+
+                existing.direction === signal.direction
+
+            );
+
+        });
+
+    }
+
+}
+
 /**
  * PipSight Learning Engine
  * Self-learning AI system for signal outcome tracking and accuracy improvement
@@ -122,34 +279,60 @@ class PipSightLearner {
   }
 
   /**
-   * Record a new signal for learning
-   * @param {Object} signal - Signal object with pair, timeframe, strategy, entry, etc.
-   */
-  recordSignal(signal) {
-    if (!signal.pair || !signal.timeframe || !signal.strategy) {
-      console.warn('Invalid signal structure');
-      return false;
+ * Record a new signal for learning
+ * @param {Object} signal - Signal object with pair, timeframe, strategy, entry, etc.
+ */
+recordSignal(signal) {
+
+    // -----------------------------
+    // Professional Validation Layer
+    // -----------------------------
+    const validation = SignalValidator.validate(signal);
+
+    if (!validation.valid) {
+        console.warn("Signal validation failed:", validation.errors);
+        return false;
     }
 
+    // -----------------------------
+    // Duplicate Protection
+    // -----------------------------
+    if (SignalValidator.isDuplicate(signal, this.data.signals)) {
+        console.warn("Duplicate signal ignored.");
+        return false;
+    }
+
+    // -----------------------------
+    // Legacy Validation (Backward Compatibility)
+    // -----------------------------
+    if (!signal.pair || !signal.timeframe || !signal.strategy) {
+        console.warn("Invalid signal structure");
+        return false;
+    }
+
+    // -----------------------------
+    // Record Signal
+    // -----------------------------
     const recordedSignal = {
-      id: this.generateId(),
-      ...signal,
-      timestamp: new Date().toISOString(),
-      outcome: null, // Will be set later
-      profitPoints: null,
-      resultPercentage: null
+        id: this.generateId(),
+        ...signal,
+        timestamp: new Date().toISOString(),
+        outcome: null,
+        profitPoints: null,
+        resultPercentage: null
     };
 
     this.data.signals.push(recordedSignal);
-    
-    // Keep last 5000 signals
-    if (this.data.signals.length > 5000) {
-      this.data.signals = this.data.signals.slice(-5000);
+
+    // Keep only latest history
+    if (this.data.signals.length > LearningConfig.MAX_HISTORY) {
+        this.data.signals = this.data.signals.slice(-LearningConfig.MAX_HISTORY);
     }
 
     this.data.updatedAt = new Date().toISOString();
+
     return recordedSignal.id;
-  }
+}
 
   /**
    * Resolve a signal with outcome (WIN/LOSS)

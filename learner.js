@@ -253,6 +253,95 @@ class SignalValidator {
 
 }
 
+/* =====================================================================
+   PipSight Pro AI v2
+   MODULE 3 : Memory Manager Engine
+   Version : 2.0.0
+   ===================================================================== */
+
+class MemoryManager {
+
+    static initialize(learner) {
+
+        if (!learner.data) {
+
+            learner.data = {
+                signals: [],
+                outcomes: [],
+                stats: {},
+                updatedAt: new Date().toISOString()
+            };
+
+        }
+
+        if (!Array.isArray(learner.data.signals)) {
+            learner.data.signals = [];
+        }
+
+        if (!Array.isArray(learner.data.outcomes)) {
+            learner.data.outcomes = [];
+        }
+
+        if (!learner.data.stats) {
+            learner.data.stats = {};
+        }
+
+        learner.data.updatedAt = new Date().toISOString();
+
+        return true;
+
+    }
+
+    static cleanup(learner) {
+
+        if (!learner.data || !learner.data.signals) {
+            return;
+        }
+
+        if (learner.data.signals.length > LearningConfig.MAX_HISTORY) {
+
+            learner.data.signals =
+                learner.data.signals.slice(
+                    -LearningConfig.MAX_HISTORY
+                );
+
+        }
+
+    }
+
+    static getResolvedSignals(learner) {
+
+        return learner.data.signals.filter(
+            signal => signal.outcome !== null
+        );
+
+    }
+
+    static getPendingSignals(learner) {
+
+        return learner.data.signals.filter(
+            signal => signal.outcome === null
+        );
+
+    }
+
+    static getSignalById(learner, id) {
+
+        return learner.data.signals.find(
+            signal => signal.id === id
+        );
+
+    }
+
+    static updateTimestamp(learner) {
+
+        learner.data.updatedAt =
+            new Date().toISOString();
+
+    }
+
+}
+
 /**
  * PipSight Learning Engine
  * Self-learning AI system for signal outcome tracking and accuracy improvement
@@ -260,23 +349,28 @@ class SignalValidator {
  */
 
 class PipSightLearner {
-  constructor() {
-    this.dataPath = 'pipsight-learning.json';
-    this.confidencePath = 'pipsight-confidence.json';
-    this.data = {
-      signals: [],
-      outcomes: [],
-      stats: {},
-      updatedAt: new Date().toISOString()
-    };
-    this.confidence = {
-      strategies: {},
-      indicators: {},
-      pairs: {},
-      timeframes: {},
-      updatedAt: new Date().toISOString()
-    };
-  }
+    constructor() {
+        this.dataPath = 'pipsight-learning.json';
+        this.confidencePath = 'pipsight-confidence.json';
+
+        this.data = {
+            signals: [],
+            outcomes: [],
+            stats: {},
+            updatedAt: new Date().toISOString()
+        };
+
+        this.confidence = {
+            strategies: {},
+            indicators: {},
+            pairs: {},
+            timeframes: {},
+            updatedAt: new Date().toISOString()
+        };
+
+        // Initialize memory manager
+        MemoryManager.initialize(this);
+    }
 
   /**
  * Record a new signal for learning
@@ -330,7 +424,8 @@ recordSignal(signal) {
     }
 
     this.data.updatedAt = new Date().toISOString();
-
+MemoryManager.cleanup(this);
+MemoryManager.updateTimestamp(this);
     return recordedSignal.id;
 }
 
@@ -363,6 +458,8 @@ recordSignal(signal) {
     this.updateStats();
     return true;
   }
+
+  
 
   /**
    * Update statistics based on all signals

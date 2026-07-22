@@ -456,7 +456,8 @@ MemoryManager.updateTimestamp(this);
     });
 
     this.updateStats();
-    return true;
+MemoryManager.updateTimestamp(this);
+return true;
   }
 
   
@@ -766,7 +767,8 @@ MemoryManager.updateTimestamp(this);
       stats: {},
       updatedAt: new Date().toISOString()
     };
-    return true;
+     MemoryManager.initialize(this);
+    return true;   
   }
 
   /**
@@ -790,16 +792,17 @@ MemoryManager.updateTimestamp(this);
   /**
    * Import data from backup
    */
-  importData(data) {
-    if (data.learning) {
-      this.data = data.learning;
-    }
-    if (data.confidence) {
-      this.confidence = data.confidence;
-    }
-    return true;
-  }
+  if (data.learning) {
+    this.data = data.learning;
 }
+
+if (data.confidence) {
+    this.confidence = data.confidence;
+}
+
+MemoryManager.initialize(this);
+
+return true;
 
 // Export for Node.js environment
 if (typeof module !== 'undefined' && module.exports) {

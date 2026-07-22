@@ -567,55 +567,160 @@ return true;
   }
 
   /**
-   * Calculate confidence for strategy/indicator/pair/timeframe
-   */
-  calculateConfidence(strategy = null, indicator = null, pair = null, timeframe = null) {
+ * Calculate confidence for strategy/indicator/pair/timeframe
+ */
+calculateConfidence(strategy = null, indicator = null, pair = null, timeframe = null) {
+
     const signals = this.data.signals.filter(s => {
-      if (strategy && s.strategy !== strategy) return false;
-      if (indicator && (!s.indicators || !s.indicators.includes(indicator))) return false;
-      if (pair && s.pair !== pair) return false;
-      if (timeframe && s.timeframe !== timeframe) return false;
-      return true;
+        if (strategy && s.strategy !== strategy) return false;
+        if (indicator && (!s.indicators || !s.indicators.includes(indicator))) return false;
+        if (pair && s.pair !== pair) return false;
+        if (timeframe && s.timeframe !== timeframe) return false;
+        return true;
     });
 
     const outcomes = signals.filter(s => s.outcome);
-    
+
     if (outcomes.length === 0) {
-    return LearningConfig.DEFAULT_CONFIDENCE;
-}
-    
-    const winRate = (outcomes.filter(s => s.outcome === 'WIN').length / outcomes.length) * 100;
-    
-    // Confidence based on sample size and win rate
+        return LearningConfig.DEFAULT_CONFIDENCE;
+    }
+
+    const winRate =
+        (outcomes.filter(s => s.outcome === "WIN").length / outcomes.length) * 100;
+
     let confidence = winRate;
-    
+
     // Boost for large sample size
     if (outcomes.length > 50) confidence = Math.min(90, confidence + 5);
     if (outcomes.length > 100) confidence = Math.min(92, confidence + 3);
-    
+
     // Penalty for small sample size
     if (outcomes.length < 10) confidence = Math.max(50, confidence - 10);
-    
+
     // Trend detection
     const recent10 = outcomes.slice(-10);
-    const recentWins = recent10.filter(s => s.outcome === 'WIN').length;
-    const recentRate = (recentWins / recent10.length) * 100;
-    
-    if (recentRate > winRate + 15) {
-      confidence = Math.min(95, confidence + 3); // Improving trend
-    } else if (recentRate < winRate - 15) {
-      confidence = Math.max(50, confidence - 3); // Declining trend
-    }
-    
-    return Math.round(confidence);
-  }
 
-  /**
-   * Get detailed statistics
-   */
-  getStats() {
+    const recentWins =
+        recent10.filter(s => s.outcome === "WIN").length;
+
+    const recentRate =
+        (recentWins / recent10.length) * 100;
+
+    if (recentRate > winRate + 15) {
+        confidence = Math.min(95, confidence + 3);
+    } else if (recentRate < winRate - 15) {
+        confidence = Math.max(50, confidence - 3);
+    }
+
+    return Math.round(confidence);
+}
+
+/**
+ * Adaptive Confidence Engine
+ */
+calculateAdaptiveConfidence(signal) {
+
+    if (!signal) {
+        return LearningConfig.DEFAULT_CONFIDENCE;
+    }
+
+    let confidence = this.calculateConfidence(
+        signal.strategy,
+        null,
+        signal.pair,
+        signal.timeframe
+    );
+
+    if (signal.indicators && Array.isArray(signal.indicators)) {
+
+        const indicatorScores = signal.indicators.map(indicator =>
+            this.calculateConfidence(
+                null,
+                indicator,
+                signal.pair,
+                signal.timeframe
+            )
+        );
+
+        if (indicatorScores.length > 0) {
+
+            const averageIndicatorConfidence =
+                indicatorScores.reduce((sum, score) => sum + score, 0)
+                / indicatorScores.length;
+
+            confidence =
+                (confidence + averageIndicatorConfidence) / 2;
+        }
+    }
+
+    const recentSignals = this.data.signals
+        .filter(s =>
+            s.outcome &&
+            s.strategy === signal.strategy &&
+            s.pair === signal.pair
+        )
+        .slice(-20);
+
+    if (recentSignals.length >= 10) {
+
+        const recentWinRate =
+            (recentSignals.filter(s => s.outcome === "WIN").length
+            / recentSignals.length) * 100;
+
+        if (recentWinRate > 70) {
+            confidence += 3;
+        } else if (recentWinRate < 40) {
+            confidence -= 3;
+        }
+    }
+
+    confidence = Math.max(
+        LearningConfig.MIN_CONFIDENCE,
+        Math.min(
+            LearningConfig.MAX_CONFIDENCE,
+            confidence
+        )
+    );
+
+    return Math.round(confidence);
+}
+
+/**
+ * Auto update signal confidence
+ */
+updateSignalConfidence(signal) {
+
+    signal.confidence =
+        this.calculateAdaptiveConfidence(signal);
+
+    return signal.confidence;
+}
+
+/**
+ * Update all pending signals
+ */
+refreshPendingConfidence() {
+
+    this.data.signals
+        .filter(s => !s.outcome)
+        .forEach(signal => {
+
+            signal.confidence =
+                this.calculateAdaptiveConfidence(signal);
+
+        });
+
+    MemoryManager.updateTimestamp(this);
+
+    return true;
+}
+
+/**
+ * Get detailed statistics
+ */
+getStats() {
     return this.data.stats;
-  }
+}
 
   /**
    * Get all confidence data

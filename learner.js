@@ -580,7 +580,9 @@ return true;
 
     const outcomes = signals.filter(s => s.outcome);
     
-    if (outcomes.length === 0) return 60; // Default confidence
+    if (outcomes.length === 0) {
+    return LearningConfig.DEFAULT_CONFIDENCE;
+}
     
     const winRate = (outcomes.filter(s => s.outcome === 'WIN').length / outcomes.length) * 100;
     

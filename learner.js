@@ -1,3 +1,101 @@
+/* =====================================================================
+   PipSight Pro AI v2
+   MODULE 1 : Learning Configuration Engine
+   Version : 2.0.0
+   ===================================================================== */
+
+class LearningConfig {
+
+    static VERSION = "2.0.0";
+
+    static ENGINE_NAME = "PipSight Pro AI";
+
+    static DEBUG = false;
+
+    static MAX_HISTORY = 5000;
+
+    static AUTO_BACKUP = true;
+
+    static AUTO_REPAIR = true;
+
+    static DUPLICATE_CHECK = true;
+
+    static AUTO_UPDATE_STATS = true;
+
+    static MIN_SIGNALS_FOR_LEARNING = 20;
+
+    static MIN_SIGNALS_FOR_CONFIDENCE = 30;
+
+    static PERFORMANCE_WINDOW = 20;
+
+    static MAX_CONFIDENCE = 95;
+
+    static MIN_CONFIDENCE = 50;
+
+    static DEFAULT_CONFIDENCE = 60;
+
+    static SUPPORTED_RESULTS = [
+        "WIN",
+        "LOSS",
+        "BREAKEVEN"
+    ];
+
+    static SUPPORTED_STRATEGIES = [
+        "scalp",
+        "daily",
+        "weekly"
+    ];
+
+    static SUPPORTED_PAIRS = [
+        "XAUUSD",
+        "GBPJPY"
+    ];
+
+    static SUPPORTED_TIMEFRAMES = [
+        "5m",
+        "15m",
+        "30m",
+        "1H",
+        "4H",
+        "D1"
+    ];
+
+    static SUPPORTED_INDICATORS = [
+        "EMA",
+        "RSI",
+        "MACD",
+        "Support/Resistance",
+        "News"
+    ];
+
+    static REQUIRED_SIGNAL_FIELDS = [
+
+        "pair",
+
+        "strategy",
+
+        "timeframe",
+
+        "entry"
+
+    ];
+
+    static PERFORMANCE_STATUS = {
+
+        IMPROVING : "improving",
+
+        STABLE : "stable",
+
+        DECLINING : "declining",
+
+        UNKNOWN : "insufficient-data"
+
+    };
+
+}
+
+Object.freeze(LearningConfig);
+
 /**
  * PipSight Learning Engine
  * Self-learning AI system for signal outcome tracking and accuracy improvement

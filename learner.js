@@ -716,6 +716,135 @@ refreshPendingConfidence() {
 }
 
 /**
+ * Performance Optimization Engine
+ */
+optimizePerformance() {
+
+    const optimization = {
+
+        bestStrategy: null,
+        bestPair: null,
+        bestTimeframe: null,
+
+        weakestStrategy: null,
+        weakestPair: null,
+        weakestTimeframe: null,
+
+        suggestions: []
+
+    };
+
+    // Strategy Analysis
+    const strategies = this.data.stats.strategies || {};
+
+    let highest = -1;
+    let lowest = 101;
+
+    for (const strategy in strategies) {
+
+        const rate = strategies[strategy].winRate;
+
+        if (rate > highest) {
+            highest = rate;
+            optimization.bestStrategy = strategy;
+        }
+
+        if (rate < lowest) {
+            lowest = rate;
+            optimization.weakestStrategy = strategy;
+        }
+    }
+
+    // Pair Analysis
+    const pairs = this.data.stats.pairs || {};
+
+    highest = -1;
+    lowest = 101;
+
+    for (const pair in pairs) {
+
+        const rate = pairs[pair].winRate;
+
+        if (rate > highest) {
+            highest = rate;
+            optimization.bestPair = pair;
+        }
+
+        if (rate < lowest) {
+            lowest = rate;
+            optimization.weakestPair = pair;
+        }
+    }
+
+    // Timeframe Analysis
+    const timeframes = this.data.stats.timeframes || {};
+
+    highest = -1;
+    lowest = 101;
+
+    for (const tf in timeframes) {
+
+        const rate = timeframes[tf].winRate;
+
+        if (rate > highest) {
+            highest = rate;
+            optimization.bestTimeframe = tf;
+        }
+
+        if (rate < lowest) {
+            lowest = rate;
+            optimization.weakestTimeframe = tf;
+        }
+    }
+
+    // Suggestions
+
+    if (optimization.bestStrategy) {
+
+        optimization.suggestions.push(
+            `Focus on ${optimization.bestStrategy} strategy.`
+        );
+    }
+
+    if (optimization.bestPair) {
+
+        optimization.suggestions.push(
+            `${optimization.bestPair} currently performs best.`
+        );
+    }
+
+    if (optimization.bestTimeframe) {
+
+        optimization.suggestions.push(
+            `Highest accuracy timeframe: ${optimization.bestTimeframe}.`
+        );
+    }
+
+    if (optimization.weakestStrategy) {
+
+        optimization.suggestions.push(
+            `Review ${optimization.weakestStrategy} strategy.`
+        );
+    }
+
+    if (optimization.weakestPair) {
+
+        optimization.suggestions.push(
+            `Reduce exposure on ${optimization.weakestPair}.`
+        );
+    }
+
+    if (optimization.weakestTimeframe) {
+
+        optimization.suggestions.push(
+            `Optimize ${optimization.weakestTimeframe} timeframe.`
+        );
+    }
+
+    return optimization;
+}
+   
+/**
  * Get detailed statistics
  */
 getStats() {
@@ -824,16 +953,23 @@ getStats() {
     const bestStrategy = this.getBestStrategy();
     const bestIndicator = this.getBestIndicator();
     const trend = this.getPerformanceTrend();
-
+    const optimization = this.optimizePerformance();
+    
     return {
-      bestStrategy: bestStrategy.strategy,
-      bestStrategyRate: bestStrategy.winRate,
-      bestIndicator: bestIndicator.indicator,
-      bestIndicatorRate: bestIndicator.winRate,
-      trend,
-      recommendation: this.generateRecommendation(bestStrategy, bestIndicator, trend)
-    };
-  }
+    bestStrategy: bestStrategy.strategy,
+    bestStrategyRate: bestStrategy.winRate,
+    bestIndicator: bestIndicator.indicator,
+    bestIndicatorRate: bestIndicator.winRate,
+    trend,
+    optimization,
+    recommendation: this.generateRecommendation(
+        bestStrategy,
+        bestIndicator,
+        trend
+    )
+
+};
+     
 
   /**
    * Generate trading recommendation based on learning

@@ -791,20 +791,24 @@ return true;
     };
   }
 
+  
   /**
-   * Import data from backup
-   */
-  if (data.learning) {
-    this.data = data.learning;
+ * Import data from backup
+ */
+importData(data) {
+
+    if (data.learning) {
+        this.data = data.learning;
+    }
+
+    if (data.confidence) {
+        this.confidence = data.confidence;
+    }
+
+    MemoryManager.initialize(this);
+
+    return true;
 }
-
-if (data.confidence) {
-    this.confidence = data.confidence;
-}
-
-MemoryManager.initialize(this);
-
-return true;
 
 // Export for Node.js environment
 if (typeof module !== 'undefined' && module.exports) {

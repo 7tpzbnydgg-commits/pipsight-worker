@@ -153,7 +153,6 @@ function persistLearner(){
   if(!pipLearner) return;
   try{ localStorage.setItem(PIPLEARNER_STORAGE_KEY, JSON.stringify(pipLearner.exportData())); }
   catch(e){ console.log("Learner data save failed:", e.message); }
-  exportLearnerToGitHub(false);
 }
 
 // Manual backup — downloads a JSON file with everything this device has
@@ -184,120 +183,10 @@ function exportLearnerBackup(){
   }
 }
   
-// ── GitHub Learning Engine Sync ────────────────────────────────
-// Load learning state from GitHub on startup
-async function syncLearningEngineWithGitHub() {
-  if (!pipLearner) return;
-
-  try {
-    const response = await fetch(
-      'https://raw.githubusercontent.com/7tpzbnydgg-commits/pipsight-worker/main/data/learning-engine-state.json?t=' + Date.now()
-    );
-    
-    if (response.ok) {
-      const gitHubData = await response.json();
-      if (gitHubData && gitHubData.learning && gitHubData.learning.signals) {
-        console.log(`Loading ${gitHubData.learning.signals.length} signals from GitHub...`);
-        pipLearner.importData(gitHubData.learning);
-        console.log('✅ Learning engine synced from GitHub!');
-      }
-    }
-  } catch (e) {
-    console.log('GitHub sync failed (offline?):', e.message);
-  }
-}
-
-// Sync on page load, then push anything this device has that GitHub doesn't
-// have yet (covers the very first run, before any signal resolves again).
-window.addEventListener('load', () => {
-  syncLearningEngineWithGitHub().then(() => exportLearnerToGitHub(true));
-});
-
-// ── GitHub Learning Engine Export ──────────────────────────────
-// This is the other half of the sync above. syncLearningEngineWithGitHub()
-// pulls data/learning-engine-state.json (written by save-learning-state.js
-// via the GitHub Action) INTO this browser. This function pushes this
-// browser's localStorage learner data OUT to the repo, by committing
-// learning-export.json at the repo root — which is exactly the file
-// save-learning-state.js looks for on its next hourly run before it
-// re-publishes data/learning-engine-state.json for every device to read.
-//
-// ⚠️ SECURITY NOTE: this calls the GitHub API directly from the browser,
-// which means GITHUB_EXPORT_TOKEN below is visible to anyone who views this
-// page's source (right-click → View Source, or devtools). Do NOT use your
-// main GitHub account token here. Instead:
-//   1. Go to GitHub → Settings → Developer settings → Fine-grained tokens
-//   2. Create a new token scoped ONLY to the "pipsight-worker" repository
-//   3. Under Repository permissions, grant ONLY "Contents: Read and write"
-//      (leave everything else "No access")
-//   4. Paste that token below, and nowhere else
-// With that scoping, the worst case if someone copies this token is they
-// can write junk into pipsight-worker's files — nothing more (no access to
-// your other repos, account settings, etc.). Rotate/revoke it any time from
-// the same Settings page if you ever want to shut this off.
-const GITHUB_EXPORT_OWNER = '7tpzbnydgg-commits';
-const GITHUB_EXPORT_REPO = 'pipsight-worker';
-const GITHUB_EXPORT_PATH = 'learning-export.json';
-const GITHUB_EXPORT_TOKEN = "PASTE-YOUR-TOKEN"; // scoped to pipsight-worker, Contents: Read and write only
-
-// Don't spam GitHub with a commit on every single signal — batch to at most
-// one export every 5 minutes, unless force=true (used on page load).
-const LEARNER_EXPORT_MIN_INTERVAL_MS = 5 * 60 * 1000;
-let lastLearnerExportAt = 0;
-let learnerExportInFlight = false;
-
-async function exportLearnerToGitHub(force){
-  if(!pipLearner) return;
-  if(!GITHUB_EXPORT_TOKEN || GITHUB_EXPORT_TOKEN === "PASTE-YOUR-TOKEN") return; // not configured yet
-  const now = Date.now();
-  if(!force && now - lastLearnerExportAt < LEARNER_EXPORT_MIN_INTERVAL_MS) return;
-  if(learnerExportInFlight) return;
-  learnerExportInFlight = true;
-
-  try{
-    const apiUrl = `https://api.github.com/repos/${GITHUB_EXPORT_OWNER}/${GITHUB_EXPORT_REPO}/contents/${GITHUB_EXPORT_PATH}`;
-    const headers = {
-      'Authorization': `Bearer ${GITHUB_EXPORT_TOKEN}`,
-      'Accept': 'application/vnd.github.v3+json',
-    };
-
-    // Need the current file's sha to update it (GitHub requires this for
-    // any PUT to an existing path). If the file doesn't exist yet, this
-    // 404s and we just create it fresh (no sha).
-    let sha = null;
-    try{
-      const getRes = await fetch(apiUrl, { headers });
-      if(getRes.ok){ const info = await getRes.json(); sha = info.sha; }
-    }catch(e){ /* file not there yet — fine, we'll create it */ }
-
-    const payload = { learning: pipLearner.exportData(), exportedAt: new Date().toISOString() };
-    const contentB64 = btoa(unescape(encodeURIComponent(JSON.stringify(payload, null, 2))));
-
-    const body = {
-      message: `[Auto] Export learner state from browser - ${new Date().toISOString()}`,
-      content: contentB64,
-      branch: 'main',
-    };
-    if(sha) body.sha = sha;
-
-    const putRes = await fetch(apiUrl, {
-      method: 'PUT',
-      headers: { ...headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-
-    if(putRes.ok){
-      lastLearnerExportAt = now;
-      console.log('✅ Learner state exported to GitHub (learning-export.json) — the hourly Action will pick it up next run.');
-    } else {
-      console.log('Learner export to GitHub failed:', putRes.status, await putRes.text());
-    }
-  } catch(e){
-    console.log('Learner export to GitHub error:', e.message);
-  } finally {
-    learnerExportInFlight = false;
-  }
-}
+// GitHub sync removed — learning data now lives only in localStorage on
+// this device. Use the "📥 Backup Data" button (top-right) to export a
+// JSON snapshot manually anytime.
+  
 // ── Learning-driven feedback gate ────────────────────────────────────────
 // This is what makes the system actually self-improve rather than just
 // report. Once a strategy or pair has enough resolved history (MIN_SAMPLE)

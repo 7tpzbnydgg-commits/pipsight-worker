@@ -788,7 +788,6 @@ class PipSightLearner {
      *   { execute: true/false, id, confidence, status, signal } -> recorded successfully
      */
     processSignal(signal) {
-        const beforeCount = this.data.signals.length;
         const id = this.recordSignal(signal);
 
         if (id === false) {

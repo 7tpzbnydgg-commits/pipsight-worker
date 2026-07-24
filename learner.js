@@ -1,96 +1,189 @@
+"use strict";
+
 /* =====================================================================
-   PipSight Pro AI v2
-   MODULE 1 : Learning Configuration Engine
-   Version : 2.0.0
+   PipSight Pro AI
+   Learning and Confidence Engine
+   Version: 2.1.0
+
+   Compatibility:
+   - Existing public methods preserved.
+   - Existing signal and confidence structures preserved.
+   - Works in Node.js and browser environments.
    ===================================================================== */
 
 class LearningConfig {
-    static VERSION = "2.0.0";
+    static VERSION = "2.1.0";
     static ENGINE_NAME = "PipSight Pro AI";
+
     static DEBUG = false;
     static MAX_HISTORY = 5000;
-    static AUTO_BACKUP = true;
-    static AUTO_REPAIR = true;
+
     static DUPLICATE_CHECK = true;
-    static AUTO_UPDATE_STATS = true;
     static MIN_SIGNALS_FOR_LEARNING = 20;
     static MIN_SIGNALS_FOR_CONFIDENCE = 30;
     static PERFORMANCE_WINDOW = 20;
+
     static MAX_CONFIDENCE = 95;
     static MIN_CONFIDENCE = 50;
     static DEFAULT_CONFIDENCE = 60;
     static ACTIONABLE_CONFIDENCE_THRESHOLD = 65;
 
-    static SUPPORTED_RESULTS = [
+    static SUPPORTED_RESULTS = Object.freeze([
         "WIN",
         "LOSS",
         "BREAKEVEN"
-    ];
+    ]);
 
-    static SUPPORTED_STRATEGIES = [
+    static SUPPORTED_STRATEGIES = Object.freeze([
         "scalp",
         "daily",
         "weekly"
-    ];
+    ]);
 
-    static SUPPORTED_PAIRS = [
+    static SUPPORTED_PAIRS = Object.freeze([
         "XAUUSD",
         "GBPJPY"
-    ];
+    ]);
 
-    static SUPPORTED_TIMEFRAMES = [
+    static SUPPORTED_TIMEFRAMES = Object.freeze([
         "5m",
         "15m",
         "30m",
         "1H",
         "4H",
         "D1"
-    ];
+    ]);
 
-    static SUPPORTED_INDICATORS = [
+    static SUPPORTED_INDICATORS = Object.freeze([
         "EMA",
         "RSI",
         "MACD",
         "Support/Resistance",
         "News"
-    ];
+    ]);
 
-    static REQUIRED_SIGNAL_FIELDS = [
+    static REQUIRED_SIGNAL_FIELDS = Object.freeze([
         "pair",
         "strategy",
         "timeframe",
         "entry"
-    ];
+    ]);
 
-    static PERFORMANCE_STATUS = {
+    static PERFORMANCE_STATUS = Object.freeze({
         IMPROVING: "improving",
         STABLE: "stable",
         DECLINING: "declining",
         UNKNOWN: "insufficient-data"
-    };
+    });
 }
 
 Object.freeze(LearningConfig);
 
 /* =====================================================================
-   PipSight Pro AI v2
-   MODULE 2 : Signal Validator Engine
-   Version : 2.0.0
+   General Helpers
+   ===================================================================== */
+
+function isPlainObject(value) {
+    return (
+        value !== null &&
+        typeof value === "object" &&
+        !Array.isArray(value)
+    );
+}
+
+function isFiniteNumber(value) {
+    return (
+        typeof value === "number" &&
+        Number.isFinite(value)
+    );
+}
+
+function clamp(value, minimum, maximum) {
+    return Math.max(minimum, Math.min(maximum, value));
+}
+
+function round(value, decimals = 2) {
+    if (!isFiniteNumber(value)) {
+        return 0;
+    }
+
+    const multiplier = 10 ** decimals;
+    return Math.round(value * multiplier) / multiplier;
+}
+
+function createEmptyStats() {
+    return {
+        totalSignals: 0,
+        resolvedSignals: 0,
+        wins: 0,
+        losses: 0,
+        breakevens: 0,
+        pending: 0,
+
+        winRate: 0,
+        lossRate: 0,
+        breakevenRate: 0,
+
+        avgProfitPoints: 0,
+        totalProfitPoints: 0,
+        grossProfitPoints: 0,
+        grossLossPoints: 0,
+        profitFactor: null,
+
+        strategies: {},
+        indicators: {},
+        pairs: {},
+        timeframes: {}
+    };
+}
+
+function createEmptyLearningData() {
+    return {
+        signals: [],
+        outcomes: [],
+        stats: createEmptyStats(),
+        updatedAt: new Date().toISOString(),
+        metadata: {
+            engine: LearningConfig.ENGINE_NAME,
+            version: LearningConfig.VERSION
+        }
+    };
+}
+
+function createEmptyConfidenceData() {
+    return {
+        strategies: {},
+        indicators: {},
+        pairs: {},
+        timeframes: {},
+        overall: {
+            totalSignals: 0,
+            winRate: 0,
+            avgProfitPoints: 0
+        },
+        updatedAt: new Date().toISOString(),
+        metadata: {
+            engine: LearningConfig.ENGINE_NAME,
+            version: LearningConfig.VERSION
+        }
+    };
+}
+
+/* =====================================================================
+   Signal Validator Engine
    ===================================================================== */
 
 class SignalValidator {
-
     static validate(signal) {
         const errors = [];
 
-        if (!signal || typeof signal !== "object") {
+        if (!isPlainObject(signal)) {
             return {
                 valid: false,
-                errors: ["Signal is missing."]
+                errors: ["Signal is missing or invalid."]
             };
         }
 
-        // Required Fields
         for (const field of LearningConfig.REQUIRED_SIGNAL_FIELDS) {
             if (
                 signal[field] === undefined ||
@@ -101,7 +194,6 @@ class SignalValidator {
             }
         }
 
-        // Pair Validation
         if (
             signal.pair &&
             !LearningConfig.SUPPORTED_PAIRS.includes(signal.pair)
@@ -109,7 +201,6 @@ class SignalValidator {
             errors.push(`Unsupported pair: ${signal.pair}`);
         }
 
-        // Strategy Validation
         if (
             signal.strategy &&
             !LearningConfig.SUPPORTED_STRATEGIES.includes(signal.strategy)
@@ -117,7 +208,6 @@ class SignalValidator {
             errors.push(`Unsupported strategy: ${signal.strategy}`);
         }
 
-        // Timeframe Validation
         if (
             signal.timeframe &&
             !LearningConfig.SUPPORTED_TIMEFRAMES.includes(signal.timeframe)
@@ -125,65 +215,149 @@ class SignalValidator {
             errors.push(`Unsupported timeframe: ${signal.timeframe}`);
         }
 
-        // Entry Validation
         if (
             signal.entry !== undefined &&
             (
-                typeof signal.entry !== "number" ||
-                isNaN(signal.entry) ||
+                !isFiniteNumber(signal.entry) ||
                 signal.entry <= 0
             )
         ) {
             errors.push("Invalid entry price.");
         }
 
-        // Stop Loss Validation
         if (
             signal.stopLoss !== undefined &&
+            signal.stopLoss !== null &&
             (
-                typeof signal.stopLoss !== "number" ||
-                isNaN(signal.stopLoss)
+                !isFiniteNumber(signal.stopLoss) ||
+                signal.stopLoss <= 0
             )
         ) {
             errors.push("Invalid Stop Loss.");
         }
 
-        // Take Profit Validation
         if (
             signal.takeProfit !== undefined &&
+            signal.takeProfit !== null &&
             (
-                typeof signal.takeProfit !== "number" ||
-                isNaN(signal.takeProfit)
+                !isFiniteNumber(signal.takeProfit) ||
+                signal.takeProfit <= 0
             )
         ) {
             errors.push("Invalid Take Profit.");
         }
 
-        // Confidence Validation
-        if (signal.confidence !== undefined) {
-            if (
-                typeof signal.confidence !== "number" ||
+        if (
+            signal.confidence !== undefined &&
+            (
+                !isFiniteNumber(signal.confidence) ||
                 signal.confidence < 0 ||
                 signal.confidence > 100
-            ) {
-                errors.push("Confidence must be between 0 and 100.");
-            }
+            )
+        ) {
+            errors.push("Confidence must be between 0 and 100.");
         }
 
-        // Indicator Validation
         if (
-            signal.indicators &&
+            signal.indicators !== undefined &&
             !Array.isArray(signal.indicators)
         ) {
             errors.push("Indicators must be an array.");
         }
 
-        // Direction Validation
+        if (Array.isArray(signal.indicators)) {
+            const invalidIndicators = signal.indicators.filter(
+                indicator =>
+                    !LearningConfig.SUPPORTED_INDICATORS.includes(indicator)
+            );
+
+            if (invalidIndicators.length > 0) {
+                errors.push(
+                    `Unsupported indicator(s): ${[
+                        ...new Set(invalidIndicators)
+                    ].join(", ")}`
+                );
+            }
+        }
+
         if (
-            signal.direction &&
+            signal.direction !== undefined &&
             !["BUY", "SELL", "HOLD"].includes(signal.direction)
         ) {
             errors.push("Invalid signal direction.");
+        }
+
+        if (
+            signal.direction === "BUY" &&
+            isFiniteNumber(signal.stopLoss) &&
+            signal.stopLoss >= signal.entry
+        ) {
+            errors.push(
+                "BUY signal Stop Loss must be below entry."
+            );
+        }
+
+        if (
+            signal.direction === "BUY" &&
+            isFiniteNumber(signal.takeProfit) &&
+            signal.takeProfit <= signal.entry
+        ) {
+            errors.push(
+                "BUY signal Take Profit must be above entry."
+            );
+        }
+
+        if (
+            signal.direction === "SELL" &&
+            isFiniteNumber(signal.stopLoss) &&
+            signal.stopLoss <= signal.entry
+        ) {
+            errors.push(
+                "SELL signal Stop Loss must be above entry."
+            );
+        }
+
+        if (
+            signal.direction === "SELL" &&
+            isFiniteNumber(signal.takeProfit) &&
+            signal.takeProfit >= signal.entry
+        ) {
+            errors.push(
+                "SELL signal Take Profit must be below entry."
+            );
+        }
+
+        return {
+            valid: errors.length === 0,
+            errors
+        };
+    }
+
+    static validateOutcome(outcome, profitPoints) {
+        const errors = [];
+
+        if (!LearningConfig.SUPPORTED_RESULTS.includes(outcome)) {
+            errors.push(
+                `Unsupported outcome: ${String(outcome)}`
+            );
+        }
+
+        if (!isFiniteNumber(profitPoints)) {
+            errors.push(
+                "Profit points must be a finite number."
+            );
+        }
+
+        if (outcome === "WIN" && profitPoints < 0) {
+            errors.push(
+                "WIN outcome cannot have negative profit points."
+            );
+        }
+
+        if (outcome === "LOSS" && profitPoints > 0) {
+            errors.push(
+                "LOSS outcome cannot have positive profit points."
+            );
         }
 
         return {
@@ -193,38 +367,42 @@ class SignalValidator {
     }
 
     static isDuplicate(signal, signalList = []) {
-        if (!LearningConfig.DUPLICATE_CHECK) {
+        if (
+            !LearningConfig.DUPLICATE_CHECK ||
+            !Array.isArray(signalList)
+        ) {
             return false;
         }
 
         return signalList.some(existing => {
+            if (!existing || typeof existing !== "object") {
+                return false;
+            }
+
             return (
                 existing.pair === signal.pair &&
                 existing.strategy === signal.strategy &&
                 existing.timeframe === signal.timeframe &&
                 existing.entry === signal.entry &&
-                existing.direction === signal.direction
+                existing.direction === signal.direction &&
+                existing.outcome === null
             );
         });
     }
 }
 
 /* =====================================================================
-   PipSight Pro AI v2
-   MODULE 3 : Memory Manager Engine
-   Version : 2.0.0
+   Memory Manager Engine
    ===================================================================== */
 
 class MemoryManager {
-
     static initialize(learner) {
-        if (!learner.data) {
-            learner.data = {
-                signals: [],
-                outcomes: [],
-                stats: {},
-                updatedAt: new Date().toISOString()
-            };
+        if (!learner || typeof learner !== "object") {
+            return false;
+        }
+
+        if (!isPlainObject(learner.data)) {
+            learner.data = createEmptyLearningData();
         }
 
         if (!Array.isArray(learner.data.signals)) {
@@ -235,28 +413,153 @@ class MemoryManager {
             learner.data.outcomes = [];
         }
 
-        if (!learner.data.stats) {
-            learner.data.stats = {};
+        if (!isPlainObject(learner.data.stats)) {
+            learner.data.stats = createEmptyStats();
         }
 
-        learner.data.updatedAt = new Date().toISOString();
+        if (!isPlainObject(learner.data.metadata)) {
+            learner.data.metadata = {};
+        }
+
+        learner.data.metadata.engine =
+            LearningConfig.ENGINE_NAME;
+
+        learner.data.metadata.version =
+            LearningConfig.VERSION;
+
+        MemoryManager.repairSignals(learner);
+        MemoryManager.repairOutcomes(learner);
+        MemoryManager.cleanup(learner);
+        MemoryManager.updateTimestamp(learner);
+
         return true;
     }
 
+    static repairSignals(learner) {
+        const seenIds = new Set();
+        const repairedSignals = [];
+
+        for (const signal of learner.data.signals) {
+            if (!isPlainObject(signal)) {
+                continue;
+            }
+
+            if (!signal.id || seenIds.has(signal.id)) {
+                signal.id = learner.generateId();
+            }
+
+            seenIds.add(signal.id);
+
+            if (
+                signal.outcome !== null &&
+                signal.outcome !== undefined &&
+                !LearningConfig.SUPPORTED_RESULTS.includes(
+                    signal.outcome
+                )
+            ) {
+                signal.outcome = null;
+                signal.profitPoints = null;
+                signal.resultPercentage = null;
+                delete signal.resolvedAt;
+            }
+
+            if (signal.outcome === undefined) {
+                signal.outcome = null;
+            }
+
+            if (signal.profitPoints === undefined) {
+                signal.profitPoints = null;
+            }
+
+            if (signal.resultPercentage === undefined) {
+                signal.resultPercentage = null;
+            }
+
+            if (!signal.timestamp) {
+                signal.timestamp = new Date().toISOString();
+            }
+
+            repairedSignals.push(signal);
+        }
+
+        learner.data.signals = repairedSignals;
+    }
+
+    static repairOutcomes(learner) {
+        const validSignalIds = new Set(
+            learner.data.signals.map(signal => signal.id)
+        );
+
+        const seenSignalIds = new Set();
+
+        learner.data.outcomes = learner.data.outcomes.filter(
+            outcomeRecord => {
+                if (!isPlainObject(outcomeRecord)) {
+                    return false;
+                }
+
+                if (
+                    !validSignalIds.has(outcomeRecord.signalId) ||
+                    seenSignalIds.has(outcomeRecord.signalId)
+                ) {
+                    return false;
+                }
+
+                if (
+                    !LearningConfig.SUPPORTED_RESULTS.includes(
+                        outcomeRecord.outcome
+                    )
+                ) {
+                    return false;
+                }
+
+                seenSignalIds.add(outcomeRecord.signalId);
+                return true;
+            }
+        );
+    }
+
     static cleanup(learner) {
-        if (!learner.data || !learner.data.signals) {
+        if (
+            !learner.data ||
+            !Array.isArray(learner.data.signals)
+        ) {
             return;
         }
 
-        if (learner.data.signals.length > LearningConfig.MAX_HISTORY) {
+        if (
+            learner.data.signals.length >
+            LearningConfig.MAX_HISTORY
+        ) {
+            const removedSignals = learner.data.signals.slice(
+                0,
+                learner.data.signals.length -
+                    LearningConfig.MAX_HISTORY
+            );
+
+            const removedIds = new Set(
+                removedSignals.map(signal => signal.id)
+            );
+
             learner.data.signals =
-                learner.data.signals.slice(-LearningConfig.MAX_HISTORY);
+                learner.data.signals.slice(
+                    -LearningConfig.MAX_HISTORY
+                );
+
+            learner.data.outcomes =
+                learner.data.outcomes.filter(
+                    outcome =>
+                        !removedIds.has(outcome.signalId)
+                );
         }
     }
 
     static getResolvedSignals(learner) {
         return learner.data.signals.filter(
-            signal => signal.outcome !== null
+            signal =>
+                LearningConfig.SUPPORTED_RESULTS.includes(
+                    signal.outcome
+                )
         );
     }
 
@@ -273,385 +576,930 @@ class MemoryManager {
     }
 
     static updateTimestamp(learner) {
-        learner.data.updatedAt = new Date().toISOString();
+        learner.data.updatedAt =
+            new Date().toISOString();
     }
 }
 
-/**
- * PipSight Learning Engine
- * Self-learning AI system for signal outcome tracking and accuracy improvement
- * Integrates with existing PipSight infrastructure
- */
+/* =====================================================================
+   Main Learning Engine
+   ===================================================================== */
 
 class PipSightLearner {
-    constructor() {
-        this.dataPath = 'pipsight-learning.json';
-        this.confidencePath = 'pipsight-confidence.json';
+    constructor(options = {}) {
+        this.dataPath =
+            options.dataPath || "pipsight-learning.json";
 
-        this.data = {
-            signals: [],
-            outcomes: [],
-            stats: {},
-            updatedAt: new Date().toISOString()
-        };
+        this.confidencePath =
+            options.confidencePath || "pipsight-confidence.json";
 
-        this.confidence = {
-            strategies: {},
-            indicators: {},
-            pairs: {},
-            timeframes: {},
-            updatedAt: new Date().toISOString()
-        };
+        this.data = createEmptyLearningData();
+        this.confidence = createEmptyConfidenceData();
 
-        // Initialize memory manager
         MemoryManager.initialize(this);
     }
 
-    /**
-     * Record a new signal for learning
-     * @param {Object} signal - Signal object with pair, timeframe, strategy, entry, etc.
-     */
-    recordSignal(signal) {
+    /* -----------------------------------------------------------------
+       Signal Recording
+       ----------------------------------------------------------------- */
 
-        // -----------------------------
-        // Professional Validation Layer
-        // -----------------------------
-        const validation = SignalValidator.validate(signal);
+    recordSignal(signal) {
+        const validation =
+            SignalValidator.validate(signal);
 
         if (!validation.valid) {
-            console.warn("Signal validation failed:", validation.errors);
+            console.warn(
+                "Signal validation failed:",
+                validation.errors
+            );
+
             return false;
         }
 
-        // -----------------------------
-        // Duplicate Protection
-        // -----------------------------
-        if (SignalValidator.isDuplicate(signal, this.data.signals)) {
-            console.warn("Duplicate signal ignored.");
+        if (
+            SignalValidator.isDuplicate(
+                signal,
+                this.data.signals
+            )
+        ) {
+            console.warn(
+                "Duplicate pending signal ignored."
+            );
+
             return false;
         }
 
-        // -----------------------------
-        // Legacy Validation (Backward Compatibility)
-        // -----------------------------
-        if (!signal.pair || !signal.timeframe || !signal.strategy) {
-            console.warn("Invalid signal structure");
-            return false;
-        }
+        const now = new Date().toISOString();
 
-        // -----------------------------
-        // Record Signal
-        // -----------------------------
         const recordedSignal = {
-            id: this.generateId(),
             ...signal,
-            timestamp: new Date().toISOString(),
+
+            id: this.generateId(),
+
+            indicators: Array.isArray(signal.indicators)
+                ? [...new Set(signal.indicators)]
+                : [],
+
+            timestamp: signal.timestamp || now,
+
             outcome: null,
             profitPoints: null,
-            resultPercentage: null
+            resultPercentage: null,
+            resolvedAt: null
         };
 
-        // -----------------------------
-        // Confidence-based Auto Filter
-        // -----------------------------
-        recordedSignal.confidence = this.calculateAdaptiveConfidence(recordedSignal);
+        recordedSignal.confidence =
+            this.calculateAdaptiveConfidence(
+                recordedSignal
+            );
 
-        const resolvedCount = this.data.signals.filter(s => s.outcome).length;
-        const enoughDataToFilter = resolvedCount >= LearningConfig.MIN_SIGNALS_FOR_CONFIDENCE;
+        const resolvedCount =
+            MemoryManager.getResolvedSignals(this).length;
+
+        const enoughDataToFilter =
+            resolvedCount >=
+            LearningConfig.MIN_SIGNALS_FOR_CONFIDENCE;
 
         recordedSignal.status =
-            !enoughDataToFilter || recordedSignal.confidence >= LearningConfig.ACTIONABLE_CONFIDENCE_THRESHOLD
+            !enoughDataToFilter ||
+            recordedSignal.confidence >=
+                LearningConfig
+                    .ACTIONABLE_CONFIDENCE_THRESHOLD
                 ? "actionable"
                 : "filtered";
 
         this.data.signals.push(recordedSignal);
 
-        // Keep only latest history
-        if (this.data.signals.length > LearningConfig.MAX_HISTORY) {
-            this.data.signals = this.data.signals.slice(-LearningConfig.MAX_HISTORY);
-        }
-
-        this.data.updatedAt = new Date().toISOString();
         MemoryManager.cleanup(this);
         MemoryManager.updateTimestamp(this);
+
+        if (LearningConfig.AUTO_UPDATE_STATS !== false) {
+            this.updateStats();
+        }
+
         return recordedSignal.id;
     }
 
-    /**
-     * Resolve a signal with outcome (WIN/LOSS)
-     * @param {String} signalId - Signal ID to resolve
-     * @param {String} outcome - 'WIN' or 'LOSS'
-     * @param {Number} profitPoints - Profit/Loss in pips
-     */
-    resolveSignal(signalId, outcome, profitPoints = 0) {
-        const signal = this.data.signals.find(s => s.id === signalId);
+    processSignal(signal) {
+        const id = this.recordSignal(signal);
+
+        if (id === false) {
+            return {
+                execute: false,
+                reason:
+                    "Signal was rejected because it was invalid or duplicated."
+            };
+        }
+
+        const recorded =
+            this.getSignalById(id);
+
+        return {
+            execute:
+                recorded.status === "actionable",
+            id: recorded.id,
+            confidence: recorded.confidence,
+            status: recorded.status,
+            signal: recorded
+        };
+    }
+
+    /* -----------------------------------------------------------------
+       Signal Resolution
+       ----------------------------------------------------------------- */
+
+    resolveSignal(
+        signalId,
+        outcome,
+        profitPoints = 0
+    ) {
+        const signal =
+            this.getSignalById(signalId);
 
         if (!signal) {
-            console.warn('Signal not found:', signalId);
+            console.warn(
+                "Signal not found:",
+                signalId
+            );
+
             return false;
         }
 
-        signal.outcome = outcome; // WIN or LOSS
-        signal.profitPoints = profitPoints;
-        signal.resultPercentage = profitPoints > 0 ? (profitPoints / Math.abs(signal.entry || 1)) * 100 : -1;
-        signal.resolvedAt = new Date().toISOString();
+        if (signal.outcome !== null) {
+            console.warn(
+                "Signal has already been resolved:",
+                signalId
+            );
 
-        this.data.outcomes.push({
-            signalId,
-            outcome,
-            profitPoints,
-            timestamp: new Date().toISOString()
-        });
+            return false;
+        }
+
+        const validation =
+            SignalValidator.validateOutcome(
+                outcome,
+                profitPoints
+            );
+
+        if (!validation.valid) {
+            console.warn(
+                "Outcome validation failed:",
+                validation.errors
+            );
+
+            return false;
+        }
+
+        const resolvedAt =
+            new Date().toISOString();
+
+        signal.outcome = outcome;
+        signal.profitPoints = profitPoints;
+        signal.resolvedAt = resolvedAt;
+
+        if (
+            isFiniteNumber(signal.entry) &&
+            signal.entry !== 0
+        ) {
+            signal.resultPercentage = round(
+                (profitPoints /
+                    Math.abs(signal.entry)) *
+                    100,
+                4
+            );
+        } else {
+            signal.resultPercentage = null;
+        }
+
+        const existingOutcome =
+            this.data.outcomes.find(
+                record =>
+                    record.signalId === signalId
+            );
+
+        if (!existingOutcome) {
+            this.data.outcomes.push({
+                signalId,
+                outcome,
+                profitPoints,
+                timestamp: resolvedAt
+            });
+        }
 
         this.updateStats();
+        this.refreshPendingConfidence();
         MemoryManager.updateTimestamp(this);
+
         return true;
     }
 
-    /**
-     * Update statistics based on all signals
-     */
-    updateStats() {
-        const stats = {
-            totalSignals: this.data.signals.length,
-            resolvedSignals: this.data.signals.filter(s => s.outcome).length,
-            wins: this.data.signals.filter(s => s.outcome === 'WIN').length,
-            losses: this.data.signals.filter(s => s.outcome === 'LOSS').length,
-            pending: this.data.signals.filter(s => !s.outcome).length,
-            winRate: 0,
-            avgProfitPoints: 0,
-            totalProfitPoints: 0,
-            strategies: {},
-            indicators: {},
-            pairs: {},
-            timeframes: {}
-        };
+    /* -----------------------------------------------------------------
+       Statistics
+       ----------------------------------------------------------------- */
 
-        // Overall stats
-        if (stats.resolvedSignals > 0) {
-            stats.winRate = (stats.wins / stats.resolvedSignals) * 100;
-        }
-
-        const profitSignals = this.data.signals.filter(s => s.profitPoints !== null);
-        if (profitSignals.length > 0) {
-            stats.totalProfitPoints = profitSignals.reduce((sum, s) => sum + s.profitPoints, 0);
-            stats.avgProfitPoints = stats.totalProfitPoints / profitSignals.length;
-        }
-
-        // Strategy stats
-        for (const strategy of ['scalp', 'daily', 'weekly']) {
-            const strategySignals = this.data.signals.filter(s => s.strategy === strategy);
-            const strategyOutcomes = strategySignals.filter(s => s.outcome);
-
-            if (strategyOutcomes.length > 0) {
-                stats.strategies[strategy] = {
-                    total: strategySignals.length,
-                    resolved: strategyOutcomes.length,
-                    wins: strategyOutcomes.filter(s => s.outcome === 'WIN').length,
-                    losses: strategyOutcomes.filter(s => s.outcome === 'LOSS').length,
-                    winRate: (strategyOutcomes.filter(s => s.outcome === 'WIN').length / strategyOutcomes.length) * 100,
-                    confidence: this.calculateConfidence(strategy, null, null)
-                };
-            }
-        }
-
-        // Indicator stats
-        for (const indicator of ['EMA', 'RSI', 'MACD', 'Support/Resistance', 'News']) {
-            const indicatorSignals = this.data.signals.filter(s =>
-                s.indicators && s.indicators.includes(indicator)
-            );
-            const indicatorOutcomes = indicatorSignals.filter(s => s.outcome);
-
-            if (indicatorOutcomes.length > 0) {
-                stats.indicators[indicator] = {
-                    total: indicatorSignals.length,
-                    resolved: indicatorOutcomes.length,
-                    wins: indicatorOutcomes.filter(s => s.outcome === 'WIN').length,
-                    losses: indicatorOutcomes.filter(s => s.outcome === 'LOSS').length,
-                    winRate: (indicatorOutcomes.filter(s => s.outcome === 'WIN').length / indicatorOutcomes.length) * 100,
-                    confidence: this.calculateConfidence(null, indicator, null)
-                };
-            }
-        }
-
-        // Pair stats
-        for (const pair of ['XAUUSD', 'GBPJPY']) {
-            const pairSignals = this.data.signals.filter(s => s.pair === pair);
-            const pairOutcomes = pairSignals.filter(s => s.outcome);
-
-            if (pairOutcomes.length > 0) {
-                stats.pairs[pair] = {
-                    total: pairSignals.length,
-                    resolved: pairOutcomes.length,
-                    wins: pairOutcomes.filter(s => s.outcome === 'WIN').length,
-                    losses: pairOutcomes.filter(s => s.outcome === 'LOSS').length,
-                    winRate: (pairOutcomes.filter(s => s.outcome === 'WIN').length / pairOutcomes.length) * 100,
-                    confidence: this.calculateConfidence(null, null, pair)
-                };
-            }
-        }
-
-        // Timeframe stats
-        for (const tf of ['5m', '15m', '30m', '1H', '4H', 'D1']) {
-            const tfSignals = this.data.signals.filter(s => s.timeframe === tf);
-            const tfOutcomes = tfSignals.filter(s => s.outcome);
-
-            if (tfOutcomes.length > 0) {
-                stats.timeframes[tf] = {
-                    total: tfSignals.length,
-                    resolved: tfOutcomes.length,
-                    wins: tfOutcomes.filter(s => s.outcome === 'WIN').length,
-                    losses: tfOutcomes.filter(s => s.outcome === 'LOSS').length,
-                    winRate: (tfOutcomes.filter(s => s.outcome === 'WIN').length / tfOutcomes.length) * 100,
-                    confidence: this.calculateConfidence(null, null, null, tf)
-                };
-            }
-        }
-
-        this.data.stats = stats;
-        return stats;
-    }
-
-    /**
-     * Calculate confidence for strategy/indicator/pair/timeframe
-     */
-    calculateConfidence(strategy = null, indicator = null, pair = null, timeframe = null) {
-        const signals = this.data.signals.filter(s => {
-            if (strategy && s.strategy !== strategy) return false;
-            if (indicator && (!s.indicators || !s.indicators.includes(indicator))) return false;
-            if (pair && s.pair !== pair) return false;
-            if (timeframe && s.timeframe !== timeframe) return false;
-            return true;
-        });
-
-        const outcomes = signals.filter(s => s.outcome);
-
-        if (outcomes.length === 0) {
-            return LearningConfig.DEFAULT_CONFIDENCE;
-        }
-
-        const winRate =
-            (outcomes.filter(s => s.outcome === "WIN").length / outcomes.length) * 100;
-
-        let confidence = winRate;
-
-        // Boost for large sample size
-        if (outcomes.length > 50) confidence = Math.min(90, confidence + 5);
-        if (outcomes.length > 100) confidence = Math.min(92, confidence + 3);
-
-        // Penalty for small sample size
-        if (outcomes.length < 10) confidence = Math.max(50, confidence - 10);
-
-        // Trend detection
-        const recent10 = outcomes.slice(-10);
-
-        const recentWins =
-            recent10.filter(s => s.outcome === "WIN").length;
-
-        const recentRate =
-            (recentWins / recent10.length) * 100;
-
-        if (recentRate > winRate + 15) {
-            confidence = Math.min(95, confidence + 3);
-        } else if (recentRate < winRate - 15) {
-            confidence = Math.max(50, confidence - 3);
-        }
-
-        return Math.round(confidence);
-    }
-
-    /**
-     * Adaptive Confidence Engine
-     */
-    calculateAdaptiveConfidence(signal) {
-        if (!signal) {
-            return LearningConfig.DEFAULT_CONFIDENCE;
-        }
-
-        let confidence = this.calculateConfidence(
-            signal.strategy,
-            null,
-            signal.pair,
-            signal.timeframe
+    buildGroupStats(
+        signals,
+        confidenceFilter = {}
+    ) {
+        const resolved = signals.filter(signal =>
+            LearningConfig.SUPPORTED_RESULTS.includes(
+                signal.outcome
+            )
         );
 
-        if (signal.indicators && Array.isArray(signal.indicators)) {
-            const indicatorScores = signal.indicators.map(indicator =>
+        const wins = resolved.filter(
+            signal => signal.outcome === "WIN"
+        ).length;
+
+        const losses = resolved.filter(
+            signal => signal.outcome === "LOSS"
+        ).length;
+
+        const breakevens = resolved.filter(
+            signal =>
+                signal.outcome === "BREAKEVEN"
+        ).length;
+
+        const profitRecords = resolved.filter(
+            signal =>
+                isFiniteNumber(signal.profitPoints)
+        );
+
+        const totalProfitPoints =
+            profitRecords.reduce(
+                (sum, signal) =>
+                    sum + signal.profitPoints,
+                0
+            );
+
+        const grossProfitPoints =
+            profitRecords
+                .filter(
+                    signal =>
+                        signal.profitPoints > 0
+                )
+                .reduce(
+                    (sum, signal) =>
+                        sum +
+                        signal.profitPoints,
+                    0
+                );
+
+        const grossLossPoints =
+            Math.abs(
+                profitRecords
+                    .filter(
+                        signal =>
+                            signal.profitPoints < 0
+                    )
+                    .reduce(
+                        (sum, signal) =>
+                            sum +
+                            signal.profitPoints,
+                        0
+                    )
+            );
+
+        const decisiveTrades =
+            wins + losses;
+
+        const winRate =
+            decisiveTrades > 0
+                ? (wins / decisiveTrades) * 100
+                : 0;
+
+        const lossRate =
+            decisiveTrades > 0
+                ? (losses / decisiveTrades) *
+                  100
+                : 0;
+
+        const breakevenRate =
+            resolved.length > 0
+                ? (breakevens /
+                      resolved.length) *
+                  100
+                : 0;
+
+        const avgProfitPoints =
+            profitRecords.length > 0
+                ? totalProfitPoints /
+                  profitRecords.length
+                : 0;
+
+        let profitFactor = null;
+
+        if (grossLossPoints > 0) {
+            profitFactor =
+                grossProfitPoints /
+                grossLossPoints;
+        } else if (grossProfitPoints > 0) {
+            profitFactor = Infinity;
+        }
+
+        return {
+            total: signals.length,
+            resolved: resolved.length,
+            pending:
+                signals.length -
+                resolved.length,
+
+            wins,
+            losses,
+            breakevens,
+
+            winRate: round(winRate),
+            lossRate: round(lossRate),
+            breakevenRate:
+                round(breakevenRate),
+
+            totalProfitPoints:
+                round(totalProfitPoints),
+
+            avgProfitPoints:
+                round(avgProfitPoints),
+
+            grossProfitPoints:
+                round(grossProfitPoints),
+
+            grossLossPoints:
+                round(grossLossPoints),
+
+            profitFactor:
+                profitFactor === Infinity
+                    ? "Infinity"
+                    : profitFactor === null
+                        ? null
+                        : round(
+                            profitFactor,
+                            3
+                        ),
+
+            confidence:
                 this.calculateConfidence(
-                    null,
-                    indicator,
-                    signal.pair,
-                    signal.timeframe
+                    confidenceFilter.strategy ||
+                        null,
+
+                    confidenceFilter.indicator ||
+                        null,
+
+                    confidenceFilter.pair ||
+                        null,
+
+                    confidenceFilter.timeframe ||
+                        null
+                )
+        };
+    }
+
+    updateStats() {
+        const allSignals =
+            this.data.signals;
+
+        const stats =
+            createEmptyStats();
+
+        const resolved =
+            MemoryManager.getResolvedSignals(this);
+
+        stats.totalSignals =
+            allSignals.length;
+
+        stats.resolvedSignals =
+            resolved.length;
+
+        stats.wins =
+            resolved.filter(
+                signal =>
+                    signal.outcome === "WIN"
+            ).length;
+
+        stats.losses =
+            resolved.filter(
+                signal =>
+                    signal.outcome === "LOSS"
+            ).length;
+
+        stats.breakevens =
+            resolved.filter(
+                signal =>
+                    signal.outcome ===
+                    "BREAKEVEN"
+            ).length;
+
+        stats.pending =
+            allSignals.length -
+            stats.resolvedSignals;
+
+        const decisiveTrades =
+            stats.wins + stats.losses;
+
+        stats.winRate =
+            decisiveTrades > 0
+                ? round(
+                    (stats.wins /
+                        decisiveTrades) *
+                        100
+                )
+                : 0;
+
+        stats.lossRate =
+            decisiveTrades > 0
+                ? round(
+                    (stats.losses /
+                        decisiveTrades) *
+                        100
+                )
+                : 0;
+
+        stats.breakevenRate =
+            stats.resolvedSignals > 0
+                ? round(
+                    (stats.breakevens /
+                        stats.resolvedSignals) *
+                        100
+                )
+                : 0;
+
+        const profitSignals =
+            resolved.filter(
+                signal =>
+                    isFiniteNumber(
+                        signal.profitPoints
+                    )
+            );
+
+        stats.totalProfitPoints =
+            round(
+                profitSignals.reduce(
+                    (sum, signal) =>
+                        sum +
+                        signal.profitPoints,
+                    0
                 )
             );
 
-            if (indicatorScores.length > 0) {
-                const averageIndicatorConfidence =
-                    indicatorScores.reduce((sum, score) => sum + score, 0)
-                    / indicatorScores.length;
+        stats.avgProfitPoints =
+            profitSignals.length > 0
+                ? round(
+                    stats.totalProfitPoints /
+                        profitSignals.length
+                )
+                : 0;
 
-                confidence =
-                    (confidence + averageIndicatorConfidence) / 2;
+        stats.grossProfitPoints =
+            round(
+                profitSignals
+                    .filter(
+                        signal =>
+                            signal.profitPoints >
+                            0
+                    )
+                    .reduce(
+                        (sum, signal) =>
+                            sum +
+                            signal.profitPoints,
+                        0
+                    )
+            );
+
+        stats.grossLossPoints =
+            round(
+                Math.abs(
+                    profitSignals
+                        .filter(
+                            signal =>
+                                signal.profitPoints <
+                                0
+                        )
+                        .reduce(
+                            (sum, signal) =>
+                                sum +
+                                signal.profitPoints,
+                            0
+                        )
+                )
+            );
+
+        if (stats.grossLossPoints > 0) {
+            stats.profitFactor = round(
+                stats.grossProfitPoints /
+                    stats.grossLossPoints,
+                3
+            );
+        } else if (
+            stats.grossProfitPoints > 0
+        ) {
+            stats.profitFactor = "Infinity";
+        } else {
+            stats.profitFactor = null;
+        }
+
+        for (
+            const strategy of
+            LearningConfig.SUPPORTED_STRATEGIES
+        ) {
+            const matchingSignals =
+                allSignals.filter(
+                    signal =>
+                        signal.strategy ===
+                        strategy
+                );
+
+            if (matchingSignals.length > 0) {
+                stats.strategies[strategy] =
+                    this.buildGroupStats(
+                        matchingSignals,
+                        { strategy }
+                    );
             }
         }
 
-        const recentSignals = this.data.signals
-            .filter(s =>
-                s.outcome &&
-                s.strategy === signal.strategy &&
-                s.pair === signal.pair
+        for (
+            const indicator of
+            LearningConfig.SUPPORTED_INDICATORS
+        ) {
+            const matchingSignals =
+                allSignals.filter(
+                    signal =>
+                        Array.isArray(
+                            signal.indicators
+                        ) &&
+                        signal.indicators.includes(
+                            indicator
+                        )
+                );
+
+            if (matchingSignals.length > 0) {
+                stats.indicators[indicator] =
+                    this.buildGroupStats(
+                        matchingSignals,
+                        { indicator }
+                    );
+            }
+        }
+
+        for (
+            const pair of
+            LearningConfig.SUPPORTED_PAIRS
+        ) {
+            const matchingSignals =
+                allSignals.filter(
+                    signal =>
+                        signal.pair === pair
+                );
+
+            if (matchingSignals.length > 0) {
+                stats.pairs[pair] =
+                    this.buildGroupStats(
+                        matchingSignals,
+                        { pair }
+                    );
+            }
+        }
+
+        for (
+            const timeframe of
+            LearningConfig.SUPPORTED_TIMEFRAMES
+        ) {
+            const matchingSignals =
+                allSignals.filter(
+                    signal =>
+                        signal.timeframe ===
+                        timeframe
+                );
+
+            if (matchingSignals.length > 0) {
+                stats.timeframes[timeframe] =
+                    this.buildGroupStats(
+                        matchingSignals,
+                        { timeframe }
+                    );
+            }
+        }
+
+        stats.updatedAt =
+            new Date().toISOString();
+
+        this.data.stats = stats;
+        MemoryManager.updateTimestamp(this);
+
+        return stats;
+    }
+
+    /* -----------------------------------------------------------------
+       Confidence Engine
+       ----------------------------------------------------------------- */
+
+    calculateConfidence(
+        strategy = null,
+        indicator = null,
+        pair = null,
+        timeframe = null
+    ) {
+        const matchingSignals =
+            this.data.signals.filter(signal => {
+                if (
+                    strategy &&
+                    signal.strategy !== strategy
+                ) {
+                    return false;
+                }
+
+                if (
+                    indicator &&
+                    (
+                        !Array.isArray(
+                            signal.indicators
+                        ) ||
+                        !signal.indicators.includes(
+                            indicator
+                        )
+                    )
+                ) {
+                    return false;
+                }
+
+                if (
+                    pair &&
+                    signal.pair !== pair
+                ) {
+                    return false;
+                }
+
+                if (
+                    timeframe &&
+                    signal.timeframe !==
+                        timeframe
+                ) {
+                    return false;
+                }
+
+                return true;
+            });
+
+        const outcomes =
+            matchingSignals.filter(signal =>
+                LearningConfig.SUPPORTED_RESULTS.includes(
+                    signal.outcome
+                )
+            );
+
+        if (
+            outcomes.length <
+            LearningConfig.MIN_SIGNALS_FOR_LEARNING
+        ) {
+            return LearningConfig
+                .DEFAULT_CONFIDENCE;
+        }
+
+        const decisiveOutcomes =
+            outcomes.filter(
+                signal =>
+                    signal.outcome === "WIN" ||
+                    signal.outcome === "LOSS"
+            );
+
+        if (decisiveOutcomes.length === 0) {
+            return LearningConfig
+                .DEFAULT_CONFIDENCE;
+        }
+
+        const wins =
+            decisiveOutcomes.filter(
+                signal =>
+                    signal.outcome === "WIN"
+            ).length;
+
+        const longTermRate =
+            (wins /
+                decisiveOutcomes.length) *
+            100;
+
+        const recentWindow =
+            decisiveOutcomes.slice(
+                -LearningConfig
+                    .PERFORMANCE_WINDOW
+            );
+
+        const recentWins =
+            recentWindow.filter(
+                signal =>
+                    signal.outcome === "WIN"
+            ).length;
+
+        const recentRate =
+            recentWindow.length > 0
+                ? (recentWins /
+                      recentWindow.length) *
+                  100
+                : longTermRate;
+
+        const sampleWeight =
+            Math.min(
+                decisiveOutcomes.length / 100,
+                1
+            );
+
+        let confidence =
+            LearningConfig.DEFAULT_CONFIDENCE *
+                (1 - sampleWeight) +
+            longTermRate * sampleWeight;
+
+        confidence =
+            confidence * 0.75 +
+            recentRate * 0.25;
+
+        if (
+            recentRate >
+            longTermRate + 15
+        ) {
+            confidence += 3;
+        } else if (
+            recentRate <
+            longTermRate - 15
+        ) {
+            confidence -= 3;
+        }
+
+        if (
+            decisiveOutcomes.length >= 50
+        ) {
+            confidence += 2;
+        }
+
+        if (
+            decisiveOutcomes.length >= 100
+        ) {
+            confidence += 2;
+        }
+
+        return Math.round(
+            clamp(
+                confidence,
+                LearningConfig.MIN_CONFIDENCE,
+                LearningConfig.MAX_CONFIDENCE
             )
-            .slice(-20);
+        );
+    }
+
+    calculateAdaptiveConfidence(signal) {
+        if (!isPlainObject(signal)) {
+            return LearningConfig
+                .DEFAULT_CONFIDENCE;
+        }
+
+        let confidence =
+            this.calculateConfidence(
+                signal.strategy,
+                null,
+                signal.pair,
+                signal.timeframe
+            );
+
+        if (
+            Array.isArray(signal.indicators) &&
+            signal.indicators.length > 0
+        ) {
+            const indicatorScores =
+                signal.indicators.map(
+                    indicator =>
+                        this.calculateConfidence(
+                            null,
+                            indicator,
+                            signal.pair,
+                            signal.timeframe
+                        )
+                );
+
+            const indicatorAverage =
+                indicatorScores.reduce(
+                    (sum, score) =>
+                        sum + score,
+                    0
+                ) /
+                indicatorScores.length;
+
+            confidence =
+                confidence * 0.65 +
+                indicatorAverage * 0.35;
+        }
+
+        const recentSignals =
+            this.data.signals
+                .filter(
+                    existing =>
+                        (
+                            existing.outcome ===
+                                "WIN" ||
+                            existing.outcome ===
+                                "LOSS"
+                        ) &&
+                        existing.strategy ===
+                            signal.strategy &&
+                        existing.pair ===
+                            signal.pair
+                )
+                .slice(
+                    -LearningConfig
+                        .PERFORMANCE_WINDOW
+                );
 
         if (recentSignals.length >= 10) {
+            const recentWins =
+                recentSignals.filter(
+                    existing =>
+                        existing.outcome ===
+                        "WIN"
+                ).length;
+
             const recentWinRate =
-                (recentSignals.filter(s => s.outcome === "WIN").length
-                / recentSignals.length) * 100;
+                (recentWins /
+                    recentSignals.length) *
+                100;
 
             if (recentWinRate > 70) {
                 confidence += 3;
-            } else if (recentWinRate < 40) {
+            } else if (
+                recentWinRate < 40
+            ) {
                 confidence -= 3;
             }
         }
 
-        confidence = Math.max(
-            LearningConfig.MIN_CONFIDENCE,
-            Math.min(
-                LearningConfig.MAX_CONFIDENCE,
-                confidence
+        return Math.round(
+            clamp(
+                confidence,
+                LearningConfig.MIN_CONFIDENCE,
+                LearningConfig.MAX_CONFIDENCE
             )
         );
-
-        return Math.round(confidence);
     }
 
-    /**
-     * Auto update signal confidence
-     */
     updateSignalConfidence(signal) {
-        signal.confidence = this.calculateAdaptiveConfidence(signal);
+        if (!signal || signal.outcome !== null) {
+            return false;
+        }
+
+        signal.confidence =
+            this.calculateAdaptiveConfidence(
+                signal
+            );
+
+        signal.status =
+            signal.confidence >=
+            LearningConfig
+                .ACTIONABLE_CONFIDENCE_THRESHOLD
+                ? "actionable"
+                : "filtered";
+
         return signal.confidence;
     }
 
-    /**
-     * Update all pending signals
-     */
     refreshPendingConfidence() {
-        this.data.signals
-            .filter(s => !s.outcome)
-            .forEach(signal => {
-                signal.confidence = this.calculateAdaptiveConfidence(signal);
-            });
+        const resolvedCount =
+            MemoryManager
+                .getResolvedSignals(this)
+                .length;
+
+        const enoughDataToFilter =
+            resolvedCount >=
+            LearningConfig.MIN_SIGNALS_FOR_CONFIDENCE;
+
+        for (
+            const signal of
+            MemoryManager.getPendingSignals(this)
+        ) {
+            signal.confidence =
+                this.calculateAdaptiveConfidence(
+                    signal
+                );
+
+            signal.status =
+                !enoughDataToFilter ||
+                signal.confidence >=
+                    LearningConfig
+                        .ACTIONABLE_CONFIDENCE_THRESHOLD
+                    ? "actionable"
+                    : "filtered";
+        }
 
         MemoryManager.updateTimestamp(this);
+
         return true;
     }
 
-    /**
-     * Performance Optimization Engine
-     */
+    /* -----------------------------------------------------------------
+       Performance Analysis
+       ----------------------------------------------------------------- */
+
     optimizePerformance() {
+        if (
+            !this.data.stats ||
+            !isPlainObject(this.data.stats)
+        ) {
+            this.updateStats();
+        }
+
         const optimization = {
             bestStrategy: null,
             bestPair: null,
@@ -664,364 +1512,605 @@ class PipSightLearner {
             suggestions: []
         };
 
-        // Strategy Analysis
-        const strategies = this.data.stats.strategies || {};
+        const pickBestAndWeakest = (
+            source,
+            minimumResolved = 1
+        ) => {
+            const entries = Object.entries(
+                source || {}
+            ).filter(([, value]) => {
+                return (
+                    value &&
+                    isFiniteNumber(value.winRate) &&
+                    Number(value.resolved || 0) >=
+                        minimumResolved
+                );
+            });
 
-        let highest = -1;
-        let lowest = 101;
-
-        for (const strategy in strategies) {
-            const rate = strategies[strategy].winRate;
-
-            if (rate > highest) {
-                highest = rate;
-                optimization.bestStrategy = strategy;
+            if (entries.length === 0) {
+                return {
+                    best: null,
+                    weakest: null
+                };
             }
 
-            if (rate < lowest) {
-                lowest = rate;
-                optimization.weakestStrategy = strategy;
-            }
-        }
+            const sorted = entries.sort(
+                (a, b) =>
+                    b[1].winRate -
+                    a[1].winRate
+            );
 
-        // Pair Analysis
-        const pairs = this.data.stats.pairs || {};
+            return {
+                best: sorted[0][0],
+                weakest:
+                    sorted[sorted.length - 1][0]
+            };
+        };
 
-        highest = -1;
-        lowest = 101;
+        const strategySelection =
+            pickBestAndWeakest(
+                this.data.stats.strategies,
+                LearningConfig.MIN_SIGNALS_FOR_LEARNING
+            );
 
-        for (const pair in pairs) {
-            const rate = pairs[pair].winRate;
+        optimization.bestStrategy =
+            strategySelection.best;
 
-            if (rate > highest) {
-                highest = rate;
-                optimization.bestPair = pair;
-            }
+        optimization.weakestStrategy =
+            strategySelection.weakest;
 
-            if (rate < lowest) {
-                lowest = rate;
-                optimization.weakestPair = pair;
-            }
-        }
+        const pairSelection =
+            pickBestAndWeakest(
+                this.data.stats.pairs,
+                LearningConfig.MIN_SIGNALS_FOR_LEARNING
+            );
 
-        // Timeframe Analysis
-        const timeframes = this.data.stats.timeframes || {};
+        optimization.bestPair =
+            pairSelection.best;
 
-        highest = -1;
-        lowest = 101;
+        optimization.weakestPair =
+            pairSelection.weakest;
 
-        for (const tf in timeframes) {
-            const rate = timeframes[tf].winRate;
+        const timeframeSelection =
+            pickBestAndWeakest(
+                this.data.stats.timeframes,
+                LearningConfig.MIN_SIGNALS_FOR_LEARNING
+            );
 
-            if (rate > highest) {
-                highest = rate;
-                optimization.bestTimeframe = tf;
-            }
+        optimization.bestTimeframe =
+            timeframeSelection.best;
 
-            if (rate < lowest) {
-                lowest = rate;
-                optimization.weakestTimeframe = tf;
-            }
-        }
+        optimization.weakestTimeframe =
+            timeframeSelection.weakest;
 
-        // Suggestions
         if (optimization.bestStrategy) {
             optimization.suggestions.push(
-                `Focus on ${optimization.bestStrategy} strategy.`
+                `Best-performing strategy: ${optimization.bestStrategy}.`
+            );
+        }
+
+        if (
+            optimization.weakestStrategy &&
+            optimization.weakestStrategy !==
+                optimization.bestStrategy
+        ) {
+            optimization.suggestions.push(
+                `Review the ${optimization.weakestStrategy} strategy before increasing its use.`
             );
         }
 
         if (optimization.bestPair) {
             optimization.suggestions.push(
-                `${optimization.bestPair} currently performs best.`
+                `Best-performing pair: ${optimization.bestPair}.`
+            );
+        }
+
+        if (
+            optimization.weakestPair &&
+            optimization.weakestPair !==
+                optimization.bestPair
+        ) {
+            optimization.suggestions.push(
+                `Review signal quality on ${optimization.weakestPair}.`
             );
         }
 
         if (optimization.bestTimeframe) {
             optimization.suggestions.push(
-                `Highest accuracy timeframe: ${optimization.bestTimeframe}.`
+                `Best-performing timeframe: ${optimization.bestTimeframe}.`
             );
         }
 
-        if (optimization.weakestStrategy) {
+        if (
+            optimization.weakestTimeframe &&
+            optimization.weakestTimeframe !==
+                optimization.bestTimeframe
+        ) {
             optimization.suggestions.push(
-                `Review ${optimization.weakestStrategy} strategy.`
+                `Review the ${optimization.weakestTimeframe} timeframe rules.`
             );
         }
 
-        if (optimization.weakestPair) {
+        if (
+            optimization.suggestions.length === 0
+        ) {
             optimization.suggestions.push(
-                `Reduce exposure on ${optimization.weakestPair}.`
-            );
-        }
-
-        if (optimization.weakestTimeframe) {
-            optimization.suggestions.push(
-                `Optimize ${optimization.weakestTimeframe} timeframe.`
+                "Insufficient resolved history for reliable optimization."
             );
         }
 
         return optimization;
     }
 
-    /**
-     * Get only signals that passed the confidence threshold (status === "actionable")
-     */
-    getActionableSignals() {
-        return this.data.signals.filter(s => s.status === "actionable");
-    }
-
-    /**
-     * Get signals that were auto-filtered out for being below the confidence threshold
-     */
-    getFilteredSignals() {
-        return this.data.signals.filter(s => s.status === "filtered");
-    }
-
-    /**
-     * All-in-one entry point: records the signal AND tells you in one call
-     * whether it should be executed. Use this in place of recordSignal()
-     * wherever your bot/EA decides to place a trade.
-     *
-     * Returns:
-     *   { execute: false, reason: "..." }                     -> validation/duplicate failure
-     *   { execute: true/false, id, confidence, status, signal } -> recorded successfully
-     */
-    processSignal(signal) {
-        const id = this.recordSignal(signal);
-
-        if (id === false) {
-            return { execute: false, reason: "Signal was rejected (invalid or duplicate)." };
-        }
-
-        const recorded = this.getSignalById(id);
-
-        return {
-            execute: recorded.status === "actionable",
-            id: recorded.id,
-            confidence: recorded.confidence,
-            status: recorded.status,
-            signal: recorded
-        };
-    }
-
-    /**
-     * Helper used internally by processSignal (and available for direct use)
-     */
-    getSignalById(id) {
-        return this.data.signals.find(s => s.id === id);
-    }
-
-    /**
-     * Get detailed statistics
-     */
-    getStats() {
-        return this.data.stats;
-    }
-
-    /**
-     * Get all confidence data
-     */
-    getConfidenceData() {
-        const confidence = {
-            strategies: {},
-            indicators: {},
-            pairs: {},
-            timeframes: {},
-            overall: {
-                totalSignals: this.data.signals.length,
-                winRate: this.data.stats.winRate || 0,
-                avgProfitPoints: this.data.stats.avgProfitPoints || 0
-            },
-            updatedAt: new Date().toISOString()
-        };
-
-        // Populate all confidence values
-        for (const strategy in this.data.stats.strategies) {
-            confidence.strategies[strategy] = this.data.stats.strategies[strategy];
-        }
-
-        for (const indicator in this.data.stats.indicators) {
-            confidence.indicators[indicator] = this.data.stats.indicators[indicator];
-        }
-
-        for (const pair in this.data.stats.pairs) {
-            confidence.pairs[pair] = this.data.stats.pairs[pair];
-        }
-
-        for (const tf in this.data.stats.timeframes) {
-            confidence.timeframes[tf] = this.data.stats.timeframes[tf];
-        }
-
-        this.confidence = confidence;
-        return confidence;
-    }
-
-    /**
-     * Get best performing strategy
-     */
-    getBestStrategy() {
-        const strategies = this.data.stats.strategies || {};
-        let best = null;
-        let bestRate = 0;
-
-        for (const strategy in strategies) {
-            if (strategies[strategy].winRate > bestRate) {
-                bestRate = strategies[strategy].winRate;
-                best = strategy;
-            }
-        }
-
-        return { strategy: best, winRate: bestRate };
-    }
-
-    /**
-     * Get best performing indicator
-     */
-    getBestIndicator() {
-        const indicators = this.data.stats.indicators || {};
-        let best = null;
-        let bestRate = 0;
-
-        for (const indicator in indicators) {
-            if (indicators[indicator].winRate > bestRate) {
-                bestRate = indicators[indicator].winRate;
-                best = indicator;
-            }
-        }
-
-        return { indicator: best, winRate: bestRate };
-    }
-
-    /**
-     * Get performance trend (improving/declining/stable)
-     */
     getPerformanceTrend() {
-        if (this.data.signals.length < 20) return 'insufficient-data';
+        const decisiveSignals =
+            this.data.signals.filter(
+                signal =>
+                    signal.outcome === "WIN" ||
+                    signal.outcome === "LOSS"
+            );
 
-        const recent = this.data.signals.slice(-20).filter(s => s.outcome);
-        const older = this.data.signals.slice(-40, -20).filter(s => s.outcome);
+        const windowSize =
+            LearningConfig.PERFORMANCE_WINDOW;
 
-        if (older.length === 0) return 'insufficient-data';
+        if (
+            decisiveSignals.length <
+            windowSize * 2
+        ) {
+            return LearningConfig
+                .PERFORMANCE_STATUS.UNKNOWN;
+        }
 
-        const recentWinRate = (recent.filter(s => s.outcome === 'WIN').length / recent.length) * 100;
-        const olderWinRate = (older.filter(s => s.outcome === 'WIN').length / older.length) * 100;
+        const recent =
+            decisiveSignals.slice(-windowSize);
 
-        const diff = recentWinRate - olderWinRate;
+        const older =
+            decisiveSignals.slice(
+                -(windowSize * 2),
+                -windowSize
+            );
 
-        if (diff > 10) return 'improving';
-        if (diff < -10) return 'declining';
-        return 'stable';
+        if (
+            recent.length === 0 ||
+            older.length === 0
+        ) {
+            return LearningConfig
+                .PERFORMANCE_STATUS.UNKNOWN;
+        }
+
+        const recentWinRate =
+            (
+                recent.filter(
+                    signal =>
+                        signal.outcome === "WIN"
+                ).length /
+                recent.length
+            ) * 100;
+
+        const olderWinRate =
+            (
+                older.filter(
+                    signal =>
+                        signal.outcome === "WIN"
+                ).length /
+                older.length
+            ) * 100;
+
+        const difference =
+            recentWinRate -
+            olderWinRate;
+
+        if (difference > 10) {
+            return LearningConfig
+                .PERFORMANCE_STATUS.IMPROVING;
+        }
+
+        if (difference < -10) {
+            return LearningConfig
+                .PERFORMANCE_STATUS.DECLINING;
+        }
+
+        return LearningConfig
+            .PERFORMANCE_STATUS.STABLE;
     }
 
-    /**
-     * Get recommendation based on learning
-     */
-    getRecommendation() {
-        const bestStrategy = this.getBestStrategy();
-        const bestIndicator = this.getBestIndicator();
-        const trend = this.getPerformanceTrend();
-        const optimization = this.optimizePerformance();
+    getBestStrategy() {
+        const strategies =
+            this.data.stats.strategies || {};
+
+        let bestStrategy = null;
+        let bestRate = -1;
+
+        for (
+            const [strategy, values] of
+            Object.entries(strategies)
+        ) {
+            if (
+                !values ||
+                !isFiniteNumber(values.winRate) ||
+                Number(values.resolved || 0) <
+                    LearningConfig.MIN_SIGNALS_FOR_LEARNING
+            ) {
+                continue;
+            }
+
+            if (values.winRate > bestRate) {
+                bestRate = values.winRate;
+                bestStrategy = strategy;
+            }
+        }
 
         return {
-            bestStrategy: bestStrategy.strategy,
-            bestStrategyRate: bestStrategy.winRate,
-            bestIndicator: bestIndicator.indicator,
-            bestIndicatorRate: bestIndicator.winRate,
+            strategy: bestStrategy,
+            winRate:
+                bestStrategy === null
+                    ? 0
+                    : bestRate
+        };
+    }
+
+    getBestIndicator() {
+        const indicators =
+            this.data.stats.indicators || {};
+
+        let bestIndicator = null;
+        let bestRate = -1;
+
+        for (
+            const [indicator, values] of
+            Object.entries(indicators)
+        ) {
+            if (
+                !values ||
+                !isFiniteNumber(values.winRate) ||
+                Number(values.resolved || 0) <
+                    LearningConfig.MIN_SIGNALS_FOR_LEARNING
+            ) {
+                continue;
+            }
+
+            if (values.winRate > bestRate) {
+                bestRate = values.winRate;
+                bestIndicator = indicator;
+            }
+        }
+
+        return {
+            indicator: bestIndicator,
+            winRate:
+                bestIndicator === null
+                    ? 0
+                    : bestRate
+        };
+    }
+
+    getRecommendation() {
+        if (
+            !this.data.stats ||
+            !isPlainObject(this.data.stats)
+        ) {
+            this.updateStats();
+        }
+
+        const bestStrategy =
+            this.getBestStrategy();
+
+        const bestIndicator =
+            this.getBestIndicator();
+
+        const trend =
+            this.getPerformanceTrend();
+
+        const optimization =
+            this.optimizePerformance();
+
+        return {
+            bestStrategy:
+                bestStrategy.strategy,
+
+            bestStrategyRate:
+                bestStrategy.winRate,
+
+            bestIndicator:
+                bestIndicator.indicator,
+
+            bestIndicatorRate:
+                bestIndicator.winRate,
+
             trend,
             optimization,
-            recommendation: this.generateRecommendation(
-                bestStrategy,
-                bestIndicator,
-                trend
-            )
+
+            recommendation:
+                this.generateRecommendation(
+                    bestStrategy,
+                    bestIndicator,
+                    trend
+                )
         };
     }
 
-    /**
-     * Generate trading recommendation based on learning
-     */
-    generateRecommendation(bestStrategy, bestIndicator, trend) {
-        let recommendation = [];
+    generateRecommendation(
+        bestStrategy,
+        bestIndicator,
+        trend
+    ) {
+        const recommendations = [];
 
         if (bestStrategy.strategy) {
-            recommendation.push(`Focus on ${bestStrategy.strategy} strategy (${bestStrategy.winRate.toFixed(1)}% win rate)`);
+            recommendations.push(
+                `Best strategy is ${bestStrategy.strategy} with a ${bestStrategy.winRate.toFixed(
+                    1
+                )}% win rate.`
+            );
         }
 
         if (bestIndicator.indicator) {
-            recommendation.push(`${bestIndicator.indicator} is most reliable (${bestIndicator.winRate.toFixed(1)}% accuracy)`);
+            recommendations.push(
+                `${bestIndicator.indicator} is currently the strongest indicator with ${bestIndicator.winRate.toFixed(
+                    1
+                )}% accuracy.`
+            );
         }
 
-        if (trend === 'improving') {
-            recommendation.push('Performance is improving - increase position size');
-        } else if (trend === 'declining') {
-            recommendation.push('Performance is declining - reduce position size and review strategy');
+        if (
+            trend ===
+            LearningConfig
+                .PERFORMANCE_STATUS.IMPROVING
+        ) {
+            recommendations.push(
+                "Performance is improving; keep risk rules unchanged while monitoring the trend."
+            );
+        } else if (
+            trend ===
+            LearningConfig
+                .PERFORMANCE_STATUS.DECLINING
+        ) {
+            recommendations.push(
+                "Performance is declining; reduce exposure and review recent losing setups."
+            );
         }
 
-        if (this.data.stats.winRate < 50) {
-            recommendation.push('⚠️ Overall win rate below 50% - review all signals carefully');
-        } else if (this.data.stats.winRate > 65) {
-            recommendation.push('✅ Strong performance - continue current approach');
+        const resolvedSignals =
+            Number(
+                this.data.stats
+                    .resolvedSignals || 0
+            );
+
+        if (
+            resolvedSignals <
+            LearningConfig.MIN_SIGNALS_FOR_LEARNING
+        ) {
+            recommendations.push(
+                `At least ${LearningConfig.MIN_SIGNALS_FOR_LEARNING} resolved signals are required before relying on performance conclusions.`
+            );
+        } else if (
+            this.data.stats.winRate < 50
+        ) {
+            recommendations.push(
+                "Overall win rate is below 50%; review filters and execution quality."
+            );
+        } else if (
+            this.data.stats.winRate > 65
+        ) {
+            recommendations.push(
+                "Overall performance is strong; continue using the existing risk limits."
+            );
         }
 
-        return recommendation.length > 0 ? recommendation : ['Insufficient data for recommendation'];
+        return recommendations.length > 0
+            ? recommendations
+            : [
+                "Insufficient data for a reliable recommendation."
+            ];
     }
 
-    /**
-     * Reset all learning data (DANGER - use carefully)
-     */
-    resetLearning() {
-        this.data = {
-            signals: [],
-            outcomes: [],
-            stats: {},
-            updatedAt: new Date().toISOString()
+    /* -----------------------------------------------------------------
+       Query Helpers
+       ----------------------------------------------------------------- */
+
+    getActionableSignals() {
+        return this.data.signals.filter(
+            signal =>
+                signal.status === "actionable"
+        );
+    }
+
+    getFilteredSignals() {
+        return this.data.signals.filter(
+            signal =>
+                signal.status === "filtered"
+        );
+    }
+
+    getSignalById(id) {
+        return MemoryManager.getSignalById(
+            this,
+            id
+        );
+    }
+
+    getStats() {
+        if (
+            !this.data.stats ||
+            !isPlainObject(this.data.stats)
+        ) {
+            return this.updateStats();
+        }
+
+        return this.data.stats;
+    }
+
+    getConfidenceData() {
+        if (
+            !this.data.stats ||
+            !isPlainObject(this.data.stats)
+        ) {
+            this.updateStats();
+        }
+
+        this.confidence = {
+            strategies: {
+                ...this.data.stats.strategies
+            },
+
+            indicators: {
+                ...this.data.stats.indicators
+            },
+
+            pairs: {
+                ...this.data.stats.pairs
+            },
+
+            timeframes: {
+                ...this.data.stats.timeframes
+            },
+
+            overall: {
+                totalSignals:
+                    this.data.signals.length,
+
+                resolvedSignals:
+                    this.data.stats
+                        .resolvedSignals || 0,
+
+                winRate:
+                    this.data.stats.winRate || 0,
+
+                avgProfitPoints:
+                    this.data.stats
+                        .avgProfitPoints || 0,
+
+                profitFactor:
+                    this.data.stats
+                        .profitFactor ?? null
+            },
+
+            updatedAt:
+                new Date().toISOString(),
+
+            metadata: {
+                engine:
+                    LearningConfig.ENGINE_NAME,
+
+                version:
+                    LearningConfig.VERSION
+            }
         };
+
+        return this.confidence;
+    }
+
+    /* -----------------------------------------------------------------
+       Import, Export and Reset
+       ----------------------------------------------------------------- */
+
+    resetLearning() {
+        this.data =
+            createEmptyLearningData();
+
+        this.confidence =
+            createEmptyConfidenceData();
+
         MemoryManager.initialize(this);
+
         return true;
     }
 
-    /**
-     * Helper: Generate unique ID
-     */
-    generateId() {
-        return `signal_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    }
-
-    /**
-     * Export data for backup
-     */
     exportData() {
         return {
             learning: this.data,
-            confidence: this.confidence,
-            exportedAt: new Date().toISOString()
+            confidence:
+                this.getConfidenceData(),
+
+            exportedAt:
+                new Date().toISOString(),
+
+            metadata: {
+                engine:
+                    LearningConfig.ENGINE_NAME,
+
+                version:
+                    LearningConfig.VERSION
+            }
         };
     }
 
-    /**
-     * Import data from backup
-     */
     importData(data) {
+        if (!isPlainObject(data)) {
+            console.warn(
+                "Import failed: invalid backup data."
+            );
+
+            return false;
+        }
+
+        if (
+            data.learning !== undefined &&
+            !isPlainObject(data.learning)
+        ) {
+            console.warn(
+                "Import failed: learning data is invalid."
+            );
+
+            return false;
+        }
+
+        if (
+            data.confidence !== undefined &&
+            !isPlainObject(data.confidence)
+        ) {
+            console.warn(
+                "Import failed: confidence data is invalid."
+            );
+
+            return false;
+        }
+
         if (data.learning) {
             this.data = data.learning;
         }
 
         if (data.confidence) {
-            this.confidence = data.confidence;
+            this.confidence =
+                data.confidence;
         }
 
         MemoryManager.initialize(this);
+        this.updateStats();
+        this.refreshPendingConfidence();
+
         return true;
     }
-}
 
-// Export for Node.js environment
-if (typeof module !== 'undefined' && module.exports) {
-    module.exports = PipSightLearner;
-}
+    generateId() {
+        const randomPart =
+            Math.random()
+                .toString(36)
+                .slice(2, 11);
 
-// Export for browser environment
-if (typeof window !== 'undefined') {
+        return `signal_${Date.now()}_${randomPart}`;
+    }
+}
+/* =====================================================================
+   Node.js Export
+   ===================================================================== */
+if (
+    typeof module !== "undefined" &&
+    module.exports
+) {
+    module.exports = {
+        PipSightLearner,
+        LearningConfig,
+        SignalValidator,
+        MemoryManager
+    };
+}
+/* =====================================================================
+   Browser Export
+   ===================================================================== */
+if (typeof window !== "undefined") {
     window.PipSightLearner = PipSightLearner;
+    window.LearningConfig = LearningConfig;
+    window.SignalValidator = SignalValidator;
+    window.MemoryManager = MemoryManager;
 }

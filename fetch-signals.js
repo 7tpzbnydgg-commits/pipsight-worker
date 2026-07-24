@@ -1,503 +1,1956 @@
-// PipSight Robot — signal engine (24/7 server-side)
-// -----------------------------------------------------------------------
-// This is a faithful port of the exact same decision engine used in
-// pipsight.html (EMA stack, RSI/MACD confirmation, S/R, ATR-style stop,
-// Risk:Reward >= 1:2). Running it here means BUY/SELL signals get
-// generated and logged on a schedule — independent of whether anyone has
-// the site open, and independent of any one device.
-//
-// Outputs:
-//   data/signals.json     — current signal snapshot per pair+mode
-//   data/signal-log.json  — persistent history of every signal ever
-//                           issued, with real outcomes resolved against
-//                           later prices (same "close crossed stop or
-//                           TP1 first" rule the site already uses)
-// -----------------------------------------------------------------------
+"use strict";
+
+/* =====================================================================
+   PipSight Pro AI — Server Signal Engine
+   Version: 2.1.0
+
+   Compatibility:
+   - Existing EMA / RSI / MACD decision pipeline preserved.
+   - Existing output files and primary output fields preserved.
+   - Close-only sources remain supported.
+   - OHLC features activate only when valid OHLC data is available.
+   ===================================================================== */
 
 const fs = require("fs");
 const path = require("path");
 
+const ENGINE_VERSION = "2.1.0";
+const STRATEGY_VERSION = "legacy-lockstep-2.1";
+
 const DATA_DIR = path.join(__dirname, "data");
-const GOLD_HISTORY_PATH = path.join(DATA_DIR, "xau-usd-history.json");
-const NEWS_FEED_PATH = path.join(DATA_DIR, "news-feed.json");
-const SIGNALS_OUT_PATH = path.join(DATA_DIR, "signals.json");
-const LOG_OUT_PATH = path.join(DATA_DIR, "signal-log.json");
 
-const PAIRS = [
-  { type: "metal", symbol: "XAU", quote: "USD", label: "XAU/USD" },
-  { type: "forex", base: "GBP", quote: "JPY", label: "GBP/JPY" },
-];
-const MODES = ["daily", "weekly"];
+const DAILY_OHLC_PATH = path.join(
+  DATA_DIR,
+  "daily-ohlc.json"
+);
 
-// ---------------------------------------------------------------- helpers
-function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+const GOLD_HISTORY_PATH = path.join(
+  DATA_DIR,
+  "xau-usd-history.json"
+);
+
+const NEWS_FEED_PATH = path.join(
+  DATA_DIR,
+  "news-feed.json"
+);
+
+const SIGNALS_OUT_PATH = path.join(
+  DATA_DIR,
+  "signals.json"
+);
+
+const LOG_OUT_PATH = path.join(
+  DATA_DIR,
+  "signal-log.json"
+);
+
+const FETCH_TIMEOUT_MS = 15000;
+const MAX_SIGNAL_LOG = 5000;
+const MIN_DAILY_ROWS = 10;
+const MIN_WEEKLY_ROWS = 8;
+
+const PAIRS = Object.freeze([
+  {
+    key: "XAUUSD",
+    type: "metal",
+    symbol: "XAU",
+    quote: "USD",
+    label: "XAU/USD"
+  },
+  {
+    key: "GBPJPY",
+    type: "forex",
+    base: "GBP",
+    quote: "JPY",
+    label: "GBP/JPY"
+  }
+]);
+
+const MODES = Object.freeze([
+  "daily",
+  "weekly"
+]);
+
+/* =====================================================================
+   General Helpers
+   ===================================================================== */
+
+function clamp(value, minimum, maximum) {
+  return Math.max(
+    minimum,
+    Math.min(maximum, value)
+  );
+}
+
+function isFiniteNumber(value) {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value)
+  );
+}
+
+function round(value, decimals = 6) {
+  if (!isFiniteNumber(value)) {
+    return null;
+  }
+
+  const factor = 10 ** decimals;
+
+  return (
+    Math.round(value * factor) /
+    factor
+  );
+}
 
 function decimalsFor(pair) {
-  if (pair.type === "metal") return 2;
-  if (pair.quote === "JPY") return 3;
+  if (pair.type === "metal") {
+    return 2;
+  }
+
+  if (pair.quote === "JPY") {
+    return 3;
+  }
+
   return 4;
 }
 
-function emaSeries(values, period) {
-  const k = 2 / (period + 1); const out = []; let prev = null;
-  for (let i = 0; i < values.length; i++) {
-    if (i === period - 1) { const seed = values.slice(0, period).reduce((a, b) => a + b, 0) / period; prev = seed; out.push(seed); }
-    else if (i < period - 1) { out.push(null); }
-    else { prev = values[i] * k + prev * (1 - k); out.push(prev); }
+function safeIsoDate(value) {
+  if (typeof value !== "string") {
+    return null;
   }
-  return out;
+
+  const normalized = value.slice(0, 10);
+
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(
+      normalized
+    )
+  ) {
+    return null;
+  }
+
+  const parsed = new Date(
+    normalized + "T00:00:00Z"
+  );
+
+  if (
+    Number.isNaN(parsed.getTime())
+  ) {
+    return null;
+  }
+
+  return normalized;
 }
 
-function rsiSeries(values, period = 14) {
-  const out = new Array(values.length).fill(null);
-  let gainSum = 0, lossSum = 0;
-  for (let i = 1; i <= period; i++) { const d = values[i] - values[i - 1]; if (d >= 0) gainSum += d; else lossSum -= d; }
-  let avgGain = gainSum / period, avgLoss = lossSum / period;
-  out[period] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
-  for (let i = period + 1; i < values.length; i++) {
-    const d = values[i] - values[i - 1]; const g = d > 0 ? d : 0; const l = d < 0 ? -d : 0;
-    avgGain = (avgGain * (period - 1) + g) / period; avgLoss = (avgLoss * (period - 1) + l) / period;
-    out[i] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
-  }
-  return out;
+function daysBetween(dateA, dateB) {
+  const a = new Date(
+    dateA + "T00:00:00Z"
+  );
+
+  const b = new Date(
+    dateB + "T00:00:00Z"
+  );
+
+  return Math.floor(
+    Math.abs(b - a) / 86400000
+  );
 }
 
-function computeVolatility(rows) {
-  const closes = rows.map(r => r.close);
-  const n = closes.length;
-  if (n < 3) return 0.004;
-  let sum = 0, count = 0;
-  for (let i = 1; i < n; i++) { sum += Math.abs(closes[i] - closes[i - 1]) / closes[i - 1]; count++; }
-  return sum / count;
+/* =====================================================================
+   Safe File Handling
+   ===================================================================== */
+
+function readJsonFile(
+  filePath,
+  fallback
+) {
+  if (!fs.existsSync(filePath)) {
+    return fallback;
+  }
+
+  try {
+    const text = fs.readFileSync(
+      filePath,
+      "utf8"
+    );
+
+    if (!text.trim()) {
+      return fallback;
+    }
+
+    return JSON.parse(text);
+  } catch (error) {
+    console.warn(
+      `Unable to read ${path.basename(
+        filePath
+      )}: ${error.message}`
+    );
+
+    return fallback;
+  }
 }
 
-function computeSR(rows, lastClose) {
-  const closes = rows.map(r => r.close);
-  const n = closes.length;
-  const radius = n > 40 ? 2 : 1;
-  const highs = [], lows = [];
-  for (let i = radius; i < n - radius; i++) {
-    let isHigh = true, isLow = true;
-    for (let k = 1; k <= radius; k++) {
-      if (closes[i] < closes[i - k] || closes[i] < closes[i + k]) isHigh = false;
-      if (closes[i] > closes[i - k] || closes[i] > closes[i + k]) isLow = false;
+function atomicWriteJson(
+  filePath,
+  value
+) {
+  fs.mkdirSync(
+    path.dirname(filePath),
+    { recursive: true }
+  );
+
+  const tempPath =
+    `${filePath}.${process.pid}.${Date.now()}.tmp`;
+
+  const serialized =
+    JSON.stringify(value, null, 2);
+
+  fs.writeFileSync(
+    tempPath,
+    serialized,
+    "utf8"
+  );
+
+  try {
+    fs.renameSync(
+      tempPath,
+      filePath
+    );
+  } catch (error) {
+    try {
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+
+      fs.renameSync(
+        tempPath,
+        filePath
+      );
+    } catch (renameError) {
+      if (fs.existsSync(tempPath)) {
+        fs.unlinkSync(tempPath);
+      }
+
+      throw renameError;
     }
-    if (isHigh) highs.push(closes[i]);
-    if (isLow) lows.push(closes[i]);
   }
-  function dedupe(levels) {
-    const sorted = [...levels].sort((a, b) => a - b);
-    const out = [];
-    for (const v of sorted) {
-      if (!out.length || Math.abs(v - out[out.length - 1]) / v > 0.0015) out.push(v);
-      else out[out.length - 1] = (out[out.length - 1] + v) / 2;
-    }
-    return out;
-  }
-  let resistances = dedupe(highs).filter(h => h > lastClose).sort((a, b) => a - b).slice(0, 2);
-  let supports = dedupe(lows).filter(l => l < lastClose).sort((a, b) => b - a).slice(0, 2);
-  if (resistances.length === 0 && n >= 3) {
-    const maxClose = Math.max(...closes);
-    if (maxClose > lastClose * 1.0005) resistances = [maxClose];
-  }
-  if (supports.length === 0 && n >= 3) {
-    const minClose = Math.min(...closes);
-    if (minClose < lastClose * 0.9995) supports = [minClose];
-  }
-  return { resistances, supports };
 }
 
-function computeMarketStructure(rows) {
-  const closes = rows.map(r => r.close);
-  const n = closes.length;
-  if (n < 10) return { label: "Building history — not enough sessions yet", score: 0 };
-  const radius = n > 60 ? 3 : (n > 30 ? 2 : 1);
-  const highs = [], lows = [];
-  for (let i = radius; i < n - radius; i++) {
-    let isHigh = true, isLow = true;
-    for (let k = 1; k <= radius; k++) {
-      if (closes[i] < closes[i - k] || closes[i] < closes[i + k]) isHigh = false;
-      if (closes[i] > closes[i - k] || closes[i] > closes[i + k]) isLow = false;
-    }
-    if (isHigh) highs.push(closes[i]);
-    if (isLow) lows.push(closes[i]);
+/* =====================================================================
+   Candle Validation and Normalization
+   ===================================================================== */
+
+function normalizeCandle(raw) {
+  if (
+    !raw ||
+    typeof raw !== "object"
+  ) {
+    return null;
   }
-  if (highs.length < 2 || lows.length < 2) return { label: "Not enough swing points yet", score: 0 };
-  const h2 = highs.slice(-2), l2 = lows.slice(-2);
-  const higherHigh = h2[1] > h2[0];
-  const higherLow = l2[1] > l2[0];
-  if (higherHigh && higherLow) return { label: "Bullish structure — higher highs & higher lows", score: 15 };
-  if (!higherHigh && !higherLow) return { label: "Bearish structure — lower highs & lower lows", score: -15 };
-  return { label: "Mixed structure — no clear HH/HL or LH/LL sequence", score: 0 };
+
+  const date = safeIsoDate(
+    raw.date ||
+    raw.time ||
+    raw.timestamp
+  );
+
+  const close = Number(raw.close);
+
+  if (
+    !date ||
+    !Number.isFinite(close) ||
+    close <= 0
+  ) {
+    return null;
+  }
+
+  const open = Number(raw.open);
+  const high = Number(raw.high);
+  const low = Number(raw.low);
+
+  const hasValidOHLC =
+    Number.isFinite(open) &&
+    Number.isFinite(high) &&
+    Number.isFinite(low) &&
+    open > 0 &&
+    high > 0 &&
+    low > 0 &&
+    high >= Math.max(
+      open,
+      close,
+      low
+    ) &&
+    low <= Math.min(
+      open,
+      close,
+      high
+    );
+
+  if (hasValidOHLC) {
+    return {
+      date,
+      open,
+      high,
+      low,
+      close,
+      hasOHLC: true
+    };
+  }
+
+  return {
+    date,
+    open: close,
+    high: close,
+    low: close,
+    close,
+    hasOHLC: false
+  };
 }
 
-// Same decision engine as pipsight.html's analyze() — kept in lockstep.
-function trendDirectionOf(rows) {
-  const closes = rows.map(r => r.close);
-  const n = closes.length;
-  if (n < 6) return null;
-  const lastClose = closes[n - 1];
-  const cap = n - 1;
-  const p200 = Math.min(200, cap);
-  const p100 = Math.min(100, Math.max(4, Math.floor(p200 * 0.5)));
-  const p50 = Math.min(50, Math.max(3, Math.floor(p100 * 0.6)));
-  const p20 = Math.min(20, Math.max(2, Math.floor(p50 * 0.5)));
-  const e20 = emaSeries(closes, p20), e50 = emaSeries(closes, p50), e100 = emaSeries(closes, p100), e200 = emaSeries(closes, p200);
-  const last = n - 1;
-  const v20 = e20[last], v50 = e50[last], v100 = e100[last], v200 = e200[last];
-  if (v20 == null || v50 == null || v100 == null || v200 == null) return null;
-  const bullFull = v20 > v50 && v50 > v100 && v100 > v200 && lastClose > v20;
-  const bearFull = v20 < v50 && v50 < v100 && v100 < v200 && lastClose < v20;
-  if (bullFull) return "BUY";
-  if (bearFull) return "SELL";
-  return null;
+function normalizeRows(input) {
+  if (!Array.isArray(input)) {
+    return {
+      rows: [],
+      rejected: 0,
+      duplicateDates: 0,
+      hasOHLC: false
+    };
+  }
+
+  const byDate = new Map();
+  let rejected = 0;
+  let duplicateDates = 0;
+
+  for (const raw of input) {
+    const candle =
+      normalizeCandle(raw);
+
+    if (!candle) {
+      rejected++;
+      continue;
+    }
+
+    if (byDate.has(candle.date)) {
+      duplicateDates++;
+    }
+
+    byDate.set(
+      candle.date,
+      candle
+    );
+  }
+
+  const rows = Array
+    .from(byDate.values())
+    .sort(
+      (a, b) =>
+        a.date.localeCompare(b.date)
+    );
+
+  const hasOHLC =
+    rows.length > 0 &&
+    rows.every(row => row.hasOHLC);
+
+  return {
+    rows,
+    rejected,
+    duplicateDates,
+    hasOHLC
+  };
 }
 
-function analyze(rows, pairLabel, newsScoreRaw, htfRows, newsItems) {
-  const closes = rows.map(r => r.close);
-  const n = closes.length;
-  const lastClose = closes[n - 1];
-  const pipeline = [];
-  let alive = true;
+function candleDataQuality(
+  normalized
+) {
+  const rows = normalized.rows;
 
-  function pass(name, ok, detail) {
-    if (!alive) { pipeline.push({ name, status: "skip", detail: "Not reached — an earlier required step failed" }); return false; }
-    pipeline.push({ name, status: ok ? "pass" : "fail", detail });
-    if (!ok) alive = false;
-    return ok;
-  }
-  function na(name, detail) { pipeline.push({ name, status: "na", detail }); }
+  const firstDate =
+    rows.length > 0
+      ? rows[0].date
+      : null;
 
-  let emaInfo = null, leanDirection = null, trendLabel = "Building history — not enough sessions yet";
-  if (n >= 6) {
-    const cap = n - 1;
-    const p200 = Math.min(200, cap);
-    const p100 = Math.min(100, Math.max(4, Math.floor(p200 * 0.5)));
-    const p50 = Math.min(50, Math.max(3, Math.floor(p100 * 0.6)));
-    const p20 = Math.min(20, Math.max(2, Math.floor(p50 * 0.5)));
-    const e20 = emaSeries(closes, p20), e50 = emaSeries(closes, p50), e100 = emaSeries(closes, p100), e200 = emaSeries(closes, p200);
-    const last = n - 1;
-    const v20 = e20[last], v50 = e50[last], v100 = e100[last], v200 = e200[last];
-    const fullStack = cap >= 200;
-    const note = fullStack ? "" : " (adaptive periods — full EMA200 needs more history)";
-    emaInfo = { p20, p50, p100, p200, fullStack };
-    if (v20 != null && v50 != null && v100 != null && v200 != null) {
-      const bullFull = v20 > v50 && v50 > v100 && v100 > v200 && lastClose > v20;
-      const bearFull = v20 < v50 && v50 < v100 && v100 < v200 && lastClose < v20;
-      const bullCount = [v20 > v50, v50 > v100, v100 > v200, lastClose > v20].filter(Boolean).length;
-      const bearCount = [v20 < v50, v50 < v100, v100 < v200, lastClose < v20].filter(Boolean).length;
-      if (bullFull) { leanDirection = "BUY"; trendLabel = `Bullish — full EMA stack ${p20}>${p50}>${p100}>${p200}${note}`; }
-      else if (bearFull) { leanDirection = "SELL"; trendLabel = `Bearish — full EMA stack ${p20}<${p50}<${p100}<${p200}${note}`; }
-      else if (bullCount >= 3) { trendLabel = `Partial bullish lean only (${bullCount}/4) — not enough to qualify${note}`; }
-      else if (bearCount >= 3) { trendLabel = `Partial bearish lean only (${bearCount}/4) — not enough to qualify${note}`; }
-      else { trendLabel = `Mixed EMA alignment — no clear trend${note}`; }
-    }
-  }
-  pass("Trend", !!leanDirection, trendLabel);
-  pass("EMA Alignment", !!leanDirection,
-    leanDirection ? `Full EMA stack confirms ${leanDirection === "BUY" ? "bullish" : "bearish"} alignment` : "Stack is not fully aligned in order");
-  na("ADX > 25?", "Not available — true ADX needs high/low candle data, which this close-price-only source doesn't provide");
-  na("Volume Confirmed?", "Not available — spot FX/gold has no centralized exchange volume feed");
+  const lastDate =
+    rows.length > 0
+      ? rows[rows.length - 1].date
+      : null;
 
-  const macdOk = n >= 35;
-  let lastMacd = null, lastMacdSignal = null;
-  if (macdOk) {
-    const ema12 = emaSeries(closes, 12), ema26 = emaSeries(closes, 26);
-    const macdLine = closes.map((_, i) => (ema12[i] != null && ema26[i] != null) ? ema12[i] - ema26[i] : null);
-    const macdVals = macdLine.filter(v => v != null);
-    const sig = emaSeries(macdVals, 9);
-    lastMacd = macdLine[n - 1];
-    lastMacdSignal = sig[sig.length - 1];
-  }
-  let macdDetail, macdPassVal = false;
-  if (!leanDirection) { macdDetail = "No confirmed trend direction to test against"; }
-  else if (!macdOk) { macdDetail = `Needs ${35 - n} more session${35 - n === 1 ? "" : "s"} of history for MACD`; }
-  else {
-    macdPassVal = leanDirection === "BUY" ? lastMacd > lastMacdSignal : lastMacd < lastMacdSignal;
-    macdDetail = `MACD ${lastMacd.toFixed(4)} vs signal ${lastMacdSignal.toFixed(4)} — ${macdPassVal ? "confirms" : "does not confirm"} ${leanDirection}`;
-  }
-  pass("MACD Confirmation", leanDirection ? (macdOk && macdPassVal) : false, macdDetail);
+  let ageDays = null;
 
-  const rsiP = Math.min(14, Math.max(4, n - 2));
-  const rsi = rsiSeries(closes, rsiP);
-  const lastRsi = rsi[n - 1];
-  const rsiBuyOk = lastRsi != null && lastRsi >= 45 && lastRsi <= 65;
-  const rsiSellOk = lastRsi != null && lastRsi >= 35 && lastRsi <= 55;
-  let rsiDetail, rsiPassVal = false;
-  if (!leanDirection) { rsiDetail = "No confirmed trend direction to test against"; }
-  else if (lastRsi == null) { rsiDetail = "Not enough history for RSI yet"; }
-  else {
-    rsiPassVal = leanDirection === "BUY" ? rsiBuyOk : rsiSellOk;
-    rsiDetail = `RSI(${rsiP}) = ${lastRsi.toFixed(1)} — ${rsiPassVal ? "inside" : "outside"} the ${leanDirection === "BUY" ? "45–65" : "35–55"} confirmation band`;
-  }
-  pass("RSI Confirmation", leanDirection ? (lastRsi != null && rsiPassVal) : false, rsiDetail);
-
-  let htfDetail, htfPassVal = false, htfDirection = null;
-  if (!leanDirection) { htfDetail = "No confirmed trend direction to test against"; }
-  else if (htfRows === null || htfRows === undefined) {
-    htfPassVal = true;
-    htfDetail = "Already viewing the highest timeframe available for this pair — no higher chart to confirm against";
-  } else {
-    htfDirection = trendDirectionOf(htfRows);
-    if (htfDirection == null) { htfDetail = "Higher-timeframe (weekly) trend isn't clearly aligned yet — mixed or insufficient EMA stack there"; }
-    else {
-      htfPassVal = htfDirection === leanDirection;
-      htfDetail = `Weekly-close trend is ${htfDirection} — ${htfPassVal ? "agrees with" : "conflicts with"} this ${leanDirection} lean`;
-    }
-  }
-  pass("Multi-Timeframe Confirmation", leanDirection ? htfPassVal : false, htfDetail);
-  na("Candle Pattern", "Not available — only daily close prices here, no open/high/low candle data");
-
-  const recentNews = Array.isArray(newsItems) ? newsItems.filter(n => n.pair === pairLabel) : [];
-  let newsFilterDetail, newsFilterPassVal = false;
-  if (!leanDirection) { newsFilterDetail = "No confirmed trend direction to test against"; }
-  else {
-    const conflicting = recentNews.find(item => item.impact === "high" &&
-      ((leanDirection === "BUY" && item.sentiment <= -10) || (leanDirection === "SELL" && item.sentiment >= 10)));
-    if (conflicting) {
-      newsFilterPassVal = false;
-      const snippet = conflicting.text.length > 80 ? conflicting.text.slice(0, 80) + "…" : conflicting.text;
-      newsFilterDetail = `Conflicting high-impact headline: "${snippet}" (${conflicting.source})`;
-    } else {
-      const highCount = recentNews.filter(item => item.impact === "high").length;
-      newsFilterPassVal = true;
-      newsFilterDetail = highCount ? `${highCount} high-impact headline${highCount === 1 ? "" : "s"} tracked, none conflict with this ${leanDirection}` : "No high-impact catalysts currently flagged for this pair";
-    }
-  }
-  pass("High-Impact News Filter", leanDirection ? newsFilterPassVal : false, newsFilterDetail);
-
-  const sr = computeSR(rows, lastClose);
-  let srDetail, srPassVal = false;
-  if (!leanDirection) { srDetail = "No confirmed trend direction to test against"; }
-  else if (leanDirection === "BUY") {
-    const res = sr.resistances[0];
-    if (res == null) { srPassVal = true; srDetail = "No resistance detected nearby"; }
-    else {
-      const d = (res - lastClose) / lastClose;
-      srPassVal = d >= 0.003;
-      srDetail = srPassVal ? `Resistance ${(d * 100).toFixed(2)}% away — clear room to run` : `Resistance only ${(d * 100).toFixed(2)}% above spot — too close to buy into`;
-    }
-  } else {
-    const sup = sr.supports[0];
-    if (sup == null) { srPassVal = true; srDetail = "No support detected nearby"; }
-    else {
-      const d = (lastClose - sup) / lastClose;
-      srPassVal = d >= 0.003;
-      srDetail = srPassVal ? `Support ${(d * 100).toFixed(2)}% away — clear room to run` : `Support only ${(d * 100).toFixed(2)}% below spot — too close to sell into`;
-    }
-  }
-  pass("Support/Resistance", leanDirection ? srPassVal : false, srDetail);
-
-  const vol = computeVolatility(rows);
-  const buffer = Math.max(vol * 0.5, 0.0004) * lastClose;
-  if (leanDirection && alive) {
-    pipeline.push({ name: "ATR-style Stop Loss", status: "pass", detail: `Volatility-based buffer ≈ ${buffer.toFixed(lastClose > 100 ? 2 : 5)} (avg daily move ${(vol * 100).toFixed(2)}%)` });
-  } else if (leanDirection) {
-    pipeline.push({ name: "ATR-style Stop Loss", status: "skip", detail: "Not reached — an earlier required step failed" });
-  } else {
-    pipeline.push({ name: "ATR-style Stop Loss", status: "skip", detail: "No confirmed trend direction yet" });
+  if (lastDate) {
+    ageDays = daysBetween(
+      lastDate,
+      new Date()
+        .toISOString()
+        .slice(0, 10)
+    );
   }
 
-  let tradePlan = null, rrDetail = "No confirmed trend direction yet";
-  if (leanDirection && alive) {
-    const sup = sr.supports[0], res = sr.resistances[0];
-    let stop, target1, target2, target3, risk;
-    if (leanDirection === "BUY") {
-      stop = sup != null ? sup - buffer : lastClose - buffer * 3;
-      risk = lastClose - stop;
-      target1 = res != null ? res : lastClose + risk * 2;
-      target2 = Math.max(target1, lastClose + risk * 3);
-      target3 = Math.max(target2, lastClose + risk * 4);
-    } else {
-      stop = res != null ? res + buffer : lastClose + buffer * 3;
-      risk = stop - lastClose;
-      target1 = sup != null ? sup : lastClose - risk * 2;
-      target2 = Math.min(target1, lastClose - risk * 3);
-      target3 = Math.min(target2, lastClose - risk * 4);
-    }
-    risk = Math.abs(lastClose - stop);
-    const reward1 = Math.abs(target1 - lastClose);
-    const rr = risk > 0 ? reward1 / risk : 0;
-    const rrOk = pass("Risk:Reward ≥ 1:2", rr >= 2, `Risk:Reward to TP1 = 1:${rr.toFixed(1)} — ${rr >= 2 ? "meets" : "below"} the 1:2 minimum`);
-    if (rrOk) { tradePlan = { direction: leanDirection, entry: lastClose, stop, target1, target2, target3, risk, rr }; }
-  } else {
-    pass("Risk:Reward ≥ 1:2", false, rrDetail);
-  }
+  return {
+    validRows: rows.length,
+    rejectedRows:
+      normalized.rejected,
 
-  const signal = tradePlan ? tradePlan.direction : "HOLD";
-  const failedStep = pipeline.find(p => p.status === "fail");
-  const suppressionReason = signal === "HOLD"
-    ? (leanDirection ? `NO TRADE — stopped at "${failedStep ? failedStep.name : "an earlier step"}"` : "NO TRADE — no confirmed trend direction yet")
-    : null;
+    duplicateDates:
+      normalized.duplicateDates,
 
-  const structure = computeMarketStructure(rows);
-  const newsScore = clamp(newsScoreRaw || 0, -10, 10);
-  const gatedSteps = pipeline.filter(p => p.status === "pass" || p.status === "fail");
-  const passCount = gatedSteps.filter(p => p.status === "pass").length;
+    firstDate,
+    lastDate,
+    ageDays,
 
-  let confidence = null;
-  if (leanDirection) {
-    let score = gatedSteps.length ? (passCount / gatedSteps.length) * 70 : 0;
-    if (structure.score > 0 && leanDirection === "BUY") score += 12;
-    else if (structure.score < 0 && leanDirection === "SELL") score += 12;
-    else if (structure.score !== 0) score -= 8;
-    if (newsScore >= 3 && leanDirection === "BUY") score += 9;
-    else if (newsScore <= -3 && leanDirection === "SELL") score += 9;
-    else if (Math.abs(newsScore) >= 3) score -= 9;
-    if (htfDirection && htfDirection === leanDirection) score += 9;
-    confidence = clamp(Math.round(score), 5, 97);
-  }
-  pipeline.push({ name: "Confidence Score", status: "info",
-    detail: confidence != null
-      ? `${confidence}% — composite of pipeline pass-rate, market structure, news alignment & multi-timeframe agreement (informational, doesn't gate the decision above)`
-      : "No confirmed trend direction yet to score" });
+    hasOHLC:
+      normalized.hasOHLC,
 
-  return { lastClose, n, pipeline, trendLabel, leanDirection, structure, sr, newsScore, confidence, signal, suppressionReason, tradePlan, passCount, gatedCount: gatedSteps.length };
+    stale:
+      ageDays !== null &&
+      ageDays > 7
+  };
 }
 
-// ---------------------------------------------------------- weekly resample
-function isoWeekKey(dateStr) {
-  const d = new Date(dateStr + "T00:00:00Z");
-  const day = (d.getUTCDay() + 6) % 7;
-  d.setUTCDate(d.getUTCDate() - day + 3);
-  const firstThursday = new Date(Date.UTC(d.getUTCFullYear(), 0, 4));
-  const fdDay = (firstThursday.getUTCDay() + 6) % 7;
-  const week = 1 + Math.round(((d - firstThursday) / 86400000 - 3 + fdDay) / 7);
-  return d.getUTCFullYear() + "-W" + String(week).padStart(2, "0");
-}
-function resampleWeekly(rows) {
-  const map = new Map();
-  for (const r of rows) { map.set(isoWeekKey(r.date), r); }
-  return Array.from(map.values());
-}
-function rowsForMode(rows, mode) { return mode === "weekly" ? resampleWeekly(rows) : rows; }
+/* =====================================================================
+   Flexible Daily OHLC Reader
+   ===================================================================== */
 
-// -------------------------------------------------------------- data fetch
-async function fetchForexRows(pair) {
-  const end = new Date();
-  const start = new Date(); start.setDate(start.getDate() - 420);
-  const fmt = d => d.toISOString().slice(0, 10);
-  const url = `https://api.frankfurter.dev/v1/${fmt(start)}..${fmt(end)}?base=${pair.base}&symbols=${pair.quote}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("Rate service unavailable (" + res.status + ")");
-  const data = await res.json();
-  const dates = Object.keys(data.rates).sort();
-  return dates.map(d => ({ date: d, close: data.rates[d][pair.quote] }));
+function extractPairRows(
+  source,
+  pair
+) {
+  if (!source) {
+    return [];
+  }
+
+  if (Array.isArray(source)) {
+    return source.filter(row => {
+      const rowPair =
+        row &&
+        (
+          row.pair ||
+          row.symbol ||
+          row.key
+        );
+
+      if (!rowPair) {
+        return pair.type === "metal";
+      }
+
+      const normalizedPair =
+        String(rowPair)
+          .replace("/", "")
+          .replace("-", "")
+          .replace("_", "")
+          .toUpperCase();
+
+      return (
+        normalizedPair === pair.key
+      );
+    });
+  }
+
+  if (typeof source !== "object") {
+    return [];
+  }
+
+  const possibleKeys = [
+    pair.key,
+    pair.label,
+    pair.label.replace("/", "-"),
+    pair.label.replace("/", "_"),
+    pair.label.replace("/", ""),
+    pair.key.toLowerCase()
+  ];
+
+  for (const key of possibleKeys) {
+    if (
+      Array.isArray(source[key])
+    ) {
+      return source[key];
+    }
+  }
+
+  if (
+    source.pairs &&
+    typeof source.pairs === "object"
+  ) {
+    for (const key of possibleKeys) {
+      const pairData =
+        source.pairs[key];
+
+      if (Array.isArray(pairData)) {
+        return pairData;
+      }
+
+      if (
+        pairData &&
+        Array.isArray(pairData.rows)
+      ) {
+        return pairData.rows;
+      }
+
+      if (
+        pairData &&
+        Array.isArray(pairData.candles)
+      ) {
+        return pairData.candles;
+      }
+    }
+  }
+
+  if (Array.isArray(source.rows)) {
+    return extractPairRows(
+      source.rows,
+      pair
+    );
+  }
+
+  if (Array.isArray(source.candles)) {
+    return extractPairRows(
+      source.candles,
+      pair
+    );
+  }
+
+  return [];
+}
+
+function readDailyOHLC(pair) {
+  const raw = readJsonFile(
+    DAILY_OHLC_PATH,
+    null
+  );
+
+  const extracted =
+    extractPairRows(raw, pair);
+
+  return normalizeRows(extracted);
 }
 
 function readGoldHistory() {
-  if (!fs.existsSync(GOLD_HISTORY_PATH)) return [];
+  const raw = readJsonFile(
+    GOLD_HISTORY_PATH,
+    []
+  );
+
+  return normalizeRows(raw);
+}
+
+/* =====================================================================
+   Fetch Helpers
+   ===================================================================== */
+
+async function fetchJsonWithTimeout(
+  url,
+  timeoutMs = FETCH_TIMEOUT_MS
+) {
+  const controller =
+    new AbortController();
+
+  const timer = setTimeout(
+    () => controller.abort(),
+    timeoutMs
+  );
+
   try {
-    const raw = JSON.parse(fs.readFileSync(GOLD_HISTORY_PATH, "utf8"));
-    return Array.isArray(raw) ? raw.filter(r => r && typeof r.date === "string" && typeof r.close === "number") : [];
-  } catch (e) { return []; }
-}
-
-function readNewsSentiment() {
-  if (!fs.existsSync(NEWS_FEED_PATH)) return {};
-  try {
-    const raw = JSON.parse(fs.readFileSync(NEWS_FEED_PATH, "utf8"));
-    const items = Array.isArray(raw.items) ? raw.items : [];
-    return items.reduce((acc, n) => { acc[n.pair] = (acc[n.pair] || 0) + n.sentiment; return acc; }, {});
-  } catch (e) { return {}; }
-}
-
-function readNewsItems() {
-  if (!fs.existsSync(NEWS_FEED_PATH)) return [];
-  try {
-    const raw = JSON.parse(fs.readFileSync(NEWS_FEED_PATH, "utf8"));
-    return Array.isArray(raw.items) ? raw.items : [];
-  } catch (e) { return []; }
-}
-
-// --------------------------------------------------------------- log logic
-function loadJson(p, fallback) {
-  if (!fs.existsSync(p)) return fallback;
-  try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch (e) { return fallback; }
-}
-
-function logSignalIfNew(log, pairLabel, mode, a) {
-  if (!a.tradePlan) return log;
-  const last = [...log].reverse().find(e => e.pair === pairLabel && e.mode === mode);
-  if (last && !last.status && last.signal === a.tradePlan.direction) return log; // unchanged open call
-  log.push({
-    ts: new Date().toISOString(),
-    pair: pairLabel, mode,
-    signal: a.tradePlan.direction,
-    entry: a.tradePlan.entry, stop: a.tradePlan.stop, tp1: a.tradePlan.target1, rr: a.tradePlan.rr,
-    status: null, closedAt: null, closePrice: null,
-  });
-  return log.length > 500 ? log.slice(log.length - 500) : log;
-}
-
-function resolveLogOutcomes(log, pairLabel, mode, rows) {
-  return log.map(e => {
-    if (e.pair !== pairLabel || e.mode !== mode || e.status) return e;
-    const entryDate = e.ts.slice(0, 10);
-    const future = rows.filter(r => r.date > entryDate);
-    for (const r of future) {
-      if (e.signal === "BUY") {
-        if (r.close <= e.stop) { e.status = "LOSS"; e.closedAt = r.date; e.closePrice = r.close; break; }
-        if (r.close >= e.tp1) { e.status = "WIN"; e.closedAt = r.date; e.closePrice = r.close; break; }
-      } else {
-        if (r.close >= e.stop) { e.status = "LOSS"; e.closedAt = r.date; e.closePrice = r.close; break; }
-        if (r.close <= e.tp1) { e.status = "WIN"; e.closedAt = r.date; e.closePrice = r.close; break; }
+    const response = await fetch(
+      url,
+      {
+        signal: controller.signal,
+        headers: {
+          accept: "application/json",
+          "user-agent":
+            "PipSight-Pro-AI/2.1"
+        }
       }
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `HTTP ${response.status}`
+      );
     }
-    return e;
-  });
+
+    return await response.json();
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error(
+        `Request timed out after ${timeoutMs}ms`
+      );
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-// ------------------------------------------------------------------- main
-async function main() {
-  const newsSentiment = readNewsSentiment();
-  const newsItems = readNewsItems();
-  let log = loadJson(LOG_OUT_PATH, []);
-  const snapshot = [];
+async function fetchForexRows(pair) {
+  const end = new Date();
+  const start = new Date();
 
-  for (const pair of PAIRS) {
-    let rawRows;
-    try {
-      rawRows = pair.type === "metal" ? readGoldHistory() : await fetchForexRows(pair);
-    } catch (e) {
-      console.error(`Fetch failed for ${pair.label}:`, e.message);
-      continue;
-    }
-    if (!rawRows.length || rawRows.length < 10) {
-      console.log(`Skipping ${pair.label} — not enough history yet (${rawRows.length} rows)`);
-      continue;
-    }
+  start.setUTCDate(
+    start.getUTCDate() - 420
+  );
 
-    for (const mode of MODES) {
-      const rows = rowsForMode(rawRows, mode);
-      if (mode === "weekly" && rows.length < 8) continue;
-      const htfRows = mode === "daily" ? resampleWeekly(rawRows) : null;
-      const a = analyze(rows, pair.label, newsSentiment[pair.label], htfRows, newsItems);
+  const formatDate = date =>
+    date.toISOString().slice(0, 10);
 
-      log = logSignalIfNew(log, pair.label, mode, a);
-      log = resolveLogOutcomes(log, pair.label, mode, rows);
+  const url =
+    `https://api.frankfurter.dev/v1/` +
+    `${formatDate(start)}..${formatDate(end)}` +
+    `?base=${encodeURIComponent(pair.base)}` +
+    `&symbols=${encodeURIComponent(pair.quote)}`;
 
-      snapshot.push({
-        pair: pair.label, mode,
-        decimals: decimalsFor(pair),
-        lastClose: a.lastClose,
-        signal: a.signal,
-        suppressionReason: a.suppressionReason,
-        tradePlan: a.tradePlan,
-        confidence: a.confidence,
-        passCount: a.passCount, gatedCount: a.gatedCount,
-        trendLabel: a.trendLabel,
-        structure: a.structure.label,
-        sr: a.sr,
-      });
+  const data =
+    await fetchJsonWithTimeout(url);
+
+  if (
+    !data ||
+    !data.rates ||
+    typeof data.rates !== "object"
+  ) {
+    throw new Error(
+      "Rate service returned invalid data"
+    );
+  }
+
+  const rows = Object
+    .keys(data.rates)
+    .sort()
+    .map(date => ({
+      date,
+      close:
+        Number(
+          data.rates[date]?.[pair.quote]
+        )
+    }));
+
+  return normalizeRows(rows);
+}
+
+/* =====================================================================
+   Technical Indicator Helpers
+   ===================================================================== */
+
+function emaSeries(values, period) {
+  const output =
+    new Array(values.length).fill(null);
+
+  if (
+    !Array.isArray(values) ||
+    period < 1 ||
+    values.length < period
+  ) {
+    return output;
+  }
+
+  const multiplier =
+    2 / (period + 1);
+
+  let seed = 0;
+
+  for (
+    let index = 0;
+    index < period;
+    index++
+  ) {
+    seed += values[index];
+  }
+
+  let previous = seed / period;
+
+  output[period - 1] =
+    previous;
+
+  for (
+    let index = period;
+    index < values.length;
+    index++
+  ) {
+    previous =
+      values[index] * multiplier +
+      previous * (1 - multiplier);
+
+    output[index] =
+      previous;
+  }
+
+  return output;
+}
+
+function rsiSeries(
+  values,
+  period = 14
+) {
+  const output =
+    new Array(values.length).fill(null);
+
+  if (
+    !Array.isArray(values) ||
+    period < 1 ||
+    values.length <= period
+  ) {
+    return output;
+  }
+
+  let gainSum = 0;
+  let lossSum = 0;
+
+  for (
+    let index = 1;
+    index <= period;
+    index++
+  ) {
+    const difference =
+      values[index] -
+      values[index - 1];
+
+    if (difference >= 0) {
+      gainSum += difference;
+    } else {
+      lossSum -= difference;
     }
   }
 
-  const out = { updatedAt: new Date().toISOString(), signals: snapshot };
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.writeFileSync(SIGNALS_OUT_PATH, JSON.stringify(out, null, 2));
-  fs.writeFileSync(LOG_OUT_PATH, JSON.stringify(log, null, 2));
-  console.log(`Wrote ${snapshot.length} signal snapshots and ${log.length} log entries.`);
+  let averageGain =
+    gainSum / period;
+
+  let averageLoss =
+    lossSum / period;
+
+  output[period] =
+    averageLoss === 0
+      ? 100
+      : 100 -
+        100 /
+          (
+            1 +
+            averageGain /
+              averageLoss
+          );
+
+  for (
+    let index = period + 1;
+    index < values.length;
+    index++
+  ) {
+    const difference =
+      values[index] -
+      values[index - 1];
+
+    const gain =
+      difference > 0
+        ? difference
+        : 0;
+
+    const loss =
+      difference < 0
+        ? -difference
+        : 0;
+
+    averageGain =
+      (
+        averageGain *
+          (period - 1) +
+        gain
+      ) / period;
+
+    averageLoss =
+      (
+        averageLoss *
+          (period - 1) +
+        loss
+      ) / period;
+
+    output[index] =
+      averageLoss === 0
+        ? 100
+        : 100 -
+          100 /
+            (
+              1 +
+              averageGain /
+                averageLoss
+            );
+  }
+
+  return output;
 }
 
-main().catch(e => { console.error(e); process.exit(1); });
+/* =====================================================================
+   ATR and Volatility
+   ===================================================================== */
+
+function computeCloseVolatility(rows) {
+  if (
+    !Array.isArray(rows) ||
+    rows.length < 3
+  ) {
+    return 0.004;
+  }
+
+  let sum = 0;
+  let count = 0;
+
+  for (
+    let index = 1;
+    index < rows.length;
+    index++
+  ) {
+    const currentClose =
+      rows[index].close;
+
+    const previousClose =
+      rows[index - 1].close;
+
+    if (
+      !isFiniteNumber(currentClose) ||
+      !isFiniteNumber(previousClose) ||
+      previousClose <= 0
+    ) {
+      continue;
+    }
+
+    sum +=
+      Math.abs(
+        currentClose -
+        previousClose
+      ) / previousClose;
+
+    count++;
+  }
+
+  return count > 0
+    ? sum / count
+    : 0.004;
+}
+
+function trueRange(
+  current,
+  previousClose
+) {
+  if (
+    !current ||
+    !isFiniteNumber(current.high) ||
+    !isFiniteNumber(current.low)
+  ) {
+    return null;
+  }
+
+  if (!isFiniteNumber(previousClose)) {
+    return current.high - current.low;
+  }
+
+  return Math.max(
+    current.high - current.low,
+    Math.abs(
+      current.high -
+      previousClose
+    ),
+    Math.abs(
+      current.low -
+      previousClose
+    )
+  );
+}
+
+function atrSeries(
+  rows,
+  period = 14
+) {
+  const output =
+    new Array(rows.length).fill(null);
+
+  if (
+    !Array.isArray(rows) ||
+    rows.length <= period
+  ) {
+    return output;
+  }
+
+  const ranges =
+    new Array(rows.length).fill(null);
+
+  for (
+    let index = 0;
+    index < rows.length;
+    index++
+  ) {
+    ranges[index] = trueRange(
+      rows[index],
+      index > 0
+        ? rows[index - 1].close
+        : null
+    );
+  }
+
+  let seed = 0;
+  let validSeed = true;
+
+  for (
+    let index = 1;
+    index <= period;
+    index++
+  ) {
+    if (!isFiniteNumber(ranges[index])) {
+      validSeed = false;
+      break;
+    }
+
+    seed += ranges[index];
+  }
+
+  if (!validSeed) {
+    return output;
+  }
+
+  let previousATR =
+    seed / period;
+
+  output[period] =
+    previousATR;
+
+  for (
+    let index = period + 1;
+    index < rows.length;
+    index++
+  ) {
+    const range =
+      ranges[index];
+
+    if (!isFiniteNumber(range)) {
+      continue;
+    }
+
+    previousATR =
+      (
+        previousATR *
+          (period - 1) +
+        range
+      ) / period;
+
+    output[index] =
+      previousATR;
+  }
+
+  return output;
+}
+
+function getVolatilityMetrics(rows) {
+  const lastRow =
+    rows[rows.length - 1];
+
+  const lastClose =
+    lastRow?.close;
+
+  const hasOHLC =
+    rows.length > 0 &&
+    rows.every(
+      row => row.hasOHLC
+    );
+
+  if (hasOHLC) {
+    const period =
+      Math.min(
+        14,
+        Math.max(
+          2,
+          rows.length - 1
+        )
+      );
+
+    const series =
+      atrSeries(rows, period);
+
+    const atr =
+      series[series.length - 1];
+
+    if (
+      isFiniteNumber(atr) &&
+      atr > 0 &&
+      isFiniteNumber(lastClose) &&
+      lastClose > 0
+    ) {
+      return {
+        type: "ATR",
+        period,
+        atr,
+        percent:
+          atr / lastClose,
+        buffer:
+          Math.max(
+            atr * 0.5,
+            lastClose * 0.0004
+          )
+      };
+    }
+  }
+
+  const volatility =
+    computeCloseVolatility(rows);
+
+  return {
+    type: "close-volatility",
+    period: null,
+    atr: null,
+    percent: volatility,
+    buffer:
+      Math.max(
+        volatility * 0.5,
+        0.0004
+      ) * lastClose
+  };
+}
+
+/* =====================================================================
+   Adaptive EMA Periods
+   ===================================================================== */
+
+function getAdaptivePeriods(length) {
+  const cap =
+    length - 1;
+
+  const p200 =
+    Math.min(200, cap);
+
+  const p100 =
+    Math.min(
+      100,
+      Math.max(
+        4,
+        Math.floor(p200 * 0.5)
+      )
+    );
+
+  const p50 =
+    Math.min(
+      50,
+      Math.max(
+        3,
+        Math.floor(p100 * 0.6)
+      )
+    );
+
+  const p20 =
+    Math.min(
+      20,
+      Math.max(
+        2,
+        Math.floor(p50 * 0.5)
+      )
+    );
+
+  return {
+    p20,
+    p50,
+    p100,
+    p200,
+    fullStack: cap >= 200
+  };
+}
+
+function getEMAState(rows) {
+  const closes =
+    rows.map(row => row.close);
+
+  const length =
+    closes.length;
+
+  if (length < 6) {
+    return {
+      direction: null,
+      label:
+        "Building history — not enough sessions yet",
+      values: null,
+      periods: null,
+      bullCount: 0,
+      bearCount: 0
+    };
+  }
+
+  const periods =
+    getAdaptivePeriods(length);
+
+  const ema20 =
+    emaSeries(
+      closes,
+      periods.p20
+    );
+
+  const ema50 =
+    emaSeries(
+      closes,
+      periods.p50
+    );
+
+  const ema100 =
+    emaSeries(
+      closes,
+      periods.p100
+    );
+
+  const ema200 =
+    emaSeries(
+      closes,
+      periods.p200
+    );
+
+  const lastIndex =
+    length - 1;
+
+  const values = {
+    ema20:
+      ema20[lastIndex],
+
+    ema50:
+      ema50[lastIndex],
+
+    ema100:
+      ema100[lastIndex],
+
+    ema200:
+      ema200[lastIndex],
+
+    close:
+      closes[lastIndex]
+  };
+
+  if (
+    Object.values(values)
+      .some(value =>
+        value == null
+      )
+  ) {
+    return {
+      direction: null,
+      label:
+        "Building EMA history — values not ready yet",
+      values,
+      periods,
+      bullCount: 0,
+      bearCount: 0
+    };
+  }
+
+  const bullRules = [
+    values.ema20 >
+      values.ema50,
+
+    values.ema50 >
+      values.ema100,
+
+    values.ema100 >
+      values.ema200,
+
+    values.close >
+      values.ema20
+  ];
+
+  const bearRules = [
+    values.ema20 <
+      values.ema50,
+
+    values.ema50 <
+      values.ema100,
+
+    values.ema100 <
+      values.ema200,
+
+    values.close <
+      values.ema20
+  ];
+
+  const bullCount =
+    bullRules.filter(Boolean).length;
+
+  const bearCount =
+    bearRules.filter(Boolean).length;
+
+  const bullFull =
+    bullCount === 4;
+
+  const bearFull =
+    bearCount === 4;
+
+  const note =
+    periods.fullStack
+      ? ""
+      : " (adaptive periods — full EMA200 needs more history)";
+
+  let direction = null;
+  let label;
+
+  if (bullFull) {
+    direction = "BUY";
+
+    label =
+      `Bullish — full EMA stack ` +
+      `${periods.p20}>${periods.p50}>` +
+      `${periods.p100}>${periods.p200}` +
+      note;
+  } else if (bearFull) {
+    direction = "SELL";
+
+    label =
+      `Bearish — full EMA stack ` +
+      `${periods.p20}<${periods.p50}<` +
+      `${periods.p100}<${periods.p200}` +
+      note;
+  } else if (bullCount >= 3) {
+    label =
+      `Partial bullish lean only ` +
+      `(${bullCount}/4) — not enough to qualify` +
+      note;
+  } else if (bearCount >= 3) {
+    label =
+      `Partial bearish lean only ` +
+      `(${bearCount}/4) — not enough to qualify` +
+      note;
+  } else {
+    label =
+      "Mixed EMA alignment — no clear trend" +
+      note;
+  }
+
+  return {
+    direction,
+    label,
+    values,
+    periods,
+    bullCount,
+    bearCount
+  };
+}
+
+function trendDirectionOf(rows) {
+  return getEMAState(rows).direction;
+}
+
+/* =====================================================================
+   MACD
+   ===================================================================== */
+
+function computeMACD(rows) {
+  const closes =
+    rows.map(row => row.close);
+
+  if (closes.length < 35) {
+    return {
+      ready: false,
+      macd: null,
+      signal: null,
+      histogram: null
+    };
+  }
+
+  const ema12 =
+    emaSeries(closes, 12);
+
+  const ema26 =
+    emaSeries(closes, 26);
+
+  const macdLine =
+    closes.map((_, index) => {
+      if (
+        ema12[index] == null ||
+        ema26[index] == null
+      ) {
+        return null;
+      }
+
+      return (
+        ema12[index] -
+        ema26[index]
+      );
+    });
+
+  const validMACD =
+    macdLine.filter(
+      value => value != null
+    );
+
+  const signalSeries =
+    emaSeries(validMACD, 9);
+
+  const macd =
+    macdLine[
+      macdLine.length - 1
+    ];
+
+  const signal =
+    signalSeries[
+      signalSeries.length - 1
+    ];
+
+  if (
+    !isFiniteNumber(macd) ||
+    !isFiniteNumber(signal)
+  ) {
+    return {
+      ready: false,
+      macd,
+      signal,
+      histogram: null
+    };
+  }
+
+  return {
+    ready: true,
+    macd,
+    signal,
+    histogram:
+      macd - signal
+  };
+}
+
+/* =====================================================================
+   Support and Resistance
+   ===================================================================== */
+
+function dedupeLevels(
+  levels,
+  threshold = 0.0015
+) {
+  const sorted = levels
+    .filter(isFiniteNumber)
+    .sort((a, b) => a - b);
+
+  const output = [];
+
+  for (const level of sorted) {
+    if (output.length === 0) {
+      output.push(level);
+      continue;
+    }
+
+    const previous =
+      output[output.length - 1];
+
+    const denominator =
+      Math.max(
+        Math.abs(level),
+        Number.EPSILON
+      );
+
+    if (
+      Math.abs(level - previous) /
+        denominator >
+      threshold
+    ) {
+      output.push(level);
+    } else {
+      output[
+        output.length - 1
+      ] =
+        (
+          previous +
+          level
+        ) / 2;
+    }
+  }
+
+  return output;
+}
+
+function computeSR(rows, lastClose) {
+  const length =
+    rows.length;
+
+  const radius =
+    length > 40
+      ? 2
+      : 1;
+
+  const useOHLC =
+    rows.length > 0 &&
+    rows.every(
+      row => row.hasOHLC
+    );
+
+  const highs = [];
+  const lows = [];
+
+  for (
+    let index = radius;
+    index < length - radius;
+    index++
+  ) {
+    const currentHigh =
+      useOHLC
+        ? rows[index].high
+        : rows[index].close;
+
+    const currentLow =
+      useOHLC
+        ? rows[index].low
+        : rows[index].close;
+
+    let isHigh = true;
+    let isLow = true;
+
+    for (
+      let offset = 1;
+      offset <= radius;
+      offset++
+    ) {
+      const leftHigh =
+        useOHLC
+          ? rows[index - offset].high
+          : rows[index - offset].close;
+
+      const rightHigh =
+        useOHLC
+          ? rows[index + offset].high
+          : rows[index + offset].close;
+
+      const leftLow =
+        useOHLC
+          ? rows[index - offset].low
+          : rows[index - offset].close;
+
+      const rightLow =
+        useOHLC
+          ? rows[index + offset].low
+          : rows[index + offset].close;
+
+      if (
+        currentHigh < leftHigh ||
+        currentHigh < rightHigh
+      ) {
+        isHigh = false;
+      }
+
+      if (
+        currentLow > leftLow ||
+        currentLow > rightLow
+      ) {
+        isLow = false;
+      }
+    }
+
+    if (isHigh) {
+      highs.push(currentHigh);
+    }
+
+    if (isLow) {
+      lows.push(currentLow);
+    }
+  }
+
+  let resistances =
+    dedupeLevels(highs)
+      .filter(
+        level => level > lastClose
+      )
+      .sort((a, b) => a - b)
+      .slice(0, 2);
+
+  let supports =
+    dedupeLevels(lows)
+      .filter(
+        level => level < lastClose
+      )
+      .sort((a, b) => b - a)
+      .slice(0, 2);
+
+  if (
+    resistances.length === 0 &&
+    length >= 3
+  ) {
+    const maximum =
+      Math.max(
+        ...rows.map(row =>
+          useOHLC
+            ? row.high
+            : row.close
+        )
+      );
+
+    if (
+      maximum >
+      lastClose * 1.0005
+    ) {
+      resistances = [maximum];
+    }
+  }
+
+  if (
+    supports.length === 0 &&
+    length >= 3
+  ) {
+    const minimum =
+      Math.min(
+        ...rows.map(row =>
+          useOHLC
+            ? row.low
+            : row.close
+        )
+      );
+
+    if (
+      minimum <
+      lastClose * 0.9995
+    ) {
+      supports = [minimum];
+    }
+  }
+
+  return {
+    resistances,
+    supports,
+    source:
+      useOHLC
+        ? "OHLC swing levels"
+        : "close-price swing levels"
+  };
+}
+
+/* =====================================================================
+   Market Structure
+   ===================================================================== */
+
+function computeMarketStructure(rows) {
+  const length =
+    rows.length;
+
+  if (length < 10) {
+    return {
+      label:
+        "Building history — not enough sessions yet",
+      score: 0,
+      source: "insufficient-data"
+    };
+  }
+
+  const useOHLC =
+    rows.every(
+      row => row.hasOHLC
+    );
+
+  const radius =
+    length > 60
+      ? 3
+      : length > 30
+        ? 2
+        : 1;
+
+  const highs = [];
+  const lows = [];
+
+  for (
+    let index = radius;
+    index < length - radius;
+    index++
+  ) {
+    const currentHigh =
+      useOHLC
+        ? rows[index].high
+        : rows[index].close;
+
+    const currentLow =
+      useOHLC
+        ? rows[index].low
+        : rows[index].close;
+
+    let isHigh = true;
+    let isLow = true;
+
+    for (
+      let offset = 1;
+      offset <= radius;
+      offset++
+    ) {
+      const leftHigh =
+        useOHLC
+          ? rows[index - offset].high
+          : rows[index - offset].close;
+
+      const rightHigh =
+        useOHLC
+          ? rows[index + offset].high
+          : rows[index + offset].close;
+
+      const leftLow =
+        useOHLC
+          ? rows[index - offset].low
+          : rows[index - offset].close;
+
+      const rightLow =
+        useOHLC
+          ? rows[index + offset].low
+          : rows[index + offset].close;
+
+      if (
+        currentHigh < leftHigh ||
+        currentHigh < rightHigh
+      ) {
+        isHigh = false;
+      }
+
+      if (
+        currentLow > leftLow ||
+        currentLow > rightLow
+      ) {
+        isLow = false;
+      }
+    }
+
+    if (isHigh) {
+      highs.push(currentHigh);
+    }
+
+    if (isLow) {
+      lows.push(currentLow);
+    }
+  }
+
+  if (
+    highs.length < 2 ||
+    lows.length < 2
+  ) {
+    return {
+      label:
+        "Not enough swing points yet",
+      score: 0,
+      source:
+        useOHLC
+          ? "OHLC"
+          : "close"
+    };
+  }
+
+  const recentHighs =
+    highs.slice(-2);
+
+  const recentLows =
+    lows.slice(-2);
+
+  const higherHigh =
+    recentHighs[1] >
+    recentHighs[0];
+
+  const higherLow =
+    recentLows[1] >
+    recentLows[0];
+
+  if (
+    higherHigh &&
+    higherLow
+  ) {
+    return {
+      label:
+        "Bullish structure — higher highs & higher lows",
+      score: 15,
+      source:
+        useOHLC
+          ? "OHLC"
+          : "close"
+    };
+  }
+
+  if (
+    !higherHigh &&
+    !higherLow
+  ) {
+    return {
+      label:
+        "Bearish structure — lower highs & lower lows",
+      score: -15,
+      source:
+        useOHLC
+          ? "OHLC"
+          : "close"
+    };
+  }
+
+  return {
+    label:
+      "Mixed structure — no clear HH/HL or LH/LL sequence",
+    score: 0,
+    source:
+      useOHLC
+        ? "OHLC"
+        : "close"
+  };
+}
+
+/* =====================================================================
+   Candle Pattern Detection
+   ===================================================================== */
+
+function detectCandlePattern(rows) {
+  if (
+    !Array.isArray(rows) ||
+    rows.length < 2 ||
+    !rows.slice(-2).every(
+      row => row.hasOHLC
+    )
+  ) {
+    return {
+      available: false,
+      direction: null,
+      pattern: null,
+      detail:
+        "Not available — valid OHLC candle data is required"
+    };
+  }
+
+  const previous =
+    rows[rows.length - 2];
+
+  const current =
+    rows[rows.length - 1];
+
+  const previousBullish =
+    previous.close >
+    previous.open;
+
+  const previousBearish =
+    previous.close <
+    previous.open;
+
+  const currentBullish =
+    current.close >
+    current.open;
+
+  const currentBearish =
+    current.close <
+    current.open;
+
+  const currentBody =
+    Math.abs(
+      current.close -
+      current.open
+    );
+
+  const fullRange =
+    current.high -
+    current.low;
+
+  const upperWick =
+    current.high -
+    Math.max(
+      current.open,
+      current.close
+    );
+
+  const lowerWick =
+    Math.min(
+      current.open,
+      current.close
+    ) -
+    current.low;
+
+  if (
+    previousBearish &&
+    currentBullish &&
+    current.open <= previous.close &&
+    current.close >= previous.open
+  ) {
+    return {
+      available: true,
+      direction: "BUY",
+      pattern:
+        "Bullish Engulfing",
+      detail:
+        "Bullish engulfing candle confirms buying pressure"
+    };
+  }
+
+  if (
+    previousBullish &&
+    currentBearish &&
+    current.open >= previous.close &&
+    current.close <= previous.open
+  ) {
+    return {
+      available: true,
+      direction: "SELL",
+      pattern:
+        "Bearish Engulfing",
+      detail:
+        "Bearish engulfing candle confirms selling pressure"
+    };
+  }
+
+  if (
+    fullRange > 0 &&
+    lowerWick >= currentBody * 2 &&
+    upperWick <= currentBody &&
+    currentBullish
+  ) {
+    return {
+      available: true,
+      direction: "BUY",
+      pattern: "Bullish Pin Bar",
+      detail:
+        "Long lower wick indicates rejection of lower prices"
+    };
+  }
+
+  if (
+    fullRange > 0 &&
+    upperWick >= currentBody * 2 &&
+    lowerWick <= currentBody &&
+    currentBearish
+  ) {
+    return {
+      available: true,
+      direction: "SELL",
+      pattern: "Bearish Pin Bar",
+      detail:
+        "Long upper wick indicates rejection of higher prices"
+    };
+  }
+
+  if (
+    fullRange > 0 &&
+    currentBody /
+      fullRange <=
+      0.1
+  ) {
+    return {
+      available: true,
+      direction: null,
+      pattern: "Doji",
+      detail:
+        "Doji shows indecision and does not confirm either direction"
+    };
+  }
+
+  return {
+    available: true,
+    direction: null,
+    pattern: "No strong pattern",
+    detail:
+      "No qualifying engulfing, pin-bar or doji confirmation"
+  };
+}
+
+/* =====================================================================
+   Weekly OHLC Resampling
+   ===================================================================== */
+
+function isoWeekKey(dateString) {
+  const date =
+    new Date(
+      dateString +
+      "T00:00:00Z"
+    );
+
+  const day =
+    (
+      date.getUTCDay() +
+      6
+    ) % 7;
+
+  date.setUTCDate(
+    date.getUTCDate() -
+    day +
+    3
+  );
+
+  const firstThursday =
+    new Date(
+      Date.UTC(
+        date.getUTCFullYear(),
+        0,
+        4
+      )
+    );
+
+  const firstDay =
+    (
+      firstThursday.getUTCDay() +
+      6
+    ) % 7;
+
+  const week =
+    1 +
+    Math.round(
+      (
+        (
+          date -
+          firstThursday
+        ) /
+          86400000 -
+        3 +
+        firstDay
+      ) / 7
+    );
+
+  return (
+    date.getUTCFullYear() +
+    "-W" +
+    String(week).padStart(2, "0")
+  );
+}
+
+function resampleWeekly(rows) {
+  const weeks =
+    new Map();
+
+  for (const row of rows) {
+    const key =
+      isoWeekKey(row.date);
+
+    if (!weeks.has(key)) {
+      weeks.set(key, {
+        date: row.date,
+        open: row.open,
+        high: row.high,
+        low: row.low,
+        close: row.close,
+        hasOHLC: row.hasOHLC,
+        firstDate: row.date,
+        lastDate: row.date
+      });
+
+      continue;
+    }
+
+    const week =
+      weeks.get(key);
+
+    week.high =
+      Math.max(
+        week.high,
+        row.high
+      );
+
+    week.low =
+      Math.min(
+        week.low,
+        row.low
+      );
+
+    week.close =
+      row.close;
+
+    week.date =
+      row.date;
+
+    week.lastDate =
+      row.date;
+
+    week.hasOHLC =
+      week.hasOHLC &&
+      row.hasOHLC;
+  }
+
+  return Array.from(
+    weeks.values()
+  ).map(week => ({
+    date: week.date,
+    open: week.open,
+    high: week.high,
+    low: week.low,
+    close: week.close,
+    hasOHLC: week.hasOHLC,
+    firstDate: week.firstDate,
+    lastDate: week.lastDate
+  }));
+}
+
+function rowsForMode(rows, mode) {
+  return mode === "weekly"
+    ? resampleWeekly(rows)
+    : rows;
+}

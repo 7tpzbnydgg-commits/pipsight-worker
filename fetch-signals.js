@@ -1954,3 +1954,1118 @@ function rowsForMode(rows, mode) {
     ? resampleWeekly(rows)
     : rows;
 }
+
+/* =====================================================================
+   News Feed
+   ===================================================================== */
+
+function readNewsFeed() {
+  const raw =
+    readJsonFile(
+      NEWS_FEED_PATH,
+      {}
+    );
+
+  const items =
+    Array.isArray(raw)
+      ? raw
+      : Array.isArray(raw.items)
+        ? raw.items
+        : [];
+
+  const normalizedItems =
+    items
+      .filter(
+        item =>
+          item &&
+          typeof item === "object"
+      )
+      .map(item => {
+        const sentiment =
+          Number(item.sentiment);
+
+        return {
+          pair:
+            typeof item.pair === "string"
+              ? item.pair
+              : null,
+
+          impact:
+            typeof item.impact === "string"
+              ? item.impact.toLowerCase()
+              : "unknown",
+
+          sentiment:
+            Number.isFinite(sentiment)
+              ? sentiment
+              : 0,
+
+          text:
+            typeof item.text === "string"
+              ? item.text
+              : typeof item.title === "string"
+                ? item.title
+                : "Untitled news item",
+
+          source:
+            typeof item.source === "string"
+              ? item.source
+              : "Unknown source",
+
+          publishedAt:
+            typeof item.publishedAt === "string"
+              ? item.publishedAt
+              : typeof item.timestamp === "string"
+                ? item.timestamp
+                : null
+        };
+      });
+
+  const sentimentByPair = {};
+
+  for (const item of normalizedItems) {
+    if (!item.pair) {
+      continue;
+    }
+
+    sentimentByPair[item.pair] =
+      (
+        sentimentByPair[item.pair] ||
+        0
+      ) + item.sentiment;
+  }
+
+  return {
+    items: normalizedItems,
+    sentimentByPair
+  };
+}
+
+/* =====================================================================
+   Main Legacy-Compatible Analysis Pipeline
+   ===================================================================== */
+
+function analyze(
+  rows,
+  pairLabel,
+  newsScoreRaw,
+  htfRows,
+  newsItems
+) {
+  const closes =
+    rows.map(row => row.close);
+
+  const length =
+    closes.length;
+
+  const lastClose =
+    closes[length - 1];
+
+  const lastRow =
+    rows[length - 1];
+
+  const pipeline = [];
+
+  let alive = true;
+
+  function addRequiredStep(
+    name,
+    passed,
+    detail
+  ) {
+    if (!alive) {
+      pipeline.push({
+        name,
+        status: "skip",
+        detail:
+          "Not reached — an earlier required step failed"
+      });
+
+      return false;
+    }
+
+    pipeline.push({
+      name,
+      status:
+        passed
+          ? "pass"
+          : "fail",
+      detail
+    });
+
+    if (!passed) {
+      alive = false;
+    }
+
+    return passed;
+  }
+
+  function addNA(
+    name,
+    detail
+  ) {
+    pipeline.push({
+      name,
+      status: "na",
+      detail
+    });
+  }
+
+  function addInfo(
+    name,
+    detail
+  ) {
+    pipeline.push({
+      name,
+      status: "info",
+      detail
+    });
+  }
+
+  /* -----------------------------------------------------------------
+     1. Trend
+     ----------------------------------------------------------------- */
+
+  const emaState =
+    getEMAState(rows);
+
+  const leanDirection =
+    emaState.direction;
+
+  const trendLabel =
+    emaState.label;
+
+  addRequiredStep(
+    "Trend",
+    Boolean(leanDirection),
+    trendLabel
+  );
+
+  /* -----------------------------------------------------------------
+     2. EMA Alignment
+     ----------------------------------------------------------------- */
+
+  addRequiredStep(
+    "EMA Alignment",
+    Boolean(leanDirection),
+    leanDirection
+      ? (
+          "Full EMA stack confirms " +
+          (
+            leanDirection === "BUY"
+              ? "bullish"
+              : "bearish"
+          ) +
+          " alignment"
+        )
+      : "Stack is not fully aligned in order"
+  );
+
+  /* -----------------------------------------------------------------
+     3. ADX
+     Existing legacy behavior remains non-gating.
+     ----------------------------------------------------------------- */
+
+  addNA(
+    "ADX > 25?",
+    rows.every(row => row.hasOHLC)
+      ? (
+          "OHLC data is available, but ADX remains informationally " +
+          "disabled here to preserve the existing decision engine"
+        )
+      : (
+          "Not available — true ADX needs high/low candle data"
+        )
+  );
+
+  /* -----------------------------------------------------------------
+     4. Volume
+     ----------------------------------------------------------------- */
+
+  addNA(
+    "Volume Confirmed?",
+    "Not available — spot FX/gold has no centralized exchange volume feed"
+  );
+
+  /* -----------------------------------------------------------------
+     5. MACD Confirmation
+     ----------------------------------------------------------------- */
+
+  const macdState =
+    computeMACD(rows);
+
+  let macdPassed = false;
+  let macdDetail;
+
+  if (!leanDirection) {
+    macdDetail =
+      "No confirmed trend direction to test against";
+  } else if (!macdState.ready) {
+    const remaining =
+      Math.max(
+        0,
+        35 - length
+      );
+
+    macdDetail =
+      remaining > 0
+        ? (
+            `Needs ${remaining} more session` +
+            `${remaining === 1 ? "" : "s"} of history for MACD`
+          )
+        : "MACD values are not ready yet";
+  } else {
+    macdPassed =
+      leanDirection === "BUY"
+        ? (
+            macdState.macd >
+            macdState.signal
+          )
+        : (
+            macdState.macd <
+            macdState.signal
+          );
+
+    macdDetail =
+      `MACD ${macdState.macd.toFixed(4)} ` +
+      `vs signal ${macdState.signal.toFixed(4)} — ` +
+      `${macdPassed ? "confirms" : "does not confirm"} ` +
+      leanDirection;
+  }
+
+  addRequiredStep(
+    "MACD Confirmation",
+    leanDirection
+      ? (
+          macdState.ready &&
+          macdPassed
+        )
+      : false,
+    macdDetail
+  );
+
+  /* -----------------------------------------------------------------
+     6. RSI Confirmation
+     ----------------------------------------------------------------- */
+
+  const rsiPeriod =
+    Math.min(
+      14,
+      Math.max(
+        4,
+        length - 2
+      )
+    );
+
+  const rsi =
+    rsiSeries(
+      closes,
+      rsiPeriod
+    );
+
+  const lastRSI =
+    rsi[rsi.length - 1];
+
+  const rsiBuyPassed =
+    lastRSI != null &&
+    lastRSI >= 45 &&
+    lastRSI <= 65;
+
+  const rsiSellPassed =
+    lastRSI != null &&
+    lastRSI >= 35 &&
+    lastRSI <= 55;
+
+  let rsiPassed = false;
+  let rsiDetail;
+
+  if (!leanDirection) {
+    rsiDetail =
+      "No confirmed trend direction to test against";
+  } else if (lastRSI == null) {
+    rsiDetail =
+      "Not enough history for RSI yet";
+  } else {
+    rsiPassed =
+      leanDirection === "BUY"
+        ? rsiBuyPassed
+        : rsiSellPassed;
+
+    rsiDetail =
+      `RSI(${rsiPeriod}) = ${lastRSI.toFixed(1)} — ` +
+      `${rsiPassed ? "inside" : "outside"} the ` +
+      `${leanDirection === "BUY" ? "45–65" : "35–55"} ` +
+      "confirmation band";
+  }
+
+  addRequiredStep(
+    "RSI Confirmation",
+    leanDirection
+      ? (
+          lastRSI != null &&
+          rsiPassed
+        )
+      : false,
+    rsiDetail
+  );
+
+  /* -----------------------------------------------------------------
+     7. Multi-Timeframe Confirmation
+     ----------------------------------------------------------------- */
+
+  let htfDirection = null;
+  let htfPassed = false;
+  let htfDetail;
+
+  if (!leanDirection) {
+    htfDetail =
+      "No confirmed trend direction to test against";
+  } else if (
+    htfRows === null ||
+    htfRows === undefined
+  ) {
+    htfPassed = true;
+
+    htfDetail =
+      "Already viewing the highest timeframe available for this pair — " +
+      "no higher chart to confirm against";
+  } else {
+    htfDirection =
+      trendDirectionOf(htfRows);
+
+    if (htfDirection == null) {
+      htfDetail =
+        "Higher-timeframe weekly trend is not clearly aligned yet";
+    } else {
+      htfPassed =
+        htfDirection ===
+        leanDirection;
+
+      htfDetail =
+        `Weekly trend is ${htfDirection} — ` +
+        `${htfPassed ? "agrees with" : "conflicts with"} ` +
+        `this ${leanDirection} lean`;
+    }
+  }
+
+  addRequiredStep(
+    "Multi-Timeframe Confirmation",
+    leanDirection
+      ? htfPassed
+      : false,
+    htfDetail
+  );
+
+  /* -----------------------------------------------------------------
+     8. Candle Pattern
+
+     Legacy compatibility:
+     - When no OHLC exists: informational N/A.
+     - When OHLC exists: pattern is reported but does not gate the trade.
+     ----------------------------------------------------------------- */
+
+  const candlePattern =
+    detectCandlePattern(rows);
+
+  if (!candlePattern.available) {
+    addNA(
+      "Candle Pattern",
+      candlePattern.detail
+    );
+  } else {
+    let candleDetail =
+      `${candlePattern.pattern}: ${candlePattern.detail}`;
+
+    if (
+      candlePattern.direction &&
+      leanDirection
+    ) {
+      candleDetail +=
+        candlePattern.direction ===
+        leanDirection
+          ? ` — agrees with ${leanDirection}`
+          : ` — conflicts with ${leanDirection}`;
+    }
+
+    addInfo(
+      "Candle Pattern",
+      candleDetail
+    );
+  }
+
+  /* -----------------------------------------------------------------
+     9. High-Impact News Filter
+     ----------------------------------------------------------------- */
+
+  const recentNews =
+    Array.isArray(newsItems)
+      ? newsItems.filter(
+          item =>
+            item.pair === pairLabel
+        )
+      : [];
+
+  let newsFilterPassed = false;
+  let newsFilterDetail;
+
+  if (!leanDirection) {
+    newsFilterDetail =
+      "No confirmed trend direction to test against";
+  } else {
+    const conflicting =
+      recentNews.find(item => {
+        if (
+          item.impact !== "high"
+        ) {
+          return false;
+        }
+
+        return (
+          (
+            leanDirection === "BUY" &&
+            item.sentiment <= -10
+          ) ||
+          (
+            leanDirection === "SELL" &&
+            item.sentiment >= 10
+          )
+        );
+      });
+
+    if (conflicting) {
+      newsFilterPassed = false;
+
+      const snippet =
+        conflicting.text.length > 80
+          ? (
+              conflicting.text.slice(
+                0,
+                80
+              ) + "…"
+            )
+          : conflicting.text;
+
+      newsFilterDetail =
+        `Conflicting high-impact headline: "${snippet}" ` +
+        `(${conflicting.source})`;
+    } else {
+      const highImpactCount =
+        recentNews.filter(
+          item =>
+            item.impact === "high"
+        ).length;
+
+      newsFilterPassed = true;
+
+      newsFilterDetail =
+        highImpactCount > 0
+          ? (
+              `${highImpactCount} high-impact headline` +
+              `${highImpactCount === 1 ? "" : "s"} tracked, ` +
+              `none conflict with this ${leanDirection}`
+            )
+          : (
+              "No high-impact catalysts currently flagged for this pair"
+            );
+    }
+  }
+
+  addRequiredStep(
+    "High-Impact News Filter",
+    leanDirection
+      ? newsFilterPassed
+      : false,
+    newsFilterDetail
+  );
+
+  /* -----------------------------------------------------------------
+     10. Support and Resistance
+     ----------------------------------------------------------------- */
+
+  const supportResistance =
+    computeSR(
+      rows,
+      lastClose
+    );
+
+  let srPassed = false;
+  let srDetail;
+
+  if (!leanDirection) {
+    srDetail =
+      "No confirmed trend direction to test against";
+  } else if (
+    leanDirection === "BUY"
+  ) {
+    const resistance =
+      supportResistance
+        .resistances[0];
+
+    if (resistance == null) {
+      srPassed = true;
+
+      srDetail =
+        `No resistance detected nearby using ` +
+        supportResistance.source;
+    } else {
+      const distance =
+        (
+          resistance -
+          lastClose
+        ) / lastClose;
+
+      srPassed =
+        distance >= 0.003;
+
+      srDetail =
+        srPassed
+          ? (
+              `Resistance ${(distance * 100).toFixed(2)}% away — ` +
+              `clear room to run (${supportResistance.source})`
+            )
+          : (
+              `Resistance only ${(distance * 100).toFixed(2)}% above spot — ` +
+              `too close to buy into (${supportResistance.source})`
+            );
+    }
+  } else {
+    const support =
+      supportResistance
+        .supports[0];
+
+    if (support == null) {
+      srPassed = true;
+
+      srDetail =
+        `No support detected nearby using ` +
+        supportResistance.source;
+    } else {
+      const distance =
+        (
+          lastClose -
+          support
+        ) / lastClose;
+
+      srPassed =
+        distance >= 0.003;
+
+      srDetail =
+        srPassed
+          ? (
+              `Support ${(distance * 100).toFixed(2)}% away — ` +
+              `clear room to run (${supportResistance.source})`
+            )
+          : (
+              `Support only ${(distance * 100).toFixed(2)}% below spot — ` +
+              `too close to sell into (${supportResistance.source})`
+            );
+    }
+  }
+
+  addRequiredStep(
+    "Support/Resistance",
+    leanDirection
+      ? srPassed
+      : false,
+    srDetail
+  );
+
+  /* -----------------------------------------------------------------
+     11. ATR / Volatility Stop
+     ----------------------------------------------------------------- */
+
+  const volatility =
+    getVolatilityMetrics(rows);
+
+  const buffer =
+    volatility.buffer;
+
+  if (
+    leanDirection &&
+    alive
+  ) {
+    const detail =
+      volatility.type === "ATR"
+        ? (
+            `ATR(${volatility.period}) = ` +
+            `${volatility.atr.toFixed(
+              lastClose > 100
+                ? 2
+                : 5
+            )}, stop buffer ≈ ` +
+            `${buffer.toFixed(
+              lastClose > 100
+                ? 2
+                : 5
+            )}`
+          )
+        : (
+            `Volatility-based buffer ≈ ` +
+            `${buffer.toFixed(
+              lastClose > 100
+                ? 2
+                : 5
+            )} ` +
+            `(average close move ` +
+            `${(volatility.percent * 100).toFixed(2)}%)`
+          );
+
+    pipeline.push({
+      name:
+        volatility.type === "ATR"
+          ? "ATR Stop Loss"
+          : "ATR-style Stop Loss",
+
+      status: "pass",
+      detail
+    });
+  } else if (leanDirection) {
+    pipeline.push({
+      name:
+        volatility.type === "ATR"
+          ? "ATR Stop Loss"
+          : "ATR-style Stop Loss",
+
+      status: "skip",
+      detail:
+        "Not reached — an earlier required step failed"
+    });
+  } else {
+    pipeline.push({
+      name:
+        volatility.type === "ATR"
+          ? "ATR Stop Loss"
+          : "ATR-style Stop Loss",
+
+      status: "skip",
+      detail:
+        "No confirmed trend direction yet"
+    });
+  }
+
+  /* -----------------------------------------------------------------
+     12. Trade Plan and Risk:Reward
+     ----------------------------------------------------------------- */
+
+  let tradePlan = null;
+
+  if (
+    leanDirection &&
+    alive
+  ) {
+    const support =
+      supportResistance
+        .supports[0];
+
+    const resistance =
+      supportResistance
+        .resistances[0];
+
+    let stop;
+    let target1;
+    let target2;
+    let target3;
+
+    if (leanDirection === "BUY") {
+      stop =
+        support != null
+          ? support - buffer
+          : lastClose -
+            buffer * 3;
+
+      let risk =
+        lastClose - stop;
+
+      if (
+        !isFiniteNumber(risk) ||
+        risk <= 0
+      ) {
+        stop =
+          lastClose -
+          buffer * 3;
+
+        risk =
+          lastClose - stop;
+      }
+
+      target1 =
+        resistance != null
+          ? resistance
+          : lastClose +
+            risk * 2;
+
+      target2 =
+        Math.max(
+          target1,
+          lastClose +
+            risk * 3
+        );
+
+      target3 =
+        Math.max(
+          target2,
+          lastClose +
+            risk * 4
+        );
+    } else {
+      stop =
+        resistance != null
+          ? resistance + buffer
+          : lastClose +
+            buffer * 3;
+
+      let risk =
+        stop - lastClose;
+
+      if (
+        !isFiniteNumber(risk) ||
+        risk <= 0
+      ) {
+        stop =
+          lastClose +
+          buffer * 3;
+
+        risk =
+          stop - lastClose;
+      }
+
+      target1 =
+        support != null
+          ? support
+          : lastClose -
+            risk * 2;
+
+      target2 =
+        Math.min(
+          target1,
+          lastClose -
+            risk * 3
+        );
+
+      target3 =
+        Math.min(
+          target2,
+          lastClose -
+            risk * 4
+        );
+    }
+
+    const risk =
+      Math.abs(
+        lastClose -
+        stop
+      );
+
+    const reward1 =
+      Math.abs(
+        target1 -
+        lastClose
+      );
+
+    const riskReward =
+      risk > 0
+        ? reward1 / risk
+        : 0;
+
+    const riskRewardPassed =
+      addRequiredStep(
+        "Risk:Reward ≥ 1:2",
+        riskReward >= 2,
+        `Risk:Reward to TP1 = 1:${riskReward.toFixed(1)} — ` +
+        `${riskReward >= 2 ? "meets" : "below"} the 1:2 minimum`
+      );
+
+    if (riskRewardPassed) {
+      tradePlan = {
+        direction:
+          leanDirection,
+
+        entry:
+          lastClose,
+
+        stop,
+        target1,
+        target2,
+        target3,
+
+        risk,
+        rr:
+          riskReward,
+
+        stopMethod:
+          volatility.type,
+
+        volatilityPercent:
+          volatility.percent,
+
+        atr:
+          volatility.atr,
+
+        atrPeriod:
+          volatility.period
+      };
+    }
+  } else {
+    addRequiredStep(
+      "Risk:Reward ≥ 1:2",
+      false,
+      "No confirmed trade setup reached this step"
+    );
+  }
+
+  /* -----------------------------------------------------------------
+     Final Signal
+     ----------------------------------------------------------------- */
+
+  const signal =
+    tradePlan
+      ? tradePlan.direction
+      : "HOLD";
+
+  const failedStep =
+    pipeline.find(
+      step =>
+        step.status === "fail"
+    );
+
+  const suppressionReason =
+    signal === "HOLD"
+      ? (
+          leanDirection
+            ? (
+                `NO TRADE — stopped at "` +
+                `${failedStep ? failedStep.name : "an earlier step"}"`
+              )
+            : (
+                "NO TRADE — no confirmed trend direction yet"
+              )
+        )
+      : null;
+
+  /* -----------------------------------------------------------------
+     Informational Confidence
+     ----------------------------------------------------------------- */
+
+  const structure =
+    computeMarketStructure(rows);
+
+  const newsScore =
+    clamp(
+      Number(newsScoreRaw) || 0,
+      -10,
+      10
+    );
+
+  const gatedSteps =
+    pipeline.filter(
+      step =>
+        step.status === "pass" ||
+        step.status === "fail"
+    );
+
+  const passCount =
+    gatedSteps.filter(
+      step =>
+        step.status === "pass"
+    ).length;
+
+  let confidence = null;
+
+  if (leanDirection) {
+    let score =
+      gatedSteps.length > 0
+        ? (
+            passCount /
+            gatedSteps.length
+          ) * 70
+        : 0;
+
+    if (
+      structure.score > 0 &&
+      leanDirection === "BUY"
+    ) {
+      score += 12;
+    } else if (
+      structure.score < 0 &&
+      leanDirection === "SELL"
+    ) {
+      score += 12;
+    } else if (
+      structure.score !== 0
+    ) {
+      score -= 8;
+    }
+
+    if (
+      newsScore >= 3 &&
+      leanDirection === "BUY"
+    ) {
+      score += 9;
+    } else if (
+      newsScore <= -3 &&
+      leanDirection === "SELL"
+    ) {
+      score += 9;
+    } else if (
+      Math.abs(newsScore) >= 3
+    ) {
+      score -= 9;
+    }
+
+    if (
+      htfDirection &&
+      htfDirection ===
+        leanDirection
+    ) {
+      score += 9;
+    }
+
+    if (
+      candlePattern.direction &&
+      candlePattern.direction ===
+        leanDirection
+    ) {
+      score += 4;
+    } else if (
+      candlePattern.direction &&
+      candlePattern.direction !==
+        leanDirection
+    ) {
+      score -= 4;
+    }
+
+    confidence =
+      clamp(
+        Math.round(score),
+        5,
+        97
+      );
+  }
+
+  addInfo(
+    "Confidence Score",
+    confidence != null
+      ? (
+          `${confidence}% — composite of pipeline pass-rate, ` +
+          "market structure, news alignment, candle context and " +
+          "multi-timeframe agreement. It does not override the legacy gate."
+        )
+      : (
+          "No confirmed trend direction yet to score"
+        )
+  );
+
+  return {
+    lastClose,
+    n: length,
+
+    lastDate:
+      lastRow?.date || null,
+
+    pipeline,
+    trendLabel,
+    leanDirection,
+
+    ema: {
+      periods:
+        emaState.periods,
+
+      values:
+        emaState.values,
+
+      bullCount:
+        emaState.bullCount,
+
+      bearCount:
+        emaState.bearCount
+    },
+
+    macd:
+      macdState,
+
+    rsi: {
+      period:
+        rsiPeriod,
+
+      value:
+        lastRSI
+    },
+
+    structure,
+
+    sr:
+      supportResistance,
+
+    candlePattern,
+
+    volatility,
+
+    newsScore,
+
+    confidence,
+
+    signal,
+    suppressionReason,
+    tradePlan,
+
+    passCount,
+
+    gatedCount:
+      gatedSteps.length,
+
+    diagnostics: {
+      hasOHLC:
+        rows.every(
+          row => row.hasOHLC
+        ),
+
+      htfDirection,
+
+      engineVersion:
+        ENGINE_VERSION,
+
+      strategyVersion:
+        STRATEGY_VERSION
+    }
+  };
+}
+
+/* =====================================================================
+   Source Selection
+   ===================================================================== */
+
+async function loadPairRows(pair) {
+  const dailyOHLC =
+    readDailyOHLC(pair);
+
+  if (
+    dailyOHLC.rows.length >=
+    MIN_DAILY_ROWS
+  ) {
+    return {
+      ...dailyOHLC,
+      source:
+        "daily-ohlc.json"
+    };
+  }
+
+  if (pair.type === "metal") {
+    const goldHistory =
+      readGoldHistory();
+
+    return {
+      ...goldHistory,
+      source:
+        "xau-usd-history.json"
+    };
+  }
+
+  const forexRows =
+    await fetchForexRows(pair);
+
+  return {
+    ...forexRows,
+    source:
+      "frankfurter.dev"
+  };
+}

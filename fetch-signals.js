@@ -3069,3 +3069,839 @@ async function loadPairRows(pair) {
       "frankfurter.dev"
   };
 }
+
+/* =====================================================================
+   Signal Log Helpers
+   ===================================================================== */
+
+function normalizeSignalLog(raw) {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  return raw
+    .filter(
+      entry =>
+        entry &&
+        typeof entry === "object" &&
+        typeof entry.pair === "string" &&
+        typeof entry.mode === "string" &&
+        (
+          entry.signal === "BUY" ||
+          entry.signal === "SELL"
+        )
+    )
+    .map(entry => ({
+      ...entry,
+
+      status:
+        entry.status === "WIN" ||
+        entry.status === "LOSS" ||
+        entry.status === "BREAKEVEN"
+          ? entry.status
+          : null,
+
+      closedAt:
+        typeof entry.closedAt === "string"
+          ? entry.closedAt
+          : null,
+
+      closePrice:
+        isFiniteNumber(entry.closePrice)
+          ? entry.closePrice
+          : null
+    }));
+}
+
+function createSignalIdentity(
+  pairLabel,
+  mode,
+  analysis
+) {
+  return [
+    pairLabel,
+    mode,
+    analysis.tradePlan.direction,
+    analysis.lastDate,
+    round(
+      analysis.tradePlan.entry,
+      8
+    ),
+    round(
+      analysis.tradePlan.stop,
+      8
+    ),
+    round(
+      analysis.tradePlan.target1,
+      8
+    )
+  ].join("|");
+}
+
+function logSignalIfNew(
+  log,
+  pairLabel,
+  mode,
+  analysis
+) {
+  if (!analysis.tradePlan) {
+    return log;
+  }
+
+  const identity =
+    createSignalIdentity(
+      pairLabel,
+      mode,
+      analysis
+    );
+
+  const existingOpenSignal =
+    [...log]
+      .reverse()
+      .find(entry =>
+        entry.pair === pairLabel &&
+        entry.mode === mode &&
+        !entry.status
+      );
+
+  if (
+    existingOpenSignal &&
+    existingOpenSignal.signal ===
+      analysis.tradePlan.direction
+  ) {
+    return log;
+  }
+
+  const duplicate =
+    log.some(entry =>
+      entry.identity === identity
+    );
+
+  if (duplicate) {
+    return log;
+  }
+
+  const createdAt =
+    new Date().toISOString();
+
+  log.push({
+    id:
+      `signal_${Date.now()}_` +
+      Math.random()
+        .toString(36)
+        .slice(2, 10),
+
+    identity,
+
+    ts:
+      createdAt,
+
+    createdAt,
+
+    marketDate:
+      analysis.lastDate,
+
+    pair:
+      pairLabel,
+
+    mode,
+
+    signal:
+      analysis.tradePlan.direction,
+
+    entry:
+      analysis.tradePlan.entry,
+
+    stop:
+      analysis.tradePlan.stop,
+
+    tp1:
+      analysis.tradePlan.target1,
+
+    tp2:
+      analysis.tradePlan.target2,
+
+    tp3:
+      analysis.tradePlan.target3,
+
+    risk:
+      analysis.tradePlan.risk,
+
+    rr:
+      analysis.tradePlan.rr,
+
+    confidence:
+      analysis.confidence,
+
+    stopMethod:
+      analysis.tradePlan.stopMethod,
+
+    engineVersion:
+      ENGINE_VERSION,
+
+    strategyVersion:
+      STRATEGY_VERSION,
+
+    status:
+      null,
+
+    closedAt:
+      null,
+
+    closePrice:
+      null,
+
+    resultR:
+      null
+  });
+
+  if (
+    log.length >
+    MAX_SIGNAL_LOG
+  ) {
+    return log.slice(
+      log.length -
+      MAX_SIGNAL_LOG
+    );
+  }
+
+  return log;
+}
+
+function candleHitsLevel(
+  row,
+  level,
+  side
+) {
+  if (
+    !row ||
+    !isFiniteNumber(level)
+  ) {
+    return false;
+  }
+
+  if (row.hasOHLC) {
+    if (side === "above") {
+      return row.high >= level;
+    }
+
+    return row.low <= level;
+  }
+
+  if (side === "above") {
+    return row.close >= level;
+  }
+
+  return row.close <= level;
+}
+
+function resolveSingleOutcome(
+  entry,
+  rows
+) {
+  if (
+    entry.status ||
+    !isFiniteNumber(entry.stop) ||
+    !isFiniteNumber(entry.tp1)
+  ) {
+    return entry;
+  }
+
+  const entryDate =
+    safeIsoDate(
+      entry.marketDate ||
+      entry.ts
+    );
+
+  if (!entryDate) {
+    return entry;
+  }
+
+  const futureRows =
+    rows.filter(
+      row =>
+        row.date >
+        entryDate
+    );
+
+  for (const row of futureRows) {
+    let stopHit = false;
+    let targetHit = false;
+
+    if (entry.signal === "BUY") {
+      stopHit =
+        candleHitsLevel(
+          row,
+          entry.stop,
+          "below"
+        );
+
+      targetHit =
+        candleHitsLevel(
+          row,
+          entry.tp1,
+          "above"
+        );
+    } else {
+      stopHit =
+        candleHitsLevel(
+          row,
+          entry.stop,
+          "above"
+        );
+
+      targetHit =
+        candleHitsLevel(
+          row,
+          entry.tp1,
+          "below"
+        );
+    }
+
+    /*
+       When both stop and target are inside the same OHLC candle,
+       their exact intrabar order is unknown.
+
+       To preserve the old conservative behavior, stop is resolved first.
+    */
+
+    if (stopHit) {
+      entry.status =
+        "LOSS";
+
+      entry.closedAt =
+        row.date;
+
+      entry.closePrice =
+        entry.stop;
+
+      entry.resultR =
+        -1;
+
+      break;
+    }
+
+    if (targetHit) {
+      entry.status =
+        "WIN";
+
+      entry.closedAt =
+        row.date;
+
+      entry.closePrice =
+        entry.tp1;
+
+      entry.resultR =
+        isFiniteNumber(entry.rr)
+          ? entry.rr
+          : null;
+
+      break;
+    }
+  }
+
+  return entry;
+}
+
+function resolveLogOutcomes(
+  log,
+  pairLabel,
+  mode,
+  rows
+) {
+  return log.map(entry => {
+    if (
+      entry.pair !== pairLabel ||
+      entry.mode !== mode ||
+      entry.status
+    ) {
+      return entry;
+    }
+
+    return resolveSingleOutcome(
+      entry,
+      rows
+    );
+  });
+}
+
+/* =====================================================================
+   Snapshot Helpers
+   ===================================================================== */
+
+function buildSnapshotEntry(
+  pair,
+  mode,
+  analysis,
+  sourceInfo
+) {
+  const precision =
+    decimalsFor(pair);
+
+  return {
+    pair:
+      pair.label,
+
+    mode,
+
+    decimals:
+      precision,
+
+    lastClose:
+      round(
+        analysis.lastClose,
+        precision
+      ),
+
+    lastDate:
+      analysis.lastDate,
+
+    signal:
+      analysis.signal,
+
+    suppressionReason:
+      analysis.suppressionReason,
+
+    tradePlan:
+      analysis.tradePlan
+        ? {
+            ...analysis.tradePlan,
+
+            entry:
+              round(
+                analysis.tradePlan.entry,
+                precision
+              ),
+
+            stop:
+              round(
+                analysis.tradePlan.stop,
+                precision
+              ),
+
+            target1:
+              round(
+                analysis.tradePlan.target1,
+                precision
+              ),
+
+            target2:
+              round(
+                analysis.tradePlan.target2,
+                precision
+              ),
+
+            target3:
+              round(
+                analysis.tradePlan.target3,
+                precision
+              ),
+
+            risk:
+              round(
+                analysis.tradePlan.risk,
+                precision
+              ),
+
+            rr:
+              round(
+                analysis.tradePlan.rr,
+                2
+              ),
+
+            atr:
+              round(
+                analysis.tradePlan.atr,
+                precision
+              ),
+
+            volatilityPercent:
+              round(
+                analysis.tradePlan
+                  .volatilityPercent,
+                6
+              )
+          }
+        : null,
+
+    confidence:
+      analysis.confidence,
+
+    passCount:
+      analysis.passCount,
+
+    gatedCount:
+      analysis.gatedCount,
+
+    trendLabel:
+      analysis.trendLabel,
+
+    structure:
+      analysis.structure.label,
+
+    structureDetails:
+      analysis.structure,
+
+    sr:
+      analysis.sr,
+
+    candlePattern:
+      analysis.candlePattern,
+
+    indicators: {
+      ema:
+        analysis.ema,
+
+      macd:
+        analysis.macd,
+
+      rsi:
+        analysis.rsi,
+
+      volatility:
+        analysis.volatility
+    },
+
+    pipeline:
+      analysis.pipeline,
+
+    data: {
+      source:
+        sourceInfo.source,
+
+      validRows:
+        sourceInfo.quality.validRows,
+
+      rejectedRows:
+        sourceInfo.quality.rejectedRows,
+
+      duplicateDates:
+        sourceInfo.quality.duplicateDates,
+
+      firstDate:
+        sourceInfo.quality.firstDate,
+
+      lastDate:
+        sourceInfo.quality.lastDate,
+
+      ageDays:
+        sourceInfo.quality.ageDays,
+
+      stale:
+        sourceInfo.quality.stale,
+
+      hasOHLC:
+        analysis.diagnostics.hasOHLC
+    },
+
+    engineVersion:
+      ENGINE_VERSION,
+
+    strategyVersion:
+      STRATEGY_VERSION
+  };
+}
+
+/* =====================================================================
+   Main
+   ===================================================================== */
+
+async function main() {
+  const startedAt =
+    new Date();
+
+  fs.mkdirSync(
+    DATA_DIR,
+    { recursive: true }
+  );
+
+  const newsFeed =
+    readNewsFeed();
+
+  let log =
+    normalizeSignalLog(
+      readJsonFile(
+        LOG_OUT_PATH,
+        []
+      )
+    );
+
+  const snapshot = [];
+  const errors = [];
+
+  for (const pair of PAIRS) {
+    let loaded;
+
+    try {
+      loaded =
+        await loadPairRows(pair);
+    } catch (error) {
+      const message =
+        `Data load failed for ${pair.label}: ` +
+        error.message;
+
+      console.error(message);
+
+      errors.push({
+        pair:
+          pair.label,
+
+        stage:
+          "load",
+
+        message:
+          error.message
+      });
+
+      continue;
+    }
+
+    const rawRows =
+      loaded.rows;
+
+    const quality =
+      candleDataQuality(loaded);
+
+    if (
+      rawRows.length <
+      MIN_DAILY_ROWS
+    ) {
+      const message =
+        `Skipping ${pair.label} — ` +
+        `not enough valid history ` +
+        `(${rawRows.length} rows)`;
+
+      console.warn(message);
+
+      errors.push({
+        pair:
+          pair.label,
+
+        stage:
+          "validation",
+
+        message
+      });
+
+      continue;
+    }
+
+    for (const mode of MODES) {
+      const rows =
+        rowsForMode(
+          rawRows,
+          mode
+        );
+
+      if (
+        mode === "weekly" &&
+        rows.length <
+          MIN_WEEKLY_ROWS
+      ) {
+        console.warn(
+          `Skipping ${pair.label} weekly — ` +
+          `only ${rows.length} weekly candles`
+        );
+
+        continue;
+      }
+
+      const htfRows =
+        mode === "daily"
+          ? resampleWeekly(
+              rawRows
+            )
+          : null;
+
+      let analysis;
+
+      try {
+        analysis =
+          analyze(
+            rows,
+            pair.label,
+            newsFeed
+              .sentimentByPair[
+                pair.label
+              ],
+            htfRows,
+            newsFeed.items
+          );
+      } catch (error) {
+        console.error(
+          `Analysis failed for ` +
+          `${pair.label} ${mode}:`,
+          error.message
+        );
+
+        errors.push({
+          pair:
+            pair.label,
+
+          mode,
+
+          stage:
+            "analysis",
+
+          message:
+            error.message
+        });
+
+        continue;
+      }
+
+      log =
+        logSignalIfNew(
+          log,
+          pair.label,
+          mode,
+          analysis
+        );
+
+      log =
+        resolveLogOutcomes(
+          log,
+          pair.label,
+          mode,
+          rows
+        );
+
+      snapshot.push(
+        buildSnapshotEntry(
+          pair,
+          mode,
+          analysis,
+          {
+            source:
+              loaded.source,
+
+            quality
+          }
+        )
+      );
+    }
+  }
+
+  log =
+    log
+      .sort((a, b) => {
+        const aTime =
+          new Date(
+            a.ts ||
+            a.createdAt ||
+            0
+          ).getTime();
+
+        const bTime =
+          new Date(
+            b.ts ||
+            b.createdAt ||
+            0
+          ).getTime();
+
+        return aTime - bTime;
+      })
+      .slice(
+        -MAX_SIGNAL_LOG
+      );
+
+  const completedAt =
+    new Date();
+
+  const output = {
+    updatedAt:
+      completedAt.toISOString(),
+
+    engineVersion:
+      ENGINE_VERSION,
+
+    strategyVersion:
+      STRATEGY_VERSION,
+
+    durationMs:
+      completedAt.getTime() -
+      startedAt.getTime(),
+
+    pairCount:
+      PAIRS.length,
+
+    snapshotCount:
+      snapshot.length,
+
+    errorCount:
+      errors.length,
+
+    newsItemCount:
+      newsFeed.items.length,
+
+    errors,
+
+    signals:
+      snapshot
+  };
+
+  atomicWriteJson(
+    SIGNALS_OUT_PATH,
+    output
+  );
+
+  atomicWriteJson(
+    LOG_OUT_PATH,
+    log
+  );
+
+  console.log(
+    `PipSight signal engine ${ENGINE_VERSION} completed.`
+  );
+
+  console.log(
+    `Wrote ${snapshot.length} signal snapshots ` +
+    `and ${log.length} log entries in ` +
+    `${output.durationMs}ms.`
+  );
+
+  if (errors.length > 0) {
+    console.warn(
+      `Completed with ${errors.length} warning/error record(s).`
+    );
+  }
+}
+
+/* =====================================================================
+   Process-Level Error Handling
+   ===================================================================== */
+
+process.on(
+  "unhandledRejection",
+  error => {
+    console.error(
+      "Unhandled promise rejection:",
+      error
+    );
+
+    process.exitCode = 1;
+  }
+);
+
+process.on(
+  "uncaughtException",
+  error => {
+    console.error(
+      "Uncaught exception:",
+      error
+    );
+
+    process.exit(1);
+  }
+);
+
+main().catch(error => {
+  console.error(
+    "PipSight signal engine failed:",
+    error
+  );
+
+  process.exitCode = 1;
+});
+
+

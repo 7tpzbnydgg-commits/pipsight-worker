@@ -1,5 +1,8 @@
 {
-  "updatedAt": "2026-07-24T21:45:40.454Z",
+  "updatedAt": "2026-07-24T22:21:28.820Z",
+  "engineVersion": "1.1.0-pro-foundation",
+  "strategyVersion": "legacy-compatible-1.0",
+  "compatibilityMode": "legacy",
   "pairs": {
     "XAUUSD": {
       "swing": {
@@ -7,18 +10,152 @@
         "suppressionReason": "NO TRADE — stopped at \"MACD Confirmation\"",
         "tradePlan": null,
         "passCount": 2,
-        "gatedCount": 3
+        "gatedCount": 3,
+        "diagnostics": {
+          "adx14": 39.25392099082686,
+          "atr14": 69.19993150801201,
+          "trendLabel": "Bearish — full EMA stack 8<17<29<59 (adaptive periods — full EMA200 needs more history)",
+          "pipeline": [
+            {
+              "name": "Trend",
+              "status": "pass",
+              "detail": "Bearish — full EMA stack 8<17<29<59 (adaptive periods — full EMA200 needs more history)"
+            },
+            {
+              "name": "EMA Alignment",
+              "status": "pass",
+              "detail": "Full EMA stack confirms bearish alignment"
+            },
+            {
+              "name": "ADX > 25?",
+              "status": "na",
+              "detail": "Informational — ADX(14) = 39.3"
+            },
+            {
+              "name": "Volume Confirmed?",
+              "status": "na",
+              "detail": "Not available — spot FX/gold has no centralized exchange volume feed"
+            },
+            {
+              "name": "MACD Confirmation",
+              "status": "fail",
+              "detail": "MACD -28.1286 vs signal -37.9649 — does not confirm SELL"
+            },
+            {
+              "name": "RSI Confirmation",
+              "status": "skip",
+              "detail": "Not reached — an earlier required step failed"
+            },
+            {
+              "name": "Multi-Timeframe Confirmation",
+              "status": "skip",
+              "detail": "Not reached — an earlier required step failed"
+            },
+            {
+              "name": "Candle Pattern",
+              "status": "skip",
+              "detail": "Not reached — an earlier required step failed"
+            },
+            {
+              "name": "High-Impact News Filter",
+              "status": "na",
+              "detail": "Informational — no server-side news feed here; shown for context only, doesn't block the signal"
+            },
+            {
+              "name": "Support/Resistance",
+              "status": "skip",
+              "detail": "Not reached — an earlier required step failed"
+            },
+            {
+              "name": "ATR-style Stop Loss",
+              "status": "skip",
+              "detail": "Not reached"
+            },
+            {
+              "name": "Risk:Reward ≥ 1:2",
+              "status": "skip",
+              "detail": "Not reached — an earlier required step failed"
+            }
+          ]
+        }
       },
       "intraday": {
         "signal": "HOLD",
         "suppressionReason": "NO TRADE — no confirmed trend direction yet",
         "tradePlan": null,
         "passCount": 0,
-        "gatedCount": 1
+        "gatedCount": 1,
+        "diagnostics": {
+          "adx14": 29.71845958119675,
+          "atr14": 10.265957352385268,
+          "trendLabel": "Partial bearish lean only (3/4) — not enough to qualify",
+          "pipeline": [
+            {
+              "name": "Trend",
+              "status": "fail",
+              "detail": "Partial bearish lean only (3/4) — not enough to qualify"
+            },
+            {
+              "name": "EMA Alignment",
+              "status": "skip",
+              "detail": "Not reached — an earlier required step failed"
+            },
+            {
+              "name": "ADX > 25?",
+              "status": "na",
+              "detail": "Informational — ADX(14) = 29.7"
+            },
+            {
+              "name": "Volume Confirmed?",
+              "status": "na",
+              "detail": "Not available — spot FX/gold has no centralized exchange volume feed"
+            },
+            {
+              "name": "MACD Confirmation",
+              "status": "skip",
+              "detail": "Not reached — an earlier required step failed"
+            },
+            {
+              "name": "RSI Confirmation",
+              "status": "skip",
+              "detail": "Not reached — an earlier required step failed"
+            },
+            {
+              "name": "Multi-Timeframe Confirmation",
+              "status": "skip",
+              "detail": "Not reached — an earlier required step failed"
+            },
+            {
+              "name": "Candle Pattern",
+              "status": "na",
+              "detail": "Not available"
+            },
+            {
+              "name": "High-Impact News Filter",
+              "status": "na",
+              "detail": "Informational — no server-side news feed here; shown for context only, doesn't block the signal"
+            },
+            {
+              "name": "Support/Resistance",
+              "status": "skip",
+              "detail": "Not reached — an earlier required step failed"
+            },
+            {
+              "name": "ATR-style Stop Loss",
+              "status": "skip",
+              "detail": "Not reached"
+            },
+            {
+              "name": "Risk:Reward ≥ 1:2",
+              "status": "skip",
+              "detail": "Not reached — an earlier required step failed"
+            }
+          ]
+        }
       },
       "scalp": {
-        "decision": "SELL",
-        "reason": "",
+        "decision": "HOLD",
+        "reason": "15-min anchor timeframe is not aligned",
         "perTF": [
           {
             "tf": "5m",
@@ -26,7 +163,7 @@
           },
           {
             "tf": "15m",
-            "signal": "SELL"
+            "signal": "HOLD"
           },
           {
             "tf": "30m",
@@ -34,16 +171,16 @@
           }
         ],
         "entry": 4056.02,
-        "sl": 4059.13,
-        "tp": 4049.81,
+        "sl": null,
+        "tp": null,
         "rr": 2
       },
       "master": {
-        "verdict": "MIXED",
+        "verdict": "HOLD",
         "votes": [
           {
             "engine": "Scalp",
-            "signal": "SELL"
+            "signal": "HOLD"
           },
           {
             "engine": "Intraday",
@@ -62,22 +199,156 @@
         "suppressionReason": "NO TRADE — stopped at \"MACD Confirmation\"",
         "tradePlan": null,
         "passCount": 2,
-        "gatedCount": 3
+        "gatedCount": 3,
+        "diagnostics": {
+          "adx14": 24.801802104471854,
+          "atr14": 0.9262619433932725,
+          "trendLabel": "Bullish — full EMA stack 8>17>29>59 (adaptive periods — full EMA200 needs more history)",
+          "pipeline": [
+            {
+              "name": "Trend",
+              "status": "pass",
+              "detail": "Bullish — full EMA stack 8>17>29>59 (adaptive periods — full EMA200 needs more history)"
+            },
+            {
+              "name": "EMA Alignment",
+              "status": "pass",
+              "detail": "Full EMA stack confirms bullish alignment"
+            },
+            {
+              "name": "ADX > 25?",
+              "status": "na",
+              "detail": "Informational — ADX(14) = 24.8"
+            },
+            {
+              "name": "Volume Confirmed?",
+              "status": "na",
+              "detail": "Not available — spot FX/gold has no centralized exchange volume feed"
+            },
+            {
+              "name": "MACD Confirmation",
+              "status": "fail",
+              "detail": "MACD 0.8299 vs signal 0.8967 — does not confirm BUY"
+            },
+            {
+              "name": "RSI Confirmation",
+              "status": "skip",
+              "detail": "Not reached — an earlier required step failed"
+            },
+            {
+              "name": "Multi-Timeframe Confirmation",
+              "status": "skip",
+              "detail": "Not reached — an earlier required step failed"
+            },
+            {
+              "name": "Candle Pattern",
+              "status": "skip",
+              "detail": "Not reached — an earlier required step failed"
+            },
+            {
+              "name": "High-Impact News Filter",
+              "status": "na",
+              "detail": "Informational — no server-side news feed here; shown for context only, doesn't block the signal"
+            },
+            {
+              "name": "Support/Resistance",
+              "status": "skip",
+              "detail": "Not reached — an earlier required step failed"
+            },
+            {
+              "name": "ATR-style Stop Loss",
+              "status": "skip",
+              "detail": "Not reached"
+            },
+            {
+              "name": "Risk:Reward ≥ 1:2",
+              "status": "skip",
+              "detail": "Not reached — an earlier required step failed"
+            }
+          ]
+        }
       },
       "intraday": {
         "signal": "HOLD",
         "suppressionReason": "NO TRADE — no confirmed trend direction yet",
         "tradePlan": null,
         "passCount": 0,
-        "gatedCount": 1
+        "gatedCount": 1,
+        "diagnostics": {
+          "adx14": 9.859497901908597,
+          "atr14": 0.16736759648586355,
+          "trendLabel": "Partial bullish lean only (3/4) — not enough to qualify",
+          "pipeline": [
+            {
+              "name": "Trend",
+              "status": "fail",
+              "detail": "Partial bullish lean only (3/4) — not enough to qualify"
+            },
+            {
+              "name": "EMA Alignment",
+              "status": "skip",
+              "detail": "Not reached — an earlier required step failed"
+            },
+            {
+              "name": "ADX > 25?",
+              "status": "na",
+              "detail": "Informational — ADX(14) = 9.9"
+            },
+            {
+              "name": "Volume Confirmed?",
+              "status": "na",
+              "detail": "Not available — spot FX/gold has no centralized exchange volume feed"
+            },
+            {
+              "name": "MACD Confirmation",
+              "status": "skip",
+              "detail": "Not reached — an earlier required step failed"
+            },
+            {
+              "name": "RSI Confirmation",
+              "status": "skip",
+              "detail": "Not reached — an earlier required step failed"
+            },
+            {
+              "name": "Multi-Timeframe Confirmation",
+              "status": "skip",
+              "detail": "Not reached — an earlier required step failed"
+            },
+            {
+              "name": "Candle Pattern",
+              "status": "na",
+              "detail": "Not available"
+            },
+            {
+              "name": "High-Impact News Filter",
+              "status": "na",
+              "detail": "Informational — no server-side news feed here; shown for context only, doesn't block the signal"
+            },
+            {
+              "name": "Support/Resistance",
+              "status": "skip",
+              "detail": "Not reached — an earlier required step failed"
+            },
+            {
+              "name": "ATR-style Stop Loss",
+              "status": "skip",
+              "detail": "Not reached"
+            },
+            {
+              "name": "Risk:Reward ≥ 1:2",
+              "status": "skip",
+              "detail": "Not reached — an earlier required step failed"
+            }
+          ]
+        }
       },
       "scalp": {
-        "decision": "SELL",
-        "reason": "",
+        "decision": "HOLD",
+        "reason": "5-min and 30-min both disagree with the 15-min lean",
         "perTF": [
           {
             "tf": "5m",
-            "signal": "SELL"
+            "signal": "HOLD"
           },
           {
             "tf": "15m",
@@ -85,20 +356,20 @@
           },
           {
             "tf": "30m",
-            "signal": "SELL"
+            "signal": "HOLD"
           }
         ],
-        "entry": 218.237,
-        "sl": 218.299,
-        "tp": 218.113,
+        "entry": 218.264,
+        "sl": null,
+        "tp": null,
         "rr": 2
       },
       "master": {
-        "verdict": "MIXED",
+        "verdict": "HOLD",
         "votes": [
           {
             "engine": "Scalp",
-            "signal": "SELL"
+            "signal": "HOLD"
           },
           {
             "engine": "Intraday",
@@ -109,6 +380,60 @@
             "signal": "HOLD"
           }
         ]
+      }
+    }
+  },
+  "dataQuality": {
+    "XAUUSD": {
+      "daily": {
+        "sourceRows": 60,
+        "validRows": 60,
+        "invalidRows": 0,
+        "duplicateRows": 0,
+        "latest": "2026-07-24",
+        "stale": false
+      },
+      "intraday": {
+        "sourceRows": 800,
+        "validRows": 800,
+        "invalidRows": 0,
+        "duplicateRows": 0,
+        "latest": "2026-07-25 08:00:00",
+        "stale": false
+      },
+      "scalp": {
+        "sourceRows": 300,
+        "validRows": 300,
+        "invalidRows": 0,
+        "duplicateRows": 0,
+        "latest": "2026-07-25 08:15:00",
+        "stale": false
+      }
+    },
+    "GBPJPY": {
+      "daily": {
+        "sourceRows": 60,
+        "validRows": 60,
+        "invalidRows": 0,
+        "duplicateRows": 0,
+        "latest": "2026-07-24",
+        "stale": false
+      },
+      "intraday": {
+        "sourceRows": 800,
+        "validRows": 800,
+        "invalidRows": 0,
+        "duplicateRows": 0,
+        "latest": "2026-07-25 08:00:00",
+        "stale": false
+      },
+      "scalp": {
+        "sourceRows": 300,
+        "validRows": 300,
+        "invalidRows": 0,
+        "duplicateRows": 0,
+        "latest": "2026-07-25 08:15:00",
+        "stale": false
       }
     }
   }

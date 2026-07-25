@@ -10,13 +10,29 @@
  * Writes:
  *   data/daily-ohlc.json
  *
+ * Integration contract
+ * --------------------
+ * Direct top-level candle arrays remain available:
+ *
+ *   {
+ *     XAUUSD: [...],
+ *     GBPJPY: [...]
+ *   }
+ *
+ * This preserves compatibility with:
+ *   - run-live-analysis.js
+ *   - fetch-signals.js
+ *   - index.html
+ *   - Existing GitHub workflows
+ *
  * FREE-TIER SAFETY
  * ----------------
  * - Exactly one Twelve Data request per symbol.
- * - Maximum two API requests per execution.
+ * - Maximum two provider requests per execution.
  * - No automatic HTTP retries.
- * - outputsize does not create extra requests.
+ * - outputsize does not create additional requests.
  * - Existing cached data is preserved when a request fails.
+ * - API credentials are never written to output or logs.
  *
  * Recommended schedule:
  *   Every 4 hours = 6 runs/day
@@ -32,8 +48,15 @@ const path = require("path");
 
 const FILE_VERSION = "2.0.0";
 const SOURCE_NAME = "Twelve Data";
+const INTERVAL = "1day";
 
-const API_KEY = process.env.TWELVEDATA_API_KEY;
+const API_BASE_URL =
+  "https://api.twelvedata.com/time_series";
+
+const API_KEY =
+  typeof process.env.TWELVEDATA_API_KEY === "string"
+    ? process.env.TWELVEDATA_API_KEY.trim()
+    : "";
 
 const DATA_DIR = path.join(
   __dirname,
@@ -45,66 +68,157 @@ const OUTPUT_PATH = path.join(
   "daily-ohlc.json"
 );
 
-const SYMBOLS = [
-  {
+const SYMBOLS = Object.freeze([
+  Object.freeze({
     symbol: "XAU/USD",
     key: "XAUUSD",
     label: "XAU/USD"
-  },
-  {
+  }),
+
+  Object.freeze({
     symbol: "GBP/JPY",
     key: "GBPJPY",
     label: "GBP/JPY"
-  }
-];
+  })
+]);
 
 /*
- * Twelve Data allows larger output sizes in one time_series request.
- * This remains one request per symbol.
+ * One time_series request can return the complete requested history.
+ * It does not consume one request per candle.
  *
- * 500 daily candles provide enough history for:
+ * 500 daily candles provide sufficient data for:
  * - EMA 200
  * - Weekly resampling
  * - Market structure
  * - ATR
+ * - ADX
  * - Support/resistance
  * - Candle-pattern analysis
  */
 const OUTPUT_SIZE = 500;
 
 /*
- * No retries are used because every retry may consume another API credit.
+ * No retry is used because each retry may consume another API credit.
  */
 const REQUEST_TIMEOUT_MS = 20_000;
 
 /*
- * Daily data normally changes only once per day.
- *
- * A file is marked stale after this many calendar days. A larger tolerance
- * is used because weekends and market holidays can create natural gaps.
+ * A short delay avoids sending both allowed requests as one burst.
+ */
+const REQUEST_GAP_MS = 1_000;
+
+/*
+ * Daily markets naturally have weekend and holiday gaps.
  */
 const STALE_AFTER_DAYS = 4;
 
 /*
- * Safety limit preventing unexpectedly huge files.
+ * Prevent unexpectedly large output files while retaining more history
+ * than the normal provider request size.
  */
 const MAX_STORED_CANDLES = 600;
+
+/*
+ * Fixed budget:
+ * - XAU/USD: one request
+ * - GBP/JPY: one request
+ */
+const MAX_REQUESTS_PER_RUN =
+  SYMBOLS.length;
+
+/* =====================================================================
+   Runtime State
+   ===================================================================== */
+
+let requestsMade = 0;
 
 /* =====================================================================
    Startup Validation
    ===================================================================== */
 
-if (!API_KEY) {
-  console.error(
-    "Missing TWELVEDATA_API_KEY environment variable."
-  );
+function validateStartupConfiguration() {
+  if (!API_KEY) {
+    throw new Error(
+      "Missing TWELVEDATA_API_KEY environment variable."
+    );
+  }
 
-  process.exit(1);
+  if (
+    !Number.isInteger(OUTPUT_SIZE) ||
+    OUTPUT_SIZE <= 0
+  ) {
+    throw new Error(
+      "OUTPUT_SIZE must be a positive integer."
+    );
+  }
+
+  if (
+    !Number.isInteger(MAX_STORED_CANDLES) ||
+    MAX_STORED_CANDLES < OUTPUT_SIZE
+  ) {
+    throw new Error(
+      "MAX_STORED_CANDLES must be an integer greater than or equal to OUTPUT_SIZE."
+    );
+  }
+
+  if (
+    !Number.isInteger(REQUEST_TIMEOUT_MS) ||
+    REQUEST_TIMEOUT_MS <= 0
+  ) {
+    throw new Error(
+      "REQUEST_TIMEOUT_MS must be a positive integer."
+    );
+  }
+
+  if (
+    !Number.isInteger(REQUEST_GAP_MS) ||
+    REQUEST_GAP_MS < 0
+  ) {
+    throw new Error(
+      "REQUEST_GAP_MS must be a non-negative integer."
+    );
+  }
+
+  const seenKeys =
+    new Set();
+
+  for (const config of SYMBOLS) {
+    if (
+      !config ||
+      typeof config !== "object" ||
+      typeof config.symbol !== "string" ||
+      typeof config.key !== "string" ||
+      typeof config.label !== "string" ||
+      !config.symbol.trim() ||
+      !config.key.trim() ||
+      !config.label.trim()
+    ) {
+      throw new Error(
+        "Every symbol configuration must contain symbol, key and label."
+      );
+    }
+
+    if (seenKeys.has(config.key)) {
+      throw new Error(
+        `Duplicate symbol key configured: ${config.key}`
+      );
+    }
+
+    seenKeys.add(config.key);
+  }
 }
 
 /* =====================================================================
    Generic Helpers
    ===================================================================== */
+
+function isRecord(value) {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value)
+  );
+}
 
 function isFiniteNumber(value) {
   return (
@@ -113,48 +227,124 @@ function isFiniteNumber(value) {
   );
 }
 
+function errorMessageOf(error) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return String(error);
+}
+
 function sleep(milliseconds) {
   return new Promise(resolve => {
-    setTimeout(resolve, milliseconds);
+    setTimeout(
+      resolve,
+      milliseconds
+    );
   });
 }
 
-function safeIsoDate(value) {
+function parsePrice(value) {
   if (
-    typeof value !== "string" ||
-    value.trim() === ""
+    typeof value !== "number" &&
+    typeof value !== "string"
   ) {
     return null;
   }
 
-  const trimmed =
-    value.trim();
+  const normalized =
+    typeof value === "string"
+      ? value.trim()
+      : value;
 
-  /*
-   * Twelve Data daily dates normally arrive as YYYY-MM-DD.
-   */
+  if (normalized === "") {
+    return null;
+  }
+
+  const parsed =
+    Number(normalized);
+
+  return Number.isFinite(parsed)
+    ? parsed
+    : null;
+}
+
+/* =====================================================================
+   Date Helpers
+   ===================================================================== */
+
+function safeIsoDate(value) {
+  if (
+    typeof value !== "string" ||
+    !value.trim()
+  ) {
+    return null;
+  }
+
   const match =
-    trimmed.match(
-      /^(\d{4})-(\d{2})-(\d{2})/
-    );
+    value
+      .trim()
+      .match(
+        /^(\d{4})-(\d{2})-(\d{2})(?:\s|T|$)/
+      );
 
   if (!match) {
     return null;
   }
 
-  const normalized =
-    `${match[1]}-${match[2]}-${match[3]}`;
+  const year =
+    Number(match[1]);
 
-  const timestamp =
-    Date.parse(
-      `${normalized}T00:00:00Z`
-    );
+  const month =
+    Number(match[2]);
 
-  if (!Number.isFinite(timestamp)) {
+  const day =
+    Number(match[3]);
+
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    !Number.isInteger(day) ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31
+  ) {
     return null;
   }
 
-  return normalized;
+  const timestamp =
+    Date.UTC(
+      year,
+      month - 1,
+      day
+    );
+
+  const date =
+    new Date(timestamp);
+
+  /*
+   * Date.UTC normalizes impossible dates. Round-trip checks reject them.
+   */
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
+  return [
+    String(year).padStart(4, "0"),
+    String(month).padStart(2, "0"),
+    String(day).padStart(2, "0")
+  ].join("-");
+}
+
+function currentUtcDate() {
+  return new Date()
+    .toISOString()
+    .slice(0, 10);
 }
 
 function calendarAgeDays(dateString) {
@@ -167,7 +357,7 @@ function calendarAgeDays(dateString) {
 
   const candleTime =
     Date.parse(
-      `${normalized}T00:00:00Z`
+      `${normalized}T00:00:00.000Z`
     );
 
   if (!Number.isFinite(candleTime)) {
@@ -187,22 +377,17 @@ function calendarAgeDays(dateString) {
   return Math.max(
     0,
     Math.floor(
-      (
-        todayUtc -
-        candleTime
-      ) /
+      (todayUtc - candleTime) /
       86_400_000
     )
   );
 }
 
-function parsePrice(value) {
-  const parsed =
-    Number.parseFloat(value);
-
-  return Number.isFinite(parsed)
-    ? parsed
-    : null;
+function isPossiblyOpenCandle(dateString) {
+  return (
+    safeIsoDate(dateString) ===
+    currentUtcDate()
+  );
 }
 
 /* =====================================================================
@@ -231,7 +416,7 @@ function readJsonFile(
     return JSON.parse(content);
   } catch (error) {
     console.warn(
-      `Could not safely read ${filePath}: ${error.message}`
+      `Could not safely read ${filePath}: ${errorMessageOf(error)}`
     );
 
     return fallback;
@@ -255,14 +440,17 @@ function atomicWriteJson(
   const temporaryPath =
     `${filePath}.${process.pid}.${Date.now()}.tmp`;
 
-  const json =
+  const serialized =
     `${JSON.stringify(value, null, 2)}\n`;
 
   try {
     fs.writeFileSync(
       temporaryPath,
-      json,
-      "utf8"
+      serialized,
+      {
+        encoding: "utf8",
+        mode: 0o600
+      }
     );
 
     fs.renameSync(
@@ -281,7 +469,9 @@ function atomicWriteJson(
         );
       }
     } catch {
-      // Preserve the original write error.
+      /*
+       * Preserve the original filesystem error.
+       */
     }
 
     throw error;
@@ -293,10 +483,7 @@ function atomicWriteJson(
    ===================================================================== */
 
 function normalizeCandle(raw) {
-  if (
-    !raw ||
-    typeof raw !== "object"
-  ) {
+  if (!isRecord(raw)) {
     return {
       candle: null,
       reason: "not-an-object"
@@ -305,9 +492,16 @@ function normalizeCandle(raw) {
 
   const date =
     safeIsoDate(
-      raw.datetime ||
+      raw.datetime ??
       raw.date
     );
+
+  if (!date) {
+    return {
+      candle: null,
+      reason: "invalid-date"
+    };
+  }
 
   const open =
     parsePrice(raw.open);
@@ -320,13 +514,6 @@ function normalizeCandle(raw) {
 
   const close =
     parsePrice(raw.close);
-
-  if (!date) {
-    return {
-      candle: null,
-      reason: "invalid-date"
-    };
-  }
 
   if (
     !isFiniteNumber(open) ||
@@ -387,37 +574,46 @@ function normalizeCandle(raw) {
       low,
       close
     },
+
     reason: null
   };
 }
 
+function buildEmptyQuality(
+  rejectedReasons = {}
+) {
+  return {
+    receivedRows: 0,
+    validRows: 0,
+    rejectedRows: 0,
+    duplicateDates: 0,
+    rejectedReasons,
+    firstDate: null,
+    lastDate: null,
+    ageDays: null,
+    stale: true
+  };
+}
+
 function normalizeCandles(values) {
-  const byDate =
+  if (!Array.isArray(values)) {
+    return {
+      rows: [],
+
+      quality:
+        buildEmptyQuality({
+          "values-not-array": 1
+        })
+    };
+  }
+
+  const candlesByDate =
     new Map();
 
   const rejectedReasons = {};
 
   let rejectedCount = 0;
   let duplicateCount = 0;
-
-  if (!Array.isArray(values)) {
-    return {
-      rows: [],
-      quality: {
-        receivedRows: 0,
-        validRows: 0,
-        rejectedRows: 0,
-        duplicateDates: 0,
-        rejectedReasons: {
-          "values-not-array": 1
-        },
-        firstDate: null,
-        lastDate: null,
-        ageDays: null,
-        stale: true
-      }
-    };
-  }
 
   for (const raw of values) {
     const result =
@@ -426,57 +622,56 @@ function normalizeCandles(values) {
     if (!result.candle) {
       rejectedCount++;
 
-      rejectedReasons[
-        result.reason
-      ] =
+      const reason =
+        result.reason ||
+        "unknown";
+
+      rejectedReasons[reason] =
         (
-          rejectedReasons[
-            result.reason
-          ] ||
+          rejectedReasons[reason] ||
           0
         ) + 1;
 
       continue;
     }
 
-    const date =
-      result.candle.date;
+    const { date } =
+      result.candle;
 
-    if (byDate.has(date)) {
+    if (candlesByDate.has(date)) {
       duplicateCount++;
     }
 
     /*
-     * Last valid occurrence wins if the provider returns a duplicate date.
+     * The last valid occurrence replaces an earlier duplicate date.
      */
-    byDate.set(
+    candlesByDate.set(
       date,
       result.candle
     );
   }
 
-  const rows =
+  const uniqueRows =
     Array.from(
-      byDate.values()
-    )
-      .sort(
-        (a, b) =>
-          a.date.localeCompare(
-            b.date
-          )
-      )
-      .slice(
-        -MAX_STORED_CANDLES
-      );
+      candlesByDate.values()
+    ).sort(
+      (left, right) =>
+        left.date.localeCompare(
+          right.date
+        )
+    );
+
+  const rows =
+    uniqueRows.slice(
+      -MAX_STORED_CANDLES
+    );
 
   const firstDate =
-    rows[0]?.date ||
+    rows[0]?.date ??
     null;
 
   const lastDate =
-    rows[
-      rows.length - 1
-    ]?.date ||
+    rows.at(-1)?.date ??
     null;
 
   const ageDays =
@@ -507,9 +702,8 @@ function normalizeCandles(values) {
       ageDays,
 
       stale:
-        ageDays == null ||
-        ageDays >
-          STALE_AFTER_DAYS
+        ageDays === null ||
+        ageDays > STALE_AFTER_DAYS
     }
   };
 }
@@ -522,42 +716,42 @@ function getPreviousRows(
   previousOutput,
   key
 ) {
-  if (
-    !previousOutput ||
-    typeof previousOutput !== "object"
-  ) {
+  if (!isRecord(previousOutput)) {
     return [];
   }
 
   /*
-   * Backward-compatible format:
+   * Existing production format:
    *
    * {
    *   XAUUSD: [...],
    *   GBPJPY: [...]
    * }
    */
-  const directRows =
-    previousOutput[key];
-
-  if (Array.isArray(directRows)) {
+  if (
+    Array.isArray(
+      previousOutput[key]
+    )
+  ) {
     return normalizeCandles(
-      directRows
+      previousOutput[key]
     ).rows;
   }
 
   /*
-   * Optional future nested compatibility:
+   * Forward-compatible nested format:
    *
    * {
    *   symbols: {
-   *     XAUUSD: { candles: [...] }
+   *     XAUUSD: {
+   *       candles: [...]
+   *     }
    *   }
    * }
    */
   const nestedRows =
     previousOutput
-      ?.symbols
+      .symbols
       ?.[key]
       ?.candles;
 
@@ -571,7 +765,34 @@ function getPreviousRows(
 }
 
 /* =====================================================================
-   Twelve Data Error Handling
+   Cache Merge
+   ===================================================================== */
+
+function mergeCandleRows(
+  previousRows,
+  freshRows
+) {
+  /*
+   * Cached rows are inserted first and fresh rows second.
+   * A fresh candle therefore replaces the cached candle for the same date.
+   */
+  return normalizeCandles([
+    ...(
+      Array.isArray(previousRows)
+        ? previousRows
+        : []
+    ),
+
+    ...(
+      Array.isArray(freshRows)
+        ? freshRows
+        : []
+    )
+  ]);
+}
+
+/* =====================================================================
+   Provider Error Handling
    ===================================================================== */
 
 function createProviderError(
@@ -579,16 +800,15 @@ function createProviderError(
   payload
 ) {
   const providerCode =
-    payload &&
-    typeof payload === "object"
-      ? payload.code
+    isRecord(payload)
+      ? payload.code ?? null
       : null;
 
   const providerMessage =
-    payload &&
-    typeof payload === "object" &&
-    typeof payload.message === "string"
-      ? payload.message
+    isRecord(payload) &&
+    typeof payload.message === "string" &&
+    payload.message.trim()
+      ? payload.message.trim()
       : "Unknown provider error";
 
   const error =
@@ -599,33 +819,60 @@ function createProviderError(
   error.providerCode =
     providerCode;
 
-  error.providerPayload =
-    payload;
-
   return error;
 }
 
+function sanitizeRequestError(
+  error
+) {
+  const message =
+    errorMessageOf(error);
+
+  if (!API_KEY) {
+    return message;
+  }
+
+  return message
+    .split(API_KEY)
+    .join("[REDACTED]");
+}
+
 /* =====================================================================
-   Free-Tier-Safe Request Control
+   Free-Tier Request Control
    ===================================================================== */
 
-/*
- * Hard safety limit:
- * - XAU/USD = one request
- * - GBP/JPY = one request
- *
- * No third request can be made during the same execution.
- */
-const MAX_REQUESTS_PER_RUN =
-  SYMBOLS.length;
+function reserveProviderRequest() {
+  if (
+    requestsMade >=
+    MAX_REQUESTS_PER_RUN
+  ) {
+    throw new Error(
+      `Request safety limit reached: maximum ${MAX_REQUESTS_PER_RUN} ` +
+      "Twelve Data requests per run."
+    );
+  }
 
-/*
- * Small delay between symbols helps avoid burst/rate-limit issues.
- * It does not use additional API credits.
- */
-const REQUEST_GAP_MS = 1_000;
+  requestsMade++;
 
-let requestsMade = 0;
+  return requestsMade;
+}
+
+function buildProviderUrl(symbol) {
+  const url =
+    new URL(API_BASE_URL);
+
+  url.search =
+    new URLSearchParams({
+      symbol,
+      interval: INTERVAL,
+      outputsize:
+        String(OUTPUT_SIZE),
+      apikey:
+        API_KEY
+    }).toString();
+
+  return url;
+}
 
 /* =====================================================================
    Single-Request JSON Fetch
@@ -635,25 +882,18 @@ async function fetchJsonOnce(
   url,
   timeoutMs = REQUEST_TIMEOUT_MS
 ) {
-  if (
-    requestsMade >=
-    MAX_REQUESTS_PER_RUN
-  ) {
-    throw new Error(
-      `Request safety limit reached: maximum ` +
-      `${MAX_REQUESTS_PER_RUN} Twelve Data requests per run`
-    );
-  }
-
-  requestsMade++;
+  reserveProviderRequest();
 
   const controller =
     new AbortController();
 
-  const timeout =
-    setTimeout(() => {
-      controller.abort();
-    }, timeoutMs);
+  const timeoutHandle =
+    setTimeout(
+      () => {
+        controller.abort();
+      },
+      timeoutMs
+    );
 
   try {
     const response =
@@ -661,6 +901,7 @@ async function fetchJsonOnce(
         url,
         {
           method: "GET",
+
           signal:
             controller.signal,
 
@@ -672,34 +913,33 @@ async function fetchJsonOnce(
       );
 
     /*
-     * Read the body once. This lets us show provider details even when
-     * the HTTP response itself is not successful.
+     * The response body is read exactly once so provider errors can be
+     * interpreted without issuing another request.
      */
     const responseText =
       await response.text();
 
-    let payload;
+    let payload = null;
 
-    try {
-      payload =
-        responseText
-          ? JSON.parse(
-              responseText
-            )
-          : null;
-    } catch {
-      throw new Error(
-        `Twelve Data returned invalid JSON ` +
-        `(HTTP ${response.status})`
-      );
+    if (responseText) {
+      try {
+        payload =
+          JSON.parse(
+            responseText
+          );
+      } catch {
+        throw new Error(
+          `Twelve Data returned invalid JSON (HTTP ${response.status}).`
+        );
+      }
     }
 
     if (!response.ok) {
       const providerMessage =
-        payload &&
-        typeof payload.message ===
-          "string"
-          ? payload.message
+        isRecord(payload) &&
+        typeof payload.message === "string" &&
+        payload.message.trim()
+          ? payload.message.trim()
           : `HTTP ${response.status}`;
 
       const error =
@@ -710,27 +950,27 @@ async function fetchJsonOnce(
       error.httpStatus =
         response.status;
 
-      error.providerPayload =
-        payload;
-
       throw error;
     }
 
     return payload;
   } catch (error) {
     if (
-      error &&
-      error.name ===
-        "AbortError"
+      error instanceof Error &&
+      error.name === "AbortError"
     ) {
       throw new Error(
-        `Twelve Data request timed out after ${timeoutMs}ms`
+        `Twelve Data request timed out after ${timeoutMs}ms.`
       );
     }
 
-    throw error;
+    throw new Error(
+      sanitizeRequestError(error)
+    );
   } finally {
-    clearTimeout(timeout);
+    clearTimeout(
+      timeoutHandle
+    );
   }
 }
 
@@ -738,38 +978,25 @@ async function fetchJsonOnce(
    Twelve Data Daily Fetch
    ===================================================================== */
 
-async function fetchDaily(symbol) {
-  const parameters =
-    new URLSearchParams({
-      symbol,
-      interval: "1day",
-
-      /*
-       * A larger history is returned in the same API request.
-       * It does not cause one request per candle.
-       */
-      outputsize:
-        String(OUTPUT_SIZE),
-
-      apikey:
-        API_KEY
-    });
-
+async function fetchDaily(
+  config
+) {
   const url =
-    `https://api.twelvedata.com/time_series?${parameters.toString()}`;
+    buildProviderUrl(
+      config.symbol
+    );
 
   const payload =
-    await fetchJsonOnce(url);
+    await fetchJsonOnce(
+      url
+    );
 
   /*
-   * Twelve Data can return HTTP 200 while reporting an API-level error.
+   * Twelve Data may return HTTP 200 with an API-level error payload.
    */
-  if (
-    !payload ||
-    typeof payload !== "object"
-  ) {
+  if (!isRecord(payload)) {
     throw new Error(
-      `Empty or invalid Twelve Data response for ${symbol}`
+      `Empty or invalid Twelve Data response for ${config.symbol}.`
     );
   }
 
@@ -778,18 +1005,15 @@ async function fetchDaily(symbol) {
     payload.code != null
   ) {
     throw createProviderError(
-      symbol,
+      config.symbol,
       payload
     );
   }
 
-  if (
-    !Array.isArray(
-      payload.values
-    )
-  ) {
+  if (!Array.isArray(payload.values)) {
     throw new Error(
-      `Twelve Data response for ${symbol} does not contain a values array`
+      `Twelve Data response for ${config.symbol} ` +
+      "does not contain a values array."
     );
   }
 
@@ -798,11 +1022,9 @@ async function fetchDaily(symbol) {
       payload.values
     );
 
-  if (
-    normalized.rows.length === 0
-  ) {
+  if (normalized.rows.length === 0) {
     throw new Error(
-      `No valid daily OHLC candles returned for ${symbol}`
+      `No valid daily OHLC candles returned for ${config.symbol}.`
     );
   }
 
@@ -813,98 +1035,45 @@ async function fetchDaily(symbol) {
     quality:
       normalized.quality,
 
-    providerMeta: {
+    provider: {
+      name:
+        SOURCE_NAME,
+
       symbol:
-        payload.meta?.symbol ||
-        symbol,
+        typeof payload.meta?.symbol === "string"
+          ? payload.meta.symbol
+          : config.symbol,
 
       interval:
-        payload.meta?.interval ||
-        "1day",
+        typeof payload.meta?.interval === "string"
+          ? payload.meta.interval
+          : INTERVAL,
 
       currencyBase:
-        payload.meta
-          ?.currency_base ||
-        null,
+        typeof payload.meta?.currency_base === "string"
+          ? payload.meta.currency_base
+          : null,
 
       currencyQuote:
-        payload.meta
-          ?.currency_quote ||
-        null,
+        typeof payload.meta?.currency_quote === "string"
+          ? payload.meta.currency_quote
+          : null,
 
       exchange:
-        payload.meta?.exchange ||
-        null,
+        typeof payload.meta?.exchange === "string"
+          ? payload.meta.exchange
+          : null,
 
-      type:
-        payload.meta?.type ||
-        null
+      instrumentType:
+        typeof payload.meta?.type === "string"
+          ? payload.meta.type
+          : null
     }
   };
 }
 
 /* =====================================================================
-   Cache Merge
-   ===================================================================== */
-
-function mergeCandleRows(
-  previousRows,
-  freshRows
-) {
-  /*
-   * Previous candles are inserted first and fresh candles second.
-   * Therefore, a newly fetched candle replaces the cached candle for
-   * the same date.
-   */
-  const combined = [
-    ...(
-      Array.isArray(
-        previousRows
-      )
-        ? previousRows
-        : []
-    ),
-
-    ...(
-      Array.isArray(
-        freshRows
-      )
-        ? freshRows
-        : []
-    )
-  ];
-
-  return normalizeCandles(
-    combined
-  );
-}
-
-/* =====================================================================
-   Daily-Candle Status
-   ===================================================================== */
-
-function currentUtcDate() {
-  return new Date()
-    .toISOString()
-    .slice(0, 10);
-}
-
-function isPossiblyOpenCandle(
-  dateString
-) {
-  /*
-   * When the provider returns today's daily candle, that candle might
-   * still be forming. We keep it for backward compatibility and expose
-   * this status through metadata instead of silently deleting it.
-   */
-  return (
-    safeIsoDate(dateString) ===
-    currentUtcDate()
-  );
-}
-
-/* =====================================================================
-   Symbol Result Builder
+   Symbol Metadata
    ===================================================================== */
 
 function buildSymbolMetadata({
@@ -916,13 +1085,20 @@ function buildSymbolMetadata({
   errorMessage,
   fetchedQuality,
   finalQuality,
-  providerMeta
+  provider
 }) {
-  const lastDate =
-    rows[
-      rows.length - 1
-    ]?.date ||
+  const firstDate =
+    rows[0]?.date ??
     null;
+
+  const lastDate =
+    rows.at(-1)?.date ??
+    null;
+
+  const ageDays =
+    calendarAgeDays(
+      lastDate
+    );
 
   return {
     symbol:
@@ -936,9 +1112,11 @@ function buildSymbolMetadata({
 
     source,
 
-    fetchSucceeded,
+    fetchSucceeded:
+      Boolean(fetchSucceeded),
 
-    fallbackUsed,
+    fallbackUsed:
+      Boolean(fallbackUsed),
 
     error:
       errorMessage ||
@@ -947,16 +1125,9 @@ function buildSymbolMetadata({
     candleCount:
       rows.length,
 
-    firstDate:
-      rows[0]?.date ||
-      null,
-
+    firstDate,
     lastDate,
-
-    ageDays:
-      calendarAgeDays(
-        lastDate
-      ),
+    ageDays,
 
     stale:
       !fetchSucceeded ||
@@ -976,37 +1147,19 @@ function buildSymbolMetadata({
       finalQuality,
 
     provider:
-      providerMeta ||
+      provider ||
       null
   };
 }
 
 /* =====================================================================
-   Main Worker
+   Output Construction
    ===================================================================== */
 
-async function main() {
-  const startedAt =
-    new Date();
-
-  fs.mkdirSync(
-    DATA_DIR,
-    {
-      recursive: true
-    }
-  );
-
-  const previousOutput =
-    readJsonFile(
-      OUTPUT_PATH,
-      {}
-    );
-
-  /*
-   * Keep direct XAUUSD and GBPJPY arrays for complete backward
-   * compatibility with fetch-signals.js and any existing frontend.
-   */
-  const output = {
+function createInitialOutput(
+  startedAt
+) {
+  return {
     updatedAt:
       startedAt.toISOString(),
 
@@ -1017,7 +1170,7 @@ async function main() {
       SOURCE_NAME,
 
     interval:
-      "1day",
+      INTERVAL,
 
     outputSizeRequested:
       OUTPUT_SIZE,
@@ -1042,189 +1195,435 @@ async function main() {
 
     errors: []
   };
+}
+
+function storeSuccessfulResult(
+  output,
+  config,
+  previousRows,
+  fetched
+) {
+  const merged =
+    mergeCandleRows(
+      previousRows,
+      fetched.rows
+    );
+
+  output[config.key] =
+    merged.rows;
+
+  output.stale[config.key] =
+    merged.quality.stale;
+
+  output.metadata[config.key] =
+    buildSymbolMetadata({
+      config,
+
+      rows:
+        merged.rows,
+
+      source:
+        SOURCE_NAME,
+
+      fetchSucceeded:
+        true,
+
+      fallbackUsed:
+        false,
+
+      errorMessage:
+        null,
+
+      fetchedQuality:
+        fetched.quality,
+
+      finalQuality:
+        merged.quality,
+
+      provider:
+        fetched.provider
+    });
+
+  return merged;
+}
+
+function storeFailedResult(
+  output,
+  config,
+  previousRows,
+  error
+) {
+  const message =
+    sanitizeRequestError(
+      error
+    );
+
+  const cached =
+    normalizeCandles(
+      previousRows
+    );
+
+  const fallbackUsed =
+    cached.rows.length > 0;
+
+  const finalQuality = {
+    ...cached.quality,
+    stale: true
+  };
+
+  output[config.key] =
+    cached.rows;
+
+  output.stale[config.key] =
+    true;
+
+  output.metadata[config.key] =
+    buildSymbolMetadata({
+      config,
+
+      rows:
+        cached.rows,
+
+      source:
+        fallbackUsed
+          ? "local-cache"
+          : "unavailable",
+
+      fetchSucceeded:
+        false,
+
+      fallbackUsed,
+
+      errorMessage:
+        message,
+
+      fetchedQuality:
+        null,
+
+      finalQuality,
+
+      provider:
+        null
+    });
+
+  output.errors.push({
+    symbol:
+      config.symbol,
+
+    key:
+      config.key,
+
+    message,
+
+    fallbackUsed,
+
+    cachedCandleCount:
+      cached.rows.length
+  });
+
+  return {
+    message,
+    cachedRows:
+      cached.rows,
+    fallbackUsed
+  };
+}
+
+/* =====================================================================
+   Output Validation
+   ===================================================================== */
+
+function validateCompletedOutput(
+  output
+) {
+  if (!isRecord(output)) {
+    throw new Error(
+      "Completed daily OHLC output must be a JSON object."
+    );
+  }
+
+  for (const config of SYMBOLS) {
+    const rows =
+      output[config.key];
+
+    if (!Array.isArray(rows)) {
+      throw new Error(
+        `${config.key} output must be an array.`
+      );
+    }
+
+    const normalized =
+      normalizeCandles(
+        rows
+      );
+
+    if (
+      normalized.rows.length !==
+      rows.length
+    ) {
+      throw new Error(
+        `${config.key} output contains invalid or duplicate candles.`
+      );
+    }
+
+    const metadata =
+      output.metadata?.[config.key];
+
+    if (!isRecord(metadata)) {
+      throw new Error(
+        `${config.key} metadata is missing or invalid.`
+      );
+    }
+
+    if (
+      metadata.fetchSucceeded &&
+      rows.length === 0
+    ) {
+      throw new Error(
+        `${config.key} cannot report a successful fetch with no candles.`
+      );
+    }
+  }
+
+  if (!Array.isArray(output.errors)) {
+    throw new Error(
+      "Output errors must be an array."
+    );
+  }
+
+  if (
+    !Number.isInteger(output.requestsMade) ||
+    output.requestsMade < 0 ||
+    output.requestsMade >
+      MAX_REQUESTS_PER_RUN
+  ) {
+    throw new Error(
+      "Output request count is invalid."
+    );
+  }
+}
+
+/* =====================================================================
+   Symbol Processing
+   ===================================================================== */
+
+async function processSymbol({
+  output,
+  previousOutput,
+  config
+}) {
+  const previousRows =
+    getPreviousRows(
+      previousOutput,
+      config.key
+    );
+
+  console.log(
+    `Fetching ${config.symbol} daily OHLC ` +
+    `(${requestsMade + 1}/${MAX_REQUESTS_PER_RUN})...`
+  );
+
+  try {
+    /*
+     * Exactly one provider request is permitted for this symbol.
+     */
+    const fetched =
+      await fetchDaily(
+        config
+      );
+
+    const merged =
+      storeSuccessfulResult(
+        output,
+        config,
+        previousRows,
+        fetched
+      );
+
+    console.log(
+      `Fetched ${fetched.rows.length} valid candles for ` +
+      `${config.symbol}; stored ${merged.rows.length} total candles.`
+    );
+  } catch (error) {
+    const failed =
+      storeFailedResult(
+        output,
+        config,
+        previousRows,
+        error
+      );
+
+    console.error(
+      `Failed to fetch ${config.symbol}: ${failed.message}`
+    );
+
+    /*
+     * No retry is attempted. Cached data is used immediately so the
+     * execution remains inside the fixed provider request budget.
+     */
+    if (failed.fallbackUsed) {
+      console.warn(
+        `Using ${failed.cachedRows.length} cached candles for ` +
+        `${config.symbol}.`
+      );
+    } else {
+      console.warn(
+        `No cached data is available for ${config.symbol}.`
+      );
+    }
+  }
+}
+
+/* =====================================================================
+   Run Summary
+   ===================================================================== */
+
+function finalizeOutput(
+  output,
+  startedAt,
+  completedAt
+) {
+  output.startedAt =
+    startedAt.toISOString();
+
+  output.updatedAt =
+    completedAt.toISOString();
+
+  output.durationMs =
+    completedAt.getTime() -
+    startedAt.getTime();
+
+  output.requestsMade =
+    requestsMade;
+
+  output.requestLimitReached =
+    requestsMade >=
+    MAX_REQUESTS_PER_RUN;
+
+  output.successCount =
+    SYMBOLS.reduce(
+      (count, config) =>
+        count +
+        (
+          output.metadata[
+            config.key
+          ]?.fetchSucceeded
+            ? 1
+            : 0
+        ),
+      0
+    );
+
+  output.failureCount =
+    output.errors.length;
+
+  output.cacheFallbackCount =
+    SYMBOLS.reduce(
+      (count, config) =>
+        count +
+        (
+          output.metadata[
+            config.key
+          ]?.fallbackUsed
+            ? 1
+            : 0
+        ),
+      0
+    );
+
+  output.allSymbolsAvailable =
+    SYMBOLS.every(
+      config =>
+        Array.isArray(
+          output[config.key]
+        ) &&
+        output[config.key].length > 0
+    );
+
+  output.hasFreshFetch =
+    output.successCount > 0;
+
+  return output;
+}
+
+function logRunSummary(
+  output
+) {
+  console.log(
+    `Wrote ${OUTPUT_PATH}`
+  );
+
+  console.log(
+    `Twelve Data requests used: ` +
+    `${output.requestsMade}/${MAX_REQUESTS_PER_RUN}`
+  );
+
+  console.log(
+    `Successful symbols: ` +
+    `${output.successCount}/${SYMBOLS.length}`
+  );
+
+  if (output.cacheFallbackCount > 0) {
+    console.warn(
+      `Cache fallback used for ` +
+      `${output.cacheFallbackCount} symbol(s).`
+    );
+  }
+
+  if (output.failureCount > 0) {
+    console.warn(
+      `Completed with ${output.failureCount} fetch failure(s); ` +
+      "cached data was preserved where available."
+    );
+  }
+}
+
+/* =====================================================================
+   Main Worker
+   ===================================================================== */
+
+async function main() {
+  validateStartupConfiguration();
+
+  const startedAt =
+    new Date();
+
+  fs.mkdirSync(
+    DATA_DIR,
+    {
+      recursive: true
+    }
+  );
+
+  const previousOutput =
+    readJsonFile(
+      OUTPUT_PATH,
+      {}
+    );
+
+  /*
+   * Direct top-level arrays remain part of the permanent integration
+   * contract for existing analysis engines and frontend consumers.
+   */
+  const output =
+    createInitialOutput(
+      startedAt
+    );
 
   for (
     let index = 0;
-    index <
-      SYMBOLS.length;
+    index < SYMBOLS.length;
     index++
   ) {
-    const config =
-      SYMBOLS[index];
-
-    const previousRows =
-      getPreviousRows(
-        previousOutput,
-        config.key
-      );
-
-    try {
-      console.log(
-        `Fetching ${config.symbol} daily OHLC ` +
-        `(${requestsMade + 1}/${MAX_REQUESTS_PER_RUN})...`
-      );
-
-      /*
-       * Exactly one provider request for this symbol.
-       */
-      const fetched =
-        await fetchDaily(
-          config.symbol
-        );
-
-      /*
-       * Merge with cache so older valid history is retained if the
-       * provider returns fewer than OUTPUT_SIZE candles.
-       */
-      const merged =
-        mergeCandleRows(
-          previousRows,
-          fetched.rows
-        );
-
-      output[
-        config.key
-      ] =
-        merged.rows;
-
-      output.stale[
-        config.key
-      ] =
-        merged.quality.stale;
-
-      output.metadata[
-        config.key
-      ] =
-        buildSymbolMetadata({
-          config,
-
-          rows:
-            merged.rows,
-
-          source:
-            SOURCE_NAME,
-
-          fetchSucceeded:
-            true,
-
-          fallbackUsed:
-            false,
-
-          errorMessage:
-            null,
-
-          fetchedQuality:
-            fetched.quality,
-
-          finalQuality:
-            merged.quality,
-
-          providerMeta:
-            fetched.providerMeta
-        });
-
-      console.log(
-        `Fetched ${fetched.rows.length} valid candles for ` +
-        `${config.symbol}; stored ${merged.rows.length} total candles.`
-      );
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : String(error);
-
-      console.error(
-        `Failed to fetch ${config.symbol}: ${message}`
-      );
-
-      /*
-       * No retry is attempted. Cached data is used immediately to keep
-       * the execution inside the fixed request budget.
-       */
-      const cached =
-        normalizeCandles(
-          previousRows
-        );
-
-      output[
-        config.key
-      ] =
-        cached.rows;
-
-      output.stale[
-        config.key
-      ] =
-        true;
-
-      output.metadata[
-        config.key
-      ] =
-        buildSymbolMetadata({
-          config,
-
-          rows:
-            cached.rows,
-
-          source:
-            cached.rows.length > 0
-              ? "local-cache"
-              : "unavailable",
-
-          fetchSucceeded:
-            false,
-
-          fallbackUsed:
-            cached.rows.length >
-            0,
-
-          errorMessage:
-            message,
-
-          fetchedQuality:
-            null,
-
-          finalQuality: {
-            ...cached.quality,
-            stale: true
-          },
-
-          providerMeta:
-            null
-        });
-
-      output.errors.push({
-        symbol:
-          config.symbol,
-
-        key:
-          config.key,
-
-        message,
-
-        fallbackUsed:
-          cached.rows.length >
-          0,
-
-        cachedCandleCount:
-          cached.rows.length
-      });
-
-      if (
-        cached.rows.length > 0
-      ) {
-        console.warn(
-          `Using ${cached.rows.length} cached candles for ${config.symbol}.`
-        );
-      } else {
-        console.warn(
-          `No cached data is available for ${config.symbol}.`
-        );
-      }
-    }
+    await processSymbol({
+      output,
+      previousOutput,
+      config:
+        SYMBOLS[index]
+    });
 
     /*
-     * Avoid a burst of two requests. There is no delay after the final
-     * symbol and no additional API call.
+     * A short gap avoids a burst while making no additional API request.
      */
     if (
       index <
@@ -1239,64 +1638,28 @@ async function main() {
   const completedAt =
     new Date();
 
-  output.updatedAt =
-    completedAt.toISOString();
+  finalizeOutput(
+    output,
+    startedAt,
+    completedAt
+  );
 
-  output.startedAt =
-    startedAt.toISOString();
-
-  output.durationMs =
-    completedAt.getTime() -
-    startedAt.getTime();
-
-  output.requestsMade =
-    requestsMade;
-
-  output.requestLimitReached =
-    requestsMade >=
-    MAX_REQUESTS_PER_RUN;
-
-  output.successCount =
-    SYMBOLS.filter(
-      config =>
-        output.metadata[
-          config.key
-        ]?.fetchSucceeded
-    ).length;
-
-  output.failureCount =
-    output.errors.length;
+  validateCompletedOutput(
+    output
+  );
 
   /*
-   * Atomic replacement prevents a partially written JSON file from
-   * breaking downstream workers.
+   * Atomic replacement prevents downstream workers from reading a
+   * partially written daily-ohlc.json file.
    */
   atomicWriteJson(
     OUTPUT_PATH,
     output
   );
 
-  console.log(
-    `Wrote ${OUTPUT_PATH}`
+  logRunSummary(
+    output
   );
-
-  console.log(
-    `Twelve Data requests used: ` +
-    `${requestsMade}/${MAX_REQUESTS_PER_RUN}`
-  );
-
-  console.log(
-    `Successful symbols: ${output.successCount}/${SYMBOLS.length}`
-  );
-
-  if (
-    output.failureCount > 0
-  ) {
-    console.warn(
-      `Completed with ${output.failureCount} fetch failure(s); ` +
-      "cached data was preserved where available."
-    );
-  }
 }
 
 /* =====================================================================
@@ -1309,9 +1672,8 @@ main().catch(error => {
     error instanceof Error
       ? error.stack ||
         error.message
-      : error
+      : String(error)
   );
 
   process.exitCode = 1;
 });
-

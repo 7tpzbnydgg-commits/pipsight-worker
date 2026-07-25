@@ -8468,3 +8468,1996 @@ async function notifyTelegram(
     options
   );
 }
+
+// ============================================================================
+// PART 6 — FINAL RUNTIME ORCHESTRATION
+//          + INPUT LOADING
+//          + ATOMIC OUTPUT WRITES
+//          + STARTUP VALIDATION
+//          + ERROR HANDLING
+//          + MAIN EXECUTION
+// ============================================================================
+//
+// This is the final section of run-live-analysis.js.
+//
+// It:
+// - Resolves all input/output paths safely.
+// - Loads Scalp signals, Scalp candles, H1 candles and Daily OHLC.
+// - Supports pair-keyed, array-based and nested JSON structures.
+// - Runs XAU/USD and GBP/JPY through the complete pipeline.
+// - Preserves primary Scalp signals with candle-analysis fallback.
+// - Builds Swing, Intraday, Scalp and Master results.
+// - Preserves existing live-analysis.json compatibility fields.
+// - Appends analysis-history.json without duplicate active signals.
+// - Preserves notify-state.json and Telegram cooldown behavior.
+// - Writes all JSON files atomically.
+// - Keeps Telegram failures non-fatal.
+// - Provides startup validation and final execution.
+// ============================================================================
+
+
+// ---------------------------------------------------------------------------
+// Final runtime configuration
+// ---------------------------------------------------------------------------
+
+const P6_DATA_DIRECTORY =
+  typeof DATA_DIR !== "undefined"
+    ? DATA_DIR
+    : path.join(__dirname, "data");
+
+const P6_SCALP_SIGNALS_PATH =
+  typeof SCALP_SIGNALS_PATH !== "undefined"
+    ? SCALP_SIGNALS_PATH
+    : path.join(
+        P6_DATA_DIRECTORY,
+        "scalp-signals.json"
+      );
+
+const P6_SCALP_CANDLES_PATH =
+  typeof SCALP_CANDLES_PATH !== "undefined"
+    ? SCALP_CANDLES_PATH
+    : path.join(
+        P6_DATA_DIRECTORY,
+        "scalp-candles.json"
+      );
+
+const P6_INTRADAY_H1_PATH =
+  typeof INTRADAY_H1_PATH !== "undefined"
+    ? INTRADAY_H1_PATH
+    : path.join(
+        P6_DATA_DIRECTORY,
+        "intraday-h1.json"
+      );
+
+const P6_DAILY_OHLC_PATH =
+  typeof DAILY_OHLC_PATH !== "undefined"
+    ? DAILY_OHLC_PATH
+    : path.join(
+        P6_DATA_DIRECTORY,
+        "daily-ohlc.json"
+      );
+
+const P6_LIVE_ANALYSIS_PATH =
+  typeof LIVE_ANALYSIS_PATH !== "undefined"
+    ? LIVE_ANALYSIS_PATH
+    : path.join(
+        P6_DATA_DIRECTORY,
+        "live-analysis.json"
+      );
+
+const P6_ANALYSIS_HISTORY_PATH =
+  typeof ANALYSIS_HISTORY_PATH !== "undefined"
+    ? ANALYSIS_HISTORY_PATH
+    : path.join(
+        P6_DATA_DIRECTORY,
+        "analysis-history.json"
+      );
+
+const P6_NOTIFY_STATE_PATH =
+  typeof NOTIFY_STATE_PATH !== "undefined"
+    ? NOTIFY_STATE_PATH
+    : path.join(
+        P6_DATA_DIRECTORY,
+        "notify-state.json"
+      );
+
+const P6_RUNTIME_PAIRS = Object.freeze([
+  "XAU/USD",
+  "GBP/JPY",
+]);
+
+const P6_MAX_HISTORY_RECORDS = 5000;
+
+const P6_HISTORY_DEDUPE_WINDOW_MS =
+  30 * 60 * 1000;
+
+const P6_DEFAULT_TELEGRAM_COOLDOWN_MS =
+  4 * 60 * 60 * 1000;
+
+const P6_DEFAULT_TELEGRAM_MINIMUM_CONFIDENCE = 70;
+
+
+// ---------------------------------------------------------------------------
+// Runtime logging
+// ---------------------------------------------------------------------------
+
+function p6Log(level, message, details = null) {
+  const timestamp = new Date().toISOString();
+  const normalizedLevel = String(
+    level || "INFO"
+  ).toUpperCase();
+
+  const prefix =
+    `[${timestamp}] [run-live-analysis] [${normalizedLevel}]`;
+
+  if (
+    details !== null &&
+    details !== undefined
+  ) {
+    if (
+      normalizedLevel === "ERROR" ||
+      normalizedLevel === "WARN"
+    ) {
+      console.error(prefix, message, details);
+    } else {
+      console.log(prefix, message, details);
+    }
+
+    return;
+  }
+
+  if (
+    normalizedLevel === "ERROR" ||
+    normalizedLevel === "WARN"
+  ) {
+    console.error(prefix, message);
+  } else {
+    console.log(prefix, message);
+  }
+}
+
+function p6ErrorMessage(error) {
+  if (!error) {
+    return "Unknown error";
+  }
+
+  if (error instanceof Error) {
+    return error.stack || error.message;
+  }
+
+  return String(error);
+}
+
+
+// ---------------------------------------------------------------------------
+// Directory and file helpers
+// ---------------------------------------------------------------------------
+
+function p6EnsureDirectory(directoryPath) {
+  fs.mkdirSync(directoryPath, {
+    recursive: true,
+  });
+}
+
+function p6FileExists(filePath) {
+  try {
+    return fs.existsSync(filePath);
+  } catch {
+    return false;
+  }
+}
+
+function p6ReadJsonFile(
+  filePath,
+  fallbackValue,
+  options = {}
+) {
+  if (!p6FileExists(filePath)) {
+    if (options.required === true) {
+      p6Log(
+        "WARN",
+        `Required input file is missing: ${filePath}`
+      );
+    }
+
+    return liveCloneValue(fallbackValue);
+  }
+
+  try {
+    const rawText = fs.readFileSync(
+      filePath,
+      "utf8"
+    );
+
+    if (!rawText.trim()) {
+      p6Log(
+        "WARN",
+        `JSON file is empty: ${filePath}`
+      );
+
+      return liveCloneValue(fallbackValue);
+    }
+
+    return JSON.parse(rawText);
+  } catch (error) {
+    p6Log(
+      "WARN",
+      `Could not read JSON file: ${filePath}`,
+      p6ErrorMessage(error)
+    );
+
+    return liveCloneValue(fallbackValue);
+  }
+}
+
+function p6AtomicWriteJson(
+  filePath,
+  value,
+  options = {}
+) {
+  const directory = path.dirname(filePath);
+  const fileName = path.basename(filePath);
+
+  p6EnsureDirectory(directory);
+
+  const temporaryPath = path.join(
+    directory,
+    `.${fileName}.${process.pid}.${Date.now()}.tmp`
+  );
+
+  const spacing =
+    Number.isFinite(Number(options.spacing))
+      ? Number(options.spacing)
+      : 2;
+
+  const serialized =
+    `${JSON.stringify(value, null, spacing)}\n`;
+
+  try {
+    fs.writeFileSync(
+      temporaryPath,
+      serialized,
+      "utf8"
+    );
+
+    fs.renameSync(
+      temporaryPath,
+      filePath
+    );
+  } catch (error) {
+    try {
+      if (p6FileExists(temporaryPath)) {
+        fs.unlinkSync(temporaryPath);
+      }
+    } catch {
+      // Cleanup failure must not hide the original write error.
+    }
+
+    throw error;
+  }
+}
+
+function p6CreateBackupIfRequested(
+  filePath,
+  enabled
+) {
+  if (!enabled || !p6FileExists(filePath)) {
+    return null;
+  }
+
+  const backupPath =
+    `${filePath}.backup`;
+
+  try {
+    fs.copyFileSync(
+      filePath,
+      backupPath
+    );
+
+    return backupPath;
+  } catch (error) {
+    p6Log(
+      "WARN",
+      `Could not create backup for ${filePath}`,
+      p6ErrorMessage(error)
+    );
+
+    return null;
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Environment helpers
+// ---------------------------------------------------------------------------
+
+function p6EnvironmentBoolean(
+  name,
+  fallback = false
+) {
+  const value = process.env[name];
+
+  if (
+    value === undefined ||
+    value === null ||
+    value === ""
+  ) {
+    return fallback;
+  }
+
+  const normalized = String(value)
+    .trim()
+    .toLowerCase();
+
+  if (
+    normalized === "1" ||
+    normalized === "true" ||
+    normalized === "yes" ||
+    normalized === "on"
+  ) {
+    return true;
+  }
+
+  if (
+    normalized === "0" ||
+    normalized === "false" ||
+    normalized === "no" ||
+    normalized === "off"
+  ) {
+    return false;
+  }
+
+  return fallback;
+}
+
+function p6EnvironmentNumber(
+  name,
+  fallback
+) {
+  const parsed = Number(process.env[name]);
+
+  return Number.isFinite(parsed)
+    ? parsed
+    : fallback;
+}
+
+
+// ---------------------------------------------------------------------------
+// Input-shape helpers
+// ---------------------------------------------------------------------------
+
+function p6LooksLikeCandle(value) {
+  if (!liveIsPlainObject(value)) {
+    return false;
+  }
+
+  const hasClose =
+    value.close !== undefined ||
+    value.Close !== undefined ||
+    value.c !== undefined ||
+    value.price !== undefined;
+
+  const hasTime =
+    value.timestamp !== undefined ||
+    value.time !== undefined ||
+    value.date !== undefined ||
+    value.datetime !== undefined ||
+    value.openTime !== undefined;
+
+  return hasClose && hasTime;
+}
+
+function p6LooksLikeSignal(value) {
+  if (!liveIsPlainObject(value)) {
+    return false;
+  }
+
+  return [
+    "decision",
+    "signal",
+    "action",
+    "direction",
+    "recommendation",
+    "bias",
+    "side",
+  ].some(
+    (key) =>
+      value[key] !== undefined &&
+      value[key] !== null
+  );
+}
+
+function p6PairMatches(value, pair) {
+  const candidate =
+    liveNormalizePairLabel(value);
+
+  return (
+    candidate ===
+      liveNormalizePairLabel(pair) ||
+    liveCompactPair(candidate) ===
+      liveCompactPair(pair)
+  );
+}
+
+function p6ObjectPairMatches(
+  object,
+  pair
+) {
+  if (!liveIsPlainObject(object)) {
+    return false;
+  }
+
+  const objectPair =
+    object.pair ||
+    object.symbol ||
+    object.pairLabel ||
+    object.instrument ||
+    object.market ||
+    object.asset;
+
+  return objectPair
+    ? p6PairMatches(objectPair, pair)
+    : false;
+}
+
+
+// ---------------------------------------------------------------------------
+// Recursive pair-data extraction
+// ---------------------------------------------------------------------------
+
+function p6ExtractPairValue(
+  container,
+  pair,
+  options = {},
+  depth = 0
+) {
+  if (
+    container === null ||
+    container === undefined ||
+    depth > 7
+  ) {
+    return null;
+  }
+
+  const expectedType =
+    options.expectedType ||
+    "any";
+
+  if (Array.isArray(container)) {
+    if (
+      expectedType === "candles" &&
+      container.length > 0 &&
+      container.every(
+        (item) =>
+          p6LooksLikeCandle(item)
+      )
+    ) {
+      const pairTaggedRows =
+        container.filter(
+          (item) =>
+            !p6ObjectPairMatches(item, pair) ||
+            p6ObjectPairMatches(item, pair)
+        );
+
+      return pairTaggedRows;
+    }
+
+    const matchingItems =
+      container.filter(
+        (item) =>
+          p6ObjectPairMatches(item, pair)
+      );
+
+    if (matchingItems.length > 0) {
+      if (expectedType === "candles") {
+        const nestedRows = [];
+
+        for (const item of matchingItems) {
+          const nested =
+            item.candles ||
+            item.rows ||
+            item.data ||
+            item.prices ||
+            item.ohlc;
+
+          if (Array.isArray(nested)) {
+            nestedRows.push(...nested);
+          } else if (p6LooksLikeCandle(item)) {
+            nestedRows.push(item);
+          }
+        }
+
+        if (nestedRows.length > 0) {
+          return nestedRows;
+        }
+      }
+
+      if (
+        expectedType === "signal" ||
+        expectedType === "any"
+      ) {
+        return matchingItems[0];
+      }
+    }
+
+    for (const item of container) {
+      const nested = p6ExtractPairValue(
+        item,
+        pair,
+        options,
+        depth + 1
+      );
+
+      if (nested !== null) {
+        return nested;
+      }
+    }
+
+    return null;
+  }
+
+  if (!liveIsPlainObject(container)) {
+    return null;
+  }
+
+  const normalizedPair =
+    liveNormalizePairLabel(pair);
+
+  const compactPair =
+    liveCompactPair(pair);
+
+  const directKeys = [
+    normalizedPair,
+    compactPair,
+    normalizedPair.replace("/", "-"),
+    normalizedPair.replace("/", "_"),
+    normalizedPair.replace("/", ""),
+    normalizedPair.toLowerCase(),
+    compactPair.toLowerCase(),
+  ];
+
+  for (const key of directKeys) {
+    if (
+      Object.prototype.hasOwnProperty.call(
+        container,
+        key
+      )
+    ) {
+      const directValue = container[key];
+
+      if (
+        expectedType === "candles" &&
+        liveIsPlainObject(directValue)
+      ) {
+        const nested =
+          directValue.candles ||
+          directValue.rows ||
+          directValue.data ||
+          directValue.prices ||
+          directValue.ohlc;
+
+        if (Array.isArray(nested)) {
+          return nested;
+        }
+      }
+
+      return directValue;
+    }
+  }
+
+  for (const [key, value] of Object.entries(container)) {
+    if (
+      liveCompactPair(key) === compactPair
+    ) {
+      if (
+        expectedType === "candles" &&
+        liveIsPlainObject(value)
+      ) {
+        const nested =
+          value.candles ||
+          value.rows ||
+          value.data ||
+          value.prices ||
+          value.ohlc;
+
+        if (Array.isArray(nested)) {
+          return nested;
+        }
+      }
+
+      return value;
+    }
+  }
+
+  if (p6ObjectPairMatches(container, pair)) {
+    if (expectedType === "candles") {
+      const nested =
+        container.candles ||
+        container.rows ||
+        container.data ||
+        container.prices ||
+        container.ohlc ||
+        container.history;
+
+      if (Array.isArray(nested)) {
+        return nested;
+      }
+
+      if (p6LooksLikeCandle(container)) {
+        return [container];
+      }
+    }
+
+    if (
+      expectedType === "signal" ||
+      expectedType === "any"
+    ) {
+      return container;
+    }
+  }
+
+  const preferredContainerKeys = [
+    "pairs",
+    "signals",
+    "results",
+    "analyses",
+    "analysis",
+    "data",
+    "items",
+    "records",
+    "markets",
+    "symbols",
+    "instruments",
+    "candles",
+    "rows",
+    "history",
+    "prices",
+    "ohlc",
+    "scalp",
+    "intraday",
+    "daily",
+    "weekly",
+  ];
+
+  for (const key of preferredContainerKeys) {
+    if (
+      container[key] === undefined ||
+      container[key] === container
+    ) {
+      continue;
+    }
+
+    const nested = p6ExtractPairValue(
+      container[key],
+      pair,
+      options,
+      depth + 1
+    );
+
+    if (nested !== null) {
+      return nested;
+    }
+  }
+
+  return null;
+}
+
+
+// ---------------------------------------------------------------------------
+// Candle extraction and normalization
+// ---------------------------------------------------------------------------
+
+function p6ExtractPairCandles(
+  rawData,
+  pair
+) {
+  const extracted =
+    p6ExtractPairValue(
+      rawData,
+      pair,
+      {
+        expectedType: "candles",
+      }
+    );
+
+  if (Array.isArray(extracted)) {
+    return normalizeLiveCandleArray(
+      extracted,
+      {
+        maxRows: 10000,
+      }
+    );
+  }
+
+  if (liveIsPlainObject(extracted)) {
+    const nested =
+      extracted.candles ||
+      extracted.rows ||
+      extracted.data ||
+      extracted.prices ||
+      extracted.ohlc ||
+      extracted.history;
+
+    if (Array.isArray(nested)) {
+      return normalizeLiveCandleArray(
+        nested,
+        {
+          maxRows: 10000,
+        }
+      );
+    }
+  }
+
+  return [];
+}
+
+function p6ExtractPairSignal(
+  rawData,
+  pair
+) {
+  const extracted =
+    p6ExtractPairValue(
+      rawData,
+      pair,
+      {
+        expectedType: "signal",
+      }
+    );
+
+  if (liveIsPlainObject(extracted)) {
+    return extracted;
+  }
+
+  return null;
+}
+
+
+// ---------------------------------------------------------------------------
+// Input loading
+// ---------------------------------------------------------------------------
+
+function p6LoadRuntimeInputs() {
+  const scalpSignals =
+    p6ReadJsonFile(
+      P6_SCALP_SIGNALS_PATH,
+      {},
+      {
+        required: false,
+      }
+    );
+
+  const scalpCandles =
+    p6ReadJsonFile(
+      P6_SCALP_CANDLES_PATH,
+      {},
+      {
+        required: false,
+      }
+    );
+
+  const intradayH1 =
+    p6ReadJsonFile(
+      P6_INTRADAY_H1_PATH,
+      {},
+      {
+        required: false,
+      }
+    );
+
+  const dailyOhlc =
+    p6ReadJsonFile(
+      P6_DAILY_OHLC_PATH,
+      {},
+      {
+        required: false,
+      }
+    );
+
+  const analysisHistory =
+    p6ReadJsonFile(
+      P6_ANALYSIS_HISTORY_PATH,
+      {
+        version: 1,
+        records: [],
+      },
+      {
+        required: false,
+      }
+    );
+
+  const notifyState =
+    p6ReadJsonFile(
+      P6_NOTIFY_STATE_PATH,
+      {
+        version: 1,
+        signals: {},
+      },
+      {
+        required: false,
+      }
+    );
+
+  return {
+    scalpSignals,
+    scalpCandles,
+    intradayH1,
+    dailyOhlc,
+    analysisHistory,
+    notifyState,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Startup validation
+// ---------------------------------------------------------------------------
+
+function p6ValidateRuntime() {
+  const errors = [];
+  const warnings = [];
+
+  if (
+    typeof fs === "undefined" ||
+    !fs ||
+    typeof fs.readFileSync !== "function"
+  ) {
+    errors.push(
+      "Node.js fs module is unavailable"
+    );
+  }
+
+  if (
+    typeof path === "undefined" ||
+    !path ||
+    typeof path.join !== "function"
+  ) {
+    errors.push(
+      "Node.js path module is unavailable"
+    );
+  }
+
+  const requiredFunctions = [
+    [
+      "prepareLiveAnalysisFrames",
+      typeof prepareLiveAnalysisFrames,
+    ],
+    [
+      "runLegacyCompatibleAnalysisPipeline",
+      typeof runLegacyCompatibleAnalysisPipeline,
+    ],
+    [
+      "buildPairEngineBundle",
+      typeof buildPairEngineBundle,
+    ],
+    [
+      "buildLiveAnalysisOutput",
+      typeof buildLiveAnalysisOutput,
+    ],
+    [
+      "collectHistoryRecordsFromOutput",
+      typeof collectHistoryRecordsFromOutput,
+    ],
+    [
+      "appendAnalysisHistoryRecords",
+      typeof appendAnalysisHistoryRecords,
+    ],
+    [
+      "processLiveOutputNotifications",
+      typeof processLiveOutputNotifications,
+    ],
+  ];
+
+  for (const [name, type] of requiredFunctions) {
+    if (type !== "function") {
+      errors.push(
+        `Required function is missing: ${name}()`
+      );
+    }
+  }
+
+  const inputFiles = [
+    P6_SCALP_SIGNALS_PATH,
+    P6_SCALP_CANDLES_PATH,
+    P6_INTRADAY_H1_PATH,
+    P6_DAILY_OHLC_PATH,
+  ];
+
+  if (
+    !inputFiles.some(
+      (filePath) =>
+        p6FileExists(filePath)
+    )
+  ) {
+    warnings.push(
+      "No market input files currently exist"
+    );
+  }
+
+  const telegramConfigured =
+    Boolean(
+      process.env.TELEGRAM_BOT_TOKEN ||
+      process.env.TELEGRAM_TOKEN
+    ) &&
+    Boolean(
+      process.env.TELEGRAM_CHAT_ID
+    );
+
+  if (!telegramConfigured) {
+    warnings.push(
+      "Telegram is not configured; analysis will continue without notifications"
+    );
+  }
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    warnings,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Pair input preparation
+// ---------------------------------------------------------------------------
+
+function p6PreparePairInput(
+  pair,
+  inputs
+) {
+  const scalpSignal =
+    p6ExtractPairSignal(
+      inputs.scalpSignals,
+      pair
+    );
+
+  const scalpCandles =
+    p6ExtractPairCandles(
+      inputs.scalpCandles,
+      pair
+    );
+
+  const intradayCandles =
+    p6ExtractPairCandles(
+      inputs.intradayH1,
+      pair
+    );
+
+  const dailyCandles =
+    p6ExtractPairCandles(
+      inputs.dailyOhlc,
+      pair
+    );
+
+  return {
+    pair,
+
+    scalpSignal,
+    scalpCandles,
+    intradayCandles,
+    dailyCandles,
+
+    counts: {
+      scalpCandles:
+        scalpCandles.length,
+
+      intradayCandles:
+        intradayCandles.length,
+
+      dailyCandles:
+        dailyCandles.length,
+    },
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Individual pair analysis
+// ---------------------------------------------------------------------------
+
+function p6RunPairAnalysis(
+  pair,
+  inputs,
+  runtimeOptions = {}
+) {
+  const pairInput =
+    p6PreparePairInput(
+      pair,
+      inputs
+    );
+
+  const frames =
+    prepareLiveAnalysisFrames({
+      pair,
+
+      scalpCandles:
+        pairInput.scalpCandles,
+
+      intradayCandles:
+        pairInput.intradayCandles,
+
+      dailyCandles:
+        pairInput.dailyCandles,
+
+      maxScalpRows:
+        runtimeOptions.maxScalpRows ||
+        5000,
+
+      maxIntradayRows:
+        runtimeOptions.maxIntradayRows ||
+        3000,
+
+      maxDailyRows:
+        runtimeOptions.maxDailyRows ||
+        1500,
+
+      maxWeeklyRows:
+        runtimeOptions.maxWeeklyRows ||
+        500,
+    });
+
+  const pipeline =
+    runLegacyCompatibleAnalysisPipeline({
+      pair,
+      frames,
+
+      scalpTimeframe:
+        runtimeOptions.scalpTimeframe ||
+        "SCALP",
+
+      maxScalpAnalysisRows:
+        runtimeOptions.maxScalpAnalysisRows ||
+        1200,
+
+      maxIntradayAnalysisRows:
+        runtimeOptions.maxIntradayAnalysisRows ||
+        1000,
+
+      maxDailyAnalysisRows:
+        runtimeOptions.maxDailyAnalysisRows ||
+        600,
+
+      maxWeeklyAnalysisRows:
+        runtimeOptions.maxWeeklyAnalysisRows ||
+        300,
+    });
+
+  const isolatedPrimaryScalpData =
+    pairInput.scalpSignal
+      ? {
+          [pair]:
+            pairInput.scalpSignal,
+        }
+      : inputs.scalpSignals;
+
+  const bundle =
+    buildPairEngineBundle({
+      pair,
+
+      analysisPipeline:
+        pipeline,
+
+      scalpSignalsData:
+        isolatedPrimaryScalpData,
+
+      fallbackScalpAnalysis:
+        pipeline.scalp,
+
+      allowPrimaryScalpHold:
+        runtimeOptions.allowPrimaryScalpHold ===
+        true,
+
+      maximumPrimaryScalpAgeMs:
+        runtimeOptions.maximumPrimaryScalpAgeMs,
+
+      masterWeights:
+        runtimeOptions.masterWeights,
+
+      minimumNetContribution:
+        runtimeOptions.minimumNetContribution,
+
+      minimumDirectionalEngines:
+        runtimeOptions.minimumDirectionalEngines,
+    });
+
+  return {
+    ...bundle,
+
+    inputMetadata: {
+      ...pairInput.counts,
+
+      primaryScalpSignalAvailable:
+        Boolean(pairInput.scalpSignal),
+
+      preparedScalpFrames:
+        frames.scalp.length,
+
+      preparedIntradayFrames:
+        frames.intraday.length,
+
+      preparedDailyFrames:
+        frames.daily.length,
+
+      preparedWeeklyFrames:
+        frames.weekly.length,
+    },
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Safe pair execution
+// ---------------------------------------------------------------------------
+
+function p6BuildFailedPairBundle(
+  pair,
+  error
+) {
+  const reason =
+    `Pair analysis failed: ${p6ErrorMessage(error)}`;
+
+  const holdEngine = (
+    mode,
+    source
+  ) =>
+    buildCanonicalEngineResult(
+      {
+        pair,
+        decision: "HOLD",
+        confidence: 0,
+        score: 0,
+        reason,
+        timestamp: Date.now(),
+      },
+      {
+        pair,
+        mode,
+        engineName:
+          `${mode}-error`,
+        source,
+        available: false,
+      }
+    );
+
+  const swing =
+    holdEngine(
+      "swing",
+      "runtime-error"
+    );
+
+  const intraday =
+    holdEngine(
+      "intraday",
+      "runtime-error"
+    );
+
+  const scalp =
+    holdEngine(
+      "scalp",
+      "runtime-error"
+    );
+
+  const master =
+    buildCanonicalEngineResult(
+      {
+        pair,
+        decision: "HOLD",
+        confidence: 0,
+        score: 0,
+        reason,
+        timestamp: Date.now(),
+      },
+      {
+        pair,
+        mode: "master",
+        engineName:
+          "master-consensus-error",
+        source: "runtime-error",
+        available: false,
+      }
+    );
+
+  return {
+    pair,
+    symbol: pair,
+    pairLabel: pair,
+
+    generatedAt:
+      new Date().toISOString(),
+
+    timestamp:
+      Date.now(),
+
+    swing,
+    intraday,
+    scalp,
+    master,
+
+    engines: {
+      swing,
+      intraday,
+      scalp,
+      master,
+    },
+
+    error: reason,
+  };
+}
+
+function p6RunAllPairs(
+  inputs,
+  runtimeOptions = {}
+) {
+  const bundles = [];
+
+  for (const pair of P6_RUNTIME_PAIRS) {
+    try {
+      p6Log(
+        "INFO",
+        `Analyzing ${pair}`
+      );
+
+      const bundle =
+        p6RunPairAnalysis(
+          pair,
+          inputs,
+          runtimeOptions
+        );
+
+      bundles.push(bundle);
+
+      p6Log(
+        "INFO",
+        `${pair} analysis complete`,
+        {
+          swing:
+            bundle.swing.decision,
+
+          intraday:
+            bundle.intraday.decision,
+
+          scalp:
+            bundle.scalp.decision,
+
+          master:
+            bundle.master.decision,
+
+          confidence:
+            bundle.master.confidence,
+        }
+      );
+    } catch (error) {
+      p6Log(
+        "ERROR",
+        `${pair} analysis failed`,
+        p6ErrorMessage(error)
+      );
+
+      bundles.push(
+        p6BuildFailedPairBundle(
+          pair,
+          error
+        )
+      );
+    }
+  }
+
+  return bundles;
+}
+
+
+// ---------------------------------------------------------------------------
+// Preserve existing live-output metadata
+// ---------------------------------------------------------------------------
+
+function p6MergeExistingOutputMetadata(
+  newOutput,
+  oldOutput
+) {
+  if (!liveIsPlainObject(oldOutput)) {
+    return newOutput;
+  }
+
+  const preservedTopLevelKeys = [
+    "schemaVersion",
+    "appVersion",
+    "environment",
+    "deployment",
+    "repository",
+  ];
+
+  const merged = {
+    ...newOutput,
+  };
+
+  for (const key of preservedTopLevelKeys) {
+    if (
+      merged[key] === undefined &&
+      oldOutput[key] !== undefined
+    ) {
+      merged[key] =
+        liveCloneValue(
+          oldOutput[key]
+        );
+    }
+  }
+
+  if (
+    liveIsPlainObject(oldOutput.metadata)
+  ) {
+    merged.metadata = {
+      ...liveCloneValue(
+        oldOutput.metadata
+      ),
+
+      ...merged.metadata,
+    };
+  }
+
+  return merged;
+}
+
+
+// ---------------------------------------------------------------------------
+// Runtime options
+// ---------------------------------------------------------------------------
+
+function p6BuildRuntimeOptions() {
+  return {
+    allowPrimaryScalpHold:
+      p6EnvironmentBoolean(
+        "PIPSIGHT_ALLOW_PRIMARY_SCALP_HOLD",
+        false
+      ),
+
+    maximumPrimaryScalpAgeMs:
+      p6EnvironmentNumber(
+        "PIPSIGHT_SCALP_MAX_AGE_MS",
+        6 * 60 * 60 * 1000
+      ),
+
+    minimumNetContribution:
+      p6EnvironmentNumber(
+        "PIPSIGHT_MASTER_MIN_CONTRIBUTION",
+        0.18
+      ),
+
+    minimumDirectionalEngines:
+      p6EnvironmentNumber(
+        "PIPSIGHT_MASTER_MIN_ENGINES",
+        2
+      ),
+
+    masterWeights: {
+      swing:
+        p6EnvironmentNumber(
+          "PIPSIGHT_SWING_WEIGHT",
+          0.40
+        ),
+
+      intraday:
+        p6EnvironmentNumber(
+          "PIPSIGHT_INTRADAY_WEIGHT",
+          0.35
+        ),
+
+      scalp:
+        p6EnvironmentNumber(
+          "PIPSIGHT_SCALP_WEIGHT",
+          0.25
+        ),
+    },
+
+    includeHoldHistory:
+      p6EnvironmentBoolean(
+        "PIPSIGHT_HISTORY_INCLUDE_HOLD",
+        false
+      ),
+
+    historyDedupeWindowMs:
+      p6EnvironmentNumber(
+        "PIPSIGHT_HISTORY_DEDUPE_MS",
+        P6_HISTORY_DEDUPE_WINDOW_MS
+      ),
+
+    maximumHistoryRecords:
+      p6EnvironmentNumber(
+        "PIPSIGHT_HISTORY_MAX_RECORDS",
+        P6_MAX_HISTORY_RECORDS
+      ),
+
+    processTelegram:
+      !p6EnvironmentBoolean(
+        "PIPSIGHT_DISABLE_TELEGRAM",
+        false
+      ),
+
+    telegramModes:
+      (
+        process.env.PIPSIGHT_TELEGRAM_MODES ||
+        "master"
+      )
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean),
+
+    telegramMinimumConfidence:
+      p6EnvironmentNumber(
+        "PIPSIGHT_TELEGRAM_MIN_CONFIDENCE",
+        P6_DEFAULT_TELEGRAM_MINIMUM_CONFIDENCE
+      ),
+
+    telegramCooldownMs:
+      p6EnvironmentNumber(
+        "PIPSIGHT_TELEGRAM_COOLDOWN_MS",
+        P6_DEFAULT_TELEGRAM_COOLDOWN_MS
+      ),
+
+    telegramNotifyHold:
+      p6EnvironmentBoolean(
+        "PIPSIGHT_TELEGRAM_NOTIFY_HOLD",
+        false
+      ),
+
+    telegramSilent:
+      p6EnvironmentBoolean(
+        "PIPSIGHT_TELEGRAM_SILENT",
+        false
+      ),
+
+    telegramTitle:
+      process.env.PIPSIGHT_TELEGRAM_TITLE ||
+      "PipSight Pro Signal",
+
+    createBackups:
+      p6EnvironmentBoolean(
+        "PIPSIGHT_CREATE_BACKUPS",
+        false
+      ),
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Output summary
+// ---------------------------------------------------------------------------
+
+function p6BuildRuntimeSummary(
+  output,
+  telegramResult,
+  appendedHistoryCount
+) {
+  const pairs =
+    liveIsPlainObject(output?.pairs)
+      ? Object.values(output.pairs)
+      : [];
+
+  return {
+    generatedAt:
+      output?.generatedAt ||
+      new Date().toISOString(),
+
+    pairCount:
+      pairs.length,
+
+    pairs:
+      pairs.map((record) => ({
+        pair:
+          record.pair,
+
+        swing:
+          record.swing?.decision ||
+          "HOLD",
+
+        intraday:
+          record.intraday?.decision ||
+          "HOLD",
+
+        scalp:
+          record.scalp?.decision ||
+          "HOLD",
+
+        master:
+          record.master?.decision ||
+          "HOLD",
+
+        confidence:
+          record.master?.confidence ||
+          0,
+      })),
+
+    historyAppended:
+      appendedHistoryCount,
+
+    telegramSent:
+      telegramResult?.sentCount ||
+      0,
+
+    telegramSkipped:
+      telegramResult?.skippedCount ||
+      0,
+
+    telegramFailed:
+      telegramResult?.failedCount ||
+      0,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Main analysis runtime
+// ---------------------------------------------------------------------------
+
+async function runLiveAnalysisRuntime(
+  overrideOptions = {}
+) {
+  const startedAt = Date.now();
+
+  p6EnsureDirectory(
+    P6_DATA_DIRECTORY
+  );
+
+  const validation =
+    p6ValidateRuntime();
+
+  for (const warning of validation.warnings) {
+    p6Log(
+      "WARN",
+      warning
+    );
+  }
+
+  if (!validation.ok) {
+    const message =
+      `Startup validation failed:\n- ${validation.errors.join("\n- ")}`;
+
+    throw new Error(message);
+  }
+
+  const runtimeOptions = {
+    ...p6BuildRuntimeOptions(),
+    ...overrideOptions,
+  };
+
+  p6Log(
+    "INFO",
+    "Loading analysis inputs"
+  );
+
+  const inputs =
+    p6LoadRuntimeInputs();
+
+  const oldLiveOutput =
+    p6ReadJsonFile(
+      P6_LIVE_ANALYSIS_PATH,
+      {},
+      {
+        required: false,
+      }
+    );
+
+  const pairBundles =
+    p6RunAllPairs(
+      inputs,
+      runtimeOptions
+    );
+
+  const generatedTimestamp =
+    Date.now();
+
+  let output =
+    buildLiveAnalysisOutput({
+      pairs:
+        pairBundles,
+
+      timestamp:
+        generatedTimestamp,
+
+      generatedAt:
+        new Date(
+          generatedTimestamp
+        ).toISOString(),
+
+      engineVersion:
+        typeof ENGINE_VERSION !== "undefined"
+          ? ENGINE_VERSION
+          : "unknown",
+
+      strategyVersion:
+        typeof STRATEGY_VERSION !== "undefined"
+          ? STRATEGY_VERSION
+          : "unknown",
+    });
+
+  output =
+    p6MergeExistingOutputMetadata(
+      output,
+      oldLiveOutput
+    );
+
+  output.runtime = {
+    startedAt:
+      new Date(startedAt).toISOString(),
+
+    completedAt:
+      new Date().toISOString(),
+
+    durationMs:
+      Date.now() - startedAt,
+
+    nodeVersion:
+      process.version,
+
+    inputFiles: {
+      scalpSignals:
+        P6_SCALP_SIGNALS_PATH,
+
+      scalpCandles:
+        P6_SCALP_CANDLES_PATH,
+
+      intradayH1:
+        P6_INTRADAY_H1_PATH,
+
+      dailyOhlc:
+        P6_DAILY_OHLC_PATH,
+    },
+
+    outputFiles: {
+      liveAnalysis:
+        P6_LIVE_ANALYSIS_PATH,
+
+      analysisHistory:
+        P6_ANALYSIS_HISTORY_PATH,
+
+      notifyState:
+        P6_NOTIFY_STATE_PATH,
+    },
+  };
+
+  const historyCandidates =
+    collectHistoryRecordsFromOutput(
+      output,
+      {
+        modes:
+          runtimeOptions.historyModes ||
+          [
+            "master",
+            "swing",
+            "intraday",
+            "scalp",
+          ],
+
+        includeHold:
+          runtimeOptions.includeHoldHistory ===
+          true,
+      }
+    );
+
+  const historyResult =
+    appendAnalysisHistoryRecords(
+      inputs.analysisHistory,
+      historyCandidates,
+      {
+        includeHold:
+          runtimeOptions.includeHoldHistory ===
+          true,
+
+        dedupeWindowMs:
+          runtimeOptions.historyDedupeWindowMs,
+
+        maximumRecords:
+          runtimeOptions.maximumHistoryRecords,
+      }
+    );
+
+  let telegramResult = {
+    notifyState:
+      normalizeNotifyState(
+        inputs.notifyState
+      ),
+
+    results: [],
+    sentCount: 0,
+    skippedCount: 0,
+    failedCount: 0,
+  };
+
+  if (
+    runtimeOptions.processTelegram !== false
+  ) {
+    try {
+      telegramResult =
+        await processLiveOutputNotifications(
+          output,
+          inputs.notifyState,
+          {
+            modes:
+              runtimeOptions.telegramModes ||
+              ["master"],
+
+            minimumConfidence:
+              runtimeOptions.telegramMinimumConfidence,
+
+            cooldownMs:
+              runtimeOptions.telegramCooldownMs,
+
+            notifyHold:
+              runtimeOptions.telegramNotifyHold ===
+              true,
+
+            token:
+              runtimeOptions.telegramToken,
+
+            chatId:
+              runtimeOptions.telegramChatId,
+
+            timeoutMs:
+              runtimeOptions.telegramTimeoutMs,
+
+            disableNotification:
+              runtimeOptions.telegramSilent ===
+              true,
+
+            title:
+              runtimeOptions.telegramTitle ||
+              "PipSight Pro Signal",
+          }
+        );
+    } catch (error) {
+      p6Log(
+        "WARN",
+        "Telegram processing failed; analysis output will still be saved",
+        p6ErrorMessage(error)
+      );
+
+      telegramResult = {
+        notifyState:
+          normalizeNotifyState(
+            inputs.notifyState
+          ),
+
+        results: [
+          {
+            sent: false,
+            skipped: false,
+            reason:
+              p6ErrorMessage(error),
+          },
+        ],
+
+        sentCount: 0,
+        skippedCount: 0,
+        failedCount: 1,
+      };
+    }
+  }
+
+  output.runtime.telegram = {
+    enabled:
+      runtimeOptions.processTelegram !==
+      false,
+
+    sentCount:
+      telegramResult.sentCount,
+
+    skippedCount:
+      telegramResult.skippedCount,
+
+    failedCount:
+      telegramResult.failedCount,
+  };
+
+  output.runtime.history = {
+    candidateCount:
+      historyCandidates.length,
+
+    appendedCount:
+      historyResult.appendedCount,
+
+    totalCount:
+      liveAsArray(
+        historyResult.history.records
+      ).length,
+  };
+
+  output.runtime.durationMs =
+    Date.now() - startedAt;
+
+  output.runtime.completedAt =
+    new Date().toISOString();
+
+  p6CreateBackupIfRequested(
+    P6_LIVE_ANALYSIS_PATH,
+    runtimeOptions.createBackups
+  );
+
+  p6CreateBackupIfRequested(
+    P6_ANALYSIS_HISTORY_PATH,
+    runtimeOptions.createBackups
+  );
+
+  p6CreateBackupIfRequested(
+    P6_NOTIFY_STATE_PATH,
+    runtimeOptions.createBackups
+  );
+
+  // Write notify state only after Telegram processing.
+  // This prevents failed Telegram attempts from being marked as sent.
+  p6AtomicWriteJson(
+    P6_LIVE_ANALYSIS_PATH,
+    output
+  );
+
+  p6AtomicWriteJson(
+    P6_ANALYSIS_HISTORY_PATH,
+    historyResult.history
+  );
+
+  p6AtomicWriteJson(
+    P6_NOTIFY_STATE_PATH,
+    telegramResult.notifyState
+  );
+
+  const summary =
+    p6BuildRuntimeSummary(
+      output,
+      telegramResult,
+      historyResult.appendedCount
+    );
+
+  p6Log(
+    "INFO",
+    "Live analysis completed successfully",
+    summary
+  );
+
+  return {
+    ok: true,
+
+    output,
+    history:
+      historyResult.history,
+
+    notifyState:
+      telegramResult.notifyState,
+
+    telegram:
+      telegramResult,
+
+    summary,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Final compatibility aliases
+// ---------------------------------------------------------------------------
+
+async function runLiveAnalysis(
+  options = {}
+) {
+  return runLiveAnalysisRuntime(
+    options
+  );
+}
+
+async function executeLiveAnalysis(
+  options = {}
+) {
+  return runLiveAnalysisRuntime(
+    options
+  );
+}
+
+async function run(
+  options = {}
+) {
+  return runLiveAnalysisRuntime(
+    options
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Unhandled runtime safety
+// ---------------------------------------------------------------------------
+
+function p6InstallRuntimeSafetyHandlers() {
+  process.on(
+    "unhandledRejection",
+    (reason) => {
+      p6Log(
+        "ERROR",
+        "Unhandled promise rejection",
+        p6ErrorMessage(reason)
+      );
+
+      process.exitCode = 1;
+    }
+  );
+
+  process.on(
+    "uncaughtException",
+    (error) => {
+      p6Log(
+        "ERROR",
+        "Uncaught exception",
+        p6ErrorMessage(error)
+      );
+
+      process.exitCode = 1;
+    }
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Direct execution
+// ---------------------------------------------------------------------------
+
+async function main() {
+  p6InstallRuntimeSafetyHandlers();
+
+  try {
+    await runLiveAnalysisRuntime();
+  } catch (error) {
+    p6Log(
+      "ERROR",
+      "Live analysis runtime failed",
+      p6ErrorMessage(error)
+    );
+
+    process.exitCode = 1;
+  }
+}
+
+if (
+  typeof require !== "undefined" &&
+  typeof module !== "undefined" &&
+  require.main === module
+) {
+  void main();
+}
+
+
+// ---------------------------------------------------------------------------
+// Optional CommonJS exports
+// ---------------------------------------------------------------------------
+
+if (
+  typeof module !== "undefined" &&
+  module.exports
+) {
+  module.exports = {
+    runLiveAnalysisRuntime,
+    runLiveAnalysis,
+    executeLiveAnalysis,
+    run,
+
+    prepareLiveAnalysisFrames,
+    runLegacyCompatibleAnalysisPipeline,
+
+    selectScalpEngineResult,
+    selectSwingEngineResult,
+    selectIntradayEngineResult,
+
+    buildMasterConsensus,
+    buildPairEngineBundle,
+    buildLiveAnalysisOutput,
+
+    collectHistoryRecordsFromOutput,
+    appendAnalysisHistoryRecords,
+
+    normalizeNotifyState,
+    processTelegramNotification,
+    processLiveOutputNotifications,
+
+    formatTelegramSignalMessage,
+    sendTelegramMessage,
+  };
+}
+
+
+// ============================================================================
+// END PART 6
+// END OF FILE — run-live-analysis.js
+// ============================================================================

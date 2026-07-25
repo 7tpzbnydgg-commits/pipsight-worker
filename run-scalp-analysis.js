@@ -2682,6 +2682,549 @@ function analyze(
 }
 
 /* =====================================================================
+   Signal Log Duplicate Suppression
+   ===================================================================== */
+
+function normalizeSignalDirection(value) {
+  const normalized =
+    String(value ?? "")
+      .trim()
+      .toUpperCase();
+
+  return (
+    normalized === "BUY" ||
+    normalized === "SELL"
+  )
+    ? normalized
+    : "WAIT";
+}
+
+function isActionableSignal(value) {
+  const direction =
+    normalizeSignalDirection(value);
+
+  return (
+    direction === "BUY" ||
+    direction === "SELL"
+  );
+}
+
+function findPairConfiguration(pairLabel) {
+  const normalized =
+    normalizePairKey(pairLabel);
+
+  return (
+    PAIRS.find(
+      pair =>
+        normalizePairKey(pair.label) === normalized ||
+        normalizePairKey(pair.key) === normalized
+    ) ||
+    null
+  );
+}
+
+function minimumPriceIncrement(pairLabel) {
+  const pair =
+    findPairConfiguration(pairLabel);
+
+  const decimals =
+    pair
+      ? decimalsFor(pair)
+      : 6;
+
+  return 10 ** -decimals;
+}
+
+function numericValue(value) {
+  const number =
+    Number(value);
+
+  return Number.isFinite(number)
+    ? number
+    : null;
+}
+
+function tradePlanRisk(tradePlan) {
+  if (
+    !tradePlan ||
+    typeof tradePlan !== "object"
+  ) {
+    return null;
+  }
+
+  const entry =
+    numericValue(
+      tradePlan.entry
+    );
+
+  const stopLoss =
+    numericValue(
+      tradePlan.stopLoss
+    );
+
+  if (
+    entry === null ||
+    stopLoss === null
+  ) {
+    return null;
+  }
+
+  return Math.abs(
+    entry - stopLoss
+  );
+}
+
+function tradePlanPriceTolerance(signal) {
+  const tradePlan =
+    signal?.tradePlan;
+
+  const entry =
+    numericValue(
+      tradePlan?.entry
+    );
+
+  const risk =
+    tradePlanRisk(
+      tradePlan
+    );
+
+  const minimumIncrement =
+    minimumPriceIncrement(
+      signal?.pair
+    );
+
+  const incrementTolerance =
+    minimumIncrement * 2;
+
+  const priceTolerance =
+    entry !== null
+      ? Math.abs(entry) *
+        LOG_PLAN_PRICE_CHANGE_RATIO
+      : 0;
+
+  const riskTolerance =
+    risk !== null
+      ? risk *
+        LOG_PLAN_RISK_CHANGE_RATIO
+      : 0;
+
+  return Math.max(
+    incrementTolerance,
+    priceTolerance,
+    riskTolerance
+  );
+}
+
+function numbersMateriallyEqual(
+  first,
+  second,
+  tolerance
+) {
+  const firstNumber =
+    numericValue(first);
+
+  const secondNumber =
+    numericValue(second);
+
+  if (
+    firstNumber === null &&
+    secondNumber === null
+  ) {
+    return true;
+  }
+
+  if (
+    firstNumber === null ||
+    secondNumber === null
+  ) {
+    return false;
+  }
+
+  return (
+    Math.abs(
+      firstNumber -
+      secondNumber
+    ) <= tolerance
+  );
+}
+
+function tradePlansMateriallyEqual(
+  previousSignal,
+  currentSignal
+) {
+  const previousPlan =
+    previousSignal?.tradePlan;
+
+  const currentPlan =
+    currentSignal?.tradePlan;
+
+  if (
+    !previousPlan &&
+    !currentPlan
+  ) {
+    return true;
+  }
+
+  if (
+    !previousPlan ||
+    !currentPlan
+  ) {
+    return false;
+  }
+
+  const tolerance =
+    Math.max(
+      tradePlanPriceTolerance(
+        previousSignal
+      ),
+      tradePlanPriceTolerance(
+        currentSignal
+      )
+    );
+
+  const priceFields = [
+    "entry",
+    "stopLoss",
+    "target1",
+    "target2",
+    "target3"
+  ];
+
+  for (
+    const field of priceFields
+  ) {
+    if (
+      !numbersMateriallyEqual(
+        previousPlan[field],
+        currentPlan[field],
+        tolerance
+      )
+    ) {
+      return false;
+    }
+  }
+
+  if (
+    !numbersMateriallyEqual(
+      previousPlan.riskReward,
+      currentPlan.riskReward,
+      LOG_RISK_REWARD_CHANGE_THRESHOLD
+    )
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function confidenceMateriallyEqual(
+  previousConfidence,
+  currentConfidence
+) {
+  const previous =
+    numericValue(
+      previousConfidence
+    );
+
+  const current =
+    numericValue(
+      currentConfidence
+    );
+
+  if (
+    previous === null &&
+    current === null
+  ) {
+    return true;
+  }
+
+  if (
+    previous === null ||
+    current === null
+  ) {
+    return false;
+  }
+
+  return (
+    Math.abs(
+      previous -
+      current
+    ) <
+    LOG_CONFIDENCE_CHANGE_THRESHOLD
+  );
+}
+
+function findPreviousSnapshotSignal(
+  previousSnapshot,
+  currentSignal
+) {
+  const previousSignals =
+    Array.isArray(
+      previousSnapshot?.signals
+    )
+      ? previousSnapshot.signals
+      : [];
+
+  const expectedPair =
+    normalizePairKey(
+      currentSignal?.pair
+    );
+
+  const expectedMode =
+    String(
+      currentSignal?.mode ??
+      ""
+    )
+      .trim()
+      .toUpperCase();
+
+  return (
+    previousSignals.find(
+      previous =>
+        normalizePairKey(
+          previous?.pair
+        ) === expectedPair &&
+        String(
+          previous?.mode ??
+          ""
+        )
+          .trim()
+          .toUpperCase() ===
+          expectedMode
+    ) ||
+    null
+  );
+}
+
+function findLatestSignalLogEntry(
+  log,
+  currentSignal
+) {
+  const expectedPair =
+    normalizePairKey(
+      currentSignal?.pair
+    );
+
+  const expectedMode =
+    String(
+      currentSignal?.mode ??
+      ""
+    )
+      .trim()
+      .toUpperCase();
+
+  for (
+    let index =
+      log.length - 1;
+    index >= 0;
+    index--
+  ) {
+    const entry =
+      log[index];
+
+    if (
+      !entry ||
+      typeof entry !== "object"
+    ) {
+      continue;
+    }
+
+    if (
+      normalizePairKey(
+        entry.pair
+      ) !== expectedPair
+    ) {
+      continue;
+    }
+
+    if (
+      String(
+        entry.mode ??
+        ""
+      )
+        .trim()
+        .toUpperCase() !==
+      expectedMode
+    ) {
+      continue;
+    }
+
+    return entry;
+  }
+
+  return null;
+}
+
+function shouldAppendSignalLogEntry({
+  signal,
+  previousSnapshot,
+  log
+}) {
+  if (
+    !isActionableSignal(
+      signal?.signal
+    )
+  ) {
+    return {
+      append: false,
+      reason:
+        "non-actionable-signal"
+    };
+  }
+
+  const previousSnapshotSignal =
+    findPreviousSnapshotSignal(
+      previousSnapshot,
+      signal
+    );
+
+  /*
+   * No previous snapshot means this is either the first run or the
+   * previous output was unavailable. Preserve the signal in the log.
+   */
+  if (!previousSnapshotSignal) {
+    return {
+      append: true,
+      reason:
+        "no-previous-snapshot"
+    };
+  }
+
+  const previousDirection =
+    normalizeSignalDirection(
+      previousSnapshotSignal.signal
+    );
+
+  const currentDirection =
+    normalizeSignalDirection(
+      signal.signal
+    );
+
+  /*
+   * A signal appearing after WAIT represents a new signal lifecycle,
+   * even when an older historical log entry has the same direction.
+   */
+  if (
+    !isActionableSignal(
+      previousDirection
+    )
+  ) {
+    return {
+      append: true,
+      reason:
+        "signal-reactivated"
+    };
+  }
+
+  if (
+    previousDirection !==
+    currentDirection
+  ) {
+    return {
+      append: true,
+      reason:
+        "direction-changed"
+    };
+  }
+
+  const latestLogEntry =
+    findLatestSignalLogEntry(
+      log,
+      signal
+    );
+
+  /*
+   * Recover safely if the snapshot says a signal was active but its
+   * matching persistent log entry is missing.
+   */
+  if (!latestLogEntry) {
+    return {
+      append: true,
+      reason:
+        "missing-log-history"
+    };
+  }
+
+  if (
+    normalizeSignalDirection(
+      latestLogEntry.signal
+    ) !== currentDirection
+  ) {
+    return {
+      append: true,
+      reason:
+        "log-direction-changed"
+    };
+  }
+
+  if (
+    !tradePlansMateriallyEqual(
+      latestLogEntry,
+      signal
+    )
+  ) {
+    return {
+      append: true,
+      reason:
+        "trade-plan-changed"
+    };
+  }
+
+  if (
+    !confidenceMateriallyEqual(
+      latestLogEntry.confidence,
+      signal.confidence
+    )
+  ) {
+    return {
+      append: true,
+      reason:
+        "confidence-changed"
+    };
+  }
+
+  return {
+    append: false,
+    reason:
+      "unchanged-active-signal"
+  };
+}
+
+function createSignalLogEntry(
+  signal,
+  generatedAt,
+  reason
+) {
+  return {
+    pair:
+      signal.pair,
+
+    mode:
+      signal.mode,
+
+    signal:
+      normalizeSignalDirection(
+        signal.signal
+      ),
+
+    confidence:
+      signal.confidence,
+
+    tradePlan:
+      signal.tradePlan,
+
+    generatedAt,
+
+    analyzedCandleAt:
+      signal.analyzedCandleAt ??
+      null,
+
+    logReason:
+      reason
+  };
+}
+
+/* =====================================================================
    Main Worker
    ===================================================================== */
 

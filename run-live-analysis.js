@@ -3227,17 +3227,23 @@ Hold: 2–7 days`
       );
 
       const notifyKey =
-        `${pairKey}:intraday`;
+  `${pairKey}:intraday`;
 
-      if (
-        analysis.signal !==
-          "HOLD" &&
-        notifyState[
-          notifyKey
-        ] !== analysis.signal
-      ) {
-        await sendTelegram(
-          `🔔 PipSight — Intraday
+if (
+  analysis.signal ===
+  "HOLD"
+) {
+  notifyState[
+    notifyKey
+  ] = "HOLD";
+} else if (
+  notifyState[
+    notifyKey
+  ] !== analysis.signal
+) {
+  const notificationSent =
+    await sendTelegram(
+      `🔔 PipSight — Intraday
 ${pairKey} · H1+H4
 ${
   analysis.signal ===
@@ -3250,13 +3256,14 @@ ${formatTradePlan(
   decimals
 )}
 Hold: 2–12 hours`
-        );
-      }
+    );
 
-      notifyState[
-        notifyKey
-      ] = analysis.signal;
-    }
+  if (notificationSent) {
+    notifyState[
+      notifyKey
+    ] = analysis.signal;
+  }
+}
 
     // ===================== Scalp =====================
 

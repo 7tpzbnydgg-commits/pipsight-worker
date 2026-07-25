@@ -4952,3 +4952,3519 @@ function runAnalysisPipeline(input = {}) {
   return runLegacyCompatibleAnalysisPipeline(input);
 }
 
+// ============================================================================
+// PART 5 — ENGINE SELECTION + MASTER CONSENSUS
+//          + OUTPUT SCHEMA ASSEMBLY + HISTORY/TELEGRAM INTEGRATION
+// ============================================================================
+//
+// This section:
+// - Selects revised or legacy-compatible Scalp analysis safely.
+// - Preserves data/scalp-signals.json as the primary Scalp source.
+// - Uses candle-based Scalp analysis only as fallback.
+// - Builds Swing, Intraday, Scalp and Master engine results.
+// - Normalizes WAIT, NEUTRAL, NO_TRADE and similar states to HOLD.
+// - Preserves common legacy output field aliases.
+// - Appends analysis-history.json safely with deduplication.
+// - Uses notify-state.json to prevent duplicate Telegram alerts.
+// - Preserves Telegram as an optional, non-blocking integration.
+// - Does not write live-analysis.json yet; final orchestration is in Part 6.
+//
+// Required from earlier parts:
+// - safe JSON reading/writing helpers from Parts 1–3.
+// - pair normalization helpers from Parts 1–3.
+// - runLegacyCompatibleAnalysisPipeline() from Part 4.
+// - TELEGRAM_TIMEOUT_MS from Part 1.
+// ============================================================================
+
+
+// ---------------------------------------------------------------------------
+// Shared compatibility helpers
+// ---------------------------------------------------------------------------
+
+function liveIsPlainObject(value) {
+  return Boolean(
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value)
+  );
+}
+
+function liveAsArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function liveCloneValue(value) {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return value;
+  }
+}
+
+function liveFiniteNumber(value, fallback = null) {
+  if (value === null || value === undefined || value === "") {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function liveBoundNumber(value, minimum, maximum, fallback = 0) {
+  const parsed = liveFiniteNumber(value, fallback);
+
+  return Math.max(
+    minimum,
+    Math.min(maximum, parsed)
+  );
+}
+
+function liveNonEmptyString(value, fallback = "") {
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+
+  const text = String(value).trim();
+  return text || fallback;
+}
+
+function liveFirstDefined(object, keys, fallback = undefined) {
+  if (!liveIsPlainObject(object)) {
+    return fallback;
+  }
+
+  for (const key of keys) {
+    if (
+      Object.prototype.hasOwnProperty.call(object, key) &&
+      object[key] !== undefined &&
+      object[key] !== null &&
+      object[key] !== ""
+    ) {
+      return object[key];
+    }
+  }
+
+  return fallback;
+}
+
+function liveNowIso() {
+  return new Date().toISOString();
+}
+
+function liveStableTimestamp(value, fallback = Date.now()) {
+  if (typeof normalizeTimestampMs === "function") {
+    const normalized = normalizeTimestampMs(value);
+
+    if (Number.isFinite(normalized)) {
+      return normalized;
+    }
+  }
+
+  if (value instanceof Date) {
+    const time = value.getTime();
+    return Number.isFinite(time) ? time : fallback;
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value < 10_000_000_000
+      ? Math.trunc(value * 1000)
+      : Math.trunc(value);
+  }
+
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+
+  return fallback;
+}
+
+function liveNormalizePairLabel(value, fallback = "UNKNOWN") {
+  if (typeof normalizePairLabel === "function") {
+    try {
+      const normalized = normalizePairLabel(value);
+
+      if (normalized) {
+        return normalized;
+      }
+    } catch {
+      // Continue with local fallback.
+    }
+  }
+
+  if (typeof normalizePair === "function") {
+    try {
+      const normalized = normalizePair(value);
+
+      if (normalized) {
+        return normalized;
+      }
+    } catch {
+      // Continue with local fallback.
+    }
+  }
+
+  const raw = liveNonEmptyString(value, fallback)
+    .toUpperCase()
+    .replace(/\s+/g, "");
+
+  const compact = raw.replace(/[^A-Z0-9]/g, "");
+
+  const aliases = {
+    XAUUSD: "XAU/USD",
+    GOLD: "XAU/USD",
+    GOLDUSD: "XAU/USD",
+
+    GBPJPY: "GBP/JPY",
+    GJ: "GBP/JPY",
+  };
+
+  if (aliases[compact]) {
+    return aliases[compact];
+  }
+
+  if (/^[A-Z]{6}$/.test(compact)) {
+    return `${compact.slice(0, 3)}/${compact.slice(3)}`;
+  }
+
+  return raw || fallback;
+}
+
+function liveCompactPair(value) {
+  return liveNormalizePairLabel(value)
+    .replace(/[^A-Z0-9]/g, "");
+}
+
+function liveNormalizeMode(value, fallback = "unknown") {
+  const raw = liveNonEmptyString(value, fallback)
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
+
+  const aliases = {
+    scalp: "scalp",
+    scalping: "scalp",
+
+    intraday: "intraday",
+    daytrade: "intraday",
+    daytrading: "intraday",
+    h1: "intraday",
+
+    swing: "swing",
+    daily: "swing",
+    d1: "swing",
+
+    weekly: "weekly",
+    w1: "weekly",
+
+    master: "master",
+    consensus: "master",
+  };
+
+  return aliases[raw] || fallback;
+}
+
+
+// ---------------------------------------------------------------------------
+// Universal decision normalization
+// ---------------------------------------------------------------------------
+
+function normalizeLiveDecision(value) {
+  if (typeof normalizePipelineDecision === "function") {
+    try {
+      return normalizePipelineDecision(value);
+    } catch {
+      // Continue with local compatibility rules.
+    }
+  }
+
+  const normalized = liveNonEmptyString(value)
+    .toUpperCase()
+    .replace(/[\s_-]+/g, "");
+
+  const buyValues = new Set([
+    "BUY",
+    "LONG",
+    "BULL",
+    "BULLISH",
+    "STRONGBUY",
+    "BUYSETUP",
+    "UP",
+  ]);
+
+  const sellValues = new Set([
+    "SELL",
+    "SHORT",
+    "BEAR",
+    "BEARISH",
+    "STRONGSELL",
+    "SELLSETUP",
+    "DOWN",
+  ]);
+
+  if (buyValues.has(normalized)) {
+    return "BUY";
+  }
+
+  if (sellValues.has(normalized)) {
+    return "SELL";
+  }
+
+  // WAIT, NEUTRAL, NONE, FLAT and unknown states intentionally become HOLD.
+  return "HOLD";
+}
+
+function liveDecisionScore(decision) {
+  const normalized = normalizeLiveDecision(decision);
+
+  if (normalized === "BUY") return 1;
+  if (normalized === "SELL") return -1;
+
+  return 0;
+}
+
+function liveOppositeDecision(decision) {
+  const normalized = normalizeLiveDecision(decision);
+
+  if (normalized === "BUY") return "SELL";
+  if (normalized === "SELL") return "BUY";
+
+  return "HOLD";
+}
+
+
+// ---------------------------------------------------------------------------
+// Confidence and price extraction
+// ---------------------------------------------------------------------------
+
+function liveNormalizeConfidence(value, fallback = 0) {
+  let confidence = liveFiniteNumber(value, fallback);
+
+  if (!Number.isFinite(confidence)) {
+    confidence = fallback;
+  }
+
+  // Accept 0–1 confidence ratios as well as 0–100 percentages.
+  if (confidence >= 0 && confidence <= 1) {
+    confidence *= 100;
+  }
+
+  return Math.round(
+    liveBoundNumber(confidence, 0, 100, fallback)
+  );
+}
+
+function liveExtractDecision(source) {
+  if (!liveIsPlainObject(source)) {
+    return normalizeLiveDecision(source);
+  }
+
+  return normalizeLiveDecision(
+    liveFirstDefined(source, [
+      "decision",
+      "signal",
+      "action",
+      "direction",
+      "recommendation",
+      "bias",
+      "side",
+      "trade",
+      "result",
+    ])
+  );
+}
+
+function liveExtractConfidence(source, fallback = 0) {
+  if (!liveIsPlainObject(source)) {
+    return liveNormalizeConfidence(fallback);
+  }
+
+  return liveNormalizeConfidence(
+    liveFirstDefined(source, [
+      "confidence",
+      "confidencePct",
+      "confidencePercent",
+      "probability",
+      "scorePercent",
+      "strength",
+      "quality",
+      "accuracy",
+    ]),
+    fallback
+  );
+}
+
+function liveExtractScore(source, fallback = 0) {
+  if (!liveIsPlainObject(source)) {
+    return liveFiniteNumber(fallback, 0);
+  }
+
+  const raw = liveFirstDefined(source, [
+    "score",
+    "signalScore",
+    "weightedScore",
+    "netScore",
+    "biasScore",
+  ]);
+
+  const parsed = liveFiniteNumber(raw);
+
+  if (Number.isFinite(parsed)) {
+    return liveBoundNumber(parsed, -100, 100, fallback);
+  }
+
+  const decision = liveExtractDecision(source);
+  const confidence = liveExtractConfidence(source, fallback);
+
+  return liveDecisionScore(decision) * confidence;
+}
+
+function liveExtractPrice(source, fallback = null) {
+  if (!liveIsPlainObject(source)) {
+    return liveFiniteNumber(source, fallback);
+  }
+
+  return liveFiniteNumber(
+    liveFirstDefined(source, [
+      "price",
+      "currentPrice",
+      "lastPrice",
+      "entry",
+      "entryPrice",
+      "close",
+      "marketPrice",
+    ]),
+    fallback
+  );
+}
+
+function liveExtractTimestamp(source, fallback = Date.now()) {
+  if (!liveIsPlainObject(source)) {
+    return liveStableTimestamp(source, fallback);
+  }
+
+  return liveStableTimestamp(
+    liveFirstDefined(source, [
+      "timestamp",
+      "generatedAt",
+      "updatedAt",
+      "createdAt",
+      "time",
+      "date",
+      "signalTime",
+    ]),
+    fallback
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Trade-plan normalization
+// ---------------------------------------------------------------------------
+
+function normalizeLiveTradePlan(source, pair, decision) {
+  if (!liveIsPlainObject(source)) {
+    return null;
+  }
+
+  const normalizedDecision = normalizeLiveDecision(decision);
+  const decimals =
+    typeof livePairPriceDecimals === "function"
+      ? livePairPriceDecimals(pair)
+      : liveCompactPair(pair).endsWith("JPY")
+        ? 3
+        : liveCompactPair(pair) === "XAUUSD"
+          ? 2
+          : 5;
+
+  const roundPrice = (value) => {
+    const parsed = liveFiniteNumber(value);
+
+    if (!Number.isFinite(parsed)) {
+      return null;
+    }
+
+    if (typeof liveRoundPrice === "function") {
+      return liveRoundPrice(parsed, decimals);
+    }
+
+    return Number(parsed.toFixed(decimals));
+  };
+
+  const entry = roundPrice(
+    liveFirstDefined(source, [
+      "entry",
+      "entryPrice",
+      "price",
+      "currentPrice",
+    ])
+  );
+
+  const stopLoss = roundPrice(
+    liveFirstDefined(source, [
+      "stopLoss",
+      "stop",
+      "sl",
+      "stop_price",
+    ])
+  );
+
+  const takeProfit1 = roundPrice(
+    liveFirstDefined(source, [
+      "takeProfit1",
+      "target1",
+      "tp1",
+      "take_profit_1",
+    ])
+  );
+
+  const takeProfit2 = roundPrice(
+    liveFirstDefined(source, [
+      "takeProfit2",
+      "target2",
+      "tp2",
+      "take_profit_2",
+    ])
+  );
+
+  const takeProfit3 = roundPrice(
+    liveFirstDefined(source, [
+      "takeProfit3",
+      "target3",
+      "tp3",
+      "take_profit_3",
+    ])
+  );
+
+  if (
+    normalizedDecision === "HOLD" ||
+    !Number.isFinite(entry) ||
+    !Number.isFinite(stopLoss) ||
+    !Number.isFinite(takeProfit1)
+  ) {
+    return null;
+  }
+
+  const calculatedRisk = Math.abs(entry - stopLoss);
+  const calculatedReward = Math.abs(takeProfit1 - entry);
+
+  const risk = roundPrice(
+    liveFirstDefined(source, ["risk"], calculatedRisk)
+  );
+
+  const reward = roundPrice(
+    liveFirstDefined(source, ["reward"], calculatedReward)
+  );
+
+  const suppliedRiskReward = liveFiniteNumber(
+    liveFirstDefined(source, [
+      "riskReward",
+      "risk_reward",
+      "rr",
+      "riskToReward",
+    ])
+  );
+
+  const riskReward =
+    Number.isFinite(suppliedRiskReward)
+      ? Number(suppliedRiskReward.toFixed(2))
+      : calculatedRisk > 0
+        ? Number((calculatedReward / calculatedRisk).toFixed(2))
+        : null;
+
+  return {
+    direction: normalizedDecision,
+
+    entry,
+    entryPrice: entry,
+
+    stop: stopLoss,
+    stopLoss,
+    sl: stopLoss,
+
+    target1: takeProfit1,
+    target2: takeProfit2,
+    target3: takeProfit3,
+
+    takeProfit1,
+    takeProfit2,
+    takeProfit3,
+
+    tp1: takeProfit1,
+    tp2: takeProfit2,
+    tp3: takeProfit3,
+
+    risk,
+    reward,
+
+    riskReward,
+    rr: riskReward,
+
+    atr: liveFiniteNumber(source.atr, null),
+  };
+}
+
+function liveExtractTradePlan(source, pair, decision) {
+  if (!liveIsPlainObject(source)) {
+    return null;
+  }
+
+  const directPlan =
+    liveFirstDefined(source, [
+      "tradePlan",
+      "plan",
+      "trade_plan",
+      "setup",
+    ]);
+
+  if (liveIsPlainObject(directPlan)) {
+    return normalizeLiveTradePlan(
+      directPlan,
+      pair,
+      decision
+    );
+  }
+
+  return normalizeLiveTradePlan(
+    source,
+    pair,
+    decision
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Canonical engine result
+// ---------------------------------------------------------------------------
+
+function buildCanonicalEngineResult(
+  source,
+  options = {}
+) {
+  const rawSource = liveIsPlainObject(source)
+    ? source
+    : {};
+
+  const pair = liveNormalizePairLabel(
+    options.pair ||
+      rawSource.pair ||
+      rawSource.symbol ||
+      rawSource.pairLabel
+  );
+
+  const mode = liveNormalizeMode(
+    options.mode ||
+      rawSource.mode ||
+      rawSource.engine ||
+      rawSource.timeframe,
+    options.defaultMode || "unknown"
+  );
+
+  const engineName = liveNonEmptyString(
+    options.engineName ||
+      rawSource.engineName ||
+      rawSource.engine ||
+      rawSource.source,
+    mode
+  );
+
+  let decision = liveExtractDecision(rawSource);
+  let confidence = liveExtractConfidence(
+    rawSource,
+    decision === "HOLD" ? 0 : 50
+  );
+
+  let score = liveExtractScore(
+    rawSource,
+    liveDecisionScore(decision) * confidence
+  );
+
+  const price = liveExtractPrice(
+    rawSource,
+    liveFiniteNumber(options.price, null)
+  );
+
+  const timestamp = liveExtractTimestamp(
+    rawSource,
+    options.timestamp || Date.now()
+  );
+
+  const tradePlan = liveExtractTradePlan(
+    rawSource,
+    pair,
+    decision
+  );
+
+  if (decision !== "HOLD" && !tradePlan && options.requireTradePlan) {
+    decision = "HOLD";
+    confidence = Math.min(confidence, 69);
+  }
+
+  if (decision === "HOLD") {
+    score = liveBoundNumber(score, -69, 69, 0);
+  }
+
+  const reason = liveNonEmptyString(
+    liveFirstDefined(rawSource, [
+      "reason",
+      "summary",
+      "message",
+      "explanation",
+      "note",
+    ]),
+    decision === "HOLD"
+      ? "No fully confirmed setup"
+      : `${decision} setup confirmed`
+  );
+
+  const steps = liveAsArray(
+    liveFirstDefined(rawSource, [
+      "steps",
+      "pipeline",
+      "checks",
+    ])
+  ).map((step) => liveCloneValue(step));
+
+  const canonical = {
+    pair,
+    symbol: pair,
+    pairLabel: pair,
+
+    mode,
+    engine: engineName,
+    engineName,
+
+    decision,
+    signal: decision,
+    action: decision,
+    direction: decision,
+
+    confidence,
+    confidencePct: confidence,
+
+    score: Number(
+      liveBoundNumber(score, -100, 100, 0).toFixed(2)
+    ),
+
+    price,
+    currentPrice: price,
+    lastPrice: price,
+
+    timestamp,
+    time: new Date(timestamp).toISOString(),
+    generatedAt: new Date(timestamp).toISOString(),
+
+    reason,
+
+    tradePlan:
+      decision === "HOLD" ? null : tradePlan,
+
+    plan:
+      decision === "HOLD" ? null : tradePlan,
+
+    entry:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.entry
+        : null,
+
+    entryPrice:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.entryPrice
+        : null,
+
+    stop:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.stop
+        : null,
+
+    stopLoss:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.stopLoss
+        : null,
+
+    sl:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.sl
+        : null,
+
+    target1:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.target1
+        : null,
+
+    target2:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.target2
+        : null,
+
+    target3:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.target3
+        : null,
+
+    takeProfit1:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.takeProfit1
+        : null,
+
+    takeProfit2:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.takeProfit2
+        : null,
+
+    takeProfit3:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.takeProfit3
+        : null,
+
+    tp1:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.tp1
+        : null,
+
+    tp2:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.tp2
+        : null,
+
+    tp3:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.tp3
+        : null,
+
+    riskReward:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.riskReward
+        : null,
+
+    rr:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.rr
+        : null,
+
+    steps,
+    pipeline: steps,
+
+    status:
+      decision === "HOLD"
+        ? "HOLD"
+        : "ACTIVE",
+
+    source: liveNonEmptyString(
+      options.source ||
+        rawSource.source ||
+        engineName,
+      engineName
+    ),
+
+    available:
+      options.available !== undefined
+        ? Boolean(options.available)
+        : true,
+  };
+
+  // Preserve useful fields from the source without overwriting canonical keys.
+  const passthroughKeys = [
+    "indicators",
+    "trend",
+    "trendDirection",
+    "rawDirection",
+    "marketStructure",
+    "structure",
+    "supportResistance",
+    "supports",
+    "resistances",
+    "nearestSupport",
+    "nearestResistance",
+    "higherTimeframe",
+    "mtfConfirmed",
+    "candleCount",
+    "diagnostics",
+    "metadata",
+    "version",
+    "strategyVersion",
+  ];
+
+  for (const key of passthroughKeys) {
+    if (
+      rawSource[key] !== undefined &&
+      canonical[key] === undefined
+    ) {
+      canonical[key] = liveCloneValue(rawSource[key]);
+    }
+  }
+
+  return canonical;
+}
+
+
+// ---------------------------------------------------------------------------
+// Scalp signal extraction
+// ---------------------------------------------------------------------------
+
+function liveFindPairRecord(container, pair) {
+  if (!container) {
+    return null;
+  }
+
+  const normalizedPair = liveNormalizePairLabel(pair);
+  const compactPair = liveCompactPair(pair);
+
+  if (Array.isArray(container)) {
+    return (
+      container.find((item) => {
+        if (!liveIsPlainObject(item)) {
+          return false;
+        }
+
+        const itemPair = liveNormalizePairLabel(
+          item.pair ||
+            item.symbol ||
+            item.pairLabel ||
+            item.instrument
+        );
+
+        return (
+          itemPair === normalizedPair ||
+          liveCompactPair(itemPair) === compactPair
+        );
+      }) || null
+    );
+  }
+
+  if (!liveIsPlainObject(container)) {
+    return null;
+  }
+
+  const directKeys = [
+    normalizedPair,
+    compactPair,
+    normalizedPair.replace("/", "-"),
+    normalizedPair.replace("/", "_"),
+    normalizedPair.replace("/", ""),
+  ];
+
+  for (const key of directKeys) {
+    if (
+      Object.prototype.hasOwnProperty.call(container, key) &&
+      container[key] !== null &&
+      container[key] !== undefined
+    ) {
+      return container[key];
+    }
+  }
+
+  for (const [key, value] of Object.entries(container)) {
+    if (liveCompactPair(key) === compactPair) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function extractPrimaryScalpSignal(
+  scalpSignalsData,
+  pair
+) {
+  if (!scalpSignalsData) {
+    return null;
+  }
+
+  const candidateContainers = [
+    scalpSignalsData,
+    scalpSignalsData.signals,
+    scalpSignalsData.results,
+    scalpSignalsData.pairs,
+    scalpSignalsData.data,
+    scalpSignalsData.analysis,
+    scalpSignalsData.scalp,
+  ];
+
+  let record = null;
+
+  for (const container of candidateContainers) {
+    record = liveFindPairRecord(container, pair);
+
+    if (record) {
+      break;
+    }
+  }
+
+  if (!record && liveIsPlainObject(scalpSignalsData)) {
+    const recordPair = liveNormalizePairLabel(
+      scalpSignalsData.pair ||
+        scalpSignalsData.symbol ||
+        scalpSignalsData.pairLabel
+    );
+
+    if (
+      liveCompactPair(recordPair) ===
+      liveCompactPair(pair)
+    ) {
+      record = scalpSignalsData;
+    }
+  }
+
+  if (!record) {
+    return null;
+  }
+
+  const nestedSignal =
+    liveIsPlainObject(record.signal)
+      ? record.signal
+      : liveIsPlainObject(record.analysis)
+        ? record.analysis
+        : liveIsPlainObject(record.result)
+          ? record.result
+          : record;
+
+  return liveIsPlainObject(nestedSignal)
+    ? {
+        ...record,
+        ...nestedSignal,
+      }
+    : record;
+}
+
+function isUsablePrimaryScalpSignal(
+  signal,
+  options = {}
+) {
+  if (!liveIsPlainObject(signal)) {
+    return false;
+  }
+
+  const decision = liveExtractDecision(signal);
+  const timestamp = liveExtractTimestamp(signal, 0);
+
+  if (decision === "HOLD" && options.allowHold !== true) {
+    return false;
+  }
+
+  const maximumAgeMs = Math.max(
+    0,
+    liveFiniteNumber(
+      options.maximumAgeMs,
+      6 * 60 * 60 * 1000
+    )
+  );
+
+  if (
+    maximumAgeMs > 0 &&
+    timestamp > 0 &&
+    Date.now() - timestamp > maximumAgeMs
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+
+// ---------------------------------------------------------------------------
+// Scalp engine selection
+// ---------------------------------------------------------------------------
+
+function selectScalpEngineResult(input = {}) {
+  const pair = liveNormalizePairLabel(
+    input.pair ||
+      input.symbol ||
+      input.pairLabel
+  );
+
+  const primarySignal = extractPrimaryScalpSignal(
+    input.scalpSignalsData ||
+      input.scalpSignals ||
+      input.primaryScalpData,
+    pair
+  );
+
+  const allowPrimaryHold =
+    input.allowPrimaryHold === true;
+
+  if (
+    isUsablePrimaryScalpSignal(primarySignal, {
+      allowHold: allowPrimaryHold,
+      maximumAgeMs:
+        input.maximumPrimaryScalpAgeMs,
+    })
+  ) {
+    const primaryResult = buildCanonicalEngineResult(
+      primarySignal,
+      {
+        pair,
+        mode: "scalp",
+        engineName: "scalp-signals",
+        source: "data/scalp-signals.json",
+        requireTradePlan: false,
+      }
+    );
+
+    return {
+      ...primaryResult,
+
+      selection: {
+        selected: "primary-signal",
+        primaryAvailable: true,
+        fallbackAvailable: Boolean(
+          input.fallbackScalpAnalysis
+        ),
+        reason:
+          "Primary Scalp signal selected from data/scalp-signals.json",
+      },
+    };
+  }
+
+  const fallbackSource =
+    input.fallbackScalpAnalysis ||
+    input.legacyScalpAnalysis ||
+    input.candleScalpAnalysis ||
+    null;
+
+  if (liveIsPlainObject(fallbackSource)) {
+    const fallbackResult = buildCanonicalEngineResult(
+      fallbackSource,
+      {
+        pair,
+        mode: "scalp",
+        engineName: "legacy-scalp-candles",
+        source: "data/scalp-candles.json",
+        requireTradePlan: false,
+      }
+    );
+
+    return {
+      ...fallbackResult,
+
+      selection: {
+        selected: "legacy-candle-fallback",
+        primaryAvailable: Boolean(primarySignal),
+        fallbackAvailable: true,
+        reason: primarySignal
+          ? "Primary Scalp signal was stale or unusable; candle fallback selected"
+          : "Primary Scalp signal unavailable; candle fallback selected",
+      },
+    };
+  }
+
+  const holdResult = buildCanonicalEngineResult(
+    {
+      decision: "HOLD",
+      confidence: 0,
+      reason:
+        "No usable primary or fallback Scalp analysis available",
+      timestamp: Date.now(),
+    },
+    {
+      pair,
+      mode: "scalp",
+      engineName: "scalp-unavailable",
+      source: "none",
+      available: false,
+    }
+  );
+
+  return {
+    ...holdResult,
+
+    selection: {
+      selected: "none",
+      primaryAvailable: Boolean(primarySignal),
+      fallbackAvailable: false,
+      reason:
+        "No usable Scalp engine result available",
+    },
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Swing and Intraday result selection
+// ---------------------------------------------------------------------------
+
+function selectSwingEngineResult(input = {}) {
+  const pair = liveNormalizePairLabel(
+    input.pair ||
+      input.symbol ||
+      input.pairLabel
+  );
+
+  const source =
+    input.swingAnalysis ||
+    input.dailyAnalysis ||
+    input.analysisPipeline?.daily ||
+    input.pipeline?.daily ||
+    null;
+
+  if (!liveIsPlainObject(source)) {
+    return buildCanonicalEngineResult(
+      {
+        decision: "HOLD",
+        confidence: 0,
+        reason: "Swing analysis unavailable",
+      },
+      {
+        pair,
+        mode: "swing",
+        engineName: "swing",
+        source: "daily-analysis",
+        available: false,
+      }
+    );
+  }
+
+  return buildCanonicalEngineResult(
+    source,
+    {
+      pair,
+      mode: "swing",
+      engineName: "swing",
+      source: "daily-analysis",
+      requireTradePlan: false,
+    }
+  );
+}
+
+function selectIntradayEngineResult(input = {}) {
+  const pair = liveNormalizePairLabel(
+    input.pair ||
+      input.symbol ||
+      input.pairLabel
+  );
+
+  const source =
+    input.intradayAnalysis ||
+    input.h1Analysis ||
+    input.analysisPipeline?.intraday ||
+    input.pipeline?.intraday ||
+    null;
+
+  if (!liveIsPlainObject(source)) {
+    return buildCanonicalEngineResult(
+      {
+        decision: "HOLD",
+        confidence: 0,
+        reason: "Intraday analysis unavailable",
+      },
+      {
+        pair,
+        mode: "intraday",
+        engineName: "intraday",
+        source: "data/intraday-h1.json",
+        available: false,
+      }
+    );
+  }
+
+  return buildCanonicalEngineResult(
+    source,
+    {
+      pair,
+      mode: "intraday",
+      engineName: "intraday",
+      source: "data/intraday-h1.json",
+      requireTradePlan: false,
+    }
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Consensus weighting
+// ---------------------------------------------------------------------------
+
+const DEFAULT_MASTER_ENGINE_WEIGHTS = Object.freeze({
+  swing: 0.40,
+  intraday: 0.35,
+  scalp: 0.25,
+});
+
+function normalizeMasterWeights(rawWeights = {}) {
+  const weights = {
+    swing: Math.max(
+      0,
+      liveFiniteNumber(
+        rawWeights.swing,
+        DEFAULT_MASTER_ENGINE_WEIGHTS.swing
+      )
+    ),
+
+    intraday: Math.max(
+      0,
+      liveFiniteNumber(
+        rawWeights.intraday,
+        DEFAULT_MASTER_ENGINE_WEIGHTS.intraday
+      )
+    ),
+
+    scalp: Math.max(
+      0,
+      liveFiniteNumber(
+        rawWeights.scalp,
+        DEFAULT_MASTER_ENGINE_WEIGHTS.scalp
+      )
+    ),
+  };
+
+  const total =
+    weights.swing +
+    weights.intraday +
+    weights.scalp;
+
+  if (total <= 0) {
+    return {
+      ...DEFAULT_MASTER_ENGINE_WEIGHTS,
+    };
+  }
+
+  return {
+    swing: weights.swing / total,
+    intraday: weights.intraday / total,
+    scalp: weights.scalp / total,
+  };
+}
+
+function masterEngineContribution(
+  engineResult,
+  weight
+) {
+  const result = liveIsPlainObject(engineResult)
+    ? engineResult
+    : {};
+
+  const decision = liveExtractDecision(result);
+  const confidence = liveExtractConfidence(result, 0);
+  const availability =
+    result.available === false ? 0 : 1;
+
+  const directionalValue =
+    liveDecisionScore(decision);
+
+  const contribution =
+    directionalValue *
+    (confidence / 100) *
+    weight *
+    availability;
+
+  return {
+    decision,
+    confidence,
+    weight,
+    available: availability === 1,
+    contribution,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Master trade-plan selection
+// ---------------------------------------------------------------------------
+
+function selectMasterTradePlan(
+  finalDecision,
+  engines
+) {
+  const normalizedDecision =
+    normalizeLiveDecision(finalDecision);
+
+  if (normalizedDecision === "HOLD") {
+    return null;
+  }
+
+  const candidates = [
+    {
+      name: "swing",
+      priority: 3,
+      result: engines.swing,
+    },
+    {
+      name: "intraday",
+      priority: 2,
+      result: engines.intraday,
+    },
+    {
+      name: "scalp",
+      priority: 1,
+      result: engines.scalp,
+    },
+  ]
+    .filter((candidate) => {
+      const result = candidate.result;
+
+      return (
+        liveIsPlainObject(result) &&
+        liveExtractDecision(result) ===
+          normalizedDecision &&
+        liveIsPlainObject(result.tradePlan)
+      );
+    })
+    .map((candidate) => ({
+      ...candidate,
+      confidence: liveExtractConfidence(
+        candidate.result,
+        0
+      ),
+    }))
+    .sort((left, right) => {
+      if (right.priority !== left.priority) {
+        return right.priority - left.priority;
+      }
+
+      return right.confidence - left.confidence;
+    });
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  const selected = candidates[0];
+
+  return {
+    ...liveCloneValue(selected.result.tradePlan),
+
+    sourceEngine: selected.name,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Master consensus
+// ---------------------------------------------------------------------------
+
+function buildMasterConsensus(input = {}) {
+  const pair = liveNormalizePairLabel(
+    input.pair ||
+      input.symbol ||
+      input.pairLabel ||
+      input.swing?.pair ||
+      input.intraday?.pair ||
+      input.scalp?.pair
+  );
+
+  const engines = {
+    swing: buildCanonicalEngineResult(
+      input.swing || {},
+      {
+        pair,
+        mode: "swing",
+        engineName: "swing",
+        available:
+          input.swing?.available !== false,
+      }
+    ),
+
+    intraday: buildCanonicalEngineResult(
+      input.intraday || {},
+      {
+        pair,
+        mode: "intraday",
+        engineName: "intraday",
+        available:
+          input.intraday?.available !== false,
+      }
+    ),
+
+    scalp: buildCanonicalEngineResult(
+      input.scalp || {},
+      {
+        pair,
+        mode: "scalp",
+        engineName: "scalp",
+        available:
+          input.scalp?.available !== false,
+      }
+    ),
+  };
+
+  const weights = normalizeMasterWeights(
+    input.weights ||
+      input.engineWeights ||
+      {}
+  );
+
+  const contributions = {
+    swing: masterEngineContribution(
+      engines.swing,
+      weights.swing
+    ),
+
+    intraday: masterEngineContribution(
+      engines.intraday,
+      weights.intraday
+    ),
+
+    scalp: masterEngineContribution(
+      engines.scalp,
+      weights.scalp
+    ),
+  };
+
+  const netContribution =
+    contributions.swing.contribution +
+    contributions.intraday.contribution +
+    contributions.scalp.contribution;
+
+  const activeDirectionalEngines = Object.values(
+    contributions
+  ).filter(
+    (item) =>
+      item.available &&
+      item.decision !== "HOLD"
+  );
+
+  const buyEngines = activeDirectionalEngines.filter(
+    (item) => item.decision === "BUY"
+  );
+
+  const sellEngines = activeDirectionalEngines.filter(
+    (item) => item.decision === "SELL"
+  );
+
+  const directionalAgreement =
+    buyEngines.length >= 2
+      ? "BUY"
+      : sellEngines.length >= 2
+        ? "SELL"
+        : "HOLD";
+
+  const minimumNetContribution = liveBoundNumber(
+    input.minimumNetContribution,
+    0,
+    1,
+    0.18
+  );
+
+  const minimumDirectionalEngines = Math.max(
+    1,
+    Math.trunc(
+      liveFiniteNumber(
+        input.minimumDirectionalEngines,
+        2
+      )
+    )
+  );
+
+  let decision = "HOLD";
+
+  if (
+    directionalAgreement === "BUY" &&
+    buyEngines.length >= minimumDirectionalEngines &&
+    netContribution >= minimumNetContribution
+  ) {
+    decision = "BUY";
+  } else if (
+    directionalAgreement === "SELL" &&
+    sellEngines.length >= minimumDirectionalEngines &&
+    netContribution <= -minimumNetContribution
+  ) {
+    decision = "SELL";
+  }
+
+  const directionalWeight = Math.abs(netContribution);
+  const agreementCount =
+    decision === "BUY"
+      ? buyEngines.length
+      : decision === "SELL"
+        ? sellEngines.length
+        : Math.max(
+            buyEngines.length,
+            sellEngines.length
+          );
+
+  const activeCount =
+    activeDirectionalEngines.length;
+
+  const agreementRatio =
+    activeCount > 0
+      ? agreementCount / activeCount
+      : 0;
+
+  const directionEngines =
+    decision === "BUY"
+      ? buyEngines
+      : decision === "SELL"
+        ? sellEngines
+        : [];
+
+  const directionConfidenceAverage =
+    directionEngines.length > 0
+      ? directionEngines.reduce(
+          (sum, item) => sum + item.confidence,
+          0
+        ) / directionEngines.length
+      : 0;
+
+  let confidence;
+
+  if (decision === "HOLD") {
+    confidence = Math.round(
+      Math.min(
+        69,
+        Math.abs(netContribution) * 100 +
+          agreementRatio * 15
+      )
+    );
+  } else {
+    confidence = Math.round(
+      Math.min(
+        99,
+        45 +
+          directionalWeight * 35 +
+          agreementRatio * 15 +
+          directionConfidenceAverage * 0.15
+      )
+    );
+  }
+
+  const masterTradePlan = selectMasterTradePlan(
+    decision,
+    engines
+  );
+
+  // Without a valid source plan, retain the directional consensus but expose
+  // no fabricated entry, stop or targets.
+  const priceCandidates = [
+    engines.intraday.price,
+    engines.scalp.price,
+    engines.swing.price,
+  ].filter(Number.isFinite);
+
+  const price =
+    priceCandidates.length > 0
+      ? priceCandidates[0]
+      : null;
+
+  const reasons = [];
+
+  if (decision === "HOLD") {
+    if (activeCount === 0) {
+      reasons.push(
+        "No directional engine produced an active setup"
+      );
+    } else if (
+      buyEngines.length > 0 &&
+      sellEngines.length > 0
+    ) {
+      reasons.push(
+        "Directional engines are conflicting"
+      );
+    } else if (
+      Math.abs(netContribution) <
+      minimumNetContribution
+    ) {
+      reasons.push(
+        "Weighted consensus is below the required threshold"
+      );
+    } else {
+      reasons.push(
+        "Insufficient multi-engine agreement"
+      );
+    }
+  } else {
+    reasons.push(
+      `${agreementCount} engine(s) confirm ${decision}`
+    );
+
+    reasons.push(
+      `Weighted consensus ${netContribution.toFixed(3)}`
+    );
+  }
+
+  const timestamp = Date.now();
+
+  return {
+    pair,
+    symbol: pair,
+    pairLabel: pair,
+
+    mode: "master",
+    engine: "master-consensus",
+    engineName: "master-consensus",
+
+    decision,
+    signal: decision,
+    action: decision,
+    direction: decision,
+
+    confidence,
+    confidencePct: confidence,
+
+    score: Number(
+      (netContribution * 100).toFixed(2)
+    ),
+
+    weightedScore: Number(
+      (netContribution * 100).toFixed(2)
+    ),
+
+    netContribution: Number(
+      netContribution.toFixed(6)
+    ),
+
+    price,
+    currentPrice: price,
+    lastPrice: price,
+
+    timestamp,
+    time: new Date(timestamp).toISOString(),
+    generatedAt: new Date(timestamp).toISOString(),
+
+    reason: reasons.join("; "),
+    reasons,
+
+    status:
+      decision === "HOLD"
+        ? "HOLD"
+        : "ACTIVE",
+
+    available: true,
+
+    tradePlan:
+      decision === "HOLD"
+        ? null
+        : masterTradePlan,
+
+    plan:
+      decision === "HOLD"
+        ? null
+        : masterTradePlan,
+
+    entry:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.entry
+        : null,
+
+    entryPrice:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.entryPrice
+        : null,
+
+    stop:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.stop
+        : null,
+
+    stopLoss:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.stopLoss
+        : null,
+
+    sl:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.sl
+        : null,
+
+    target1:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.target1
+        : null,
+
+    target2:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.target2
+        : null,
+
+    target3:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.target3
+        : null,
+
+    takeProfit1:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.takeProfit1
+        : null,
+
+    takeProfit2:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.takeProfit2
+        : null,
+
+    takeProfit3:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.takeProfit3
+        : null,
+
+    tp1:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.tp1
+        : null,
+
+    tp2:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.tp2
+        : null,
+
+    tp3:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.tp3
+        : null,
+
+    riskReward:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.riskReward
+        : null,
+
+    rr:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.rr
+        : null,
+
+    weights,
+
+    contributions,
+
+    agreement: {
+      direction: directionalAgreement,
+      activeDirectionalEngines: activeCount,
+      buyEngines: buyEngines.length,
+      sellEngines: sellEngines.length,
+      agreementCount,
+      agreementRatio: Number(
+        agreementRatio.toFixed(4)
+      ),
+    },
+
+    engines: {
+      swing: {
+        decision: engines.swing.decision,
+        confidence: engines.swing.confidence,
+        score: engines.swing.score,
+        available: engines.swing.available,
+      },
+
+      intraday: {
+        decision: engines.intraday.decision,
+        confidence: engines.intraday.confidence,
+        score: engines.intraday.score,
+        available: engines.intraday.available,
+      },
+
+      scalp: {
+        decision: engines.scalp.decision,
+        confidence: engines.scalp.confidence,
+        score: engines.scalp.score,
+        available: engines.scalp.available,
+        source: engines.scalp.source,
+      },
+    },
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Per-pair engine bundle
+// ---------------------------------------------------------------------------
+
+function buildPairEngineBundle(input = {}) {
+  const pair = liveNormalizePairLabel(
+    input.pair ||
+      input.symbol ||
+      input.pairLabel
+  );
+
+  const pipeline =
+    liveIsPlainObject(input.analysisPipeline)
+      ? input.analysisPipeline
+      : liveIsPlainObject(input.pipeline)
+        ? input.pipeline
+        : typeof runLegacyCompatibleAnalysisPipeline === "function"
+          ? runLegacyCompatibleAnalysisPipeline({
+              ...input,
+              pair,
+            })
+          : {};
+
+  const swing = selectSwingEngineResult({
+    pair,
+    swingAnalysis:
+      input.swingAnalysis ||
+      pipeline.daily,
+    analysisPipeline: pipeline,
+  });
+
+  const intraday = selectIntradayEngineResult({
+    pair,
+    intradayAnalysis:
+      input.intradayAnalysis ||
+      pipeline.intraday,
+    analysisPipeline: pipeline,
+  });
+
+  const scalp = selectScalpEngineResult({
+    pair,
+
+    scalpSignalsData:
+      input.scalpSignalsData ||
+      input.scalpSignals,
+
+    fallbackScalpAnalysis:
+      input.fallbackScalpAnalysis ||
+      input.legacyScalpAnalysis ||
+      pipeline.scalp,
+
+    allowPrimaryHold:
+      input.allowPrimaryScalpHold,
+
+    maximumPrimaryScalpAgeMs:
+      input.maximumPrimaryScalpAgeMs,
+  });
+
+  const master = buildMasterConsensus({
+    pair,
+    swing,
+    intraday,
+    scalp,
+
+    weights:
+      input.masterWeights ||
+      input.engineWeights,
+
+    minimumNetContribution:
+      input.minimumNetContribution,
+
+    minimumDirectionalEngines:
+      input.minimumDirectionalEngines,
+  });
+
+  return {
+    pair,
+    symbol: pair,
+    pairLabel: pair,
+
+    generatedAt: liveNowIso(),
+    timestamp: Date.now(),
+
+    swing,
+    intraday,
+    scalp,
+    master,
+
+    engines: {
+      swing,
+      intraday,
+      scalp,
+      master,
+    },
+
+    pipelineMetadata:
+      liveCloneValue(
+        pipeline.frameMetadata ||
+        pipeline.metadata ||
+        null
+      ),
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Live-analysis output schema
+// ---------------------------------------------------------------------------
+
+function buildLiveAnalysisOutput(input = {}) {
+  const pairBundles = Array.isArray(input.pairs)
+    ? input.pairs
+    : liveIsPlainObject(input.pairs)
+      ? Object.values(input.pairs)
+      : [];
+
+  const generatedTimestamp =
+    liveStableTimestamp(
+      input.timestamp,
+      Date.now()
+    );
+
+  const generatedAt =
+    input.generatedAt ||
+    new Date(generatedTimestamp).toISOString();
+
+  const byPair = {};
+
+  for (const rawBundle of pairBundles) {
+    if (!liveIsPlainObject(rawBundle)) {
+      continue;
+    }
+
+    const pair = liveNormalizePairLabel(
+      rawBundle.pair ||
+        rawBundle.symbol ||
+        rawBundle.pairLabel
+    );
+
+    if (!pair || pair === "UNKNOWN") {
+      continue;
+    }
+
+    const swing = buildCanonicalEngineResult(
+      rawBundle.swing ||
+        rawBundle.engines?.swing ||
+        {},
+      {
+        pair,
+        mode: "swing",
+        engineName: "swing",
+      }
+    );
+
+    const intraday = buildCanonicalEngineResult(
+      rawBundle.intraday ||
+        rawBundle.engines?.intraday ||
+        {},
+      {
+        pair,
+        mode: "intraday",
+        engineName: "intraday",
+      }
+    );
+
+    const scalp = buildCanonicalEngineResult(
+      rawBundle.scalp ||
+        rawBundle.engines?.scalp ||
+        {},
+      {
+        pair,
+        mode: "scalp",
+        engineName: "scalp",
+      }
+    );
+
+    const master = buildCanonicalEngineResult(
+      rawBundle.master ||
+        rawBundle.engines?.master ||
+        buildMasterConsensus({
+          pair,
+          swing,
+          intraday,
+          scalp,
+        }),
+      {
+        pair,
+        mode: "master",
+        engineName: "master-consensus",
+      }
+    );
+
+    const pairRecord = {
+      pair,
+      symbol: pair,
+      pairLabel: pair,
+
+      generatedAt,
+      timestamp: generatedTimestamp,
+
+      swing,
+      intraday,
+      scalp,
+      master,
+
+      engines: {
+        swing,
+        intraday,
+        scalp,
+        master,
+      },
+
+      // Legacy-compatible mode access.
+      modes: {
+        swing,
+        intraday,
+        scalp,
+        master,
+      },
+
+      // Convenient top-level master aliases.
+      decision: master.decision,
+      signal: master.signal,
+      action: master.action,
+      direction: master.direction,
+
+      confidence: master.confidence,
+      score: master.score,
+
+      price: master.price,
+      currentPrice: master.currentPrice,
+      lastPrice: master.lastPrice,
+
+      tradePlan: master.tradePlan,
+      plan: master.plan,
+
+      entry: master.entry,
+      stop: master.stop,
+      stopLoss: master.stopLoss,
+
+      target1: master.target1,
+      target2: master.target2,
+      target3: master.target3,
+
+      tp1: master.tp1,
+      tp2: master.tp2,
+      tp3: master.tp3,
+
+      riskReward: master.riskReward,
+      rr: master.rr,
+
+      reason: master.reason,
+      status: master.status,
+    };
+
+    byPair[pair] = pairRecord;
+  }
+
+  const pairList = Object.values(byPair);
+
+  return {
+    generatedAt,
+    updatedAt: generatedAt,
+    timestamp: generatedTimestamp,
+
+    engineVersion:
+      typeof ENGINE_VERSION !== "undefined"
+        ? ENGINE_VERSION
+        : input.engineVersion ||
+          "unknown",
+
+    strategyVersion:
+      typeof STRATEGY_VERSION !== "undefined"
+        ? STRATEGY_VERSION
+        : input.strategyVersion ||
+          "unknown",
+
+    status: "ok",
+
+    pairCount: pairList.length,
+
+    // Primary current schema.
+    pairs: byPair,
+
+    // Legacy-compatible array aliases.
+    results: pairList,
+    analyses: pairList,
+    data: pairList,
+
+    // Optional direct aliases for known pairs.
+    xauUsd:
+      byPair["XAU/USD"] || null,
+
+    gbpJpy:
+      byPair["GBP/JPY"] || null,
+
+    "XAU/USD":
+      byPair["XAU/USD"] || null,
+
+    "GBP/JPY":
+      byPair["GBP/JPY"] || null,
+
+    metadata: {
+      generatedAt,
+      pairCount: pairList.length,
+      engineVersion:
+        typeof ENGINE_VERSION !== "undefined"
+          ? ENGINE_VERSION
+          : input.engineVersion ||
+            "unknown",
+
+      strategyVersion:
+        typeof STRATEGY_VERSION !== "undefined"
+          ? STRATEGY_VERSION
+          : input.strategyVersion ||
+            "unknown",
+    },
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// History fingerprinting
+// ---------------------------------------------------------------------------
+
+function liveHistoryFingerprint(record) {
+  const pair = liveNormalizePairLabel(
+    record?.pair ||
+      record?.symbol ||
+      record?.pairLabel
+  );
+
+  const mode = liveNormalizeMode(
+    record?.mode ||
+      record?.engine ||
+      "master",
+    "master"
+  );
+
+  const decision = liveExtractDecision(record);
+
+  const entry = liveFiniteNumber(
+    record?.entry ??
+      record?.entryPrice ??
+      record?.tradePlan?.entry,
+    null
+  );
+
+  const stopLoss = liveFiniteNumber(
+    record?.stopLoss ??
+      record?.stop ??
+      record?.tradePlan?.stopLoss,
+    null
+  );
+
+  const target1 = liveFiniteNumber(
+    record?.target1 ??
+      record?.tp1 ??
+      record?.tradePlan?.target1,
+    null
+  );
+
+  return [
+    liveCompactPair(pair),
+    mode,
+    decision,
+    Number.isFinite(entry) ? entry : "",
+    Number.isFinite(stopLoss) ? stopLoss : "",
+    Number.isFinite(target1) ? target1 : "",
+  ].join("|");
+}
+
+function liveHistoryRecordFromEngine(
+  engineResult,
+  options = {}
+) {
+  const canonical = buildCanonicalEngineResult(
+    engineResult,
+    {
+      pair:
+        options.pair ||
+        engineResult?.pair,
+
+      mode:
+        options.mode ||
+        engineResult?.mode ||
+        "master",
+
+      engineName:
+        options.engineName ||
+        engineResult?.engine ||
+        engineResult?.engineName,
+    }
+  );
+
+  const recordedAt = liveNowIso();
+
+  return {
+    id:
+      options.id ||
+      `${Date.now()}-${liveCompactPair(canonical.pair)}-${canonical.mode}`,
+
+    recordedAt,
+    createdAt: recordedAt,
+    updatedAt: recordedAt,
+
+    pair: canonical.pair,
+    symbol: canonical.pair,
+    pairLabel: canonical.pair,
+
+    mode: canonical.mode,
+    engine: canonical.engine,
+    engineName: canonical.engineName,
+
+    decision: canonical.decision,
+    signal: canonical.signal,
+    action: canonical.action,
+    direction: canonical.direction,
+
+    confidence: canonical.confidence,
+    score: canonical.score,
+
+    price: canonical.price,
+    currentPrice: canonical.currentPrice,
+
+    entry: canonical.entry,
+    entryPrice: canonical.entryPrice,
+
+    stop: canonical.stop,
+    stopLoss: canonical.stopLoss,
+    sl: canonical.sl,
+
+    target1: canonical.target1,
+    target2: canonical.target2,
+    target3: canonical.target3,
+
+    takeProfit1: canonical.takeProfit1,
+    takeProfit2: canonical.takeProfit2,
+    takeProfit3: canonical.takeProfit3,
+
+    tp1: canonical.tp1,
+    tp2: canonical.tp2,
+    tp3: canonical.tp3,
+
+    riskReward: canonical.riskReward,
+    rr: canonical.rr,
+
+    reason: canonical.reason,
+    source: canonical.source,
+
+    signalTimestamp: canonical.timestamp,
+    signalTime: canonical.time,
+
+    status:
+      canonical.decision === "HOLD"
+        ? "hold"
+        : "open",
+
+    outcome: null,
+    resolvedAt: null,
+
+    fingerprint:
+      liveHistoryFingerprint(canonical),
+
+    snapshot: liveCloneValue(canonical),
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// History normalization
+// ---------------------------------------------------------------------------
+
+function normalizeAnalysisHistory(rawHistory) {
+  if (Array.isArray(rawHistory)) {
+    return {
+      version: 1,
+      updatedAt: liveNowIso(),
+      records: rawHistory,
+    };
+  }
+
+  if (!liveIsPlainObject(rawHistory)) {
+    return {
+      version: 1,
+      updatedAt: liveNowIso(),
+      records: [],
+    };
+  }
+
+  const records =
+    liveAsArray(rawHistory.records).length > 0
+      ? rawHistory.records
+      : liveAsArray(rawHistory.history).length > 0
+        ? rawHistory.history
+        : liveAsArray(rawHistory.items).length > 0
+          ? rawHistory.items
+          : liveAsArray(rawHistory.signals);
+
+  return {
+    ...rawHistory,
+
+    version:
+      liveFiniteNumber(rawHistory.version, 1),
+
+    updatedAt:
+      rawHistory.updatedAt ||
+      liveNowIso(),
+
+    records,
+
+    // Preserve common aliases.
+    history: records,
+    items: records,
+  };
+}
+
+function shouldAppendHistoryRecord(
+  history,
+  record,
+  options = {}
+) {
+  if (!liveIsPlainObject(record)) {
+    return false;
+  }
+
+  const decision = liveExtractDecision(record);
+
+  if (
+    decision === "HOLD" &&
+    options.includeHold !== true
+  ) {
+    return false;
+  }
+
+  const records = liveAsArray(history.records);
+  const fingerprint =
+    record.fingerprint ||
+    liveHistoryFingerprint(record);
+
+  const dedupeWindowMs = Math.max(
+    0,
+    liveFiniteNumber(
+      options.dedupeWindowMs,
+      30 * 60 * 1000
+    )
+  );
+
+  for (
+    let index = records.length - 1;
+    index >= 0;
+    index -= 1
+  ) {
+    const existing = records[index];
+
+    if (!liveIsPlainObject(existing)) {
+      continue;
+    }
+
+    const existingTimestamp = liveExtractTimestamp(
+      existing,
+      0
+    );
+
+    if (
+      dedupeWindowMs > 0 &&
+      existingTimestamp > 0 &&
+      Date.now() - existingTimestamp >
+        dedupeWindowMs
+    ) {
+      break;
+    }
+
+    const existingFingerprint =
+      existing.fingerprint ||
+      liveHistoryFingerprint(existing);
+
+    if (existingFingerprint === fingerprint) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function appendAnalysisHistoryRecords(
+  rawHistory,
+  recordsToAppend,
+  options = {}
+) {
+  const history =
+    normalizeAnalysisHistory(rawHistory);
+
+  const existingRecords =
+    liveAsArray(history.records);
+
+  const appended = [];
+
+  for (const rawRecord of liveAsArray(recordsToAppend)) {
+    const record = liveIsPlainObject(rawRecord)
+      ? rawRecord
+      : null;
+
+    if (!record) {
+      continue;
+    }
+
+    if (
+      shouldAppendHistoryRecord(
+        {
+          records: [
+            ...existingRecords,
+            ...appended,
+          ],
+        },
+        record,
+        options
+      )
+    ) {
+      appended.push(record);
+    }
+  }
+
+  const maximumRecords = Math.max(
+    1,
+    Math.trunc(
+      liveFiniteNumber(
+        options.maximumRecords,
+        5000
+      )
+    )
+  );
+
+  const records = [
+    ...existingRecords,
+    ...appended,
+  ].slice(-maximumRecords);
+
+  const updatedAt = liveNowIso();
+
+  return {
+    history: {
+      ...history,
+
+      updatedAt,
+      records,
+
+      // Preserve aliases used by older readers.
+      history: records,
+      items: records,
+
+      count: records.length,
+    },
+
+    appended,
+    appendedCount: appended.length,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// History collection from current output
+// ---------------------------------------------------------------------------
+
+function collectHistoryRecordsFromOutput(
+  liveOutput,
+  options = {}
+) {
+  const records = [];
+
+  const pairRecords = liveIsPlainObject(
+    liveOutput?.pairs
+  )
+    ? Object.values(liveOutput.pairs)
+    : liveAsArray(liveOutput?.results);
+
+  const modes = Array.isArray(options.modes)
+    ? options.modes.map((mode) =>
+        liveNormalizeMode(mode)
+      )
+    : ["master", "swing", "intraday", "scalp"];
+
+  for (const pairRecord of pairRecords) {
+    if (!liveIsPlainObject(pairRecord)) {
+      continue;
+    }
+
+    const pair = liveNormalizePairLabel(
+      pairRecord.pair ||
+        pairRecord.symbol
+    );
+
+    for (const mode of modes) {
+      const engineResult =
+        pairRecord[mode] ||
+        pairRecord.engines?.[mode] ||
+        pairRecord.modes?.[mode];
+
+      if (!liveIsPlainObject(engineResult)) {
+        continue;
+      }
+
+      const decision =
+        liveExtractDecision(engineResult);
+
+      if (
+        decision === "HOLD" &&
+        options.includeHold !== true
+      ) {
+        continue;
+      }
+
+      records.push(
+        liveHistoryRecordFromEngine(
+          engineResult,
+          {
+            pair,
+            mode,
+          }
+        )
+      );
+    }
+  }
+
+  return records;
+}
+
+
+// ---------------------------------------------------------------------------
+// Notify-state normalization
+// ---------------------------------------------------------------------------
+
+function normalizeNotifyState(rawState) {
+  if (!liveIsPlainObject(rawState)) {
+    return {
+      version: 1,
+      updatedAt: liveNowIso(),
+      signals: {},
+    };
+  }
+
+  const signals =
+    liveIsPlainObject(rawState.signals)
+      ? rawState.signals
+      : liveIsPlainObject(rawState.notifications)
+        ? rawState.notifications
+        : liveIsPlainObject(rawState.state)
+          ? rawState.state
+          : {};
+
+  return {
+    ...rawState,
+
+    version:
+      liveFiniteNumber(rawState.version, 1),
+
+    updatedAt:
+      rawState.updatedAt ||
+      liveNowIso(),
+
+    signals,
+
+    // Preserve older aliases.
+    notifications: signals,
+    state: signals,
+  };
+}
+
+function liveNotifyStateKey(record) {
+  const pair = liveCompactPair(
+    record?.pair ||
+      record?.symbol ||
+      record?.pairLabel
+  );
+
+  const mode = liveNormalizeMode(
+    record?.mode ||
+      record?.engine ||
+      "master",
+    "master"
+  );
+
+  return `${pair}:${mode}`;
+}
+
+function liveNotifySignature(record) {
+  return liveHistoryFingerprint(record);
+}
+
+
+// ---------------------------------------------------------------------------
+// Telegram notification eligibility
+// ---------------------------------------------------------------------------
+
+function shouldSendTelegramNotification(
+  rawNotifyState,
+  engineResult,
+  options = {}
+) {
+  const state =
+    normalizeNotifyState(rawNotifyState);
+
+  const canonical =
+    buildCanonicalEngineResult(
+      engineResult,
+      {
+        pair:
+          options.pair ||
+          engineResult?.pair,
+
+        mode:
+          options.mode ||
+          engineResult?.mode ||
+          "master",
+      }
+    );
+
+  const decision =
+    canonical.decision;
+
+  if (
+    decision === "HOLD" &&
+    options.notifyHold !== true
+  ) {
+    return {
+      shouldSend: false,
+      reason: "HOLD notifications are disabled",
+      state,
+      canonical,
+    };
+  }
+
+  const minimumConfidence =
+    liveNormalizeConfidence(
+      options.minimumConfidence,
+      0
+    );
+
+  if (
+    canonical.confidence <
+    minimumConfidence
+  ) {
+    return {
+      shouldSend: false,
+      reason:
+        `Confidence ${canonical.confidence}% is below ${minimumConfidence}%`,
+      state,
+      canonical,
+    };
+  }
+
+  const key =
+    liveNotifyStateKey(canonical);
+
+  const signature =
+    liveNotifySignature(canonical);
+
+  const previous =
+    liveIsPlainObject(state.signals[key])
+      ? state.signals[key]
+      : null;
+
+  const cooldownMs = Math.max(
+    0,
+    liveFiniteNumber(
+      options.cooldownMs,
+      4 * 60 * 60 * 1000
+    )
+  );
+
+  if (previous) {
+    const previousSignature =
+      liveNonEmptyString(
+        previous.signature ||
+          previous.fingerprint
+      );
+
+    const previousSentAt =
+      liveStableTimestamp(
+        previous.sentAt ||
+          previous.timestamp ||
+          previous.updatedAt,
+        0
+      );
+
+    const stillInCooldown =
+      cooldownMs > 0 &&
+      previousSentAt > 0 &&
+      Date.now() - previousSentAt <
+        cooldownMs;
+
+    if (
+      previousSignature === signature &&
+      stillInCooldown
+    ) {
+      return {
+        shouldSend: false,
+        reason:
+          "An identical signal was already notified within the cooldown window",
+        state,
+        canonical,
+        key,
+        signature,
+      };
+    }
+  }
+
+  return {
+    shouldSend: true,
+    reason: "Signal is eligible for notification",
+    state,
+    canonical,
+    key,
+    signature,
+  };
+}
+
+function updateNotifyStateAfterSend(
+  rawNotifyState,
+  engineResult,
+  options = {}
+) {
+  const eligibility =
+    shouldSendTelegramNotification(
+      rawNotifyState,
+      engineResult,
+      {
+        ...options,
+        cooldownMs: 0,
+      }
+    );
+
+  const state = eligibility.state;
+  const canonical = eligibility.canonical;
+
+  const key =
+    eligibility.key ||
+    liveNotifyStateKey(canonical);
+
+  const signature =
+    eligibility.signature ||
+    liveNotifySignature(canonical);
+
+  const sentAt = liveNowIso();
+
+  const signals = {
+    ...state.signals,
+
+    [key]: {
+      pair: canonical.pair,
+      mode: canonical.mode,
+
+      decision: canonical.decision,
+      confidence: canonical.confidence,
+
+      signature,
+      fingerprint: signature,
+
+      sentAt,
+      updatedAt: sentAt,
+      timestamp: Date.now(),
+
+      messageId:
+        options.messageId ||
+        null,
+    },
+  };
+
+  return {
+    ...state,
+
+    updatedAt: sentAt,
+    signals,
+
+    notifications: signals,
+    state: signals,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Telegram formatting
+// ---------------------------------------------------------------------------
+
+function liveEscapeTelegramHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function liveFormatTelegramPrice(
+  value,
+  pair
+) {
+  const parsed = liveFiniteNumber(value);
+
+  if (!Number.isFinite(parsed)) {
+    return "—";
+  }
+
+  const decimals =
+    typeof livePairPriceDecimals === "function"
+      ? livePairPriceDecimals(pair)
+      : liveCompactPair(pair).endsWith("JPY")
+        ? 3
+        : liveCompactPair(pair) === "XAUUSD"
+          ? 2
+          : 5;
+
+  return parsed.toFixed(decimals);
+}
+
+function liveDecisionEmoji(decision) {
+  const normalized =
+    normalizeLiveDecision(decision);
+
+  if (normalized === "BUY") return "🟢";
+  if (normalized === "SELL") return "🔴";
+
+  return "🟡";
+}
+
+function formatTelegramSignalMessage(
+  engineResult,
+  options = {}
+) {
+  const canonical =
+    buildCanonicalEngineResult(
+      engineResult,
+      {
+        pair:
+          options.pair ||
+          engineResult?.pair,
+
+        mode:
+          options.mode ||
+          engineResult?.mode ||
+          "master",
+      }
+    );
+
+  const emoji =
+    liveDecisionEmoji(canonical.decision);
+
+  const title =
+    options.title ||
+    "PipSight Pro Signal";
+
+  const lines = [
+    `<b>${liveEscapeTelegramHtml(title)}</b>`,
+    "",
+    `${emoji} <b>${liveEscapeTelegramHtml(canonical.decision)}</b>`,
+    `<b>Pair:</b> ${liveEscapeTelegramHtml(canonical.pair)}`,
+    `<b>Engine:</b> ${liveEscapeTelegramHtml(canonical.mode.toUpperCase())}`,
+    `<b>Confidence:</b> ${canonical.confidence}%`,
+  ];
+
+  if (Number.isFinite(canonical.price)) {
+    lines.push(
+      `<b>Market:</b> ${liveFormatTelegramPrice(
+        canonical.price,
+        canonical.pair
+      )}`
+    );
+  }
+
+  if (
+    canonical.decision !== "HOLD" &&
+    canonical.tradePlan
+  ) {
+    lines.push("");
+    lines.push(
+      `<b>Entry:</b> ${liveFormatTelegramPrice(
+        canonical.entry,
+        canonical.pair
+      )}`
+    );
+
+    lines.push(
+      `<b>Stop Loss:</b> ${liveFormatTelegramPrice(
+        canonical.stopLoss,
+        canonical.pair
+      )}`
+    );
+
+    lines.push(
+      `<b>TP1:</b> ${liveFormatTelegramPrice(
+        canonical.target1,
+        canonical.pair
+      )}`
+    );
+
+    if (Number.isFinite(canonical.target2)) {
+      lines.push(
+        `<b>TP2:</b> ${liveFormatTelegramPrice(
+          canonical.target2,
+          canonical.pair
+        )}`
+      );
+    }
+
+    if (Number.isFinite(canonical.target3)) {
+      lines.push(
+        `<b>TP3:</b> ${liveFormatTelegramPrice(
+          canonical.target3,
+          canonical.pair
+        )}`
+      );
+    }
+
+    if (
+      Number.isFinite(
+        canonical.riskReward
+      )
+    ) {
+      lines.push(
+        `<b>Risk:Reward:</b> 1:${canonical.riskReward.toFixed(2)}`
+      );
+    }
+  }
+
+  if (canonical.reason) {
+    lines.push("");
+    lines.push(
+      `<b>Reason:</b> ${liveEscapeTelegramHtml(
+        canonical.reason
+      )}`
+    );
+  }
+
+  lines.push("");
+  lines.push(
+    `<i>${liveEscapeTelegramHtml(
+      new Date(canonical.timestamp).toISOString()
+    )}</i>`
+  );
+
+  return lines.join("\n");
+}
+
+
+// ---------------------------------------------------------------------------
+// Telegram transport
+// ---------------------------------------------------------------------------
+
+function liveTelegramConfig(options = {}) {
+  const token =
+    options.token ||
+    options.botToken ||
+    process.env.TELEGRAM_BOT_TOKEN ||
+    process.env.TELEGRAM_TOKEN ||
+    "";
+
+  const chatId =
+    options.chatId ||
+    options.chat_id ||
+    process.env.TELEGRAM_CHAT_ID ||
+    "";
+
+  return {
+    token: liveNonEmptyString(token),
+    chatId: liveNonEmptyString(chatId),
+
+    enabled:
+      Boolean(
+        liveNonEmptyString(token) &&
+        liveNonEmptyString(chatId)
+      ),
+
+    timeoutMs: Math.max(
+      1000,
+      liveFiniteNumber(
+        options.timeoutMs,
+        typeof TELEGRAM_TIMEOUT_MS !== "undefined"
+          ? TELEGRAM_TIMEOUT_MS
+          : 15000
+      )
+    ),
+  };
+}
+
+async function sendTelegramMessage(
+  message,
+  options = {}
+) {
+  const config =
+    liveTelegramConfig(options);
+
+  if (!config.enabled) {
+    return {
+      ok: false,
+      skipped: true,
+      reason:
+        "Telegram token or chat ID is not configured",
+    };
+  }
+
+  if (
+    typeof fetch !== "function"
+  ) {
+    return {
+      ok: false,
+      skipped: true,
+      reason:
+        "Global fetch is unavailable in this Node.js runtime",
+    };
+  }
+
+  const controller =
+    typeof AbortController === "function"
+      ? new AbortController()
+      : null;
+
+  const timeoutHandle = setTimeout(() => {
+    if (controller) {
+      controller.abort();
+    }
+  }, config.timeoutMs);
+
+  try {
+    const response = await fetch(
+      `https://api.telegram.org/bot${config.token}/sendMessage`,
+      {
+        method: "POST",
+
+        headers: {
+          "content-type": "application/json",
+        },
+
+        body: JSON.stringify({
+          chat_id: config.chatId,
+          text: String(message || ""),
+          parse_mode:
+            options.parseMode ||
+            "HTML",
+
+          disable_web_page_preview: true,
+
+          disable_notification:
+            options.disableNotification === true,
+        }),
+
+        signal:
+          controller
+            ? controller.signal
+            : undefined,
+      }
+    );
+
+    let payload = null;
+
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
+
+    if (!response.ok || payload?.ok === false) {
+      return {
+        ok: false,
+        skipped: false,
+
+        status: response.status,
+
+        reason:
+          payload?.description ||
+          `Telegram HTTP ${response.status}`,
+
+        payload,
+      };
+    }
+
+    return {
+      ok: true,
+      skipped: false,
+
+      status: response.status,
+
+      messageId:
+        payload?.result?.message_id ||
+        null,
+
+      payload,
+    };
+  } catch (error) {
+    const aborted =
+      error &&
+      (
+        error.name === "AbortError" ||
+        String(error.message || "")
+          .toLowerCase()
+          .includes("abort")
+      );
+
+    return {
+      ok: false,
+      skipped: false,
+
+      reason: aborted
+        ? `Telegram request timed out after ${config.timeoutMs}ms`
+        : `Telegram request failed: ${
+            error?.message ||
+            String(error)
+          }`,
+    };
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Telegram processing for one engine
+// ---------------------------------------------------------------------------
+
+async function processTelegramNotification(
+  rawNotifyState,
+  engineResult,
+  options = {}
+) {
+  const eligibility =
+    shouldSendTelegramNotification(
+      rawNotifyState,
+      engineResult,
+      options
+    );
+
+  if (!eligibility.shouldSend) {
+    return {
+      sent: false,
+      skipped: true,
+
+      reason: eligibility.reason,
+
+      notifyState:
+        eligibility.state,
+
+      engine:
+        eligibility.canonical,
+    };
+  }
+
+  const message =
+    options.message ||
+    formatTelegramSignalMessage(
+      eligibility.canonical,
+      options
+    );
+
+  const sendResult =
+    await sendTelegramMessage(
+      message,
+      options
+    );
+
+  if (!sendResult.ok) {
+    return {
+      sent: false,
+      skipped:
+        sendResult.skipped === true,
+
+      reason:
+        sendResult.reason ||
+        "Telegram send failed",
+
+      sendResult,
+
+      notifyState:
+        eligibility.state,
+
+      engine:
+        eligibility.canonical,
+    };
+  }
+
+  const notifyState =
+    updateNotifyStateAfterSend(
+      eligibility.state,
+      eligibility.canonical,
+      {
+        ...options,
+
+        messageId:
+          sendResult.messageId,
+      }
+    );
+
+  return {
+    sent: true,
+    skipped: false,
+
+    reason:
+      "Telegram notification sent",
+
+    sendResult,
+    notifyState,
+
+    engine:
+      eligibility.canonical,
+
+    message,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Telegram processing for complete live output
+// ---------------------------------------------------------------------------
+
+async function processLiveOutputNotifications(
+  liveOutput,
+  rawNotifyState,
+  options = {}
+) {
+  let notifyState =
+    normalizeNotifyState(rawNotifyState);
+
+  const results = [];
+
+  const modes = Array.isArray(options.modes)
+    ? options.modes.map((mode) =>
+        liveNormalizeMode(mode)
+      )
+    : ["master"];
+
+  const pairRecords =
+    liveIsPlainObject(liveOutput?.pairs)
+      ? Object.values(liveOutput.pairs)
+      : liveAsArray(liveOutput?.results);
+
+  for (const pairRecord of pairRecords) {
+    if (!liveIsPlainObject(pairRecord)) {
+      continue;
+    }
+
+    const pair =
+      liveNormalizePairLabel(
+        pairRecord.pair ||
+          pairRecord.symbol
+      );
+
+    for (const mode of modes) {
+      const engineResult =
+        pairRecord[mode] ||
+        pairRecord.engines?.[mode] ||
+        pairRecord.modes?.[mode];
+
+      if (!liveIsPlainObject(engineResult)) {
+        continue;
+      }
+
+      const result =
+        await processTelegramNotification(
+          notifyState,
+          engineResult,
+          {
+            ...options,
+            pair,
+            mode,
+          }
+        );
+
+      notifyState =
+        result.notifyState ||
+        notifyState;
+
+      results.push({
+        pair,
+        mode,
+        sent: result.sent,
+        skipped: result.skipped,
+        reason: result.reason,
+        messageId:
+          result.sendResult?.messageId ||
+          null,
+      });
+    }
+  }
+
+  return {
+    notifyState: {
+      ...notifyState,
+      updatedAt: liveNowIso(),
+    },
+
+    results,
+
+    sentCount: results.filter(
+      (result) => result.sent
+    ).length,
+
+    skippedCount: results.filter(
+      (result) => result.skipped
+    ).length,
+
+    failedCount: results.filter(
+      (result) =>
+        !result.sent &&
+        !result.skipped
+    ).length,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Complete output/history/notification assembly
+// ---------------------------------------------------------------------------
+
+async function assembleLiveAnalysisArtifacts(
+  input = {}
+) {
+  const output =
+    buildLiveAnalysisOutput({
+      pairs:
+        input.pairBundles ||
+        input.pairs ||
+        [],
+
+      timestamp:
+        input.timestamp,
+
+      generatedAt:
+        input.generatedAt,
+
+      engineVersion:
+        input.engineVersion,
+
+      strategyVersion:
+        input.strategyVersion,
+    });
+
+  const historyCandidates =
+    collectHistoryRecordsFromOutput(
+      output,
+      {
+        modes:
+          input.historyModes ||
+          ["master", "swing", "intraday", "scalp"],
+
+        includeHold:
+          input.includeHoldHistory === true,
+      }
+    );
+
+  const historyResult =
+    appendAnalysisHistoryRecords(
+      input.analysisHistory ||
+        input.history ||
+        {},
+      historyCandidates,
+      {
+        includeHold:
+          input.includeHoldHistory === true,
+
+        dedupeWindowMs:
+          input.historyDedupeWindowMs,
+
+        maximumRecords:
+          input.maximumHistoryRecords,
+      }
+    );
+
+  let notificationResult = {
+    notifyState:
+      normalizeNotifyState(
+        input.notifyState
+      ),
+
+    results: [],
+    sentCount: 0,
+    skippedCount: 0,
+    failedCount: 0,
+  };
+
+  if (input.processTelegram !== false) {
+    notificationResult =
+      await processLiveOutputNotifications(
+        output,
+        input.notifyState,
+        {
+          modes:
+            input.telegramModes ||
+            ["master"],
+
+          minimumConfidence:
+            input.telegramMinimumConfidence,
+
+          cooldownMs:
+            input.telegramCooldownMs,
+
+          notifyHold:
+            input.telegramNotifyHold === true,
+
+          token:
+            input.telegramToken,
+
+          chatId:
+            input.telegramChatId,
+
+          timeoutMs:
+            input.telegramTimeoutMs,
+
+          disableNotification:
+            input.telegramSilent === true,
+
+          title:
+            input.telegramTitle ||
+            "PipSight Pro Signal",
+        }
+      );
+  }
+
+  return {
+    output,
+
+    history:
+      historyResult.history,
+
+    appendedHistory:
+      historyResult.appended,
+
+    appendedHistoryCount:
+      historyResult.appendedCount,
+
+    notifyState:
+      notificationResult.notifyState,
+
+    telegram:
+      {
+        results:
+          notificationResult.results,
+
+        sentCount:
+          notificationResult.sentCount,
+
+        skippedCount:
+          notificationResult.skippedCount,
+
+        failedCount:
+          notificationResult.failedCount,
+      },
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Legacy-compatible aliases
+// ---------------------------------------------------------------------------
+
+function selectScalpResult(input = {}) {
+  return selectScalpEngineResult(input);
+}
+
+function buildMasterAnalysis(input = {}) {
+  return buildMasterConsensus(input);
+}
+
+function buildMasterSignal(input = {}) {
+  return buildMasterConsensus(input);
+}
+
+function buildPairAnalysis(input = {}) {
+  return buildPairEngineBundle(input);
+}
+
+function assembleLiveAnalysis(input = {}) {
+  return buildLiveAnalysisOutput(input);
+}
+
+function buildAnalysisHistoryRecord(
+  engineResult,
+  options = {}
+) {
+  return liveHistoryRecordFromEngine(
+    engineResult,
+    options
+  );
+}
+
+function appendAnalysisHistory(
+  rawHistory,
+  records,
+  options = {}
+) {
+  return appendAnalysisHistoryRecords(
+    rawHistory,
+    records,
+    options
+  );
+}
+
+function formatTelegramMessage(
+  engineResult,
+  options = {}
+) {
+  return formatTelegramSignalMessage(
+    engineResult,
+    options
+  );
+}
+
+async function notifyTelegram(
+  rawNotifyState,
+  engineResult,
+  options = {}
+) {
+  return processTelegramNotification(
+    rawNotifyState,
+    engineResult,
+    options
+  );
+}

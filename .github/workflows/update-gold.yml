@@ -2,59 +2,128 @@ name: Update Gold Price History
 
 on:
   schedule:
-    - cron: '0 * * * *'
+    - cron: "0 * * * *"
+
   workflow_dispatch: {}
 
 permissions:
   contents: write
 
 concurrency:
-  group: pipsight-robots
+  group: pipsight-update-gold-history-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   update:
+    name: Update and publish gold history
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        shell: bash
 
     steps:
-      - name: Check out repo
+      - name: Check out repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
 
-      - name: Set up Node
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "20"
 
-      - name: Fetch live gold price and update history file
-        run: node scripts/update-history.js
+      - name: Fetch live gold price and update history
+        run: |
+          set -euo pipefail
+
+          node scripts/update-history.js
+
+      - name: Validate gold history output
+        run: |
+          set -euo pipefail
+
+          test -s data/xau-usd-history.json
+
+          node -e "
+            const fs = require('fs');
+
+            const file = 'data/xau-usd-history.json';
+            const parsed = JSON.parse(
+              fs.readFileSync(file, 'utf8')
+            );
+
+            if (
+              parsed === null ||
+              (
+                typeof parsed !== 'object' &&
+                !Array.isArray(parsed)
+              )
+            ) {
+              throw new Error(
+                'Gold history output has an invalid JSON structure'
+              );
+            }
+
+            console.log('Validated:', file);
+          "
 
       - name: Commit and push if changed
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add data/xau-usd-history.json
+          # Strictly stage only the file owned by this workflow.
+          git add -- data/xau-usd-history.json
 
-          if [[ -n "$(git status --porcelain)" ]]; then
-            git commit -m "Update gold price history [skip ci]"
-
-            # Sync with latest remote changes
-            git pull --rebase origin main
-
-            # Push changes
-            git push origin main
-          else
-            echo "No changes to commit"
+          if git diff --cached --quiet; then
+            echo "No gold history changes to commit."
+            exit 0
           fi
+
+          git commit -m "Update gold price history [skip ci]"
+
+          max_attempts=5
+
+          for attempt in $(seq 1 "$max_attempts"); do
+            echo "Push attempt ${attempt}/${max_attempts}"
+
+            if git push origin HEAD:main; then
+              echo "Gold history pushed successfully."
+              exit 0
+            fi
+
+            if [[ "$attempt" -eq "$max_attempts" ]]; then
+              echo "Push failed after ${max_attempts} attempts."
+              exit 1
+            fi
+
+            echo "Remote branch changed. Rebasing before retry..."
+
+            git fetch origin main
+
+            if ! git rebase origin/main; then
+              echo "Rebase conflict detected."
+
+              git rebase --abort || true
+              exit 1
+            fi
+
+            sleep $((attempt * 5))
+          done
 
       - name: Log execution
         if: always()
         run: |
-          echo "✅ Gold price history updated at $(date)"
+          echo "PipSight gold history workflow finished."
+          echo "Status: ${{ job.status }}"
           echo "Repository: ${{ github.repository }}"
-          echo "Workflow completed successfully"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "Completed at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"

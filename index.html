@@ -10572,6 +10572,115 @@ function backendScalpEntryForPair(
     return null;
   }
 
+  /*
+   * Current backend format:
+   * {
+   *   signals: [
+   *     { pair:"XAU/USD", mode:"M5", ... },
+   *     { pair:"XAU/USD", mode:"M15", ... },
+   *     { pair:"XAU/USD", mode:"M30", ... }
+   *   ]
+   * }
+   */
+  if(Array.isArray(payload.signals)){
+    const pairSignals =
+      payload.signals.filter(
+        item=>
+          item &&
+          typeof item === "object" &&
+          String(item.pair || "")
+            .trim()
+            .toUpperCase() ===
+          pairKey
+            .trim()
+            .toUpperCase()
+      );
+
+    if(!pairSignals.length){
+      return null;
+    }
+
+    const primary =
+      pairSignals.find(
+        item=>
+          item.signal === "BUY" ||
+          item.signal === "SELL"
+      ) ||
+      pairSignals.find(
+        item=>
+          String(item.mode || "")
+            .toUpperCase() === "M5"
+      ) ||
+      pairSignals[0];
+
+    return {
+      ...primary,
+
+      generatedAt:
+        primary.generatedAt ||
+        payload.generatedAt ||
+        null,
+
+      reason:
+        Array.isArray(primary.reasons) &&
+        primary.reasons.length
+          ? primary.reasons.join(" · ")
+          : (
+              typeof primary.reason === "string"
+                ? primary.reason
+                : "Backend scalp worker found no qualified setup"
+            ),
+
+      pipeline:
+        Array.isArray(primary.steps)
+          ? primary.steps.map(
+              step=>({
+                name:
+                  step.name ||
+                  "Analysis Step",
+
+                status:
+                  step.pass === true
+                    ? "pass"
+                    : step.pass === false
+                      ? "fail"
+                      : "info",
+
+                detail:
+                  step.detail ||
+                  ""
+              })
+            )
+          : [],
+
+      perTF:
+        pairSignals.map(
+          item=>({
+            tf:
+              String(item.mode || "")
+                .trim()
+                .toLowerCase(),
+
+            signal:
+              item.signal ||
+              "WAIT",
+
+            role:
+              String(item.mode || "")
+                .toUpperCase() === "M5"
+                ? "Entry"
+                : String(item.mode || "")
+                    .toUpperCase() === "M15"
+                  ? "Confirmation"
+                  : "Context"
+          })
+        )
+    };
+  }
+
+  /*
+   * Backward-compatible keyed-object formats.
+   */
   const candidates = [
     payload[pairKey],
 

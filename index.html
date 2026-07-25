@@ -15161,6 +15161,770 @@ async function renderMasterSignal(){
   }
 }
 
+// ════════════════════════════════════════════════════════════════
+// PIPSIGHT PRO AI
+// INDEX.HTML — PART 5 OF 5
+//
+// Pattern feed, startup, refresh scheduler and closing HTML.
+// ════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════
+// PATTERN FEED
+// ════════════════════════════════════════════════════════════════
+
+function validatePatternPayload(payload){
+  if(
+    !payload ||
+    typeof payload !== "object"
+  ){
+    return "Pattern payload must be an object";
+  }
+
+  const candidates = [
+    payload.patterns,
+    payload.signals,
+    payload.items,
+    payload.data
+  ];
+
+  if(
+    !candidates.some(
+      value=>
+        Array.isArray(value)
+    )
+  ){
+    return "Pattern payload contains no signal array";
+  }
+
+  return true;
+}
+
+function patternItemsFromPayload(payload){
+  const candidates = [
+    payload.patterns,
+    payload.signals,
+    payload.items,
+    payload.data
+  ];
+
+  return (
+    candidates.find(
+      value=>
+        Array.isArray(value)
+    ) ||
+    []
+  );
+}
+
+function normalizePatternSignal(item){
+  if(
+    !item ||
+    typeof item !== "object"
+  ){
+    return null;
+  }
+
+  const pairText =
+    String(
+      item.pair ||
+      item.symbol ||
+      item.instrument ||
+      ""
+    )
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z]/g,"");
+
+  let pairKey =
+    null;
+
+  if(
+    pairText.includes("XAUUSD") ||
+    pairText === "XAU"
+  ){
+    pairKey =
+      "XAUUSD";
+  }else if(
+    pairText.includes("GBPJPY")
+  ){
+    pairKey =
+      "GBPJPY";
+  }
+
+  if(!pairKey){
+    return null;
+  }
+
+  const direction =
+    normalizeSignalDecision(
+      item.direction ||
+      item.signal ||
+      item.decision ||
+      item.bias
+    );
+
+  const pattern =
+    String(
+      item.pattern ||
+      item.name ||
+      item.type ||
+      "Unknown pattern"
+    ).trim();
+
+  const confidence =
+    safeNumber(
+      item.confidence ??
+      item.score ??
+      item.probability,
+      null
+    );
+
+  return {
+    pairKey,
+
+    pairLabel:
+      pairByKey(pairKey)
+        ? pairByKey(pairKey).label
+        : pairKey,
+
+    pattern,
+
+    direction,
+
+    confidence:
+      confidence == null
+        ? null
+        : clamp(
+            Math.round(confidence),
+            0,
+            100
+          ),
+
+    timeframe:
+      String(
+        item.timeframe ||
+        item.interval ||
+        item.tf ||
+        "Unknown"
+      ).trim(),
+
+    price:
+      safeNumber(
+        item.price ??
+        item.entry,
+        null
+      ),
+
+    target:
+      safeNumber(
+        item.target ??
+        item.tp ??
+        item.takeProfit,
+        null
+      ),
+
+    stop:
+      safeNumber(
+        item.stop ??
+        item.sl ??
+        item.stopLoss,
+        null
+      ),
+
+    detectedAt:
+      safeISODate(
+        item.detectedAt ||
+        item.generatedAt ||
+        item.updatedAt ||
+        item.timestamp ||
+        item.createdAt
+      ),
+
+    note:
+      String(
+        item.note ||
+        item.reason ||
+        item.description ||
+        ""
+      ).trim()
+  };
+}
+
+async function fetchPatternSignals({
+  forceRefresh = false
+} = {}){
+  const payload =
+    await fetchJSONCached(
+      PATTERN_DATA_URL,
+      {
+        ttlMs:
+          APP_CONFIG
+            .cacheTtlMs
+            .patternSignals,
+
+        forceRefresh,
+
+        validate:
+          validatePatternPayload
+      }
+    );
+
+  PATTERN_DATA = {
+    ...payload,
+
+    updatedAt:
+      workerUpdatedAt(payload),
+
+    items:
+      patternItemsFromPayload(payload)
+        .map(
+          normalizePatternSignal
+        )
+        .filter(Boolean)
+        .slice(
+          -APP_CONFIG
+            .limits
+            .maximumPatternSignalsDisplayed
+        )
+  };
+
+  return PATTERN_DATA;
+}
+
+function renderPatternCard(
+  pattern,
+  pair
+){
+  const decimals =
+    decimalsFor(pair);
+
+  return `
+    <div class="card">
+      <div
+        style="
+          display:flex;
+          justify-content:space-between;
+          align-items:flex-start;
+          gap:14px;
+        "
+      >
+        <div>
+          <div class="label">
+            ${escapeHTML(pattern.timeframe)}
+          </div>
+
+          <div
+            class="display"
+            style="
+              font-size:20px;
+              font-weight:600;
+            "
+          >
+            ${escapeHTML(pattern.pattern)}
+          </div>
+        </div>
+
+        <span
+          class="badge ${signalBadgeClass(pattern.direction)}"
+        >
+          ${escapeHTML(pattern.direction)}
+        </span>
+      </div>
+
+      <div
+        class="metric-grid"
+        style="margin-top:14px;"
+      >
+        <div class="metric">
+          <div class="metric-label">
+            Confidence
+          </div>
+
+          <div class="metric-value">
+            ${
+              pattern.confidence == null
+                ? "—"
+                : `${safeFixed(pattern.confidence,0)}%`
+            }
+          </div>
+        </div>
+
+        <div class="metric">
+          <div class="metric-label">
+            Price
+          </div>
+
+          <div class="metric-value">
+            ${safeFixed(
+              pattern.price,
+              decimals
+            )}
+          </div>
+        </div>
+
+        <div class="metric">
+          <div class="metric-label">
+            Detected
+          </div>
+
+          <div class="metric-value">
+            ${escapeHTML(
+              getTimeAgo(
+                pattern.detectedAt
+              )
+            )}
+          </div>
+        </div>
+      </div>
+
+      ${
+        pattern.target != null ||
+        pattern.stop != null
+          ? `
+            <div
+              class="plan-grid"
+              style="margin-top:12px;"
+            >
+              <div class="plan-cell">
+                <div class="k">
+                  Target
+                </div>
+
+                <div
+                  class="v mono"
+                  style="color:var(--buy);"
+                >
+                  ${safeFixed(
+                    pattern.target,
+                    decimals
+                  )}
+                </div>
+              </div>
+
+              <div class="plan-cell">
+                <div class="k">
+                  Stop
+                </div>
+
+                <div
+                  class="v mono"
+                  style="color:var(--sell);"
+                >
+                  ${safeFixed(
+                    pattern.stop,
+                    decimals
+                  )}
+                </div>
+              </div>
+            </div>
+          `
+          : ""
+      }
+
+      ${
+        pattern.note
+          ? `
+            <div
+              class="scope-note"
+              style="margin-top:12px;"
+            >
+              ${escapeHTML(pattern.note)}
+            </div>
+          `
+          : ""
+      }
+    </div>
+  `;
+}
+
+async function loadPatternDetector({
+  forceRefresh = false
+} = {}){
+  currentMode =
+    "patterns";
+
+  updateModeButtons();
+
+  const mainContainer =
+    document.getElementById(
+      "container"
+    );
+
+  const scalpContainer =
+    document.getElementById(
+      "scalpContainer"
+    );
+
+  const patternContainer =
+    document.getElementById(
+      "patternContainer"
+    );
+
+  if(mainContainer){
+    mainContainer.style.display =
+      "none";
+  }
+
+  if(scalpContainer){
+    scalpContainer.style.display =
+      "none";
+  }
+
+  if(!patternContainer){
+    return null;
+  }
+
+  patternContainer.style.display =
+    "block";
+
+  patternContainer.innerHTML = `
+    <div class="loading">
+      Loading chart-pattern signals…
+    </div>
+  `;
+
+  try{
+    const payload =
+      await fetchPatternSignals({
+        forceRefresh
+      });
+
+    const pair =
+      currentPair;
+
+    const patterns =
+      safeArray(payload.items)
+        .filter(
+          item=>
+            item.pairKey ===
+            pair.key
+        )
+        .sort(
+          (first,second)=>
+            (
+              safeDateMs(
+                second.detectedAt
+              ) || 0
+            ) -
+            (
+              safeDateMs(
+                first.detectedAt
+              ) || 0
+            )
+        )
+        .slice(
+          0,
+          APP_CONFIG
+            .limits
+            .maximumPatternSignalsPerPair
+        );
+
+    patternContainer.innerHTML = `
+      <div class="card">
+        <div class="hero">
+          <div>
+            <div class="label">
+              ${escapeHTML(pair.label)}
+              · AI Pattern Detector
+            </div>
+
+            <div
+              class="display"
+              style="
+                font-size:25px;
+                font-weight:600;
+              "
+            >
+              Chart Pattern Feed
+            </div>
+          </div>
+
+          <div style="text-align:right;">
+            ${freshnessBadge(
+              payload.updatedAt,
+              APP_CONFIG
+                .freshnessMinutes
+                .patternSignals
+            )}
+
+            <div style="margin-top:8px;">
+              <button
+                class="iconbtn"
+                type="button"
+                onclick="loadPatternDetector({forceRefresh:true})"
+              >
+                Refresh
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      ${
+        patterns.length
+          ? patterns.map(
+              pattern=>
+                renderPatternCard(
+                  pattern,
+                  pair
+                )
+            ).join("")
+          : `
+            <div class="empty-note">
+              No current pattern signal for ${escapeHTML(pair.label)}.
+            </div>
+          `
+      }
+
+      <div class="footer-note">
+        Pattern detections are external AI feed observations.
+        Confirm structure, liquidity and risk before trading.
+      </div>
+    `;
+
+    await renderMasterSignal();
+
+    return patterns;
+  }catch(error){
+    patternContainer.innerHTML = `
+      <div class="errbox">
+        Pattern feed could not be loaded.
+
+        <div
+          style="
+            margin-top:8px;
+            color:var(--sell);
+          "
+        >
+          ${escapeHTML(
+            normalizeErrorMessage(error)
+          )}
+        </div>
+
+        <button
+          type="button"
+          class="retry"
+          onclick="loadPatternDetector({forceRefresh:true})"
+        >
+          Retry Pattern Feed
+        </button>
+      </div>
+    `;
+
+    return null;
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// REFRESH SCHEDULER
+// ════════════════════════════════════════════════════════════════
+
+let APP_INTERVALS =
+  [];
+
+function clearAppIntervals(){
+  for(const intervalId of APP_INTERVALS){
+    clearInterval(
+      intervalId
+    );
+  }
+
+  APP_INTERVALS = [];
+}
+
+function startRefreshScheduler(){
+  clearAppIntervals();
+
+  APP_INTERVALS.push(
+    setInterval(
+      ()=>{
+        if(
+          canRefreshMainDashboard()
+        ){
+          renderCurrentPair();
+        }
+      },
+      APP_CONFIG
+        .refreshMs
+        .pairPanel
+    )
+  );
+
+  APP_INTERVALS.push(
+    setInterval(
+      ()=>{
+        if(
+          canRefreshScalpDashboard()
+        ){
+          renderScalpPanel();
+        }
+      },
+      APP_CONFIG
+        .refreshMs
+        .scalpPanel
+    )
+  );
+
+  APP_INTERVALS.push(
+    setInterval(
+      ()=>{
+        if(
+          canRefreshPatternDashboard()
+        ){
+          loadPatternDetector();
+        }
+      },
+      APP_CONFIG
+        .refreshMs
+        .patternPanel
+    )
+  );
+
+  APP_INTERVALS.push(
+    setInterval(
+      ()=>{
+        if(isPageVisible()){
+          renderMasterSignal();
+        }
+      },
+      APP_CONFIG
+        .refreshMs
+        .masterSignal
+    )
+  );
+
+  APP_INTERVALS.push(
+    setInterval(
+      async()=>{
+        if(!isPageVisible()){
+          return;
+        }
+
+        await Promise.allSettled([
+          fetchRobotNews(),
+          fetchRobotSignalLog(),
+          fetchScalpCandles(),
+          fetchBackendScalpSignals()
+        ]);
+      },
+      APP_CONFIG
+        .refreshMs
+        .robotFeeds
+    )
+  );
+}
+
+// ════════════════════════════════════════════════════════════════
+// VISIBILITY REFRESH
+// ════════════════════════════════════════════════════════════════
+
+document.addEventListener(
+  "visibilitychange",
+  ()=>{
+    if(!isPageVisible()){
+      return;
+    }
+
+    const sessionChip =
+      document.getElementById(
+        "sessionChip"
+      );
+
+    if(sessionChip){
+      sessionChip.textContent =
+        getSession();
+    }
+
+    if(currentMode === "scalp"){
+      renderScalpPanel();
+    }else if(currentMode === "patterns"){
+      loadPatternDetector();
+    }else{
+      renderCurrentPair();
+    }
+
+    renderMasterSignal();
+  }
+);
+
+// ════════════════════════════════════════════════════════════════
+// GLOBAL ERROR HANDLING
+// ════════════════════════════════════════════════════════════════
+
+window.addEventListener(
+  "error",
+  event=>{
+    console.error(
+      "PipSight runtime error:",
+      event.error ||
+      event.message
+    );
+  }
+);
+
+window.addEventListener(
+  "unhandledrejection",
+  event=>{
+    console.error(
+      "PipSight rejected promise:",
+      event.reason
+    );
+  }
+);
+
+// ════════════════════════════════════════════════════════════════
+// APPLICATION STARTUP
+// ════════════════════════════════════════════════════════════════
+
+async function initializeApp(){
+  renderTabs();
+  updateModeButtons();
+
+  await Promise.allSettled([
+    fetchRobotNews(),
+    fetchRobotSignalLog(),
+    fetchScalpCandles(),
+    fetchBackendScalpSignals()
+  ]);
+
+  if(currentMode === "scalp"){
+    await renderScalpPanel();
+  }else if(currentMode === "patterns"){
+    await loadPatternDetector();
+  }else{
+    await renderCurrentPair();
+  }
+
+  await renderMasterSignal();
+
+  startRefreshScheduler();
+}
+
+if(
+  document.readyState ===
+  "loading"
+){
+  document.addEventListener(
+    "DOMContentLoaded",
+    ()=>{
+      initializeApp();
+    },
+    {
+      once:true
+    }
+  );
+}else{
+  initializeApp();
+}
+
+// ════════════════════════════════════════════════════════════════
+// INDEX.HTML COMPLETE
+// ════════════════════════════════════════════════════════════════
+</script>
+
+</body>
+</html>
+
 
 
 

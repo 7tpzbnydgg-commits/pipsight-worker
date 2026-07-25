@@ -7260,5 +7260,3189 @@ function analyze(
   };
 }
 
+// ════════════════════════════════════════════════════════════════
+// PIPSIGHT PRO AI
+// INDEX.HTML — PART 3 OF 5
+//
+// This section provides:
+//
+// - H1, D1 and M5 worker-data loaders
+// - worker-payload validation
+// - gold and GBP/JPY reference-history loading
+// - worker freshness helpers
+// - closed-candle-only scalp preparation
+// - clock-aligned M15, M30 and H1 candle construction
+// - professional weighted scalp analysis
+// - EMA, RSI, MACD, ATR, ADX and market-structure scoring
+// - support/resistance and candle-confirmation scoring
+// - session and news-risk filters
+// - professional scalp stop-loss and take-profit plans
+// - scalp confidence and minimum Risk:Reward gating
+//
+// Part 4 continues directly below this code.
+// ════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════
+// GENERIC WORKER PAYLOAD HELPERS
+// ════════════════════════════════════════════════════════════════
+
+function workerRowsForPair(
+  payload,
+  pairKey
+){
+  if(
+    !payload ||
+    typeof payload !== "object" ||
+    typeof pairKey !== "string"
+  ){
+    return [];
+  }
+
+  const direct =
+    payload[pairKey];
+
+  if(Array.isArray(direct)){
+    return direct;
+  }
+
+  if(
+    payload.pairs &&
+    Array.isArray(
+      payload.pairs[pairKey]
+    )
+  ){
+    return payload.pairs[pairKey];
+  }
+
+  if(
+    payload.data &&
+    Array.isArray(
+      payload.data[pairKey]
+    )
+  ){
+    return payload.data[pairKey];
+  }
+
+  if(
+    payload.candles &&
+    Array.isArray(
+      payload.candles[pairKey]
+    )
+  ){
+    return payload.candles[pairKey];
+  }
+
+  return [];
+}
+
+function workerStaleFlagForPair(
+  payload,
+  pairKey
+){
+  if(
+    !payload ||
+    typeof payload !== "object"
+  ){
+    return false;
+  }
+
+  if(
+    payload.stale &&
+    typeof payload.stale === "object"
+  ){
+    return !!payload.stale[pairKey];
+  }
+
+  if(
+    payload.metadata &&
+    payload.metadata.stale &&
+    typeof payload.metadata.stale === "object"
+  ){
+    return !!payload.metadata.stale[pairKey];
+  }
+
+  return false;
+}
+
+function workerUpdatedAt(payload){
+  if(
+    !payload ||
+    typeof payload !== "object"
+  ){
+    return null;
+  }
+
+  return (
+    safeISODate(
+      payload.updatedAt ||
+      payload.generatedAt ||
+      payload.fetchedAt ||
+      (
+        payload.metadata &&
+        (
+          payload.metadata.updatedAt ||
+          payload.metadata.generatedAt
+        )
+      )
+    ) ||
+    null
+  );
+}
+
+function validatePairCandlePayload(
+  payload,
+  requiredPairKeys = [
+    "XAUUSD",
+    "GBPJPY"
+  ]
+){
+  if(
+    !payload ||
+    typeof payload !== "object"
+  ){
+    return "Worker payload must be an object";
+  }
+
+  const availablePairs =
+    requiredPairKeys.filter(
+      pairKey=>
+        workerRowsForPair(
+          payload,
+          pairKey
+        ).length > 0
+    );
+
+  if(!availablePairs.length){
+    return "Worker payload contains no supported pair candles";
+  }
+
+  return true;
+}
+
+// ════════════════════════════════════════════════════════════════
+// H1 WORKER DATA
+// ════════════════════════════════════════════════════════════════
+
+async function fetchIntradayH1Data({
+  forceRefresh = false
+} = {}){
+  const payload =
+    await fetchJSONCached(
+      SHARED_INTRADAY_H1_URL,
+      {
+        ttlMs:
+          APP_CONFIG.cacheTtlMs.intradayH1,
+
+        forceRefresh,
+
+        validate:
+          payload=>
+            validatePairCandlePayload(
+              payload
+            )
+      }
+    );
+
+  const normalizedPayload = {
+    ...payload,
+
+    updatedAt:
+      workerUpdatedAt(
+        payload
+      ),
+
+    stale:
+      safeObject(
+        payload.stale
+      )
+  };
+
+  for(const pair of PAIRS){
+    normalizedPayload[pair.key] =
+      normalizeCandles(
+        workerRowsForPair(
+          payload,
+          pair.key
+        )
+      );
+  }
+
+  INTRADAY_H1_CACHE =
+    normalizedPayload;
+
+  return INTRADAY_H1_CACHE;
+}
+
+async function getIntradayH1(
+  pairKey,
+  {
+    forceRefresh = false
+  } = {}
+){
+  try{
+    if(
+      !INTRADAY_H1_CACHE ||
+      forceRefresh
+    ){
+      await fetchIntradayH1Data({
+        forceRefresh
+      });
+    }
+
+    return normalizeCandles(
+      workerRowsForPair(
+        INTRADAY_H1_CACHE,
+        pairKey
+      )
+    );
+  }catch(error){
+    console.warn(
+      `Intraday H1 fetch failed for ${pairKey}:`,
+      normalizeErrorMessage(error)
+    );
+
+    return normalizeCandles(
+      workerRowsForPair(
+        INTRADAY_H1_CACHE,
+        pairKey
+      )
+    );
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// DAILY OHLC WORKER DATA
+// ════════════════════════════════════════════════════════════════
+
+async function fetchDailyOHLCData({
+  forceRefresh = false
+} = {}){
+  const payload =
+    await fetchJSONCached(
+      SHARED_DAILY_OHLC_URL,
+      {
+        ttlMs:
+          APP_CONFIG.cacheTtlMs.dailyOHLC,
+
+        forceRefresh,
+
+        validate:
+          payload=>
+            validatePairCandlePayload(
+              payload
+            )
+      }
+    );
+
+  const normalizedPayload = {
+    ...payload,
+
+    updatedAt:
+      workerUpdatedAt(
+        payload
+      ),
+
+    stale:
+      safeObject(
+        payload.stale
+      )
+  };
+
+  for(const pair of PAIRS){
+    normalizedPayload[pair.key] =
+      normalizeCandles(
+        workerRowsForPair(
+          payload,
+          pair.key
+        )
+      );
+  }
+
+  DAILY_OHLC_CACHE =
+    normalizedPayload;
+
+  return DAILY_OHLC_CACHE;
+}
+
+async function getDailyOHLC(
+  pairKey,
+  {
+    forceRefresh = false
+  } = {}
+){
+  try{
+    if(
+      !DAILY_OHLC_CACHE ||
+      forceRefresh
+    ){
+      await fetchDailyOHLCData({
+        forceRefresh
+      });
+    }
+
+    return normalizeCandles(
+      workerRowsForPair(
+        DAILY_OHLC_CACHE,
+        pairKey
+      )
+    );
+  }catch(error){
+    console.warn(
+      `Daily OHLC fetch failed for ${pairKey}:`,
+      normalizeErrorMessage(error)
+    );
+
+    return normalizeCandles(
+      workerRowsForPair(
+        DAILY_OHLC_CACHE,
+        pairKey
+      )
+    );
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// SCALP-CANDLE WORKER DATA
+// ════════════════════════════════════════════════════════════════
+
+async function fetchScalpCandles({
+  forceRefresh = false
+} = {}){
+  try{
+    const payload =
+      await fetchJSONCached(
+        SHARED_SCALP_CANDLES_URL,
+        {
+          ttlMs:
+            APP_CONFIG.cacheTtlMs.scalpCandles,
+
+          forceRefresh,
+
+          validate:
+            payload=>
+              validatePairCandlePayload(
+                payload
+              )
+        }
+      );
+
+    const normalizedPayload = {
+      ...payload,
+
+      updatedAt:
+        workerUpdatedAt(
+          payload
+        ),
+
+      stale:
+        safeObject(
+          payload.stale
+        ),
+
+      metadata:
+        safeObject(
+          payload.metadata
+        )
+    };
+
+    for(const pair of PAIRS){
+      normalizedPayload[pair.key] =
+        normalizeCandles(
+          workerRowsForPair(
+            payload,
+            pair.key
+          )
+        );
+    }
+
+    SCALP_DATA =
+      normalizedPayload;
+
+    return SCALP_DATA;
+  }catch(error){
+    console.warn(
+      "Scalp-candle worker fetch failed:",
+      normalizeErrorMessage(error)
+    );
+
+    return SCALP_DATA;
+  }
+}
+
+function scalpCandlesForPair(pairKey){
+  return normalizeCandles(
+    workerRowsForPair(
+      SCALP_DATA,
+      pairKey
+    )
+  );
+}
+
+// ════════════════════════════════════════════════════════════════
+// WORKER FRESHNESS BADGES
+// ════════════════════════════════════════════════════════════════
+
+function intradayFreshnessFor(pairKey){
+  return freshnessBadge(
+    workerUpdatedAt(
+      INTRADAY_H1_CACHE
+    ),
+
+    APP_CONFIG
+      .freshnessMinutes
+      .intradayH1,
+
+    workerStaleFlagForPair(
+      INTRADAY_H1_CACHE,
+      pairKey
+    )
+  );
+}
+
+function dailyFreshnessFor(pairKey){
+  return freshnessBadge(
+    workerUpdatedAt(
+      DAILY_OHLC_CACHE
+    ),
+
+    APP_CONFIG
+      .freshnessMinutes
+      .dailyOHLC,
+
+    workerStaleFlagForPair(
+      DAILY_OHLC_CACHE,
+      pairKey
+    )
+  );
+}
+
+function scalpFreshnessFor(pairKey){
+  return freshnessBadge(
+    workerUpdatedAt(
+      SCALP_DATA
+    ),
+
+    APP_CONFIG
+      .freshnessMinutes
+      .scalpCandles,
+
+    workerStaleFlagForPair(
+      SCALP_DATA,
+      pairKey
+    )
+  );
+}
+
+function scalpSignalFreshnessFor(pairKey){
+  return freshnessBadge(
+    workerUpdatedAt(
+      SCALP_SIGNALS_DATA
+    ),
+
+    APP_CONFIG
+      .freshnessMinutes
+      .scalpSignals,
+
+    workerStaleFlagForPair(
+      SCALP_SIGNALS_DATA,
+      pairKey
+    )
+  );
+}
+
+// ════════════════════════════════════════════════════════════════
+// FOREX DAILY REFERENCE HISTORY
+// ════════════════════════════════════════════════════════════════
+
+function formatDateForAPI(date){
+  return date
+    .toISOString()
+    .slice(0,10);
+}
+
+function validateFrankfurterPayload(
+  payload,
+  quoteCurrency
+){
+  if(
+    !payload ||
+    typeof payload !== "object"
+  ){
+    return "Forex history response is invalid";
+  }
+
+  if(
+    !payload.rates ||
+    typeof payload.rates !== "object"
+  ){
+    return "Forex history has no rates object";
+  }
+
+  const dates =
+    Object.keys(
+      payload.rates
+    );
+
+  if(!dates.length){
+    return "Forex history contains no dates";
+  }
+
+  const usable =
+    dates.some(
+      date=>
+        safeNumber(
+          payload.rates[date] &&
+          payload.rates[date][quoteCurrency],
+          null
+        ) != null
+    );
+
+  if(!usable){
+    return `Forex history contains no ${quoteCurrency} rates`;
+  }
+
+  return true;
+}
+
+async function fetchForexRows(pair){
+  const end =
+    new Date();
+
+  const start =
+    new Date();
+
+  start.setUTCDate(
+    start.getUTCDate() -
+    450
+  );
+
+  const url =
+    `https://api.frankfurter.dev/v1/` +
+    `${formatDateForAPI(start)}..${formatDateForAPI(end)}` +
+    `?base=${encodeURIComponent(pair.base)}` +
+    `&symbols=${encodeURIComponent(pair.quote)}`;
+
+  const payload =
+    await fetchJSONCached(
+      url,
+      {
+        ttlMs:
+          APP_CONFIG.cacheTtlMs.forexHistory,
+
+        validate:
+          data=>
+            validateFrankfurterPayload(
+              data,
+              pair.quote
+            )
+      }
+    );
+
+  let rows =
+    Object.keys(
+      payload.rates
+    )
+      .sort()
+      .map(
+        date=>({
+          date,
+
+          close:
+            safeNumber(
+              payload.rates[date] &&
+              payload.rates[date][pair.quote],
+              null
+            )
+        })
+      )
+      .filter(
+        row=>
+          row.close != null &&
+          row.close > 0
+      );
+
+  /*
+   * Use the latest M5 close as the current reference price.
+   * This avoids any additional Twelve Data price request.
+   */
+  try{
+    if(!SCALP_DATA){
+      await fetchScalpCandles();
+    }
+
+    const scalpCandles =
+      scalpCandlesForPair(
+        pair.key
+      );
+
+    const latestCandle =
+      scalpCandles[
+        scalpCandles.length -
+        1
+      ];
+
+    const latestPrice =
+      safeNumber(
+        latestCandle &&
+        latestCandle.close,
+        null
+      );
+
+    if(latestPrice != null){
+      const today =
+        new Date()
+          .toISOString()
+          .slice(0,10);
+
+      const existingIndex =
+        rows.findIndex(
+          row=>
+            row.date === today
+        );
+
+      if(existingIndex >= 0){
+        rows[existingIndex] = {
+          date:
+            today,
+
+          close:
+            latestPrice
+        };
+      }else{
+        rows.push({
+          date:
+            today,
+
+          close:
+            latestPrice
+        });
+      }
+    }
+  }catch(error){
+    console.warn(
+      "Could not apply latest GBP/JPY scalp price:",
+      normalizeErrorMessage(error)
+    );
+  }
+
+  rows =
+    normalizeCloseRows(
+      rows
+    );
+
+  if(rows.length < 30){
+    throw new Error(
+      "Not enough GBP/JPY history was returned"
+    );
+  }
+
+  return {
+    rows,
+
+    statusLabel:
+      `daily reference history · ${rows.length} sessions`
+  };
+}
+
+// ════════════════════════════════════════════════════════════════
+// GOLD HISTORY AND LIVE PRICE
+// ════════════════════════════════════════════════════════════════
+
+const GOLD_HISTORY_KEY =
+  "pipsight_xau_usd_history_v1";
+
+function loadGoldHistory(){
+  return normalizeCloseRows(
+    loadJSON(
+      GOLD_HISTORY_KEY,
+      []
+    )
+  );
+}
+
+function saveGoldHistory(rows){
+  const normalized =
+    normalizeCloseRows(
+      rows
+    );
+
+  const maximumRows =
+    APP_CONFIG
+      .limits
+      .maximumGoldHistoryRows;
+
+  return saveJSON(
+    GOLD_HISTORY_KEY,
+    normalized.slice(
+      -maximumRows
+    )
+  );
+}
+
+function validateGoldHistoryPayload(payload){
+  if(!Array.isArray(payload)){
+    return "Gold history must be an array";
+  }
+
+  const normalized =
+    normalizeCloseRows(
+      payload
+    );
+
+  if(!normalized.length){
+    return "Gold history contains no valid rows";
+  }
+
+  return true;
+}
+
+function validateGoldLivePayload(payload){
+  if(
+    !payload ||
+    typeof payload !== "object"
+  ){
+    return "Gold live-price response is invalid";
+  }
+
+  const price =
+    safeNumber(
+      payload.price,
+      null
+    );
+
+  if(
+    price == null ||
+    price <= 0
+  ){
+    return "Gold live-price response has no valid price";
+  }
+
+  return true;
+}
+
+async function fetchSharedGoldHistory({
+  forceRefresh = false
+} = {}){
+  try{
+    const payload =
+      await fetchJSONCached(
+        SHARED_GOLD_HISTORY_URL,
+        {
+          ttlMs:
+            APP_CONFIG.cacheTtlMs.goldHistory,
+
+          forceRefresh,
+
+          validate:
+            validateGoldHistoryPayload
+        }
+      );
+
+    return normalizeCloseRows(
+      payload
+    );
+  }catch(error){
+    console.warn(
+      "Shared gold history unavailable:",
+      normalizeErrorMessage(error)
+    );
+
+    return [];
+  }
+}
+
+async function fetchLiveGoldPrice(
+  pair,
+  {
+    forceRefresh = false
+  } = {}
+){
+  const url =
+    `https://api.gold-api.com/price/` +
+    `${encodeURIComponent(pair.symbol)}/` +
+    `${encodeURIComponent(pair.quote)}`;
+
+  const payload =
+    await fetchJSONCached(
+      url,
+      {
+        ttlMs:
+          APP_CONFIG.cacheTtlMs.goldLive,
+
+        forceRefresh,
+
+        validate:
+          validateGoldLivePayload
+      }
+    );
+
+  return safeNumber(
+    payload.price,
+    null
+  );
+}
+
+async function fetchMetalRows(pair){
+  let rows =
+    await fetchSharedGoldHistory();
+
+  let usingSharedHistory =
+    rows.length > 0;
+
+  if(!usingSharedHistory){
+    rows =
+      loadGoldHistory();
+  }
+
+  let livePrice =
+    null;
+
+  try{
+    livePrice =
+      await fetchLiveGoldPrice(
+        pair
+      );
+  }catch(error){
+    console.warn(
+      "Live gold price unavailable:",
+      normalizeErrorMessage(error)
+    );
+
+    try{
+      if(!SCALP_DATA){
+        await fetchScalpCandles();
+      }
+
+      const candles =
+        scalpCandlesForPair(
+          pair.key
+        );
+
+      livePrice =
+        safeNumber(
+          candles[
+            candles.length -
+            1
+          ] &&
+          candles[
+            candles.length -
+            1
+          ].close,
+          null
+        );
+    }catch{
+      livePrice = null;
+    }
+  }
+
+  if(
+    livePrice != null &&
+    livePrice > 0
+  ){
+    const today =
+      new Date()
+        .toISOString()
+        .slice(0,10);
+
+    const existingIndex =
+      rows.findIndex(
+        row=>
+          row.date === today
+      );
+
+    if(existingIndex >= 0){
+      rows[existingIndex] = {
+        date:
+          today,
+
+        close:
+          livePrice
+      };
+    }else{
+      rows.push({
+        date:
+          today,
+
+        close:
+          livePrice
+      });
+    }
+  }
+
+  rows =
+    normalizeCloseRows(
+      rows
+    ).slice(
+      -APP_CONFIG
+        .limits
+        .maximumGoldHistoryRows
+    );
+
+  if(rows.length){
+    saveGoldHistory(
+      rows
+    );
+  }
+
+  if(!rows.length){
+    throw new Error(
+      "No valid XAU/USD history is currently available"
+    );
+  }
+
+  let statusLabel;
+
+  if(
+    usingSharedHistory &&
+    livePrice != null
+  ){
+    statusLabel =
+      `live spot · shared history (${rows.length} sessions)`;
+  }else if(usingSharedHistory){
+    statusLabel =
+      `shared history · latest available close (${rows.length} sessions)`;
+  }else if(livePrice != null){
+    statusLabel =
+      `live spot · local history (${rows.length} sessions)`;
+  }else{
+    statusLabel =
+      `local cached history (${rows.length} sessions)`;
+  }
+
+  return {
+    rows,
+    statusLabel
+  };
+}
+
+// ════════════════════════════════════════════════════════════════
+// SCALP ENGINE CONFIGURATION
+// ════════════════════════════════════════════════════════════════
+
+const SCALP_PAIRS = Object.freeze(
+  PAIRS.map(
+    pair=>
+      Object.freeze({
+        key:
+          pair.key,
+
+        label:
+          pair.label,
+
+        decimals:
+          pair.decimals
+      })
+  )
+);
+
+const SCALP_TIMEFRAMES = Object.freeze([
+  Object.freeze({
+    key:"5m",
+    label:"5 min",
+    minutes:5,
+    role:"Entry"
+  }),
+
+  Object.freeze({
+    key:"15m",
+    label:"15 min",
+    minutes:15,
+    role:"Confirmation"
+  }),
+
+  Object.freeze({
+    key:"30m",
+    label:"30 min",
+    minutes:30,
+    role:"Context"
+  }),
+
+  Object.freeze({
+    key:"1h",
+    label:"1 hour",
+    minutes:60,
+    role:"Trend"
+  })
+]);
+
+const SCALP_STRATEGY_CONFIG = Object.freeze({
+  minimumM5Candles:
+    120,
+
+  minimumM15Candles:
+    45,
+
+  minimumM30Candles:
+    30,
+
+  minimumH1Candles:
+    60,
+
+  minimumConfidence:
+    68,
+
+  minimumRiskReward:
+    2,
+
+  atrPeriod:
+    14,
+
+  adxPeriod:
+    14,
+
+  adxMinimum:
+    18,
+
+  adxStrong:
+    25,
+
+  maximumNewsConflictScore:
+    10,
+
+  weights:Object.freeze({
+    h1Trend:
+      20,
+
+    m30Trend:
+      12,
+
+    m15Trend:
+      15,
+
+    m5Momentum:
+      10,
+
+    macd:
+      8,
+
+    rsi:
+      6,
+
+    structure:
+      10,
+
+    candle:
+      7,
+
+    supportResistance:
+      5,
+
+    adx:
+      4,
+
+    session:
+      3
+  })
+});
+
+// ════════════════════════════════════════════════════════════════
+// SCALP CANDLE PREPARATION
+// ════════════════════════════════════════════════════════════════
+
+function prepareScalpTimeframes(
+  rawM5Candles,
+  nowMs = Date.now()
+){
+  const m5 =
+    closedCandlesOnly(
+      rawM5Candles,
+      5,
+      nowMs
+    );
+
+  const m15 =
+    aggregateCandlesAligned(
+      m5,
+      5,
+      15,
+      {
+        closedOnly:true,
+        nowMs,
+        requireCompleteBuckets:true
+      }
+    );
+
+  const m30 =
+    aggregateCandlesAligned(
+      m5,
+      5,
+      30,
+      {
+        closedOnly:true,
+        nowMs,
+        requireCompleteBuckets:true
+      }
+    );
+
+  const h1 =
+    aggregateCandlesAligned(
+      m5,
+      5,
+      60,
+      {
+        closedOnly:true,
+        nowMs,
+        requireCompleteBuckets:true
+      }
+    );
+
+  return {
+    m5,
+    m15,
+    m30,
+    h1,
+
+    counts:{
+      m5:m5.length,
+      m15:m15.length,
+      m30:m30.length,
+      h1:h1.length
+    }
+  };
+}
+
+function validatePreparedScalpData(
+  prepared
+){
+  const counts =
+    prepared &&
+    prepared.counts
+      ? prepared.counts
+      : {};
+
+  const missing =
+    [];
+
+  if(
+    safeNumber(
+      counts.m5,
+      0
+    ) <
+    SCALP_STRATEGY_CONFIG
+      .minimumM5Candles
+  ){
+    missing.push(
+      `M5 ${counts.m5 || 0}/${SCALP_STRATEGY_CONFIG.minimumM5Candles}`
+    );
+  }
+
+  if(
+    safeNumber(
+      counts.m15,
+      0
+    ) <
+    SCALP_STRATEGY_CONFIG
+      .minimumM15Candles
+  ){
+    missing.push(
+      `M15 ${counts.m15 || 0}/${SCALP_STRATEGY_CONFIG.minimumM15Candles}`
+    );
+  }
+
+  if(
+    safeNumber(
+      counts.m30,
+      0
+    ) <
+    SCALP_STRATEGY_CONFIG
+      .minimumM30Candles
+  ){
+    missing.push(
+      `M30 ${counts.m30 || 0}/${SCALP_STRATEGY_CONFIG.minimumM30Candles}`
+    );
+  }
+
+  if(
+    safeNumber(
+      counts.h1,
+      0
+    ) <
+    SCALP_STRATEGY_CONFIG
+      .minimumH1Candles
+  ){
+    missing.push(
+      `H1 ${counts.h1 || 0}/${SCALP_STRATEGY_CONFIG.minimumH1Candles}`
+    );
+  }
+
+  return {
+    valid:
+      missing.length === 0,
+
+    missing,
+
+    detail:
+      missing.length
+        ? `Insufficient closed-candle history: ${missing.join(", ")}`
+        : "All required closed-candle timeframes are available"
+  };
+}
+
+// ════════════════════════════════════════════════════════════════
+// SCALP TIMEFRAME ANALYSIS
+// ════════════════════════════════════════════════════════════════
+
+function scalpTrendState(
+  candles,
+  {
+    fastPeriod = 9,
+    slowPeriod = 21,
+    contextPeriod = 50
+  } = {}
+){
+  const normalized =
+    normalizeCandles(
+      candles
+    );
+
+  const closes =
+    normalized.map(
+      candle=>
+        candle.close
+    );
+
+  if(
+    closes.length <
+    Math.max(
+      slowPeriod,
+      contextPeriod
+    )
+  ){
+    return {
+      direction:null,
+      strength:0,
+      label:"Not enough candles for trend state",
+      fast:null,
+      slow:null,
+      context:null,
+      price:
+        closes[
+          closes.length -
+          1
+        ] ??
+        null
+    };
+  }
+
+  const fast =
+    emaSeries(
+      closes,
+      fastPeriod
+    );
+
+  const slow =
+    emaSeries(
+      closes,
+      slowPeriod
+    );
+
+  const context =
+    emaSeries(
+      closes,
+      contextPeriod
+    );
+
+  const index =
+    closes.length -
+    1;
+
+  const fastValue =
+    fast[index];
+
+  const slowValue =
+    slow[index];
+
+  const contextValue =
+    context[index];
+
+  const price =
+    closes[index];
+
+  if(
+    fastValue == null ||
+    slowValue == null ||
+    contextValue == null
+  ){
+    return {
+      direction:null,
+      strength:0,
+      label:"EMA trend values are incomplete",
+      fast:fastValue,
+      slow:slowValue,
+      context:contextValue,
+      price
+    };
+  }
+
+  const bullishChecks = [
+    fastValue >
+      slowValue,
+
+    slowValue >
+      contextValue,
+
+    price >
+      fastValue
+  ];
+
+  const bearishChecks = [
+    fastValue <
+      slowValue,
+
+    slowValue <
+      contextValue,
+
+    price <
+      fastValue
+  ];
+
+  const bullishCount =
+    bullishChecks.filter(Boolean)
+      .length;
+
+  const bearishCount =
+    bearishChecks.filter(Boolean)
+      .length;
+
+  if(bullishCount === 3){
+    return {
+      direction:"BUY",
+      strength:100,
+      label:`EMA${fastPeriod}>EMA${slowPeriod}>EMA${contextPeriod} with price above fast EMA`,
+      fast:fastValue,
+      slow:slowValue,
+      context:contextValue,
+      price
+    };
+  }
+
+  if(bearishCount === 3){
+    return {
+      direction:"SELL",
+      strength:100,
+      label:`EMA${fastPeriod}<EMA${slowPeriod}<EMA${contextPeriod} with price below fast EMA`,
+      fast:fastValue,
+      slow:slowValue,
+      context:contextValue,
+      price
+    };
+  }
+
+  if(bullishCount >= 2){
+    return {
+      direction:null,
+      lean:"BUY",
+      strength:
+        Math.round(
+          bullishCount /
+          3 *
+          100
+        ),
+      label:`Partial bullish EMA alignment (${bullishCount}/3)`,
+      fast:fastValue,
+      slow:slowValue,
+      context:contextValue,
+      price
+    };
+  }
+
+  if(bearishCount >= 2){
+    return {
+      direction:null,
+      lean:"SELL",
+      strength:
+        Math.round(
+          bearishCount /
+          3 *
+          100
+        ),
+      label:`Partial bearish EMA alignment (${bearishCount}/3)`,
+      fast:fastValue,
+      slow:slowValue,
+      context:contextValue,
+      price
+    };
+  }
+
+  return {
+    direction:null,
+    lean:null,
+    strength:
+      Math.max(
+        bullishCount,
+        bearishCount
+      ) /
+      3 *
+      100,
+    label:"Mixed EMA trend state",
+    fast:fastValue,
+    slow:slowValue,
+    context:contextValue,
+    price
+  };
+}
+
+function scalpMomentumState(candles){
+  const normalized =
+    normalizeCandles(
+      candles
+    );
+
+  const closes =
+    normalized.map(
+      candle=>
+        candle.close
+    );
+
+  if(closes.length < 35){
+    return {
+      direction:null,
+      score:0,
+      rsi:null,
+      macd:null,
+      detail:"Not enough candles for RSI and MACD"
+    };
+  }
+
+  const rsi =
+    rsiSeries(
+      closes,
+      14
+    );
+
+  const latestRSI =
+    rsi[
+      rsi.length -
+      1
+    ];
+
+  const macd =
+    computeMACD(
+      closes,
+      12,
+      26,
+      9
+    );
+
+  let rsiDirection =
+    null;
+
+  let macdDirection =
+    null;
+
+  if(latestRSI != null){
+    if(
+      latestRSI >= 53 &&
+      latestRSI <= 72
+    ){
+      rsiDirection =
+        "BUY";
+    }else if(
+      latestRSI <= 47 &&
+      latestRSI >= 28
+    ){
+      rsiDirection =
+        "SELL";
+    }
+  }
+
+  if(
+    macd.lastMacd != null &&
+    macd.lastSignal != null
+  ){
+    if(
+      macd.lastMacd >
+      macd.lastSignal &&
+      (
+        macd.lastHistogram == null ||
+        macd.lastHistogram > 0
+      )
+    ){
+      macdDirection =
+        "BUY";
+    }else if(
+      macd.lastMacd <
+      macd.lastSignal &&
+      (
+        macd.lastHistogram == null ||
+        macd.lastHistogram < 0
+      )
+    ){
+      macdDirection =
+        "SELL";
+    }
+  }
+
+  let direction =
+    null;
+
+  let score =
+    0;
+
+  if(
+    rsiDirection &&
+    macdDirection &&
+    rsiDirection ===
+      macdDirection
+  ){
+    direction =
+      rsiDirection;
+
+    score =
+      100;
+  }else if(macdDirection){
+    direction =
+      macdDirection;
+
+    score =
+      65;
+  }else if(rsiDirection){
+    direction =
+      rsiDirection;
+
+    score =
+      50;
+  }
+
+  return {
+    direction,
+    score,
+
+    rsi:
+      latestRSI,
+
+    rsiDirection,
+
+    macd,
+
+    macdDirection,
+
+    detail:
+      direction
+        ? `RSI ${safeFixed(latestRSI,1)} · MACD ${macdDirection || "neutral"} · momentum favors ${direction}`
+        : `RSI ${safeFixed(latestRSI,1)} · MACD has no aligned momentum`
+  };
+}
+
+// ════════════════════════════════════════════════════════════════
+// SCALP SESSION QUALITY
+// ════════════════════════════════════════════════════════════════
+
+function scalpSessionState(
+  date = new Date()
+){
+  const hour =
+    date.getUTCHours();
+
+  const inAsia =
+    hour >= 0 &&
+    hour < 9;
+
+  const inLondon =
+    hour >= 8 &&
+    hour < 17;
+
+  const inNewYork =
+    hour >= 13 &&
+    hour < 22;
+
+  if(
+    inLondon &&
+    inNewYork
+  ){
+    return {
+      score:100,
+      quality:"excellent",
+      label:"London/New York overlap"
+    };
+  }
+
+  if(inLondon){
+    return {
+      score:80,
+      quality:"good",
+      label:"London session"
+    };
+  }
+
+  if(inNewYork){
+    return {
+      score:80,
+      quality:"good",
+      label:"New York session"
+    };
+  }
+
+  if(inAsia){
+    return {
+      score:55,
+      quality:"moderate",
+      label:"Asian session"
+    };
+  }
+
+  return {
+    score:30,
+    quality:"thin",
+    label:"Between major sessions"
+  };
+}
+
+// ════════════════════════════════════════════════════════════════
+// SCALP NEWS FILTER
+// ════════════════════════════════════════════════════════════════
+
+function evaluateScalpNewsRisk(
+  pairLabel,
+  direction
+){
+  if(
+    direction !== "BUY" &&
+    direction !== "SELL"
+  ){
+    return {
+      pass:true,
+      conflict:false,
+      score:0,
+      detail:"No provisional scalp direction available for news comparison"
+    };
+  }
+
+  const relevant =
+    newsItemsFor(
+      pairLabel
+    );
+
+  const conflicting =
+    relevant.find(
+      item=>
+        item.impact === "high" &&
+        (
+          (
+            direction === "BUY" &&
+            item.sentiment <=
+              -SCALP_STRATEGY_CONFIG
+                .maximumNewsConflictScore
+          ) ||
+          (
+            direction === "SELL" &&
+            item.sentiment >=
+              SCALP_STRATEGY_CONFIG
+                .maximumNewsConflictScore
+          )
+        )
+    );
+
+  if(conflicting){
+    return {
+      pass:false,
+      conflict:true,
+      score:
+        conflicting.sentiment,
+
+      detail:
+        `Conflicting high-impact news: ${truncateText(conflicting.text,90)}`
+    };
+  }
+
+  const aggregate =
+    relevant.reduce(
+      (sum, item)=>
+        sum +
+        safeNumber(
+          item.sentiment,
+          0
+        ),
+      0
+    );
+
+  return {
+    pass:true,
+    conflict:false,
+    score:
+      aggregate,
+
+    detail:
+      relevant.length
+        ? "No conflicting high-impact headline is currently flagged"
+        : "No current pair-specific news risk is available"
+  };
+}
+
+// ════════════════════════════════════════════════════════════════
+// SCALP TRADE-PLAN CONSTRUCTION
+// ════════════════════════════════════════════════════════════════
+
+function buildScalpTradePlan({
+  direction,
+  entry,
+  m5Candles,
+  m15Candles,
+  supportResistance,
+  decimals
+}){
+  if(
+    direction !== "BUY" &&
+    direction !== "SELL"
+  ){
+    return {
+      valid:false,
+      reason:"No valid scalp direction",
+      plan:null
+    };
+  }
+
+  const price =
+    safeNumber(
+      entry,
+      null
+    );
+
+  if(price == null){
+    return {
+      valid:false,
+      reason:"Entry price is unavailable",
+      plan:null
+    };
+  }
+
+  const m5ATR =
+    computeATR(
+      m5Candles,
+      SCALP_STRATEGY_CONFIG
+        .atrPeriod
+    );
+
+  const m15ATR =
+    computeATR(
+      m15Candles,
+      SCALP_STRATEGY_CONFIG
+        .atrPeriod
+    );
+
+  const baseATR =
+    m15ATR != null &&
+    m15ATR > 0
+      ? m15ATR
+      : m5ATR;
+
+  if(
+    baseATR == null ||
+    baseATR <= 0
+  ){
+    return {
+      valid:false,
+      reason:"ATR is unavailable for stop calculation",
+      plan:null
+    };
+  }
+
+  const nearestSupport =
+    safeNumber(
+      supportResistance &&
+      supportResistance.supports &&
+      supportResistance.supports[0],
+      null
+    );
+
+  const nearestResistance =
+    safeNumber(
+      supportResistance &&
+      supportResistance.resistances &&
+      supportResistance.resistances[0],
+      null
+    );
+
+  const minimumStopDistance =
+    baseATR *
+    0.8;
+
+  const maximumStopDistance =
+    baseATR *
+    1.8;
+
+  let stop =
+    null;
+
+  if(direction === "BUY"){
+    const structuralStop =
+      nearestSupport != null &&
+      nearestSupport <
+        price
+        ? nearestSupport -
+          baseATR *
+          0.15
+        : null;
+
+    stop =
+      structuralStop != null
+        ? structuralStop
+        : price -
+          baseATR *
+          1.15;
+
+    let stopDistance =
+      price -
+      stop;
+
+    if(
+      stopDistance <
+      minimumStopDistance
+    ){
+      stop =
+        price -
+        minimumStopDistance;
+
+      stopDistance =
+        minimumStopDistance;
+    }
+
+    if(
+      stopDistance >
+      maximumStopDistance
+    ){
+      stop =
+        price -
+        maximumStopDistance;
+    }
+  }else{
+    const structuralStop =
+      nearestResistance != null &&
+      nearestResistance >
+        price
+        ? nearestResistance +
+          baseATR *
+          0.15
+        : null;
+
+    stop =
+      structuralStop != null
+        ? structuralStop
+        : price +
+          baseATR *
+          1.15;
+
+    let stopDistance =
+      stop -
+      price;
+
+    if(
+      stopDistance <
+      minimumStopDistance
+    ){
+      stop =
+        price +
+        minimumStopDistance;
+
+      stopDistance =
+        minimumStopDistance;
+    }
+
+    if(
+      stopDistance >
+      maximumStopDistance
+    ){
+      stop =
+        price +
+        maximumStopDistance;
+    }
+  }
+
+  const risk =
+    Math.abs(
+      price -
+      stop
+    );
+
+  if(
+    !Number.isFinite(risk) ||
+    risk <= 0
+  ){
+    return {
+      valid:false,
+      reason:"Calculated scalp risk is invalid",
+      plan:null
+    };
+  }
+
+  const minimumRR =
+    SCALP_STRATEGY_CONFIG
+      .minimumRiskReward;
+
+  let target1 =
+    direction === "BUY"
+      ? price +
+        risk *
+        minimumRR
+      : price -
+        risk *
+        minimumRR;
+
+  const structuralTarget =
+    direction === "BUY"
+      ? nearestResistance
+      : nearestSupport;
+
+  if(structuralTarget != null){
+    const structuralReward =
+      Math.abs(
+        structuralTarget -
+        price
+      );
+
+    if(
+      (
+        direction === "BUY" &&
+        structuralTarget >
+          price
+      ) ||
+      (
+        direction === "SELL" &&
+        structuralTarget <
+          price
+      )
+    ){
+      if(
+        structuralReward >=
+        risk *
+        minimumRR
+      ){
+        target1 =
+          structuralTarget;
+      }
+    }
+  }
+
+  const reward =
+    Math.abs(
+      target1 -
+      price
+    );
+
+  const riskReward =
+    risk > 0
+      ? reward /
+        risk
+      : 0;
+
+  if(
+    riskReward <
+    minimumRR
+  ){
+    return {
+      valid:false,
+      reason:
+        `Available Risk:Reward is 1:${riskReward.toFixed(2)}, below required 1:${minimumRR}`,
+      plan:null
+    };
+  }
+
+  const target2 =
+    direction === "BUY"
+      ? Math.max(
+          target1,
+          price +
+          risk *
+          3
+        )
+      : Math.min(
+          target1,
+          price -
+          risk *
+          3
+        );
+
+  const target3 =
+    direction === "BUY"
+      ? Math.max(
+          target2,
+          price +
+          risk *
+          4
+        )
+      : Math.min(
+          target2,
+          price -
+          risk *
+          4
+        );
+
+  return {
+    valid:true,
+    reason:null,
+
+    plan:{
+      direction,
+
+      entry:
+        price,
+
+      stop,
+
+      target1,
+
+      target2,
+
+      target3,
+
+      risk,
+
+      rr:
+        riskReward,
+
+      atr:
+        baseATR,
+
+      stopMethod:
+        "M15 ATR + recent structure",
+
+      entryFormatted:
+        safeFixed(
+          price,
+          decimals
+        ),
+
+      stopFormatted:
+        safeFixed(
+          stop,
+          decimals
+        ),
+
+      target1Formatted:
+        safeFixed(
+          target1,
+          decimals
+        ),
+
+      target2Formatted:
+        safeFixed(
+          target2,
+          decimals
+        ),
+
+      target3Formatted:
+        safeFixed(
+          target3,
+          decimals
+        )
+    }
+  };
+}
+
+// ════════════════════════════════════════════════════════════════
+// PROFESSIONAL WEIGHTED SCALP ENGINE
+// ════════════════════════════════════════════════════════════════
+
+function computeProfessionalScalpSignal(
+  rawM5Candles,
+  pair,
+  {
+    nowMs = Date.now()
+  } = {}
+){
+  const pipeline =
+    [];
+
+  function addStep(
+    name,
+    status,
+    detail,
+    extra = {}
+  ){
+    pipeline.push({
+      name,
+      status,
+      detail,
+      ...extra
+    });
+  }
+
+  const prepared =
+    prepareScalpTimeframes(
+      rawM5Candles,
+      nowMs
+    );
+
+  const validation =
+    validatePreparedScalpData(
+      prepared
+    );
+
+  addStep(
+    "Closed-Candle Validation",
+    validation.valid
+      ? "pass"
+      : "fail",
+    validation.detail
+  );
+
+  if(!validation.valid){
+    return {
+      decision:"HOLD",
+
+      signal:"HOLD",
+
+      reason:
+        validation.detail,
+
+      confidence:null,
+
+      pipeline,
+
+      prepared,
+
+      perTF:[
+        {
+          tf:"5m",
+          signal:"HOLD"
+        },
+        {
+          tf:"15m",
+          signal:"HOLD"
+        },
+        {
+          tf:"30m",
+          signal:"HOLD"
+        },
+        {
+          tf:"1h",
+          signal:"HOLD"
+        }
+      ],
+
+      entry:"—",
+      sl:"—",
+      tp:"—",
+      tp1:"—",
+      tp2:"—",
+      tp3:"—",
+      rr:null,
+
+      rawEntry:null,
+      rawSl:null,
+      rawTp:null,
+      rawTp1:null,
+      rawTp2:null,
+      rawTp3:null,
+
+      tradePlan:null,
+
+      bullWeight:0,
+      bearWeight:0,
+
+      indicators:{}
+    };
+  }
+
+  const m5 =
+    prepared.m5;
+
+  const m15 =
+    prepared.m15;
+
+  const m30 =
+    prepared.m30;
+
+  const h1 =
+    prepared.h1;
+
+  const latestM5 =
+    m5[
+      m5.length -
+      1
+    ];
+
+  const entry =
+    latestM5.close;
+
+  const trendM5 =
+    scalpTrendState(
+      m5,
+      {
+        fastPeriod:9,
+        slowPeriod:21,
+        contextPeriod:50
+      }
+    );
+
+  const trendM15 =
+    scalpTrendState(
+      m15,
+      {
+        fastPeriod:9,
+        slowPeriod:21,
+        contextPeriod:50
+      }
+    );
+
+  const trendM30 =
+    scalpTrendState(
+      m30,
+      {
+        fastPeriod:9,
+        slowPeriod:21,
+        contextPeriod:50
+      }
+    );
+
+  const trendH1 =
+    scalpTrendState(
+      h1,
+      {
+        fastPeriod:20,
+        slowPeriod:50,
+        contextPeriod:100
+      }
+    );
+
+  const momentumM5 =
+    scalpMomentumState(
+      m5
+    );
+
+  const momentumM15 =
+    scalpMomentumState(
+      m15
+    );
+
+  const structureM15 =
+    computeCandleMarketStructure(
+      m15
+    );
+
+  const structureM30 =
+    computeCandleMarketStructure(
+      m30
+    );
+
+  const candleConfirmation =
+    detectCandleVote(
+      m5.slice(-3)
+    );
+
+  const supportResistance =
+    computeCandleSR(
+      m15.slice(-120),
+      entry
+    );
+
+  const supportResistanceVote =
+    detectSRVote(
+      supportResistance,
+      entry
+    );
+
+  const adxM15 =
+    computeADX(
+      m15,
+      SCALP_STRATEGY_CONFIG
+        .adxPeriod
+    );
+
+  const atrM15 =
+    computeATR(
+      m15,
+      SCALP_STRATEGY_CONFIG
+        .atrPeriod
+    );
+
+  const session =
+    scalpSessionState(
+      new Date(nowMs)
+    );
+
+  const weightedVotes =
+    [];
+
+  function addDirectionalWeight(
+    name,
+    direction,
+    weight,
+    detail
+  ){
+    if(
+      direction !== "BUY" &&
+      direction !== "SELL"
+    ){
+      return;
+    }
+
+    weightedVotes.push({
+      name,
+      direction,
+      weight,
+      detail
+    });
+  }
+
+  addDirectionalWeight(
+    "H1 Trend",
+    trendH1.direction,
+    SCALP_STRATEGY_CONFIG
+      .weights
+      .h1Trend,
+    trendH1.label
+  );
+
+  addDirectionalWeight(
+    "M30 Trend",
+    trendM30.direction,
+    SCALP_STRATEGY_CONFIG
+      .weights
+      .m30Trend,
+    trendM30.label
+  );
+
+  addDirectionalWeight(
+    "M15 Trend",
+    trendM15.direction,
+    SCALP_STRATEGY_CONFIG
+      .weights
+      .m15Trend,
+    trendM15.label
+  );
+
+  addDirectionalWeight(
+    "M5 Trend",
+    trendM5.direction,
+    SCALP_STRATEGY_CONFIG
+      .weights
+      .m5Momentum,
+    trendM5.label
+  );
+
+  addDirectionalWeight(
+    "M5 MACD",
+    momentumM5.macdDirection,
+    SCALP_STRATEGY_CONFIG
+      .weights
+      .macd,
+    momentumM5.detail
+  );
+
+  addDirectionalWeight(
+    "M5 RSI",
+    momentumM5.rsiDirection,
+    SCALP_STRATEGY_CONFIG
+      .weights
+      .rsi,
+    momentumM5.detail
+  );
+
+  addDirectionalWeight(
+    "Structure",
+    structureM15.direction ||
+    structureM30.direction,
+    SCALP_STRATEGY_CONFIG
+      .weights
+      .structure,
+    structureM15.direction
+      ? structureM15.label
+      : structureM30.label
+  );
+
+  addDirectionalWeight(
+    "Candle",
+    candleConfirmation.vote,
+    SCALP_STRATEGY_CONFIG
+      .weights
+      .candle,
+    candleConfirmation.detail
+  );
+
+  addDirectionalWeight(
+    "Support/Resistance",
+    supportResistanceVote.vote,
+    SCALP_STRATEGY_CONFIG
+      .weights
+      .supportResistance,
+    supportResistanceVote.detail
+  );
+
+  const buyWeight =
+    weightedVotes
+      .filter(
+        vote=>
+          vote.direction === "BUY"
+      )
+      .reduce(
+        (sum, vote)=>
+          sum +
+          vote.weight,
+        0
+      );
+
+  const sellWeight =
+    weightedVotes
+      .filter(
+        vote=>
+          vote.direction === "SELL"
+      )
+      .reduce(
+        (sum, vote)=>
+          sum +
+          vote.weight,
+        0
+      );
+
+  const totalDirectionalWeight =
+    buyWeight +
+    sellWeight;
+
+  const provisionalDirection =
+    buyWeight >
+      sellWeight
+      ? "BUY"
+      : sellWeight >
+          buyWeight
+        ? "SELL"
+        : null;
+
+  const leadingWeight =
+    Math.max(
+      buyWeight,
+      sellWeight
+    );
+
+  const opposingWeight =
+    Math.min(
+      buyWeight,
+      sellWeight
+    );
+
+  const agreementRatio =
+    totalDirectionalWeight > 0
+      ? leadingWeight /
+        totalDirectionalWeight
+      : 0;
+
+  addStep(
+    "H1 Trend",
+    trendH1.direction
+      ? "pass"
+      : "na",
+    trendH1.label
+  );
+
+  addStep(
+    "M30 Context",
+    trendM30.direction
+      ? "pass"
+      : "na",
+    trendM30.label
+  );
+
+  addStep(
+    "M15 Confirmation",
+    trendM15.direction
+      ? "pass"
+      : "na",
+    trendM15.label
+  );
+
+  addStep(
+    "M5 Entry Trend",
+    trendM5.direction
+      ? "pass"
+      : "na",
+    trendM5.label
+  );
+
+  addStep(
+    "M5 Momentum",
+    momentumM5.direction
+      ? "pass"
+      : "na",
+    momentumM5.detail
+  );
+
+  addStep(
+    "M15 Momentum",
+    momentumM15.direction
+      ? "pass"
+      : "na",
+    momentumM15.detail
+  );
+
+  addStep(
+    "Market Structure",
+    structureM15.direction ||
+    structureM30.direction
+      ? "pass"
+      : "na",
+    structureM15.direction
+      ? structureM15.label
+      : structureM30.label
+  );
+
+  addStep(
+    "Candle Confirmation",
+    candleConfirmation.vote
+      ? "pass"
+      : "na",
+    candleConfirmation.detail
+  );
+
+  addStep(
+    "Support/Resistance",
+    supportResistanceVote.vote
+      ? "pass"
+      : "na",
+    supportResistanceVote.detail
+  );
+
+  if(adxM15 != null){
+    addStep(
+      "ADX Trend Strength",
+      adxM15 >=
+        SCALP_STRATEGY_CONFIG
+          .adxMinimum
+        ? "pass"
+        : "fail",
+      `M15 ADX(14) = ${adxM15.toFixed(1)} · ${
+        adxM15 >=
+        SCALP_STRATEGY_CONFIG
+          .adxStrong
+          ? "strong trend"
+          : adxM15 >=
+            SCALP_STRATEGY_CONFIG
+              .adxMinimum
+            ? "acceptable trend strength"
+            : "weak/ranging market"
+      }`
+    );
+  }else{
+    addStep(
+      "ADX Trend Strength",
+      "na",
+      "ADX is not yet available"
+    );
+  }
+
+  addStep(
+    "Trading Session",
+    session.score >= 55
+      ? "pass"
+      : "na",
+    `${session.label} · ${session.quality} scalp liquidity`
+  );
+
+  let directionalFailure =
+    null;
+
+  if(!provisionalDirection){
+    directionalFailure =
+      "Directional weights are tied";
+  }else if(
+    agreementRatio <
+      0.70
+  ){
+    directionalFailure =
+      `Directional agreement is too weak: BUY ${buyWeight}, SELL ${sellWeight}`;
+  }else if(
+    !trendH1.direction
+  ){
+    directionalFailure =
+      "H1 trend is not clearly aligned";
+  }else if(
+    trendH1.direction !==
+      provisionalDirection
+  ){
+    directionalFailure =
+      `H1 trend opposes the provisional ${provisionalDirection} setup`;
+  }else if(
+    !trendM15.direction
+  ){
+    directionalFailure =
+      "M15 confirmation timeframe is not clearly aligned";
+  }else if(
+    trendM15.direction !==
+      provisionalDirection
+  ){
+    directionalFailure =
+      `M15 confirmation opposes the ${provisionalDirection} setup`;
+  }else if(
+    adxM15 != null &&
+    adxM15 <
+      SCALP_STRATEGY_CONFIG
+        .adxMinimum
+  ){
+    directionalFailure =
+      `M15 ADX ${adxM15.toFixed(1)} is below the minimum ${SCALP_STRATEGY_CONFIG.adxMinimum}`;
+  }
+
+  addStep(
+    "Weighted Direction",
+    directionalFailure
+      ? "fail"
+      : "pass",
+    directionalFailure ||
+    `${provisionalDirection} · BUY weight ${buyWeight}, SELL weight ${sellWeight}, agreement ${(agreementRatio * 100).toFixed(0)}%`
+  );
+
+  const newsRisk =
+    evaluateScalpNewsRisk(
+      pair.label,
+      provisionalDirection
+    );
+
+  addStep(
+    "High-Impact News Filter",
+    newsRisk.pass
+      ? "pass"
+      : "fail",
+    newsRisk.detail
+  );
+
+  if(
+    !newsRisk.pass &&
+    !directionalFailure
+  ){
+    directionalFailure =
+      newsRisk.detail;
+  }
+
+  let confidence =
+    null;
+
+  if(
+    provisionalDirection &&
+    !directionalFailure
+  ){
+    const configuredDirectionalWeight =
+      Object.values(
+        SCALP_STRATEGY_CONFIG
+          .weights
+      ).reduce(
+        (sum, weight)=>
+          sum +
+          weight,
+        0
+      );
+
+    const directionWeight =
+      provisionalDirection === "BUY"
+        ? buyWeight
+        : sellWeight;
+
+    let confidenceScore =
+      directionWeight /
+      configuredDirectionalWeight *
+      76;
+
+    if(
+      trendH1.direction ===
+      provisionalDirection
+    ){
+      confidenceScore +=
+        5;
+    }
+
+    if(
+      trendM15.direction ===
+      provisionalDirection
+    ){
+      confidenceScore +=
+        4;
+    }
+
+    if(
+      trendM30.direction ===
+      provisionalDirection
+    ){
+      confidenceScore +=
+        3;
+    }
+
+    if(
+      momentumM5.direction ===
+      provisionalDirection
+    ){
+      confidenceScore +=
+        3;
+    }
+
+    if(
+      structureM15.direction ===
+      provisionalDirection
+    ){
+      confidenceScore +=
+        3;
+    }
+
+    if(
+      candleConfirmation.vote ===
+      provisionalDirection
+    ){
+      confidenceScore +=
+        2;
+    }
+
+    if(
+      adxM15 != null &&
+      adxM15 >=
+        SCALP_STRATEGY_CONFIG
+          .adxStrong
+    ){
+      confidenceScore +=
+        2;
+    }
+
+    if(
+      session.score >= 80
+    ){
+      confidenceScore +=
+        2;
+    }
+
+    if(
+      opposingWeight >
+      20
+    ){
+      confidenceScore -=
+        8;
+    }
+
+    confidence =
+      clamp(
+        Math.round(
+          confidenceScore
+        ),
+        5,
+        97
+      );
+  }
+
+  addStep(
+    "Confidence Score",
+    "info",
+    confidence == null
+      ? "No qualified direction to score"
+      : `${confidence}% · minimum required ${SCALP_STRATEGY_CONFIG.minimumConfidence}%`
+  );
+
+  if(
+    confidence != null &&
+    confidence <
+      SCALP_STRATEGY_CONFIG
+        .minimumConfidence &&
+    !directionalFailure
+  ){
+    directionalFailure =
+      `Confidence ${confidence}% is below the required ${SCALP_STRATEGY_CONFIG.minimumConfidence}%`;
+  }
+
+  let tradePlanResult = {
+    valid:false,
+    reason:
+      directionalFailure ||
+      "No qualified direction",
+    plan:null
+  };
+
+  if(!directionalFailure){
+    tradePlanResult =
+      buildScalpTradePlan({
+        direction:
+          provisionalDirection,
+
+        entry,
+
+        m5Candles:
+          m5,
+
+        m15Candles:
+          m15,
+
+        supportResistance,
+
+        decimals:
+          pair.decimals
+      });
+  }
+
+  addStep(
+    "Risk:Reward ≥ 1:2",
+    tradePlanResult.valid
+      ? "pass"
+      : "fail",
+    tradePlanResult.valid
+      ? `Risk:Reward to TP1 = 1:${tradePlanResult.plan.rr.toFixed(2)}`
+      : tradePlanResult.reason
+  );
+
+  const decision =
+    tradePlanResult.valid &&
+    confidence >=
+      SCALP_STRATEGY_CONFIG
+        .minimumConfidence
+      ? provisionalDirection
+      : "HOLD";
+
+  const reason =
+    decision === "HOLD"
+      ? (
+          directionalFailure ||
+          tradePlanResult.reason ||
+          "Scalp setup requirements are incomplete"
+        )
+      : `${decision} setup confirmed with ${confidence}% confidence`;
+
+  addStep(
+    "Final Decision",
+    decision === "HOLD"
+      ? "fail"
+      : "pass",
+    reason
+  );
+
+  const tradePlan =
+    decision === "HOLD"
+      ? null
+      : tradePlanResult.plan;
+
+  const perTF = [
+    {
+      tf:"5m",
+      signal:
+        trendM5.direction ||
+        momentumM5.direction ||
+        "HOLD",
+
+      role:"Entry"
+    },
+
+    {
+      tf:"15m",
+      signal:
+        trendM15.direction ||
+        "HOLD",
+
+      role:"Confirmation"
+    },
+
+    {
+      tf:"30m",
+      signal:
+        trendM30.direction ||
+        "HOLD",
+
+      role:"Context"
+    },
+
+    {
+      tf:"1h",
+      signal:
+        trendH1.direction ||
+        "HOLD",
+
+      role:"Trend"
+    }
+  ];
+
+  return {
+    decision,
+
+    signal:
+      decision,
+
+    reason,
+
+    confidence,
+
+    pipeline,
+
+    prepared,
+
+    perTF,
+
+    entry:
+      safeFixed(
+        entry,
+        pair.decimals
+      ),
+
+    sl:
+      tradePlan
+        ? safeFixed(
+            tradePlan.stop,
+            pair.decimals
+          )
+        : "—",
+
+    tp:
+      tradePlan
+        ? safeFixed(
+            tradePlan.target1,
+            pair.decimals
+          )
+        : "—",
+
+    tp1:
+      tradePlan
+        ? safeFixed(
+            tradePlan.target1,
+            pair.decimals
+          )
+        : "—",
+
+    tp2:
+      tradePlan
+        ? safeFixed(
+            tradePlan.target2,
+            pair.decimals
+          )
+        : "—",
+
+    tp3:
+      tradePlan
+        ? safeFixed(
+            tradePlan.target3,
+            pair.decimals
+          )
+        : "—",
+
+    rr:
+      tradePlan
+        ? tradePlan.rr
+        : null,
+
+    rawEntry:
+      entry,
+
+    rawSl:
+      tradePlan
+        ? tradePlan.stop
+        : null,
+
+    rawTp:
+      tradePlan
+        ? tradePlan.target1
+        : null,
+
+    rawTp1:
+      tradePlan
+        ? tradePlan.target1
+        : null,
+
+    rawTp2:
+      tradePlan
+        ? tradePlan.target2
+        : null,
+
+    rawTp3:
+      tradePlan
+        ? tradePlan.target3
+        : null,
+
+    tradePlan,
+
+    bullWeight:
+      buyWeight,
+
+    bearWeight:
+      sellWeight,
+
+    indicators:{
+      trendM5,
+      trendM15,
+      trendM30,
+      trendH1,
+
+      momentumM5,
+      momentumM15,
+
+      structureM15,
+      structureM30,
+
+      candleConfirmation,
+
+      supportResistance,
+      supportResistanceVote,
+
+      adxM15,
+      atrM15,
+
+      session,
+      newsRisk,
+
+      agreementRatio
+    }
+  };
+}
+
+// ════════════════════════════════════════════════════════════════
+// BACKWARD-COMPATIBLE SCALP FUNCTION
+//
+// Existing rendering code can call computeScalpTradeSignal().
+// It now uses the professional weighted engine above.
+// ════════════════════════════════════════════════════════════════
+
+function computeScalpTradeSignal(
+  candles5m,
+  decimalsOrPair
+){
+  let pair =
+    null;
+
+  if(
+    decimalsOrPair &&
+    typeof decimalsOrPair === "object"
+  ){
+    pair =
+      decimalsOrPair;
+  }else{
+    const decimals =
+      safeInteger(
+        decimalsOrPair,
+        2
+      );
+
+    pair =
+      decimals === 3
+        ? pairByKey(
+            "GBPJPY"
+          )
+        : pairByKey(
+            "XAUUSD"
+          );
+  }
+
+  if(!pair){
+    pair = {
+      key:"UNKNOWN",
+      label:"Unknown pair",
+      decimals:
+        safeInteger(
+          decimalsOrPair,
+          2
+        )
+    };
+  }
+
+  return computeProfessionalScalpSignal(
+    candles5m,
+    pair
+  );
+}
+
+// ════════════════════════════════════════════════════════════════
+// SCALP TIMEFRAME DISPLAY ANALYSIS
+// ════════════════════════════════════════════════════════════════
+
+function analyzeScalp(
+  candles
+){
+  const normalized =
+    normalizeCandles(
+      candles
+    );
+
+  if(normalized.length < 35){
+    return {
+      signal:"HOLD",
+      bull:0,
+      bear:0,
+      notes:[
+        "Not enough closed candles"
+      ],
+      price:
+        normalized.length
+          ? normalized[
+              normalized.length -
+              1
+            ].close
+          : null
+    };
+  }
+
+  const trend =
+    scalpTrendState(
+      normalized
+    );
+
+  const momentum =
+    scalpMomentumState(
+      normalized
+    );
+
+  const structure =
+    computeCandleMarketStructure(
+      normalized
+    );
+
+  const candle =
+    detectCandleVote(
+      normalized.slice(-3)
+    );
+
+  const directionalInputs = [
+    trend.direction,
+    momentum.direction,
+    structure.direction,
+    candle.vote
+  ].filter(Boolean);
+
+  const bull =
+    directionalInputs.filter(
+      direction=>
+        direction === "BUY"
+    ).length;
+
+  const bear =
+    directionalInputs.filter(
+      direction=>
+        direction === "SELL"
+    ).length;
+
+  let signal =
+    "HOLD";
+
+  if(
+    bull >= 3 &&
+    bull > bear
+  ){
+    signal =
+      "BUY";
+  }else if(
+    bear >= 3 &&
+    bear > bull
+  ){
+    signal =
+      "SELL";
+  }
+
+  const notes = [
+    `Trend: ${trend.direction || trend.lean || "neutral"}`,
+
+    `Momentum: ${momentum.direction || "neutral"}`,
+
+    `Structure: ${structure.direction || "neutral"}`,
+
+    `Candle: ${candle.vote || "neutral"}`
+  ];
+
+  return {
+    signal,
+    bull,
+    bear,
+    notes,
+
+    price:
+      normalized[
+        normalized.length -
+        1
+      ].close,
+
+    trend,
+    momentum,
+    structure,
+    candle
+  };
+}
+
+
+  
+
 
 

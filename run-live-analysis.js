@@ -1208,3 +1208,1169 @@ function resolveDedicatedScalpSignal(
     },
   };
 }
+
+// ========================================================
+// Indicator Helpers
+// ========================================================
+
+function emaSeries(
+  values,
+  period
+) {
+  if (
+    !Array.isArray(values) ||
+    !Number.isInteger(period) ||
+    period < 1
+  ) {
+    return [];
+  }
+
+  const output =
+    new Array(
+      values.length
+    ).fill(null);
+
+  if (
+    values.length < period
+  ) {
+    return output;
+  }
+
+  const multiplier =
+    2 / (period + 1);
+
+  let previous =
+    values
+      .slice(0, period)
+      .reduce(
+        (sum, value) =>
+          sum + value,
+        0
+      ) / period;
+
+  output[
+    period - 1
+  ] = previous;
+
+  for (
+    let index = period;
+    index < values.length;
+    index += 1
+  ) {
+    previous =
+      values[index] *
+        multiplier +
+      previous *
+        (1 - multiplier);
+
+    output[index] =
+      previous;
+  }
+
+  return output;
+}
+
+function rsiSeries(
+  values,
+  period = 14
+) {
+  if (
+    !Array.isArray(values)
+  ) {
+    return [];
+  }
+
+  const output =
+    new Array(
+      values.length
+    ).fill(null);
+
+  if (
+    !Number.isInteger(period) ||
+    period < 1 ||
+    values.length <= period
+  ) {
+    return output;
+  }
+
+  let gainSum = 0;
+  let lossSum = 0;
+
+  for (
+    let index = 1;
+    index <= period;
+    index += 1
+  ) {
+    const difference =
+      values[index] -
+      values[index - 1];
+
+    if (
+      difference >= 0
+    ) {
+      gainSum += difference;
+    } else {
+      lossSum -= difference;
+    }
+  }
+
+  let averageGain =
+    gainSum / period;
+
+  let averageLoss =
+    lossSum / period;
+
+  output[period] =
+    averageLoss === 0
+      ? 100
+      : 100 -
+        100 /
+          (
+            1 +
+            averageGain /
+              averageLoss
+          );
+
+  for (
+    let index =
+      period + 1;
+    index < values.length;
+    index += 1
+  ) {
+    const difference =
+      values[index] -
+      values[index - 1];
+
+    const gain =
+      difference > 0
+        ? difference
+        : 0;
+
+    const loss =
+      difference < 0
+        ? -difference
+        : 0;
+
+    averageGain =
+      (
+        averageGain *
+          (period - 1) +
+        gain
+      ) / period;
+
+    averageLoss =
+      (
+        averageLoss *
+          (period - 1) +
+        loss
+      ) / period;
+
+    output[index] =
+      averageLoss === 0
+        ? 100
+        : 100 -
+          100 /
+            (
+              1 +
+              averageGain /
+                averageLoss
+            );
+  }
+
+  return output;
+}
+
+function computeVolatility(
+  rows
+) {
+  if (
+    !Array.isArray(rows) ||
+    rows.length < 3
+  ) {
+    return 0.004;
+  }
+
+  let totalMove = 0;
+  let count = 0;
+
+  for (
+    let index = 1;
+    index < rows.length;
+    index += 1
+  ) {
+    const previousClose =
+      rows[index - 1]
+        .close;
+
+    const currentClose =
+      rows[index].close;
+
+    if (
+      !isFiniteNumber(
+        previousClose
+      ) ||
+      !isFiniteNumber(
+        currentClose
+      ) ||
+      previousClose <= 0
+    ) {
+      continue;
+    }
+
+    totalMove +=
+      Math.abs(
+        currentClose -
+          previousClose
+      ) / previousClose;
+
+    count += 1;
+  }
+
+  return count
+    ? totalMove / count
+    : 0.004;
+}
+
+function computeATR(
+  ohlcRows,
+  period = 14
+) {
+  if (
+    !Array.isArray(
+      ohlcRows
+    ) ||
+    !Number.isInteger(period) ||
+    period < 1 ||
+    ohlcRows.length <
+      period + 1
+  ) {
+    return null;
+  }
+
+  const trueRanges = [];
+
+  for (
+    let index = 1;
+    index <
+      ohlcRows.length;
+    index += 1
+  ) {
+    const current =
+      ohlcRows[index];
+
+    const previous =
+      ohlcRows[
+        index - 1
+      ];
+
+    trueRanges.push(
+      Math.max(
+        current.high -
+          current.low,
+
+        Math.abs(
+          current.high -
+            previous.close
+        ),
+
+        Math.abs(
+          current.low -
+            previous.close
+        )
+      )
+    );
+  }
+
+  if (
+    trueRanges.length <
+    period
+  ) {
+    return null;
+  }
+
+  let atr =
+    trueRanges
+      .slice(0, period)
+      .reduce(
+        (sum, value) =>
+          sum + value,
+        0
+      ) / period;
+
+  for (
+    let index = period;
+    index <
+      trueRanges.length;
+    index += 1
+  ) {
+    atr =
+      (
+        atr *
+          (period - 1) +
+        trueRanges[index]
+      ) / period;
+  }
+
+  return atr;
+}
+
+function computeADX(
+  ohlcRows,
+  period = 14
+) {
+  if (
+    !Array.isArray(
+      ohlcRows
+    ) ||
+    !Number.isInteger(period) ||
+    period < 1 ||
+    ohlcRows.length <
+      period * 2 + 1
+  ) {
+    return null;
+  }
+
+  const trueRanges = [];
+  const plusDM = [];
+  const minusDM = [];
+
+  for (
+    let index = 1;
+    index <
+      ohlcRows.length;
+    index += 1
+  ) {
+    const current =
+      ohlcRows[index];
+
+    const previous =
+      ohlcRows[
+        index - 1
+      ];
+
+    trueRanges.push(
+      Math.max(
+        current.high -
+          current.low,
+
+        Math.abs(
+          current.high -
+            previous.close
+        ),
+
+        Math.abs(
+          current.low -
+            previous.close
+        )
+      )
+    );
+
+    const upwardMove =
+      current.high -
+      previous.high;
+
+    const downwardMove =
+      previous.low -
+      current.low;
+
+    plusDM.push(
+      upwardMove >
+        downwardMove &&
+      upwardMove > 0
+        ? upwardMove
+        : 0
+    );
+
+    minusDM.push(
+      downwardMove >
+        upwardMove &&
+      downwardMove > 0
+        ? downwardMove
+        : 0
+    );
+  }
+
+  let smoothedTR = 0;
+  let smoothedPlusDM = 0;
+  let smoothedMinusDM = 0;
+
+  for (
+    let index = 0;
+    index < period;
+    index += 1
+  ) {
+    smoothedTR +=
+      trueRanges[index];
+
+    smoothedPlusDM +=
+      plusDM[index];
+
+    smoothedMinusDM +=
+      minusDM[index];
+  }
+
+  const dxSeries = [];
+
+  for (
+    let index = period;
+    index <
+      trueRanges.length;
+    index += 1
+  ) {
+    smoothedTR =
+      smoothedTR -
+      smoothedTR /
+        period +
+      trueRanges[index];
+
+    smoothedPlusDM =
+      smoothedPlusDM -
+      smoothedPlusDM /
+        period +
+      plusDM[index];
+
+    smoothedMinusDM =
+      smoothedMinusDM -
+      smoothedMinusDM /
+        period +
+      minusDM[index];
+
+    const plusDI =
+      smoothedTR === 0
+        ? 0
+        : 100 *
+          (
+            smoothedPlusDM /
+            smoothedTR
+          );
+
+    const minusDI =
+      smoothedTR === 0
+        ? 0
+        : 100 *
+          (
+            smoothedMinusDM /
+            smoothedTR
+          );
+
+    const denominator =
+      plusDI + minusDI;
+
+    const dx =
+      denominator === 0
+        ? 0
+        : (
+            100 *
+            Math.abs(
+              plusDI -
+                minusDI
+            )
+          ) /
+          denominator;
+
+    dxSeries.push(dx);
+  }
+
+  if (
+    dxSeries.length <
+    period
+  ) {
+    return null;
+  }
+
+  let adx =
+    dxSeries
+      .slice(0, period)
+      .reduce(
+        (sum, value) =>
+          sum + value,
+        0
+      ) / period;
+
+  for (
+    let index = period;
+    index <
+      dxSeries.length;
+    index += 1
+  ) {
+    adx =
+      (
+        adx *
+          (period - 1) +
+        dxSeries[index]
+      ) / period;
+  }
+
+  return adx;
+}
+
+function computeSR(
+  rows,
+  lastClose
+) {
+  if (
+    !Array.isArray(rows) ||
+    rows.length === 0 ||
+    !isFiniteNumber(
+      lastClose
+    )
+  ) {
+    return {
+      resistances: [],
+      supports: [],
+    };
+  }
+
+  const closes =
+    rows
+      .map(
+        (row) =>
+          row.close
+      )
+      .filter(
+        isFiniteNumber
+      );
+
+  const count =
+    closes.length;
+
+  if (count === 0) {
+    return {
+      resistances: [],
+      supports: [],
+    };
+  }
+
+  const radius =
+    count > 40
+      ? 2
+      : 1;
+
+  const swingHighs = [];
+  const swingLows = [];
+
+  for (
+    let index = radius;
+    index <
+      count - radius;
+    index += 1
+  ) {
+    let isHigh = true;
+    let isLow = true;
+
+    for (
+      let offset = 1;
+      offset <= radius;
+      offset += 1
+    ) {
+      if (
+        closes[index] <
+          closes[
+            index - offset
+          ] ||
+        closes[index] <
+          closes[
+            index + offset
+          ]
+      ) {
+        isHigh = false;
+      }
+
+      if (
+        closes[index] >
+          closes[
+            index - offset
+          ] ||
+        closes[index] >
+          closes[
+            index + offset
+          ]
+      ) {
+        isLow = false;
+      }
+    }
+
+    if (isHigh) {
+      swingHighs.push(
+        closes[index]
+      );
+    }
+
+    if (isLow) {
+      swingLows.push(
+        closes[index]
+      );
+    }
+  }
+
+  function dedupeLevels(
+    levels
+  ) {
+    const sorted =
+      [...levels].sort(
+        (a, b) =>
+          a - b
+      );
+
+    const output = [];
+
+    for (
+      const level of sorted
+    ) {
+      const previous =
+        output[
+          output.length - 1
+        ];
+
+      if (
+        previous == null ||
+        Math.abs(
+          level - previous
+        ) / level >
+          0.0015
+      ) {
+        output.push(level);
+      } else {
+        output[
+          output.length - 1
+        ] =
+          (
+            previous +
+            level
+          ) / 2;
+      }
+    }
+
+    return output;
+  }
+
+  let resistances =
+    dedupeLevels(
+      swingHighs
+    )
+      .filter(
+        (level) =>
+          level >
+          lastClose
+      )
+      .sort(
+        (a, b) =>
+          a - b
+      )
+      .slice(0, 2);
+
+  let supports =
+    dedupeLevels(
+      swingLows
+    )
+      .filter(
+        (level) =>
+          level <
+          lastClose
+      )
+      .sort(
+        (a, b) =>
+          b - a
+      )
+      .slice(0, 2);
+
+  if (
+    resistances.length ===
+      0 &&
+    count >= 3
+  ) {
+    const maximumClose =
+      Math.max(
+        ...closes
+      );
+
+    if (
+      maximumClose >
+      lastClose *
+        1.0005
+    ) {
+      resistances = [
+        maximumClose,
+      ];
+    }
+  }
+
+  if (
+    supports.length ===
+      0 &&
+    count >= 3
+  ) {
+    const minimumClose =
+      Math.min(
+        ...closes
+      );
+
+    if (
+      minimumClose <
+      lastClose *
+        0.9995
+    ) {
+      supports = [
+        minimumClose,
+      ];
+    }
+  }
+
+  return {
+    resistances,
+    supports,
+  };
+}
+
+function detectCandlePattern(
+  ohlcRows,
+  leanDirection
+) {
+  if (
+    !Array.isArray(
+      ohlcRows
+    ) ||
+    ohlcRows.length < 2 ||
+    !leanDirection
+  ) {
+    return {
+      ok: false,
+      detail:
+        "Not enough candle history",
+    };
+  }
+
+  const last =
+    ohlcRows[
+      ohlcRows.length - 1
+    ];
+
+  const previous =
+    ohlcRows[
+      ohlcRows.length - 2
+    ];
+
+  const range =
+    last.high -
+    last.low;
+
+  const body =
+    Math.abs(
+      last.close -
+      last.open
+    );
+
+  const bodyPercentage =
+    range > 0
+      ? body / range
+      : 0;
+
+  if (
+    leanDirection ===
+    "BUY"
+  ) {
+    const bullishEngulfing =
+      previous.close <
+        previous.open &&
+      last.close >
+        last.open &&
+      last.open <=
+        previous.close &&
+      last.close >=
+        previous.open;
+
+    if (
+      bullishEngulfing
+    ) {
+      return {
+        ok: true,
+        detail:
+          "Bullish engulfing on the latest candle",
+      };
+    }
+
+    if (
+      last.close >
+        last.open &&
+      bodyPercentage > 0.6
+    ) {
+      return {
+        ok: true,
+        detail:
+          `Strong bullish candle ` +
+          `(body ${(
+            bodyPercentage *
+            100
+          ).toFixed(
+            0
+          )}% of range)`,
+      };
+    }
+
+    return {
+      ok: false,
+      detail:
+        "Latest candle doesn't confirm a bullish pattern",
+    };
+  }
+
+  const bearishEngulfing =
+    previous.close >
+      previous.open &&
+    last.close <
+      last.open &&
+    last.open >=
+      previous.close &&
+    last.close <=
+      previous.open;
+
+  if (
+    bearishEngulfing
+  ) {
+    return {
+      ok: true,
+      detail:
+        "Bearish engulfing on the latest candle",
+    };
+  }
+
+  if (
+    last.close <
+      last.open &&
+    bodyPercentage > 0.6
+  ) {
+    return {
+      ok: true,
+      detail:
+        `Strong bearish candle ` +
+        `(body ${(
+          bodyPercentage *
+          100
+        ).toFixed(
+          0
+        )}% of range)`,
+    };
+  }
+
+  return {
+    ok: false,
+    detail:
+      "Latest candle doesn't confirm a bearish pattern",
+  };
+}
+
+// ========================================================
+// Trend Helpers
+// ========================================================
+
+function adaptiveEmaPeriods(
+  rowCount
+) {
+  if (
+    !Number.isInteger(
+      rowCount
+    ) ||
+    rowCount < 6
+  ) {
+    return null;
+  }
+
+  const cap =
+    rowCount - 1;
+
+  const p200 =
+    Math.min(
+      200,
+      cap
+    );
+
+  const p100 =
+    Math.min(
+      100,
+      Math.max(
+        4,
+        Math.floor(
+          p200 * 0.5
+        )
+      )
+    );
+
+  const p50 =
+    Math.min(
+      50,
+      Math.max(
+        3,
+        Math.floor(
+          p100 * 0.6
+        )
+      )
+    );
+
+  const p20 =
+    Math.min(
+      20,
+      Math.max(
+        2,
+        Math.floor(
+          p50 * 0.5
+        )
+      )
+    );
+
+  return {
+    p20,
+    p50,
+    p100,
+    p200,
+    fullStack:
+      cap >= 200,
+  };
+}
+
+function calculateTrendState(
+  rows
+) {
+  if (
+    !Array.isArray(rows) ||
+    rows.length < 6
+  ) {
+    return {
+      direction: null,
+
+      label:
+        "Building history — not enough sessions yet",
+
+      values: null,
+      periods: null,
+    };
+  }
+
+  const closes =
+    rows
+      .map(
+        (row) =>
+          row.close
+      )
+      .filter(
+        isFiniteNumber
+      );
+
+  if (
+    closes.length < 6
+  ) {
+    return {
+      direction: null,
+
+      label:
+        "Building history — valid close history is not ready",
+
+      values: null,
+      periods: null,
+    };
+  }
+
+  const periods =
+    adaptiveEmaPeriods(
+      closes.length
+    );
+
+  if (!periods) {
+    return {
+      direction: null,
+
+      label:
+        "Building history — not enough sessions yet",
+
+      values: null,
+      periods: null,
+    };
+  }
+
+  const {
+    p20,
+    p50,
+    p100,
+    p200,
+    fullStack,
+  } = periods;
+
+  const ema20 =
+    emaSeries(
+      closes,
+      p20
+    );
+
+  const ema50 =
+    emaSeries(
+      closes,
+      p50
+    );
+
+  const ema100 =
+    emaSeries(
+      closes,
+      p100
+    );
+
+  const ema200 =
+    emaSeries(
+      closes,
+      p200
+    );
+
+  const lastIndex =
+    closes.length - 1;
+
+  const lastClose =
+    closes[lastIndex];
+
+  const values = {
+    v20:
+      ema20[lastIndex],
+
+    v50:
+      ema50[lastIndex],
+
+    v100:
+      ema100[lastIndex],
+
+    v200:
+      ema200[lastIndex],
+  };
+
+  const {
+    v20,
+    v50,
+    v100,
+    v200,
+  } = values;
+
+  if (
+    v20 == null ||
+    v50 == null ||
+    v100 == null ||
+    v200 == null
+  ) {
+    return {
+      direction: null,
+
+      label:
+        "Building history — EMA values are not ready",
+
+      values,
+      periods,
+    };
+  }
+
+  const bullishChecks = [
+    v20 > v50,
+    v50 > v100,
+    v100 > v200,
+    lastClose > v20,
+  ];
+
+  const bearishChecks = [
+    v20 < v50,
+    v50 < v100,
+    v100 < v200,
+    lastClose < v20,
+  ];
+
+  const bullishCount =
+    bullishChecks
+      .filter(Boolean)
+      .length;
+
+  const bearishCount =
+    bearishChecks
+      .filter(Boolean)
+      .length;
+
+  const note =
+    fullStack
+      ? ""
+      : " (adaptive periods — full EMA200 needs more history)";
+
+  if (
+    bullishCount === 4
+  ) {
+    return {
+      direction: "BUY",
+
+      label:
+        `Bullish — full EMA stack ` +
+        `${p20}>${p50}>${p100}>${p200}` +
+        note,
+
+      values,
+      periods,
+    };
+  }
+
+  if (
+    bearishCount === 4
+  ) {
+    return {
+      direction: "SELL",
+
+      label:
+        `Bearish — full EMA stack ` +
+        `${p20}<${p50}<${p100}<${p200}` +
+        note,
+
+      values,
+      periods,
+    };
+  }
+
+  if (
+    bullishCount >= 3
+  ) {
+    return {
+      direction: null,
+
+      label:
+        `Partial bullish lean only ` +
+        `(${bullishCount}/4) — not enough to qualify` +
+        note,
+
+      values,
+      periods,
+    };
+  }
+
+  if (
+    bearishCount >= 3
+  ) {
+    return {
+      direction: null,
+
+      label:
+        `Partial bearish lean only ` +
+        `(${bearishCount}/4) — not enough to qualify` +
+        note,
+
+      values,
+      periods,
+    };
+  }
+
+  return {
+    direction: null,
+
+    label:
+      `Mixed EMA alignment — no clear trend` +
+      note,
+
+    values,
+    periods,
+  };
+}
+
+function trendDirectionOf(
+  rows
+) {
+  return calculateTrendState(
+    rows
+  ).direction;
+}

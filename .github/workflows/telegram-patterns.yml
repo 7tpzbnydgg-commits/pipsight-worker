@@ -2,22 +2,28 @@ name: Send Pattern Alerts to Telegram
 
 on:
   schedule:
-    - cron: '*/10 * * * *'
-  workflow_dispatch:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
 
 permissions:
   contents: read
 
 concurrency:
-  group: pipsight-robots
+  group: pipsight-telegram-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   alert:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        shell: bash
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -26,15 +32,38 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Validate required configuration
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${TELEGRAM_BOT_TOKEN:-}" ]]; then
+            echo "::error::TELEGRAM_BOT_TOKEN secret is missing or empty."
+            exit 1
+          fi
+
+          if [[ -z "${TELEGRAM_CHAT_ID:-}" ]]; then
+            echo "::error::TELEGRAM_CHAT_ID secret is missing or empty."
+            exit 1
+          fi
+
+          echo "Telegram configuration validated."
+
       - name: Send Pattern Alerts
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: node telegram-pattern-alerts.js
+        run: |
+          set -euo pipefail
+          node telegram-pattern-alerts.js
 
       - name: Log execution
         if: always()
         run: |
-          echo "✅ Telegram pattern alerts completed at $(date)"
+          echo "Telegram workflow finished at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
           echo "Repository: ${{ github.repository }}"
-          echo "Workflow completed successfully"
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "Final status: ${{ job.status }}"

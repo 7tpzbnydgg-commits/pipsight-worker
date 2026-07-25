@@ -57,7 +57,17 @@ const LOG_OUT_PATH = path.join(
 );
 
 const MAX_SIGNAL_LOG = 5000;
-
+/*
+ * Duplicate suppression:
+ *
+ * A continuously active signal is logged again only when its trade plan
+ * changes materially. A fresh signal lifecycle, direction reversal, or
+ * reactivation after WAIT is always logged.
+ */
+const LOG_CONFIDENCE_CHANGE_THRESHOLD = 5;
+const LOG_RISK_REWARD_CHANGE_THRESHOLD = 0.1;
+const LOG_PLAN_RISK_CHANGE_RATIO = 0.1;
+const LOG_PLAN_PRICE_CHANGE_RATIO = 0.0002;
 const MIN_M5_ROWS = 40;
 const MIN_M15_ROWS = 35;
 const MIN_M30_ROWS = 35;

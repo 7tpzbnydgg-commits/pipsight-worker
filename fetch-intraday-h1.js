@@ -10,13 +10,29 @@
  * Writes:
  *   data/intraday-h1.json
  *
+ * Integration contract
+ * --------------------
+ * Existing top-level candle arrays remain unchanged:
+ *
+ *   {
+ *     XAUUSD: [...],
+ *     GBPJPY: [...]
+ *   }
+ *
+ * This preserves compatibility with:
+ *   - run-live-analysis.js
+ *   - Existing H4 aggregation logic
+ *   - Existing frontend consumers
+ *   - Existing GitHub workflow validation
+ *
  * FREE-TIER SAFETY
  * ----------------
- * - Exactly one API request per symbol.
- * - Maximum two Twelve Data requests per execution.
+ * - Exactly one Twelve Data request per symbol.
+ * - Maximum two provider requests per execution.
  * - No automatic retries.
  * - H4 remains derived locally from H1 candles.
- * - Cached data is retained when a request fails.
+ * - Existing cached data is retained when a request fails.
+ * - API credentials are never written to output or logs.
  *
  * Recommended cadence:
  *   Every 15 minutes
@@ -36,8 +52,13 @@ const FILE_VERSION = "2.0.0";
 const SOURCE_NAME = "Twelve Data";
 const INTERVAL = "1h";
 
+const API_BASE_URL =
+  "https://api.twelvedata.com/time_series";
+
 const API_KEY =
-  process.env.TWELVEDATA_API_KEY;
+  typeof process.env.TWELVEDATA_API_KEY === "string"
+    ? process.env.TWELVEDATA_API_KEY.trim()
+    : "";
 
 const DATA_DIR =
   path.join(
@@ -51,71 +72,79 @@ const OUTPUT_PATH =
     "intraday-h1.json"
   );
 
-const SYMBOLS = [
-  {
+const SYMBOLS = Object.freeze([
+  Object.freeze({
     symbol: "XAU/USD",
     key: "XAUUSD",
     label: "XAU/USD"
-  },
-  {
+  }),
+
+  Object.freeze({
     symbol: "GBP/JPY",
     key: "GBPJPY",
     label: "GBP/JPY"
-  }
-];
+  })
+]);
 
 /*
  * 800 H1 candles provide approximately:
  *
- * - 33 calendar days if the market traded continuously
- * - Enough bars to derive roughly 200 H4 candles
+ * - 33 calendar days for continuously traded markets
+ * - Around 200 locally derived H4 candles
  *
- * This remains one time_series request per symbol.
+ * The complete history remains one time_series request per symbol.
  */
 const OUTPUT_SIZE = 800;
 
 /*
- * Hard request safety:
+ * Hard provider-request budget:
  *
- * XAU/USD = 1 request
- * GBP/JPY = 1 request
- *
- * No retries are performed.
+ * XAU/USD = one request
+ * GBP/JPY = one request
  */
 const MAX_REQUESTS_PER_RUN =
   SYMBOLS.length;
 
-const REQUEST_TIMEOUT_MS =
-  20_000;
-
-const REQUEST_GAP_MS =
-  1_000;
-
 /*
- * H1 data is expected to refresh frequently.
- *
- * Market closure, weekends and holidays can naturally make the latest
- * candle older. This threshold is therefore used mainly as metadata;
- * failed fetches are always explicitly marked stale.
+ * No retries are used because another request may consume another
+ * provider credit.
  */
-const STALE_AFTER_HOURS =
-  6;
+const REQUEST_TIMEOUT_MS = 20_000;
 
 /*
- * Keep slightly more than the requested amount after merging cache and
- * fresh data. This prevents uncontrolled file growth.
+ * A short gap prevents both allowed requests from being sent as one burst.
  */
-const MAX_STORED_CANDLES =
-  900;
+const REQUEST_GAP_MS = 1_000;
 
 /*
- * Used only for data-quality reporting.
+ * H1 data normally refreshes frequently.
  *
- * A weekend gap or market closure is not automatically considered
- * corruption.
+ * Weekends, holidays and market closures may naturally create older bars.
+ * Failed fetches are always explicitly marked stale regardless of age.
+ */
+const STALE_AFTER_HOURS = 6;
+
+/*
+ * Retain slightly more history than the provider request while preventing
+ * uncontrolled output growth after cache merging.
+ */
+const MAX_STORED_CANDLES = 900;
+
+/*
+ * Used for diagnostics only.
+ *
+ * Missing candles are never fabricated because valid gaps may represent:
+ * - Weekends
+ * - Holidays
+ * - Provider maintenance
+ * - Market closures
  */
 const EXPECTED_INTERVAL_MS =
   60 * 60 * 1000;
+
+/* =====================================================================
+   Runtime State
+   ===================================================================== */
 
 let requestsMade = 0;
 
@@ -123,23 +152,122 @@ let requestsMade = 0;
    Startup Validation
    ===================================================================== */
 
-if (!API_KEY) {
-  console.error(
-    "Missing TWELVEDATA_API_KEY environment variable."
-  );
+function validateStartupConfiguration() {
+  if (!API_KEY) {
+    throw new Error(
+      "Missing TWELVEDATA_API_KEY environment variable."
+    );
+  }
 
-  process.exit(1);
+  if (
+    !Number.isInteger(OUTPUT_SIZE) ||
+    OUTPUT_SIZE <= 0
+  ) {
+    throw new Error(
+      "OUTPUT_SIZE must be a positive integer."
+    );
+  }
+
+  if (
+    !Number.isInteger(MAX_STORED_CANDLES) ||
+    MAX_STORED_CANDLES < OUTPUT_SIZE
+  ) {
+    throw new Error(
+      "MAX_STORED_CANDLES must be greater than or equal to OUTPUT_SIZE."
+    );
+  }
+
+  if (
+    !Number.isInteger(REQUEST_TIMEOUT_MS) ||
+    REQUEST_TIMEOUT_MS <= 0
+  ) {
+    throw new Error(
+      "REQUEST_TIMEOUT_MS must be a positive integer."
+    );
+  }
+
+  if (
+    !Number.isInteger(REQUEST_GAP_MS) ||
+    REQUEST_GAP_MS < 0
+  ) {
+    throw new Error(
+      "REQUEST_GAP_MS must be a non-negative integer."
+    );
+  }
+
+  if (
+    !Number.isInteger(STALE_AFTER_HOURS) ||
+    STALE_AFTER_HOURS <= 0
+  ) {
+    throw new Error(
+      "STALE_AFTER_HOURS must be a positive integer."
+    );
+  }
+
+  if (
+    !Number.isInteger(EXPECTED_INTERVAL_MS) ||
+    EXPECTED_INTERVAL_MS <= 0
+  ) {
+    throw new Error(
+      "EXPECTED_INTERVAL_MS must be a positive integer."
+    );
+  }
+
+  const seenKeys =
+    new Set();
+
+  for (const config of SYMBOLS) {
+    if (
+      !isRecord(config) ||
+      typeof config.symbol !== "string" ||
+      typeof config.key !== "string" ||
+      typeof config.label !== "string" ||
+      !config.symbol.trim() ||
+      !config.key.trim() ||
+      !config.label.trim()
+    ) {
+      throw new Error(
+        "Every symbol configuration must contain symbol, key and label."
+      );
+    }
+
+    if (seenKeys.has(config.key)) {
+      throw new Error(
+        `Duplicate symbol key configured: ${config.key}`
+      );
+    }
+
+    seenKeys.add(
+      config.key
+    );
+  }
 }
 
 /* =====================================================================
    Generic Helpers
    ===================================================================== */
 
+function isRecord(value) {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value)
+  );
+}
+
 function isFiniteNumber(value) {
   return (
     typeof value === "number" &&
     Number.isFinite(value)
   );
+}
+
+function errorMessageOf(error) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return String(error);
 }
 
 function sleep(milliseconds) {
@@ -152,8 +280,24 @@ function sleep(milliseconds) {
 }
 
 function parsePrice(value) {
+  if (
+    typeof value !== "number" &&
+    typeof value !== "string"
+  ) {
+    return null;
+  }
+
+  const normalized =
+    typeof value === "string"
+      ? value.trim()
+      : value;
+
+  if (normalized === "") {
+    return null;
+  }
+
   const parsed =
-    Number.parseFloat(value);
+    Number(normalized);
 
   return Number.isFinite(parsed)
     ? parsed
@@ -165,28 +309,37 @@ function pad2(value) {
     .padStart(2, "0");
 }
 
+/* =====================================================================
+   Timestamp Helpers
+   ===================================================================== */
+
 /*
- * Twelve Data normally returns intraday timestamps in:
+ * Twelve Data normally returns intraday timestamps as:
  *
- * YYYY-MM-DD HH:mm:ss
+ *   YYYY-MM-DD HH:mm:ss
  *
- * We preserve this backward-compatible format in the output.
+ * This exact backward-compatible format remains in the output.
+ *
+ * Provider timestamps are treated consistently as UTC for:
+ * - Ordering
+ * - Freshness calculations
+ * - Duplicate detection
+ * - Gap analysis
  */
 function normalizeTimestamp(value) {
   if (
     typeof value !== "string" ||
-    value.trim() === ""
+    !value.trim()
   ) {
     return null;
   }
 
-  const trimmed =
-    value.trim();
-
   const match =
-    trimmed.match(
-      /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/
-    );
+    value
+      .trim()
+      .match(
+        /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?(?:Z)?$/
+      );
 
   if (!match) {
     return null;
@@ -208,9 +361,15 @@ function normalizeTimestamp(value) {
     Number(match[5]);
 
   const second =
-    Number(match[6] || 0);
+    Number(match[6] ?? 0);
 
   if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    !Number.isInteger(day) ||
+    !Number.isInteger(hour) ||
+    !Number.isInteger(minute) ||
+    !Number.isInteger(second) ||
     month < 1 ||
     month > 12 ||
     day < 1 ||
@@ -225,10 +384,6 @@ function normalizeTimestamp(value) {
     return null;
   }
 
-  /*
-   * Validate calendar correctness while treating the provider timestamp
-   * consistently as UTC for ordering and freshness calculations.
-   */
   const timestamp =
     Date.UTC(
       year,
@@ -242,6 +397,10 @@ function normalizeTimestamp(value) {
   const checked =
     new Date(timestamp);
 
+  /*
+   * Date.UTC normalizes impossible dates. Round-trip validation rejects
+   * invalid timestamps such as 2026-02-31 10:00:00.
+   */
   if (
     checked.getUTCFullYear() !== year ||
     checked.getUTCMonth() !== month - 1 ||
@@ -254,8 +413,12 @@ function normalizeTimestamp(value) {
   }
 
   return (
-    `${year}-${pad2(month)}-${pad2(day)} ` +
-    `${pad2(hour)}:${pad2(minute)}:${pad2(second)}`
+    `${String(year).padStart(4, "0")}-` +
+    `${pad2(month)}-` +
+    `${pad2(day)} ` +
+    `${pad2(hour)}:` +
+    `${pad2(minute)}:` +
+    `${pad2(second)}`
   );
 }
 
@@ -267,14 +430,10 @@ function timestampToMs(value) {
     return null;
   }
 
-  const iso =
-    normalized.replace(
-      " ",
-      "T"
-    ) + "Z";
-
   const timestamp =
-    Date.parse(iso);
+    Date.parse(
+      `${normalized.replace(" ", "T")}Z`
+    );
 
   return Number.isFinite(timestamp)
     ? timestamp
@@ -295,10 +454,40 @@ function ageHours(value) {
       Date.now() -
       timestamp
     ) /
-    (
-      60 *
-      60 *
-      1000
+    EXPECTED_INTERVAL_MS
+  );
+}
+
+function floorToHourMs(timestamp) {
+  if (!Number.isFinite(timestamp)) {
+    return null;
+  }
+
+  return (
+    Math.floor(
+      timestamp /
+      EXPECTED_INTERVAL_MS
+    ) *
+    EXPECTED_INTERVAL_MS
+  );
+}
+
+function isPossiblyOpenLastCandle(
+  timeValue
+) {
+  const candleTimestamp =
+    timestampToMs(
+      timeValue
+    );
+
+  if (!Number.isFinite(candleTimestamp)) {
+    return false;
+  }
+
+  return (
+    candleTimestamp ===
+    floorToHourMs(
+      Date.now()
     )
   );
 }
@@ -329,7 +518,7 @@ function readJsonFile(
     return JSON.parse(content);
   } catch (error) {
     console.warn(
-      `Could not safely read ${filePath}: ${error.message}`
+      `Could not safely read ${filePath}: ${errorMessageOf(error)}`
     );
 
     return fallback;
@@ -353,14 +542,17 @@ function atomicWriteJson(
   const temporaryPath =
     `${filePath}.${process.pid}.${Date.now()}.tmp`;
 
-  const json =
+  const serialized =
     `${JSON.stringify(value, null, 2)}\n`;
 
   try {
     fs.writeFileSync(
       temporaryPath,
-      json,
-      "utf8"
+      serialized,
+      {
+        encoding: "utf8",
+        mode: 0o600
+      }
     );
 
     fs.renameSync(
@@ -379,7 +571,9 @@ function atomicWriteJson(
         );
       }
     } catch {
-      // Preserve original write error.
+      /*
+       * Preserve the original filesystem error.
+       */
     }
 
     throw error;
@@ -391,10 +585,7 @@ function atomicWriteJson(
    ===================================================================== */
 
 function normalizeCandle(raw) {
-  if (
-    !raw ||
-    typeof raw !== "object"
-  ) {
+  if (!isRecord(raw)) {
     return {
       candle: null,
       reason: "not-an-object"
@@ -403,9 +594,16 @@ function normalizeCandle(raw) {
 
   const time =
     normalizeTimestamp(
-      raw.datetime ||
+      raw.datetime ??
       raw.time
     );
+
+  if (!time) {
+    return {
+      candle: null,
+      reason: "invalid-time"
+    };
+  }
 
   const open =
     parsePrice(raw.open);
@@ -418,13 +616,6 @@ function normalizeCandle(raw) {
 
   const close =
     parsePrice(raw.close);
-
-  if (!time) {
-    return {
-      candle: null,
-      reason: "invalid-time"
-    };
-  }
 
   if (
     !isFiniteNumber(open) ||
@@ -485,6 +676,7 @@ function normalizeCandle(raw) {
       low,
       close
     },
+
     reason: null
   };
 }
@@ -493,12 +685,28 @@ function normalizeCandle(raw) {
    Data Quality Analysis
    ===================================================================== */
 
+function createEmptyGapAnalysis() {
+  return {
+    normalGapCount: 0,
+    largeGapCount: 0,
+    largestGapHours: 0,
+    sampleLargeGaps: []
+  };
+}
+
 function analyzeTimeGaps(rows) {
+  if (
+    !Array.isArray(rows) ||
+    rows.length < 2
+  ) {
+    return createEmptyGapAnalysis();
+  }
+
   let normalGapCount = 0;
   let largeGapCount = 0;
   let largestGapHours = 0;
 
-  const gaps = [];
+  const sampleLargeGaps = [];
 
   for (
     let index = 1;
@@ -546,19 +754,12 @@ function analyzeTimeGaps(rows) {
     }
 
     /*
-     * Do not repair missing bars artificially.
-     *
-     * Forex and metals can have:
-     * - weekends
-     * - holidays
-     * - maintenance windows
-     *
-     * Gaps are recorded for diagnostics only.
+     * Gaps are recorded only. Missing bars are never created locally.
      */
     largeGapCount++;
 
-    if (gaps.length < 20) {
-      gaps.push({
+    if (sampleLargeGaps.length < 20) {
+      sampleLargeGaps.push({
         from:
           rows[index - 1].time,
 
@@ -582,13 +783,41 @@ function analyzeTimeGaps(rows) {
         largestGapHours.toFixed(2)
       ),
 
-    sampleLargeGaps:
-      gaps
+    sampleLargeGaps
+  };
+}
+
+function buildEmptyQuality(
+  rejectedReasons = {}
+) {
+  return {
+    receivedRows: 0,
+    validRows: 0,
+    rejectedRows: 0,
+    duplicateTimes: 0,
+    rejectedReasons,
+    firstTime: null,
+    lastTime: null,
+    ageHours: null,
+    stale: true,
+    gaps:
+      createEmptyGapAnalysis()
   };
 }
 
 function normalizeCandles(values) {
-  const byTime =
+  if (!Array.isArray(values)) {
+    return {
+      rows: [],
+
+      quality:
+        buildEmptyQuality({
+          "values-not-array": 1
+        })
+    };
+  }
+
+  const candlesByTime =
     new Map();
 
   const rejectedReasons = {};
@@ -596,96 +825,68 @@ function normalizeCandles(values) {
   let rejectedCount = 0;
   let duplicateCount = 0;
 
-  if (!Array.isArray(values)) {
-    return {
-      rows: [],
-
-      quality: {
-        receivedRows: 0,
-        validRows: 0,
-        rejectedRows: 0,
-        duplicateTimes: 0,
-
-        rejectedReasons: {
-          "values-not-array": 1
-        },
-
-        firstTime: null,
-        lastTime: null,
-        ageHours: null,
-        stale: true,
-
-        gaps: {
-          normalGapCount: 0,
-          largeGapCount: 0,
-          largestGapHours: 0,
-          sampleLargeGaps: []
-        }
-      }
-    };
-  }
-
   for (const raw of values) {
-    const normalized =
+    const result =
       normalizeCandle(raw);
 
-    if (!normalized.candle) {
+    if (!result.candle) {
       rejectedCount++;
 
-      rejectedReasons[
-        normalized.reason
-      ] =
+      const reason =
+        result.reason ||
+        "unknown";
+
+      rejectedReasons[reason] =
         (
-          rejectedReasons[
-            normalized.reason
-          ] ||
+          rejectedReasons[reason] ||
           0
         ) + 1;
 
       continue;
     }
 
-    const time =
-      normalized.candle.time;
+    const { time } =
+      result.candle;
 
-    if (byTime.has(time)) {
+    if (candlesByTime.has(time)) {
       duplicateCount++;
     }
 
     /*
-     * Last valid occurrence wins.
+     * The latest valid occurrence replaces an earlier duplicate time.
      */
-    byTime.set(
+    candlesByTime.set(
       time,
-      normalized.candle
+      result.candle
     );
   }
 
-  const rows =
+  const uniqueRows =
     Array.from(
-      byTime.values()
-    )
-      .sort(
-        (a, b) =>
-          timestampToMs(a.time) -
-          timestampToMs(b.time)
-      )
-      .slice(
-        -MAX_STORED_CANDLES
-      );
+      candlesByTime.values()
+    ).sort(
+      (left, right) =>
+        timestampToMs(left.time) -
+        timestampToMs(right.time)
+    );
+
+  const rows =
+    uniqueRows.slice(
+      -MAX_STORED_CANDLES
+    );
 
   const firstTime =
-    rows[0]?.time ||
+    rows[0]?.time ??
     null;
 
   const lastTime =
-    rows[
-      rows.length - 1
-    ]?.time ||
+    rows.at(-1)?.time ??
     null;
 
   const latestAgeHours =
-    ageHours(lastTime);
+    ageHours(
+      lastTime
+    );
 
   return {
     rows,
@@ -709,19 +910,21 @@ function normalizeCandles(values) {
       lastTime,
 
       ageHours:
-        latestAgeHours == null
+        latestAgeHours === null
           ? null
           : Number(
               latestAgeHours.toFixed(2)
             ),
 
       stale:
-        latestAgeHours == null ||
+        latestAgeHours === null ||
         latestAgeHours >
           STALE_AFTER_HOURS,
 
       gaps:
-        analyzeTimeGaps(rows)
+        analyzeTimeGaps(
+          rows
+        )
     }
   };
 }
@@ -734,15 +937,12 @@ function getPreviousRows(
   previousOutput,
   key
 ) {
-  if (
-    !previousOutput ||
-    typeof previousOutput !== "object"
-  ) {
+  if (!isRecord(previousOutput)) {
     return [];
   }
 
   /*
-   * Existing backward-compatible format:
+   * Existing production format:
    *
    * {
    *   XAUUSD: [...],
@@ -760,11 +960,19 @@ function getPreviousRows(
   }
 
   /*
-   * Optional nested-format compatibility.
+   * Optional forward-compatible nested format:
+   *
+   * {
+   *   symbols: {
+   *     XAUUSD: {
+   *       candles: [...]
+   *     }
+   *   }
+   * }
    */
   const nestedRows =
     previousOutput
-      ?.symbols
+      .symbols
       ?.[key]
       ?.candles;
 
@@ -778,7 +986,34 @@ function getPreviousRows(
 }
 
 /* =====================================================================
-   Provider Error Builder
+   Cache Merge
+   ===================================================================== */
+
+function mergeCandleRows(
+  previousRows,
+  freshRows
+) {
+  /*
+   * Cached candles are inserted first and fresh candles second.
+   * A fresh candle therefore replaces the cached candle for the same time.
+   */
+  return normalizeCandles([
+    ...(
+      Array.isArray(previousRows)
+        ? previousRows
+        : []
+    ),
+
+    ...(
+      Array.isArray(freshRows)
+        ? freshRows
+        : []
+    )
+  ]);
+}
+
+/* =====================================================================
+   Provider Error Handling
    ===================================================================== */
 
 function createProviderError(
@@ -786,16 +1021,15 @@ function createProviderError(
   payload
 ) {
   const providerCode =
-    payload &&
-    typeof payload === "object"
-      ? payload.code
+    isRecord(payload)
+      ? payload.code ?? null
       : null;
 
   const providerMessage =
-    payload &&
-    typeof payload === "object" &&
-    typeof payload.message === "string"
-      ? payload.message
+    isRecord(payload) &&
+    typeof payload.message === "string" &&
+    payload.message.trim()
+      ? payload.message.trim()
       : "Unknown provider error";
 
   const error =
@@ -806,38 +1040,82 @@ function createProviderError(
   error.providerCode =
     providerCode;
 
-  error.providerPayload =
-    payload;
-
   return error;
 }
 
+function sanitizeRequestError(
+  error
+) {
+  const message =
+    errorMessageOf(error);
+
+  if (!API_KEY) {
+    return message;
+  }
+
+  return message
+    .split(API_KEY)
+    .join("[REDACTED]");
+}
+
 /* =====================================================================
-   Free-Tier-Safe Single Request
+   Free-Tier Request Control
+   ===================================================================== */
+
+function reserveProviderRequest() {
+  if (
+    requestsMade >=
+    MAX_REQUESTS_PER_RUN
+  ) {
+    throw new Error(
+      `Request safety limit reached: maximum ${MAX_REQUESTS_PER_RUN} ` +
+      "Twelve Data requests per run."
+    );
+  }
+
+  requestsMade++;
+
+  return requestsMade;
+}
+
+function buildProviderUrl(symbol) {
+  const url =
+    new URL(
+      API_BASE_URL
+    );
+
+  url.search =
+    new URLSearchParams({
+      symbol,
+      interval:
+        INTERVAL,
+      outputsize:
+        String(OUTPUT_SIZE),
+      apikey:
+        API_KEY
+    }).toString();
+
+  return url;
+}
+
+/* =====================================================================
+   Single-Request JSON Fetch
    ===================================================================== */
 
 async function fetchJsonOnce(
   url,
   timeoutMs = REQUEST_TIMEOUT_MS
 ) {
-  if (
-    requestsMade >=
-    MAX_REQUESTS_PER_RUN
-  ) {
-    throw new Error(
-      `Request safety limit reached: maximum ` +
-      `${MAX_REQUESTS_PER_RUN} Twelve Data requests per run`
-    );
-  }
-
-  requestsMade++;
+  reserveProviderRequest();
 
   const controller =
     new AbortController();
 
-  const timer =
+  const timeoutHandle =
     setTimeout(
-      () => controller.abort(),
+      () => {
+        controller.abort();
+      },
       timeoutMs
     );
 
@@ -847,6 +1125,7 @@ async function fetchJsonOnce(
         url,
         {
           method: "GET",
+
           signal:
             controller.signal,
 
@@ -857,41 +1136,43 @@ async function fetchJsonOnce(
         }
       );
 
-    const body =
+    /*
+     * The response body is read exactly once. This avoids any accidental
+     * additional provider request while preserving API error details.
+     */
+    const responseText =
       await response.text();
 
-    let payload;
+    let payload = null;
 
-    try {
-      payload =
-        body
-          ? JSON.parse(body)
-          : null;
-    } catch {
-      throw new Error(
-        `Twelve Data returned invalid JSON ` +
-        `(HTTP ${response.status})`
-      );
+    if (responseText) {
+      try {
+        payload =
+          JSON.parse(
+            responseText
+          );
+      } catch {
+        throw new Error(
+          `Twelve Data returned invalid JSON (HTTP ${response.status}).`
+        );
+      }
     }
 
     if (!response.ok) {
-      const message =
-        payload &&
-        typeof payload.message ===
-          "string"
-          ? payload.message
+      const providerMessage =
+        isRecord(payload) &&
+        typeof payload.message === "string" &&
+        payload.message.trim()
+          ? payload.message.trim()
           : `HTTP ${response.status}`;
 
       const error =
         new Error(
-          `Twelve Data request failed: ${message}`
+          `Twelve Data request failed: ${providerMessage}`
         );
 
       error.httpStatus =
         response.status;
-
-      error.providerPayload =
-        payload;
 
       throw error;
     }
@@ -899,18 +1180,21 @@ async function fetchJsonOnce(
     return payload;
   } catch (error) {
     if (
-      error &&
-      error.name ===
-        "AbortError"
+      error instanceof Error &&
+      error.name === "AbortError"
     ) {
       throw new Error(
-        `Twelve Data request timed out after ${timeoutMs}ms`
+        `Twelve Data request timed out after ${timeoutMs}ms.`
       );
     }
 
-    throw error;
+    throw new Error(
+      sanitizeRequestError(error)
+    );
   } finally {
-    clearTimeout(timer);
+    clearTimeout(
+      timeoutHandle
+    );
   }
 }
 
@@ -918,58 +1202,45 @@ async function fetchJsonOnce(
    Twelve Data H1 Fetch
    ===================================================================== */
 
-async function fetchH1(symbol) {
-  const params =
-    new URLSearchParams({
-      symbol,
-      interval:
-        INTERVAL,
-
-      outputsize:
-        String(OUTPUT_SIZE),
-
-      apikey:
-        API_KEY
-    });
-
+async function fetchH1(
+  config
+) {
   const url =
-    `https://api.twelvedata.com/time_series?${params.toString()}`;
+    buildProviderUrl(
+      config.symbol
+    );
 
   /*
-   * Exactly one API request for this symbol.
+   * Exactly one provider request is permitted for this symbol.
    */
   const payload =
-    await fetchJsonOnce(url);
+    await fetchJsonOnce(
+      url
+    );
 
-  if (
-    !payload ||
-    typeof payload !== "object"
-  ) {
+  if (!isRecord(payload)) {
     throw new Error(
-      `Empty or invalid Twelve Data response for ${symbol}`
+      `Empty or invalid Twelve Data response for ${config.symbol}.`
     );
   }
 
   /*
-   * Twelve Data may return HTTP 200 with an API-level error object.
+   * Twelve Data may return HTTP 200 with an API-level error payload.
    */
   if (
     payload.status === "error" ||
     payload.code != null
   ) {
     throw createProviderError(
-      symbol,
+      config.symbol,
       payload
     );
   }
 
-  if (
-    !Array.isArray(
-      payload.values
-    )
-  ) {
+  if (!Array.isArray(payload.values)) {
     throw new Error(
-      `Twelve Data response for ${symbol} does not contain a values array`
+      `Twelve Data response for ${config.symbol} ` +
+      "does not contain a values array."
     );
   }
 
@@ -978,11 +1249,9 @@ async function fetchH1(symbol) {
       payload.values
     );
 
-  if (
-    normalized.rows.length === 0
-  ) {
+  if (normalized.rows.length === 0) {
     throw new Error(
-      `No valid H1 candles returned for ${symbol}`
+      `No valid H1 candles returned for ${config.symbol}.`
     );
   }
 
@@ -993,115 +1262,46 @@ async function fetchH1(symbol) {
     quality:
       normalized.quality,
 
-    providerMeta: {
+    provider: {
+      name:
+        SOURCE_NAME,
+
       symbol:
-        payload.meta?.symbol ||
-        symbol,
+        typeof payload.meta?.symbol === "string"
+          ? payload.meta.symbol
+          : config.symbol,
 
       interval:
-        payload.meta?.interval ||
-        INTERVAL,
+        typeof payload.meta?.interval === "string"
+          ? payload.meta.interval
+          : INTERVAL,
 
       currencyBase:
-        payload.meta
-          ?.currency_base ||
-        null,
+        typeof payload.meta?.currency_base === "string"
+          ? payload.meta.currency_base
+          : null,
 
       currencyQuote:
-        payload.meta
-          ?.currency_quote ||
-        null,
+        typeof payload.meta?.currency_quote === "string"
+          ? payload.meta.currency_quote
+          : null,
 
       exchange:
-        payload.meta?.exchange ||
-        null,
+        typeof payload.meta?.exchange === "string"
+          ? payload.meta.exchange
+          : null,
 
       exchangeTimezone:
-        payload.meta
-          ?.exchange_timezone ||
-        null,
+        typeof payload.meta?.exchange_timezone === "string"
+          ? payload.meta.exchange_timezone
+          : null,
 
-      type:
-        payload.meta?.type ||
-        null
+      instrumentType:
+        typeof payload.meta?.type === "string"
+          ? payload.meta.type
+          : null
     }
   };
-}
-
-/* =====================================================================
-   Cache Merge
-   ===================================================================== */
-
-function mergeCandleRows(
-  previousRows,
-  freshRows
-) {
-  /*
-   * Previous candles are inserted first and fresh candles second.
-   * Fresh candles therefore replace cached candles for duplicate times.
-   */
-  const combined = [
-    ...(
-      Array.isArray(
-        previousRows
-      )
-        ? previousRows
-        : []
-    ),
-
-    ...(
-      Array.isArray(
-        freshRows
-      )
-        ? freshRows
-        : []
-    )
-  ];
-
-  return normalizeCandles(
-    combined
-  );
-}
-
-/* =====================================================================
-   Open-Candle Detection
-   ===================================================================== */
-
-function floorToHourMs(timestamp) {
-  if (!Number.isFinite(timestamp)) {
-    return null;
-  }
-
-  return (
-    Math.floor(
-      timestamp /
-      EXPECTED_INTERVAL_MS
-    ) *
-    EXPECTED_INTERVAL_MS
-  );
-}
-
-function isPossiblyOpenLastCandle(
-  timeValue
-) {
-  const candleTimestamp =
-    timestampToMs(
-      timeValue
-    );
-
-  if (!Number.isFinite(candleTimestamp)) {
-    return false;
-  }
-
-  const currentHour =
-    floorToHourMs(
-      Date.now()
-    );
-
-  return (
-    candleTimestamp ===
-    currentHour
-  );
 }
 
 /* =====================================================================
@@ -1117,20 +1317,20 @@ function buildSymbolMetadata({
   errorMessage,
   fetchedQuality,
   finalQuality,
-  providerMeta
+  provider
 }) {
   const firstTime =
-    rows[0]?.time ||
+    rows[0]?.time ??
     null;
 
   const lastTime =
-    rows[
-      rows.length - 1
-    ]?.time ||
+    rows.at(-1)?.time ??
     null;
 
-  const latestAge =
-    ageHours(lastTime);
+  const latestAgeHours =
+    ageHours(
+      lastTime
+    );
 
   return {
     symbol:
@@ -1147,9 +1347,11 @@ function buildSymbolMetadata({
 
     source,
 
-    fetchSucceeded,
+    fetchSucceeded:
+      Boolean(fetchSucceeded),
 
-    fallbackUsed,
+    fallbackUsed:
+      Boolean(fallbackUsed),
 
     error:
       errorMessage ||
@@ -1162,10 +1364,10 @@ function buildSymbolMetadata({
     lastTime,
 
     ageHours:
-      latestAge == null
+      latestAgeHours === null
         ? null
         : Number(
-            latestAge.toFixed(2)
+            latestAgeHours.toFixed(2)
           ),
 
     stale:
@@ -1186,37 +1388,19 @@ function buildSymbolMetadata({
       finalQuality,
 
     provider:
-      providerMeta ||
+      provider ||
       null
   };
 }
 
 /* =====================================================================
-   Main Worker
+   Output Construction
    ===================================================================== */
 
-async function main() {
-  const startedAt =
-    new Date();
-
-  fs.mkdirSync(
-    DATA_DIR,
-    {
-      recursive: true
-    }
-  );
-
-  const previousOutput =
-    readJsonFile(
-      OUTPUT_PATH,
-      {}
-    );
-
-  /*
-   * Keep direct XAUUSD and GBPJPY arrays unchanged for compatibility
-   * with the frontend and any existing analysis code.
-   */
-  const output = {
+function createInitialOutput(
+  startedAt
+) {
+  return {
     updatedAt:
       startedAt.toISOString(),
 
@@ -1268,196 +1452,388 @@ async function main() {
 
     errors: []
   };
+}
 
-  for (
-    let index = 0;
-    index < SYMBOLS.length;
-    index++
-  ) {
-    const config =
-      SYMBOLS[index];
+function storeSuccessfulResult(
+  output,
+  config,
+  previousRows,
+  fetched
+) {
+  const merged =
+    mergeCandleRows(
+      previousRows,
+      fetched.rows
+    );
 
-    const previousRows =
-      getPreviousRows(
-        previousOutput,
-        config.key
-      );
+  output[config.key] =
+    merged.rows;
 
-    try {
-      console.log(
-        `Fetching ${config.symbol} H1 OHLC ` +
-        `(${requestsMade + 1}/${MAX_REQUESTS_PER_RUN})...`
-      );
+  output.stale[config.key] =
+    merged.quality.stale;
 
-      const fetched =
-        await fetchH1(
-          config.symbol
-        );
+  output.metadata[config.key] =
+    buildSymbolMetadata({
+      config,
 
-      /*
-       * Merge the new response with the existing file. This protects
-       * older history when the provider temporarily returns fewer bars.
-       */
-      const merged =
-        mergeCandleRows(
-          previousRows,
-          fetched.rows
-        );
+      rows:
+        merged.rows,
 
-      output[
-        config.key
-      ] =
-        merged.rows;
+      source:
+        SOURCE_NAME,
 
-      output.stale[
-        config.key
-      ] =
-        merged.quality.stale;
+      fetchSucceeded:
+        true,
 
-      output.metadata[
-        config.key
-      ] =
-        buildSymbolMetadata({
-          config,
+      fallbackUsed:
+        false,
 
-          rows:
-            merged.rows,
+      errorMessage:
+        null,
 
-          source:
-            SOURCE_NAME,
+      fetchedQuality:
+        fetched.quality,
 
-          fetchSucceeded:
-            true,
+      finalQuality:
+        merged.quality,
 
-          fallbackUsed:
-            false,
+      provider:
+        fetched.provider
+    });
 
-          errorMessage:
-            null,
+  return merged;
+}
 
-          fetchedQuality:
-            fetched.quality,
+function storeFailedResult(
+  output,
+  config,
+  previousRows,
+  error
+) {
+  const message =
+    sanitizeRequestError(
+      error
+    );
 
-          finalQuality:
-            merged.quality,
+  const cached =
+    normalizeCandles(
+      previousRows
+    );
 
-          providerMeta:
-            fetched.providerMeta
-        });
+  const fallbackUsed =
+    cached.rows.length > 0;
 
-      console.log(
-        `Fetched ${fetched.rows.length} valid H1 candles for ` +
-        `${config.symbol}; stored ${merged.rows.length} candles.`
-      );
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : String(error);
+  const finalQuality = {
+    ...cached.quality,
+    stale: true
+  };
 
-      console.error(
-        `Failed to fetch ${config.symbol}: ${message}`
-      );
+  output[config.key] =
+    cached.rows;
 
-      /*
-       * No retry is performed. Cached candles are used immediately.
-       */
-      const cached =
-        normalizeCandles(
-          previousRows
-        );
+  output.stale[config.key] =
+    true;
 
-      output[
-        config.key
-      ] =
-        cached.rows;
+  output.metadata[config.key] =
+    buildSymbolMetadata({
+      config,
 
-      output.stale[
-        config.key
-      ] =
-        true;
+      rows:
+        cached.rows,
 
-      output.metadata[
-        config.key
-      ] =
-        buildSymbolMetadata({
-          config,
+      source:
+        fallbackUsed
+          ? "local-cache"
+          : "unavailable",
 
-          rows:
-            cached.rows,
+      fetchSucceeded:
+        false,
 
-          source:
-            cached.rows.length > 0
-              ? "local-cache"
-              : "unavailable",
+      fallbackUsed,
 
-          fetchSucceeded:
-            false,
-
-          fallbackUsed:
-            cached.rows.length >
-            0,
-
-          errorMessage:
-            message,
-
-          fetchedQuality:
-            null,
-
-          finalQuality: {
-            ...cached.quality,
-            stale: true
-          },
-
-          providerMeta:
-            null
-        });
-
-      output.errors.push({
-        symbol:
-          config.symbol,
-
-        key:
-          config.key,
-
+      errorMessage:
         message,
 
-        fallbackUsed:
-          cached.rows.length >
-          0,
+      fetchedQuality:
+        null,
 
-        cachedCandleCount:
-          cached.rows.length
-      });
+      finalQuality,
+
+      provider:
+        null
+    });
+
+  output.errors.push({
+    symbol:
+      config.symbol,
+
+    key:
+      config.key,
+
+    message,
+
+    fallbackUsed,
+
+    cachedCandleCount:
+      cached.rows.length
+  });
+
+  return {
+    message,
+    cachedRows:
+      cached.rows,
+    fallbackUsed
+  };
+}
+
+/* =====================================================================
+   Output Validation
+   ===================================================================== */
+
+function validateCompletedOutput(
+  output
+) {
+  if (!isRecord(output)) {
+    throw new Error(
+      "Completed intraday H1 output must be a JSON object."
+    );
+  }
+
+  if (
+    output.interval !==
+    INTERVAL
+  ) {
+    throw new Error(
+      `Output interval must remain ${INTERVAL}.`
+    );
+  }
+
+  if (
+    output.derivedTimeframes?.H4?.source !== "H1" ||
+    output.derivedTimeframes?.H4?.grouping !== 4 ||
+    output.derivedTimeframes?.H4?.extraApiRequests !== 0
+  ) {
+    throw new Error(
+      "H4 derivation metadata is missing or invalid."
+    );
+  }
+
+  for (const config of SYMBOLS) {
+    const rows =
+      output[config.key];
+
+    if (!Array.isArray(rows)) {
+      throw new Error(
+        `${config.key} output must be an array.`
+      );
+    }
+
+    const normalized =
+      normalizeCandles(
+        rows
+      );
+
+    if (
+      normalized.rows.length !==
+      rows.length
+    ) {
+      throw new Error(
+        `${config.key} output contains invalid or duplicate H1 candles.`
+      );
+    }
+
+    for (
+      let index = 1;
+      index < rows.length;
+      index++
+    ) {
+      const previousTime =
+        timestampToMs(
+          rows[index - 1].time
+        );
+
+      const currentTime =
+        timestampToMs(
+          rows[index].time
+        );
 
       if (
-        cached.rows.length > 0
+        !Number.isFinite(previousTime) ||
+        !Number.isFinite(currentTime) ||
+        currentTime <= previousTime
       ) {
-        console.warn(
-          `Using ${cached.rows.length} cached H1 candles for ${config.symbol}.`
-        );
-      } else {
-        console.warn(
-          `No cached H1 data is available for ${config.symbol}.`
+        throw new Error(
+          `${config.key} candles must be strictly chronological.`
         );
       }
     }
 
-    /*
-     * A short delay reduces request bursts. It consumes no extra credit.
-     */
+    const metadata =
+      output.metadata?.[config.key];
+
+    if (!isRecord(metadata)) {
+      throw new Error(
+        `${config.key} metadata is missing or invalid.`
+      );
+    }
+
     if (
-      index <
-      SYMBOLS.length - 1
+      metadata.fetchSucceeded &&
+      rows.length === 0
     ) {
-      await sleep(
-        REQUEST_GAP_MS
+      throw new Error(
+        `${config.key} cannot report a successful fetch with no candles.`
+      );
+    }
+
+    if (
+      metadata.key !==
+      config.key
+    ) {
+      throw new Error(
+        `${config.key} metadata key does not match its integration key.`
+      );
+    }
+
+    if (
+      metadata.symbol !==
+      config.symbol
+    ) {
+      throw new Error(
+        `${config.key} metadata symbol does not match ${config.symbol}.`
       );
     }
   }
 
-  const completedAt =
-    new Date();
+  if (!Array.isArray(output.errors)) {
+    throw new Error(
+      "Output errors must be an array."
+    );
+  }
+
+  if (
+    !Number.isInteger(output.requestsMade) ||
+    output.requestsMade < 0 ||
+    output.requestsMade >
+      MAX_REQUESTS_PER_RUN
+  ) {
+    throw new Error(
+      "Output request count is invalid."
+    );
+  }
+
+  if (
+    !Number.isInteger(output.successCount) ||
+    output.successCount < 0 ||
+    output.successCount >
+      SYMBOLS.length
+  ) {
+    throw new Error(
+      "Output success count is invalid."
+    );
+  }
+
+  if (
+    !Number.isInteger(output.failureCount) ||
+    output.failureCount < 0 ||
+    output.failureCount >
+      SYMBOLS.length
+  ) {
+    throw new Error(
+      "Output failure count is invalid."
+    );
+  }
+
+  if (
+    output.successCount +
+      output.failureCount !==
+    SYMBOLS.length
+  ) {
+    throw new Error(
+      "Success and failure counts do not cover every configured symbol."
+    );
+  }
+}
+
+/* =====================================================================
+   Symbol Processing
+   ===================================================================== */
+
+async function processSymbol({
+  output,
+  previousOutput,
+  config
+}) {
+  const previousRows =
+    getPreviousRows(
+      previousOutput,
+      config.key
+    );
+
+  console.log(
+    `Fetching ${config.symbol} H1 OHLC ` +
+    `(${requestsMade + 1}/${MAX_REQUESTS_PER_RUN})...`
+  );
+
+  try {
+    const fetched =
+      await fetchH1(
+        config
+      );
+
+    const merged =
+      storeSuccessfulResult(
+        output,
+        config,
+        previousRows,
+        fetched
+      );
+
+    console.log(
+      `Fetched ${fetched.rows.length} valid H1 candles for ` +
+      `${config.symbol}; stored ${merged.rows.length} candles.`
+    );
+  } catch (error) {
+    const failed =
+      storeFailedResult(
+        output,
+        config,
+        previousRows,
+        error
+      );
+
+    console.error(
+      `Failed to fetch ${config.symbol}: ${failed.message}`
+    );
+
+    /*
+     * No retry is attempted. Cached candles are used immediately to keep
+     * execution within the fixed two-request provider budget.
+     */
+    if (failed.fallbackUsed) {
+      console.warn(
+        `Using ${failed.cachedRows.length} cached H1 candles for ` +
+        `${config.symbol}.`
+      );
+    } else {
+      console.warn(
+        `No cached H1 data is available for ${config.symbol}.`
+      );
+    }
+  }
+}
+
+/* =====================================================================
+   Run Finalization
+   ===================================================================== */
+
+function finalizeOutput(
+  output,
+  startedAt,
+  completedAt
+) {
+  output.startedAt =
+    startedAt.toISOString();
 
   output.updatedAt =
     completedAt.toISOString();
@@ -1477,31 +1853,65 @@ async function main() {
     MAX_REQUESTS_PER_RUN;
 
   output.successCount =
-    SYMBOLS.filter(
-      config =>
-        output.metadata[
-          config.key
-        ]?.fetchSucceeded
-    ).length;
+    SYMBOLS.reduce(
+      (count, config) =>
+        count +
+        (
+          output.metadata[
+            config.key
+          ]?.fetchSucceeded
+            ? 1
+            : 0
+        ),
+      0
+    );
 
   output.failureCount =
     output.errors.length;
 
-  /*
-   * Atomic replacement prevents partial or corrupted JSON output.
-   */
-  atomicWriteJson(
-    OUTPUT_PATH,
-    output
-  );
+  output.cacheFallbackCount =
+    SYMBOLS.reduce(
+      (count, config) =>
+        count +
+        (
+          output.metadata[
+            config.key
+          ]?.fallbackUsed
+            ? 1
+            : 0
+        ),
+      0
+    );
 
+  output.allSymbolsAvailable =
+    SYMBOLS.every(
+      config =>
+        Array.isArray(
+          output[config.key]
+        ) &&
+        output[config.key].length > 0
+    );
+
+  output.hasFreshFetch =
+    output.successCount > 0;
+
+  return output;
+}
+
+/* =====================================================================
+   Run Logging
+   ===================================================================== */
+
+function logRunSummary(
+  output
+) {
   console.log(
     `Wrote ${OUTPUT_PATH}`
   );
 
   console.log(
     `Twelve Data requests used: ` +
-    `${requestsMade}/${MAX_REQUESTS_PER_RUN}`
+    `${output.requestsMade}/${MAX_REQUESTS_PER_RUN}`
   );
 
   console.log(
@@ -1509,14 +1919,103 @@ async function main() {
     `${output.successCount}/${SYMBOLS.length}`
   );
 
-  if (
-    output.failureCount > 0
-  ) {
+  if (output.cacheFallbackCount > 0) {
     console.warn(
-      `Completed with ${output.failureCount} fetch failure(s); ` +
-      "cached data was preserved where available."
+      `Cache fallback used for ` +
+      `${output.cacheFallbackCount} symbol(s).`
     );
   }
+
+  if (output.failureCount > 0) {
+    console.warn(
+      `Completed with ${output.failureCount} fetch failure(s); ` +
+      "cached H1 data was preserved where available."
+    );
+  }
+}
+
+/* =====================================================================
+   Main Worker
+   ===================================================================== */
+
+async function main() {
+  validateStartupConfiguration();
+
+  const startedAt =
+    new Date();
+
+  fs.mkdirSync(
+    DATA_DIR,
+    {
+      recursive: true
+    }
+  );
+
+  const previousOutput =
+    readJsonFile(
+      OUTPUT_PATH,
+      {}
+    );
+
+  /*
+   * Direct top-level XAUUSD and GBPJPY arrays remain the permanent
+   * integration contract for run-live-analysis.js and other consumers.
+   */
+  const output =
+    createInitialOutput(
+      startedAt
+    );
+
+  for (
+    let index = 0;
+    index < SYMBOLS.length;
+    index++
+  ) {
+    await processSymbol({
+      output,
+      previousOutput,
+      config:
+        SYMBOLS[index]
+    });
+
+    /*
+     * Avoid a two-request burst. No delay occurs after the final symbol.
+     */
+    if (
+      index <
+      SYMBOLS.length - 1
+    ) {
+      await sleep(
+        REQUEST_GAP_MS
+      );
+    }
+  }
+
+  const completedAt =
+    new Date();
+
+  finalizeOutput(
+    output,
+    startedAt,
+    completedAt
+  );
+
+  validateCompletedOutput(
+    output
+  );
+
+  /*
+   * Atomic replacement prevents downstream workers from reading a
+   * partially written intraday-h1.json file.
+   */
+  atomicWriteJson(
+    OUTPUT_PATH,
+    output
+  );
+
+  logRunSummary(
+    output
+  );
 }
 
 /* =====================================================================
@@ -1529,9 +2028,8 @@ main().catch(error => {
     error instanceof Error
       ? error.stack ||
         error.message
-      : error
+      : String(error)
   );
 
   process.exitCode = 1;
 });
-

@@ -638,14 +638,7 @@ function logFatalError(error) {
   }
 }
 
-main().catch((error) => {
-  logFatalError(error);
 
-  // Existing failure behavior is retained:
-  // the process exits with code 1 so GitHub Actions clearly reports
-  // a failed workflow instead of silently succeeding without an update.
-  process.exitCode = 1;
-});
 
  // -----------------------------------------------------------------------
  // Direct-execution guard

@@ -2501,3 +2501,172 @@ function analyze(
     });
 
   }
+
+  /* =============================
+     STEP 5 : News Filter
+     ============================= */
+
+  const conflict =
+    conflictingHighImpactNews(
+      direction,
+      newsItems
+    );
+
+  if (conflict) {
+
+    result.steps.push({
+      name: "News",
+      pass: false
+    });
+
+    result.reasons.push(
+      "High impact news conflict"
+    );
+
+    return result;
+
+  }
+
+  result.steps.push({
+    name: "News",
+    pass: true
+  });
+
+  /* =============================
+     STEP 6 : Support / Resistance
+     ============================= */
+
+  const entry =
+    lastClose(rows);
+
+  let stop;
+  let target;
+
+  if (direction === "BUY") {
+
+    const support =
+      sr.supports[0];
+
+    const resistance =
+      sr.resistances[0];
+
+    if (
+      !support ||
+      !resistance
+    ) {
+      result.reasons.push(
+        "Support/Resistance unavailable"
+      );
+      return result;
+    }
+
+    stop = support;
+
+    target = resistance;
+
+  } else {
+
+    const resistance =
+      sr.resistances[0];
+
+    const support =
+      sr.supports[0];
+
+    if (
+      !support ||
+      !resistance
+    ) {
+      result.reasons.push(
+        "Support/Resistance unavailable"
+      );
+      return result;
+    }
+
+    stop = resistance;
+
+    target = support;
+
+  }
+
+  const rr =
+    calculateRiskReward(
+      entry,
+      stop,
+      target
+    );
+
+  if (rr < 2) {
+
+    result.steps.push({
+      name: "Risk Reward",
+      pass: false
+    });
+
+    result.reasons.push(
+      "Risk Reward below 1:2"
+    );
+
+    return result;
+
+  }
+
+  result.steps.push({
+    name: "Risk Reward",
+    pass: true
+  });
+
+  /* =============================
+     Final Signal
+     ============================= */
+
+  result.signal =
+    direction;
+
+  result.confidence =
+    80;
+
+  if (market.direction === direction)
+    result.confidence += 10;
+
+  if (candlePattern)
+    result.confidence += 5;
+
+  if (Math.abs(newsScoreRaw) < 10)
+    result.confidence += 5;
+
+  result.confidence =
+    clamp(
+      result.confidence,
+      0,
+      100
+    );
+
+  const risk =
+    Math.abs(entry - stop);
+
+  result.tradePlan = {
+
+    entry,
+
+    stopLoss: stop,
+
+    target1: target,
+
+    target2:
+      direction === "BUY"
+        ? entry + risk * 3
+        : entry - risk * 3,
+
+    target3:
+      direction === "BUY"
+        ? entry + risk * 4
+        : entry - risk * 4,
+
+    riskReward:
+      round(rr, 2)
+
+  };
+
+  return result;
+
+}

@@ -3,58 +3,158 @@ name: PipSight Robot — live GBP/JPY tick
 on:
   schedule:
     - cron: "*/10 * * * *"
+
   workflow_dispatch: {}
 
 permissions:
   contents: write
 
 concurrency:
-  group: pipsight-robots
+  group: pipsight-live-gbpjpy-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   fetch:
+    name: Fetch and publish live GBP/JPY tick
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        shell: bash
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
 
-      - uses: actions/setup-node@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: "20"
 
-      - name: Fetch live tick
+      - name: Verify API secret
         env:
           TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
-        run: node fetch-gbpjpy-live.js
+        run: |
+          set -euo pipefail
 
-      - name: Commit updated tick
+          if [[ -z "${TWELVEDATA_API_KEY:-}" ]]; then
+            echo "TWELVEDATA_API_KEY is not configured."
+            exit 1
+          fi
+
+      - name: Fetch live GBP/JPY tick
+        env:
+          TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          node fetch-gbpjpy-live.js
+
+      - name: Validate live tick output
+        run: |
+          set -euo pipefail
+
+          test -s data/gbpjpy-live.json
+
+          node - <<'NODE'
+          const fs = require("fs");
+
+          const file = "data/gbpjpy-live.json";
+          const parsed = JSON.parse(
+            fs.readFileSync(file, "utf8")
+          );
+
+          if (
+            parsed === null ||
+            typeof parsed !== "object" ||
+            Array.isArray(parsed)
+          ) {
+            throw new Error(
+              "gbpjpy-live.json must contain a JSON object"
+            );
+          }
+
+          const priceCandidates = [
+            parsed.price,
+            parsed.close,
+            parsed.value,
+            parsed.rate,
+            parsed.last,
+            parsed.currentPrice
+          ];
+
+          const price = priceCandidates
+            .map(Number)
+            .find((value) => Number.isFinite(value) && value > 0);
+
+          if (!price) {
+            throw new Error(
+              "gbpjpy-live.json does not contain a valid positive price"
+            );
+          }
+
+          console.log(
+            `Validated ${file} with price ${price}`
+          );
+          NODE
+
+      - name: Commit and push updated tick
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
+
           git config user.name "pipsight-robot"
           git config user.email "actions@users.noreply.github.com"
 
-          git add data/gbpjpy-live.json
+          # Strictly stage only the file owned by this workflow.
+          git add -- data/gbpjpy-live.json
 
-          if [[ -n "$(git status --porcelain)" ]]; then
-            git commit -m "robot: refresh live GBP/JPY tick"
-
-            # Sync with latest remote changes
-            git pull --rebase origin main
-
-            # Push changes
-            git push origin main
-          else
-            echo "No changes to commit"
+          if git diff --cached --quiet; then
+            echo "No live GBP/JPY tick changes to commit."
+            exit 0
           fi
+
+          git commit -m "robot: refresh live GBP/JPY tick"
+
+          max_attempts=5
+
+          for attempt in $(seq 1 "$max_attempts"); do
+            echo "Push attempt ${attempt}/${max_attempts}"
+
+            if git push origin HEAD:main; then
+              echo "Live GBP/JPY tick pushed successfully."
+              exit 0
+            fi
+
+            if [[ "$attempt" -eq "$max_attempts" ]]; then
+              echo "Push failed after ${max_attempts} attempts."
+              exit 1
+            fi
+
+            echo "Remote branch changed. Rebasing before retry..."
+
+            git fetch origin main
+
+            if ! git rebase origin/main; then
+              echo "Rebase conflict detected."
+              git rebase --abort || true
+              exit 1
+            fi
+
+            sleep $((attempt * 5))
+          done
 
       - name: Log execution
         if: always()
         run: |
-          echo "✅ Live GBP/JPY tick updated at $(date)"
+          echo "PipSight live GBP/JPY workflow finished."
+          echo "Status: ${{ job.status }}"
           echo "Repository: ${{ github.repository }}"
-          echo "Workflow completed successfully"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "Completed at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"

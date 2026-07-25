@@ -9,12 +9,17 @@ permissions:
   contents: write
 
 concurrency:
-  group: pipsight-robots
+  group: pipsight-scalp-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   fetch:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout repository
@@ -26,20 +31,126 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: "20"
+
+      - name: Validate required configuration
+        env:
+          TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${TWELVEDATA_API_KEY:-}" ]]; then
+            echo "::error::TWELVEDATA_API_KEY secret is missing or empty."
+            exit 1
+          fi
+
+          echo "Required configuration validated."
 
       - name: Fetch scalp candles
         env:
           TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
-        run: node fetch-scalp-candles.js
+        run: |
+          set -euo pipefail
+          node fetch-scalp-candles.js
+
+      - name: Validate scalp candles output
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          "use strict";
+
+          const fs = require("fs");
+
+          const filePath = "data/scalp-candles.json";
+
+          if (!fs.existsSync(filePath)) {
+            throw new Error(`Required output file was not created: ${filePath}`);
+          }
+
+          const raw = fs.readFileSync(filePath, "utf8").trim();
+
+          if (!raw) {
+            throw new Error(`Output file is empty: ${filePath}`);
+          }
+
+          let data;
+
+          try {
+            data = JSON.parse(raw);
+          } catch (error) {
+            throw new Error(
+              `Output file contains invalid JSON: ${filePath}: ${error.message}`
+            );
+          }
+
+          if (data === null || typeof data !== "object") {
+            throw new Error(
+              `Output file must contain a JSON object or array: ${filePath}`
+            );
+          }
+
+          console.log(`Validated ${filePath}`);
+          NODE
 
       - name: Run scalp analysis
-        run: node run-scalp-analysis.js
+        run: |
+          set -euo pipefail
+          node run-scalp-analysis.js
+
+      - name: Validate scalp analysis outputs
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          "use strict";
+
+          const fs = require("fs");
+
+          const outputFiles = [
+            "data/scalp-signals.json",
+            "data/scalp-signal-log.json"
+          ];
+
+          for (const filePath of outputFiles) {
+            if (!fs.existsSync(filePath)) {
+              throw new Error(
+                `Required output file was not created: ${filePath}`
+              );
+            }
+
+            const raw = fs.readFileSync(filePath, "utf8").trim();
+
+            if (!raw) {
+              throw new Error(`Output file is empty: ${filePath}`);
+            }
+
+            let data;
+
+            try {
+              data = JSON.parse(raw);
+            } catch (error) {
+              throw new Error(
+                `Output file contains invalid JSON: ${filePath}: ${error.message}`
+              );
+            }
+
+            if (data === null || typeof data !== "object") {
+              throw new Error(
+                `Output file must contain a JSON object or array: ${filePath}`
+              );
+            }
+
+            console.log(`Validated ${filePath}`);
+          }
+          NODE
 
       - name: Commit updated scalp data
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
+
           git config user.name "pipsight-robot"
           git config user.email "actions@users.noreply.github.com"
 
@@ -48,19 +159,52 @@ jobs:
             data/scalp-signals.json \
             data/scalp-signal-log.json
 
-          if [[ -n "$(git status --porcelain)" ]]; then
-            git commit -m "robot: refresh scalp candles and signals"
-
-            git pull --rebase origin main
-
-            git push origin main
-          else
-            echo "No changes to commit"
+          if git diff --cached --quiet; then
+            echo "No scalp data changes to commit."
+            exit 0
           fi
+
+          git commit -m "robot: refresh scalp candles and signals"
+
+          push_succeeded=false
+
+          for attempt in 1 2 3 4 5; do
+            echo "Push attempt ${attempt} of 5..."
+
+            if git push origin HEAD:main; then
+              push_succeeded=true
+              break
+            fi
+
+            if [[ "${attempt}" -eq 5 ]]; then
+              break
+            fi
+
+            echo "Push was rejected. Fetching and rebasing onto origin/main..."
+
+            git fetch origin main
+
+            if ! git rebase origin/main; then
+              echo "::error::Rebase failed while synchronizing scalp data."
+              git rebase --abort || true
+              exit 1
+            fi
+
+            sleep $((attempt * 2))
+          done
+
+          if [[ "${push_succeeded}" != "true" ]]; then
+            echo "::error::Unable to push scalp data after 5 attempts."
+            exit 1
+          fi
+
+          echo "Scalp data committed and pushed successfully."
 
       - name: Log execution
         if: always()
         run: |
-          echo "✅ Scalp candles and signals updated at $(date)"
+          echo "Scalp workflow finished at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
           echo "Repository: ${{ github.repository }}"
-          echo "Workflow completed"
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "Final status: ${{ job.status }}"

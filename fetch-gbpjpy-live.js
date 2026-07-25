@@ -646,7 +646,7 @@ function logFatalError(error) {
 
  // Run the worker only when this file is executed directly:
  //
- //   node run-live-gbpjpy.js
+ //   // node fetch-gbpjpy-live.js
  //
  // Importing this file from tests or another worker will not accidentally
  // call Twelve Data or overwrite the existing JSON output.

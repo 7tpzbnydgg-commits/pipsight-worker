@@ -1,3 +1,4 @@
+"use strict";
 /**
  * GitHub Learning Engine Sync
  * Saves/loads learning data to/from GitHub

@@ -1110,3 +1110,219 @@ function lowSeries(
   );
 
 }
+
+/* =====================================================================
+   News Engine
+   ===================================================================== */
+
+function normalizeNewsPair(value) {
+  return normalizePairKey(value);
+}
+
+function normalizeNewsItem(item) {
+
+  if (
+    !item ||
+    typeof item !== "object"
+  ) {
+    return null;
+  }
+
+  const pair =
+    normalizeNewsPair(
+      item.pair ??
+      item.symbol ??
+      item.instrument
+    );
+
+  return {
+
+    pair,
+
+    title:
+      String(
+        item.title ??
+        item.headline ??
+        ""
+      ).trim(),
+
+    impact:
+      String(
+        item.impact ??
+        "medium"
+      ).toLowerCase(),
+
+    sentiment:
+      Number(
+        item.sentiment ?? 0
+      ),
+
+    publishedAt:
+      item.publishedAt ??
+      item.time ??
+      item.datetime ??
+      null,
+
+    source:
+      item.source ??
+      "",
+
+    raw: item
+
+  };
+
+}
+
+function readNewsFeed() {
+
+  const raw =
+    readJsonFile(
+      NEWS_FEED_PATH,
+      {}
+    );
+
+  const list =
+    Array.isArray(raw)
+      ? raw
+      : Array.isArray(raw.items)
+      ? raw.items
+      : [];
+
+  return list
+    .map(normalizeNewsItem)
+    .filter(Boolean);
+
+}
+
+function newsForPair(
+  pairLabel,
+  allNews
+) {
+
+  const key =
+    normalizePairKey(pairLabel);
+
+  return allNews.filter(
+    news =>
+      news.pair === key
+  );
+
+}
+
+/* =====================================================================
+   News Sentiment
+   ===================================================================== */
+
+function newsScoreForPair(
+  pairLabel,
+  newsItems
+) {
+
+  let score = 0;
+
+  for (const news of newsItems) {
+
+    if (
+      normalizePairKey(
+        pairLabel
+      ) !== news.pair
+    ) {
+      continue;
+    }
+
+    if (
+      Number.isFinite(
+        news.sentiment
+      )
+    ) {
+      score +=
+        news.sentiment;
+    }
+
+  }
+
+  return clamp(
+    score,
+    -100,
+    100
+  );
+
+}
+
+function conflictingHighImpactNews(
+  direction,
+  newsItems
+) {
+
+  for (const news of newsItems) {
+
+    if (
+      news.impact !== "high"
+    ) {
+      continue;
+    }
+
+    if (
+      direction === "BUY" &&
+      news.sentiment <= -10
+    ) {
+      return news;
+    }
+
+    if (
+      direction === "SELL" &&
+      news.sentiment >= 10
+    ) {
+      return news;
+    }
+
+  }
+
+  return null;
+
+}
+
+/* =====================================================================
+   Validation Helpers
+   ===================================================================== */
+
+function hasEnoughRows(
+  rows,
+  minimum
+) {
+
+  return (
+    Array.isArray(rows) &&
+    rows.length >= minimum
+  );
+
+}
+
+function lastClose(
+  rows
+) {
+
+  if (
+    !rows ||
+    rows.length === 0
+  ) {
+    return null;
+  }
+
+  return rows[
+    rows.length - 1
+  ].close;
+
+}
+
+function cloneRows(
+  rows
+) {
+
+  return rows.map(
+    row => ({
+      ...row
+    })
+  );
+
+}

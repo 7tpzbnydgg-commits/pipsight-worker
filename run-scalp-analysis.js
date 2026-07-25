@@ -2207,3 +2207,116 @@ function computeMarketStructure(rows) {
     lowerLow
   };
 }
+
+/* =====================================================================
+   Support / Resistance
+   ===================================================================== */
+
+function computeSupportResistance(rows) {
+
+  if (!rows || rows.length < 10) {
+    return {
+      supports: [],
+      resistances: []
+    };
+  }
+
+  const lastClose = rows[rows.length - 1].close;
+
+  const supports = [];
+  const resistances = [];
+
+  const radius =
+    rows.length > 40 ? 2 : 1;
+
+  for (let i = radius; i < rows.length - radius; i++) {
+
+    let swingHigh = true;
+    let swingLow = true;
+
+    for (let j = 1; j <= radius; j++) {
+
+      if (
+        rows[i].high <= rows[i-j].high ||
+        rows[i].high <= rows[i+j].high
+      ) {
+        swingHigh = false;
+      }
+
+      if (
+        rows[i].low >= rows[i-j].low ||
+        rows[i].low >= rows[i+j].low
+      ) {
+        swingLow = false;
+      }
+    }
+
+    if (swingHigh && rows[i].high > lastClose)
+      resistances.push(rows[i].high);
+
+    if (swingLow && rows[i].low < lastClose)
+      supports.push(rows[i].low);
+  }
+
+  return {
+    supports: supports.sort((a,b)=>b-a).slice(0,2),
+    resistances: resistances.sort((a,b)=>a-b).slice(0,2)
+  };
+
+}
+
+/* =====================================================================
+   Candle Pattern
+   ===================================================================== */
+
+function detectCandlePattern(rows) {
+
+  if (!rows || rows.length < 2)
+    return null;
+
+  const last = rows[rows.length-1];
+  const prev = rows[rows.length-2];
+
+  const bullish =
+    last.close > last.open &&
+    prev.close < prev.open &&
+    last.close > prev.open &&
+    last.open < prev.close;
+
+  const bearish =
+    last.close < last.open &&
+    prev.close > prev.open &&
+    last.open > prev.close &&
+    last.close < prev.open;
+
+  if (bullish)
+    return "Bullish Engulfing";
+
+  if (bearish)
+    return "Bearish Engulfing";
+
+  return null;
+
+}
+
+/* =====================================================================
+   Risk Reward
+   ===================================================================== */
+
+function calculateRiskReward(
+  entry,
+  stop,
+  target
+) {
+
+  const risk =
+    Math.abs(entry-stop);
+
+  const reward =
+    Math.abs(target-entry);
+
+  return risk === 0
+    ? 0
+    : reward/risk;
+
+}

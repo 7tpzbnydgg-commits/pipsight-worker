@@ -10441,6 +10441,2202 @@ function analyzeScalp(
   };
 }
 
+// ════════════════════════════════════════════════════════════════
+// PIPSIGHT PRO AI
+// INDEX.HTML — PART 4A OF 5
+//
+// This section provides:
+//
+// - backend scalp-signal payload validation
+// - 24/7 scalp worker result loading
+// - backend/fallback signal normalization
+// - browser-side fallback analysis selection
+// - local scalp open-trade storage
+// - scalp outcome tracking
+// - duplicate-signal prevention
+// - resolved scalp-history storage
+// - learner outcome integration
+//
+// Part 4B continues directly below this code.
+// ════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════
+// SCALP STORAGE CONFIGURATION
+// ════════════════════════════════════════════════════════════════
+
+const SCALP_OPEN_STORAGE_KEY =
+  "pipsight_scalp_open_v2";
+
+const SCALP_HISTORY_STORAGE_KEY =
+  "pipsight_scalp_history_v2";
+
+const SCALP_LAST_SIGNAL_STORAGE_KEY =
+  "pipsight_scalp_last_signal_v2";
+
+const SCALP_SIGNAL_COOLDOWN_MS =
+  30 * 60_000;
+
+const SCALP_DUPLICATE_PRICE_TOLERANCE_RATIO =
+  0.0005;
+
+// ════════════════════════════════════════════════════════════════
+// SCALP LOCAL STORAGE
+// ════════════════════════════════════════════════════════════════
+
+function loadScalpOpen(){
+  const stored =
+    loadJSON(
+      SCALP_OPEN_STORAGE_KEY,
+      {}
+    );
+
+  return safeObject(
+    stored
+  );
+}
+
+function saveScalpOpen(openTrades){
+  return saveJSON(
+    SCALP_OPEN_STORAGE_KEY,
+    safeObject(openTrades)
+  );
+}
+
+function loadScalpHistory(){
+  const stored =
+    loadJSON(
+      SCALP_HISTORY_STORAGE_KEY,
+      []
+    );
+
+  return safeArray(stored)
+    .filter(
+      entry=>
+        entry &&
+        typeof entry === "object"
+    );
+}
+
+function saveScalpHistory(history){
+  const maximumEntries =
+    APP_CONFIG
+      .limits
+      .maximumScalpHistoryEntries;
+
+  const normalized =
+    safeArray(history)
+      .filter(
+        entry=>
+          entry &&
+          typeof entry === "object"
+      )
+      .slice(
+        -maximumEntries
+      );
+
+  return saveJSON(
+    SCALP_HISTORY_STORAGE_KEY,
+    normalized
+  );
+}
+
+function loadLastScalpSignals(){
+  return safeObject(
+    loadJSON(
+      SCALP_LAST_SIGNAL_STORAGE_KEY,
+      {}
+    )
+  );
+}
+
+function saveLastScalpSignals(signals){
+  return saveJSON(
+    SCALP_LAST_SIGNAL_STORAGE_KEY,
+    safeObject(signals)
+  );
+}
+
+// ════════════════════════════════════════════════════════════════
+// BACKEND SCALP-SIGNAL PAYLOAD HELPERS
+// ════════════════════════════════════════════════════════════════
+
+function backendScalpEntryForPair(
+  payload,
+  pairKey
+){
+  if(
+    !payload ||
+    typeof payload !== "object" ||
+    typeof pairKey !== "string"
+  ){
+    return null;
+  }
+
+  const candidates = [
+    payload[pairKey],
+
+    payload.signals &&
+      payload.signals[pairKey],
+
+    payload.pairs &&
+      payload.pairs[pairKey],
+
+    payload.data &&
+      payload.data[pairKey],
+
+    payload.results &&
+      payload.results[pairKey]
+  ];
+
+  for(const candidate of candidates){
+    if(
+      candidate &&
+      typeof candidate === "object" &&
+      !Array.isArray(candidate)
+    ){
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function normalizeSignalDecision(value){
+  const normalized =
+    typeof value === "string"
+      ? value
+          .trim()
+          .toUpperCase()
+      : "";
+
+  if(
+    normalized === "BUY" ||
+    normalized === "SELL" ||
+    normalized === "HOLD"
+  ){
+    return normalized;
+  }
+
+  return "HOLD";
+}
+
+function normalizePipelineStatus(value){
+  const normalized =
+    typeof value === "string"
+      ? value
+          .trim()
+          .toLowerCase()
+      : "";
+
+  if(
+    normalized === "pass" ||
+    normalized === "fail" ||
+    normalized === "na" ||
+    normalized === "skip" ||
+    normalized === "info"
+  ){
+    return normalized;
+  }
+
+  return "info";
+}
+
+function normalizeScalpPipeline(value){
+  return safeArray(value)
+    .map(
+      step=>{
+        if(
+          !step ||
+          typeof step !== "object"
+        ){
+          return null;
+        }
+
+        return {
+          name:
+            typeof step.name === "string" &&
+            step.name.trim()
+              ? step.name.trim()
+              : "Analysis Step",
+
+          status:
+            normalizePipelineStatus(
+              step.status
+            ),
+
+          detail:
+            typeof step.detail === "string"
+              ? step.detail.trim()
+              : ""
+        };
+      }
+    )
+    .filter(Boolean);
+}
+
+function normalizeScalpPerTF(value){
+  const validTimeframes =
+    new Set([
+      "5m",
+      "15m",
+      "30m",
+      "1h"
+    ]);
+
+  const normalized =
+    safeArray(value)
+      .map(
+        item=>{
+          if(
+            !item ||
+            typeof item !== "object"
+          ){
+            return null;
+          }
+
+          const timeframe =
+            typeof item.tf === "string"
+              ? item.tf
+                  .trim()
+                  .toLowerCase()
+              : "";
+
+          if(
+            !validTimeframes.has(
+              timeframe
+            )
+          ){
+            return null;
+          }
+
+          return {
+            tf:
+              timeframe,
+
+            signal:
+              normalizeSignalDecision(
+                item.signal ||
+                item.decision
+              ),
+
+            role:
+              typeof item.role === "string"
+                ? item.role.trim()
+                : ""
+          };
+        }
+      )
+      .filter(Boolean);
+
+  const byTimeframe =
+    new Map(
+      normalized.map(
+        item=>[
+          item.tf,
+          item
+        ]
+      )
+    );
+
+  return [
+    {
+      tf:"5m",
+      role:"Entry"
+    },
+    {
+      tf:"15m",
+      role:"Confirmation"
+    },
+    {
+      tf:"30m",
+      role:"Context"
+    },
+    {
+      tf:"1h",
+      role:"Trend"
+    }
+  ].map(
+    fallback=>{
+      return (
+        byTimeframe.get(
+          fallback.tf
+        ) || {
+          ...fallback,
+          signal:"HOLD"
+        }
+      );
+    }
+  );
+}
+
+function normalizeBackendTradePlan(
+  entry,
+  decimals
+){
+  const source =
+    safeObject(
+      entry.tradePlan ||
+      entry.plan
+    );
+
+  const direction =
+    normalizeSignalDecision(
+      source.direction ||
+      entry.decision ||
+      entry.signal
+    );
+
+  if(
+    direction !== "BUY" &&
+    direction !== "SELL"
+  ){
+    return null;
+  }
+
+  const rawEntry =
+    safeNumber(
+      source.entry ??
+      entry.rawEntry ??
+      entry.entry,
+      null
+    );
+
+  const stop =
+    safeNumber(
+      source.stop ??
+      source.sl ??
+      entry.rawSl ??
+      entry.sl,
+      null
+    );
+
+  const target1 =
+    safeNumber(
+      source.target1 ??
+      source.tp1 ??
+      source.tp ??
+      entry.rawTp1 ??
+      entry.rawTp ??
+      entry.tp1 ??
+      entry.tp,
+      null
+    );
+
+  const target2 =
+    safeNumber(
+      source.target2 ??
+      source.tp2 ??
+      entry.rawTp2 ??
+      entry.tp2,
+      null
+    );
+
+  const target3 =
+    safeNumber(
+      source.target3 ??
+      source.tp3 ??
+      entry.rawTp3 ??
+      entry.tp3,
+      null
+    );
+
+  if(
+    rawEntry == null ||
+    stop == null ||
+    target1 == null
+  ){
+    return null;
+  }
+
+  const risk =
+    Math.abs(
+      rawEntry -
+      stop
+    );
+
+  const reward =
+    Math.abs(
+      target1 -
+      rawEntry
+    );
+
+  if(
+    risk <= 0 ||
+    !Number.isFinite(risk)
+  ){
+    return null;
+  }
+
+  const calculatedRR =
+    reward /
+    risk;
+
+  const rr =
+    safeNumber(
+      source.rr ??
+      entry.rr,
+      calculatedRR
+    );
+
+  return {
+    direction,
+
+    entry:
+      rawEntry,
+
+    stop,
+
+    target1,
+
+    target2:
+      target2 != null
+        ? target2
+        : (
+            direction === "BUY"
+              ? rawEntry +
+                risk *
+                3
+              : rawEntry -
+                risk *
+                3
+          ),
+
+    target3:
+      target3 != null
+        ? target3
+        : (
+            direction === "BUY"
+              ? rawEntry +
+                risk *
+                4
+              : rawEntry -
+                risk *
+                4
+          ),
+
+    risk,
+
+    rr,
+
+    atr:
+      safeNumber(
+        source.atr ??
+        entry.atr,
+        null
+      ),
+
+    stopMethod:
+      typeof source.stopMethod === "string"
+        ? source.stopMethod
+        : "Backend scalp engine",
+
+    entryFormatted:
+      safeFixed(
+        rawEntry,
+        decimals
+      ),
+
+    stopFormatted:
+      safeFixed(
+        stop,
+        decimals
+      ),
+
+    target1Formatted:
+      safeFixed(
+        target1,
+        decimals
+      ),
+
+    target2Formatted:
+      safeFixed(
+        target2 != null
+          ? target2
+          : (
+              direction === "BUY"
+                ? rawEntry +
+                  risk *
+                  3
+                : rawEntry -
+                  risk *
+                  3
+            ),
+        decimals
+      ),
+
+    target3Formatted:
+      safeFixed(
+        target3 != null
+          ? target3
+          : (
+              direction === "BUY"
+                ? rawEntry +
+                  risk *
+                  4
+                : rawEntry -
+                  risk *
+                  4
+            ),
+        decimals
+      )
+  };
+}
+
+function normalizeBackendScalpSignal(
+  rawEntry,
+  pair
+){
+  if(
+    !rawEntry ||
+    typeof rawEntry !== "object"
+  ){
+    return null;
+  }
+
+  const decision =
+    normalizeSignalDecision(
+      rawEntry.decision ||
+      rawEntry.signal
+    );
+
+  const confidenceValue =
+    safeNumber(
+      rawEntry.confidence,
+      null
+    );
+
+  const confidence =
+    confidenceValue == null
+      ? null
+      : clamp(
+          Math.round(
+            confidenceValue
+          ),
+          0,
+          100
+        );
+
+  const tradePlan =
+    decision === "HOLD"
+      ? null
+      : normalizeBackendTradePlan(
+          rawEntry,
+          pair.decimals
+        );
+
+  const finalDecision =
+    decision !== "HOLD" &&
+    tradePlan
+      ? decision
+      : "HOLD";
+
+  const rawEntryPrice =
+    tradePlan
+      ? tradePlan.entry
+      : safeNumber(
+          rawEntry.rawEntry ??
+          rawEntry.entry ??
+          rawEntry.price,
+          null
+        );
+
+  const reason =
+    typeof rawEntry.reason === "string" &&
+    rawEntry.reason.trim()
+      ? rawEntry.reason.trim()
+      : (
+          finalDecision === "HOLD"
+            ? "Backend scalp worker found no qualified setup"
+            : `${finalDecision} setup generated by backend scalp worker`
+        );
+
+  const generatedAt =
+    safeISODate(
+      rawEntry.generatedAt ||
+      rawEntry.updatedAt ||
+      rawEntry.timestamp ||
+      rawEntry.createdAt
+    );
+
+  return {
+    decision:
+      finalDecision,
+
+    signal:
+      finalDecision,
+
+    reason,
+
+    confidence,
+
+    source:
+      "backend",
+
+    generatedAt,
+
+    pipeline:
+      normalizeScalpPipeline(
+        rawEntry.pipeline
+      ),
+
+    perTF:
+      normalizeScalpPerTF(
+        rawEntry.perTF ||
+        rawEntry.timeframes
+      ),
+
+    entry:
+      rawEntryPrice != null
+        ? safeFixed(
+            rawEntryPrice,
+            pair.decimals
+          )
+        : "—",
+
+    sl:
+      tradePlan
+        ? safeFixed(
+            tradePlan.stop,
+            pair.decimals
+          )
+        : "—",
+
+    tp:
+      tradePlan
+        ? safeFixed(
+            tradePlan.target1,
+            pair.decimals
+          )
+        : "—",
+
+    tp1:
+      tradePlan
+        ? safeFixed(
+            tradePlan.target1,
+            pair.decimals
+          )
+        : "—",
+
+    tp2:
+      tradePlan
+        ? safeFixed(
+            tradePlan.target2,
+            pair.decimals
+          )
+        : "—",
+
+    tp3:
+      tradePlan
+        ? safeFixed(
+            tradePlan.target3,
+            pair.decimals
+          )
+        : "—",
+
+    rr:
+      tradePlan
+        ? tradePlan.rr
+        : safeNumber(
+            rawEntry.rr,
+            null
+          ),
+
+    rawEntry:
+      rawEntryPrice,
+
+    rawSl:
+      tradePlan
+        ? tradePlan.stop
+        : null,
+
+    rawTp:
+      tradePlan
+        ? tradePlan.target1
+        : null,
+
+    rawTp1:
+      tradePlan
+        ? tradePlan.target1
+        : null,
+
+    rawTp2:
+      tradePlan
+        ? tradePlan.target2
+        : null,
+
+    rawTp3:
+      tradePlan
+        ? tradePlan.target3
+        : null,
+
+    tradePlan,
+
+    bullWeight:
+      safeNumber(
+        rawEntry.bullWeight ??
+        rawEntry.buyWeight,
+        0
+      ),
+
+    bearWeight:
+      safeNumber(
+        rawEntry.bearWeight ??
+        rawEntry.sellWeight,
+        0
+      ),
+
+    indicators:
+      safeObject(
+        rawEntry.indicators
+      ),
+
+    workerMetadata:
+      safeObject(
+        rawEntry.metadata
+      )
+  };
+}
+
+function validateScalpSignalsPayload(payload){
+  if(
+    !payload ||
+    typeof payload !== "object"
+  ){
+    return "Scalp-signals payload must be an object";
+  }
+
+  const available =
+    PAIRS.some(
+      pair=>
+        backendScalpEntryForPair(
+          payload,
+          pair.key
+        )
+    );
+
+  if(!available){
+    return "Scalp-signals payload contains no supported pair results";
+  }
+
+  return true;
+}
+
+// ════════════════════════════════════════════════════════════════
+// BACKEND SCALP-SIGNAL FETCH
+// ════════════════════════════════════════════════════════════════
+
+async function fetchBackendScalpSignals({
+  forceRefresh = false
+} = {}){
+  try{
+    const payload =
+      await fetchJSONCached(
+        SHARED_SCALP_SIGNALS_URL,
+        {
+          ttlMs:
+            APP_CONFIG
+              .cacheTtlMs
+              .scalpSignals,
+
+          forceRefresh,
+
+          validate:
+            validateScalpSignalsPayload,
+
+          allowLastKnownGood:
+            true
+        }
+      );
+
+    const normalizedPayload = {
+      ...payload,
+
+      updatedAt:
+        workerUpdatedAt(
+          payload
+        ),
+
+      stale:
+        safeObject(
+          payload.stale ||
+          (
+            payload.metadata &&
+            payload.metadata.stale
+          )
+        )
+    };
+
+    for(const pair of PAIRS){
+      const rawEntry =
+        backendScalpEntryForPair(
+          payload,
+          pair.key
+        );
+
+      normalizedPayload[pair.key] =
+        normalizeBackendScalpSignal(
+          rawEntry,
+          pair
+        );
+    }
+
+    SCALP_SIGNALS_DATA =
+      normalizedPayload;
+
+    SCALP_SIGNAL_STATUS = {
+      active:
+        true,
+
+      updatedAt:
+        workerUpdatedAt(
+          normalizedPayload
+        ),
+
+      note:
+        null
+    };
+
+    return SCALP_SIGNALS_DATA;
+  }catch(error){
+    SCALP_SIGNAL_STATUS = {
+      active:
+        false,
+
+      updatedAt:
+        null,
+
+      note:
+        "Backend scalp analysis unavailable — browser fallback active: " +
+        normalizeErrorMessage(
+          error
+        )
+    };
+
+    return SCALP_SIGNALS_DATA;
+  }
+}
+
+function backendScalpSignalForPair(
+  pairKey
+){
+  if(
+    !SCALP_SIGNALS_DATA ||
+    typeof SCALP_SIGNALS_DATA !== "object"
+  ){
+    return null;
+  }
+
+  const value =
+    SCALP_SIGNALS_DATA[
+      pairKey
+    ];
+
+  return (
+    value &&
+    typeof value === "object"
+      ? value
+      : null
+  );
+}
+
+// ════════════════════════════════════════════════════════════════
+// SIGNAL FRESHNESS CHECK
+// ════════════════════════════════════════════════════════════════
+
+function isScalpSignalFresh(
+  signal,
+  payload,
+  maximumAgeMinutes =
+    APP_CONFIG
+      .freshnessMinutes
+      .scalpSignals
+){
+  const signalTimestamp =
+    safeDateMs(
+      signal &&
+      signal.generatedAt
+    );
+
+  const payloadTimestamp =
+    safeDateMs(
+      workerUpdatedAt(
+        payload
+      )
+    );
+
+  const timestamp =
+    signalTimestamp ??
+    payloadTimestamp;
+
+  if(timestamp == null){
+    return false;
+  }
+
+  return (
+    Date.now() -
+    timestamp <=
+    maximumAgeMinutes *
+    60_000
+  );
+}
+
+// ════════════════════════════════════════════════════════════════
+// BACKEND / BROWSER FALLBACK SELECTION
+// ════════════════════════════════════════════════════════════════
+
+async function getScalpSignalForPair(
+  pair,
+  {
+    forceRefresh = false,
+    allowBrowserFallback = true
+  } = {}
+){
+  if(
+    !pair ||
+    typeof pair !== "object"
+  ){
+    throw new Error(
+      "A valid pair is required for scalp analysis"
+    );
+  }
+
+  if(
+    !SCALP_SIGNALS_DATA ||
+    forceRefresh
+  ){
+    await fetchBackendScalpSignals({
+      forceRefresh
+    });
+  }
+
+  const backendSignal =
+    backendScalpSignalForPair(
+      pair.key
+    );
+
+  if(
+    backendSignal &&
+    isScalpSignalFresh(
+      backendSignal,
+      SCALP_SIGNALS_DATA
+    )
+  ){
+    return {
+      ...deepClone(
+        backendSignal
+      ),
+
+      source:
+        "backend",
+
+      sourceLabel:
+        "24/7 backend scalp worker"
+    };
+  }
+
+  if(!allowBrowserFallback){
+    return {
+      decision:"HOLD",
+      signal:"HOLD",
+
+      reason:
+        backendSignal
+          ? "Backend scalp signal is stale"
+          : "Backend scalp signal is unavailable",
+
+      confidence:null,
+
+      source:
+        "none",
+
+      sourceLabel:
+        "No active scalp engine",
+
+      generatedAt:
+        null,
+
+      pipeline:[
+        {
+          name:"Scalp Signal Source",
+          status:"fail",
+          detail:
+            backendSignal
+              ? "Backend result is stale and browser fallback is disabled"
+              : "Backend result is unavailable and browser fallback is disabled"
+        }
+      ],
+
+      perTF:
+        normalizeScalpPerTF(
+          []
+        ),
+
+      entry:"—",
+      sl:"—",
+      tp:"—",
+      tp1:"—",
+      tp2:"—",
+      tp3:"—",
+      rr:null,
+
+      rawEntry:null,
+      rawSl:null,
+      rawTp:null,
+      rawTp1:null,
+      rawTp2:null,
+      rawTp3:null,
+
+      tradePlan:null,
+
+      bullWeight:0,
+      bearWeight:0,
+
+      indicators:{}
+    };
+  }
+
+  if(
+    !SCALP_DATA ||
+    forceRefresh
+  ){
+    await fetchScalpCandles({
+      forceRefresh
+    });
+  }
+
+  const rawCandles =
+    scalpCandlesForPair(
+      pair.key
+    );
+
+  if(!rawCandles.length){
+    return {
+      decision:"HOLD",
+      signal:"HOLD",
+
+      reason:
+        "No valid M5 scalp candles are available",
+
+      confidence:null,
+
+      source:
+        "browser-fallback",
+
+      sourceLabel:
+        "Browser fallback engine",
+
+      generatedAt:
+        new Date().toISOString(),
+
+      pipeline:[
+        {
+          name:"Scalp Candle Feed",
+          status:"fail",
+          detail:"No valid M5 candles were returned by the worker"
+        }
+      ],
+
+      perTF:
+        normalizeScalpPerTF(
+          []
+        ),
+
+      entry:"—",
+      sl:"—",
+      tp:"—",
+      tp1:"—",
+      tp2:"—",
+      tp3:"—",
+      rr:null,
+
+      rawEntry:null,
+      rawSl:null,
+      rawTp:null,
+      rawTp1:null,
+      rawTp2:null,
+      rawTp3:null,
+
+      tradePlan:null,
+
+      bullWeight:0,
+      bearWeight:0,
+
+      indicators:{}
+    };
+  }
+
+  let fallbackSignal =
+    computeProfessionalScalpSignal(
+      rawCandles,
+      pair
+    );
+
+  fallbackSignal =
+    applyScalpLearnerGate(
+      fallbackSignal,
+      pair.key
+    );
+
+  return {
+    ...fallbackSignal,
+
+    source:
+      "browser-fallback",
+
+    sourceLabel:
+      backendSignal
+        ? "Browser fallback · backend result stale"
+        : "Browser fallback · backend unavailable",
+
+    generatedAt:
+      new Date().toISOString()
+  };
+}
+
+// ════════════════════════════════════════════════════════════════
+// SCALP SIGNAL IDENTITY
+// ════════════════════════════════════════════════════════════════
+
+function scalpSignalIdentity(
+  pairKey,
+  signal
+){
+  if(
+    !signal ||
+    typeof signal !== "object"
+  ){
+    return null;
+  }
+
+  const decision =
+    normalizeSignalDecision(
+      signal.decision ||
+      signal.signal
+    );
+
+  if(
+    decision !== "BUY" &&
+    decision !== "SELL"
+  ){
+    return null;
+  }
+
+  const entry =
+    safeNumber(
+      signal.rawEntry ??
+      signal.entry,
+      null
+    );
+
+  const stop =
+    safeNumber(
+      signal.rawSl ??
+      (
+        signal.tradePlan &&
+        signal.tradePlan.stop
+      ),
+      null
+    );
+
+  const target =
+    safeNumber(
+      signal.rawTp1 ??
+      signal.rawTp ??
+      (
+        signal.tradePlan &&
+        signal.tradePlan.target1
+      ),
+      null
+    );
+
+  if(
+    entry == null ||
+    stop == null ||
+    target == null
+  ){
+    return null;
+  }
+
+  const entryToken =
+    entry.toFixed(6);
+
+  const stopToken =
+    stop.toFixed(6);
+
+  const targetToken =
+    target.toFixed(6);
+
+  return [
+    pairKey,
+    decision,
+    entryToken,
+    stopToken,
+    targetToken
+  ].join("|");
+}
+
+function signalPricesAreSimilar(
+  previousSignal,
+  nextSignal
+){
+  const previousEntry =
+    safeNumber(
+      previousSignal &&
+      previousSignal.entry,
+      null
+    );
+
+  const nextEntry =
+    safeNumber(
+      nextSignal &&
+      (
+        nextSignal.rawEntry ??
+        nextSignal.entry
+      ),
+      null
+    );
+
+  if(
+    previousEntry == null ||
+    nextEntry == null ||
+    nextEntry <= 0
+  ){
+    return false;
+  }
+
+  return (
+    Math.abs(
+      previousEntry -
+      nextEntry
+    ) /
+    nextEntry <=
+    SCALP_DUPLICATE_PRICE_TOLERANCE_RATIO
+  );
+}
+
+function isDuplicateScalpSignal(
+  pairKey,
+  signal
+){
+  const decision =
+    normalizeSignalDecision(
+      signal &&
+      (
+        signal.decision ||
+        signal.signal
+      )
+    );
+
+  if(
+    decision !== "BUY" &&
+    decision !== "SELL"
+  ){
+    return false;
+  }
+
+  const lastSignals =
+    loadLastScalpSignals();
+
+  const previous =
+    lastSignals[
+      pairKey
+    ];
+
+  if(
+    !previous ||
+    typeof previous !== "object"
+  ){
+    return false;
+  }
+
+  if(
+    previous.decision !==
+    decision
+  ){
+    return false;
+  }
+
+  const previousTimestamp =
+    safeDateMs(
+      previous.createdAt
+    );
+
+  if(previousTimestamp == null){
+    return false;
+  }
+
+  const withinCooldown =
+    Date.now() -
+    previousTimestamp <
+    SCALP_SIGNAL_COOLDOWN_MS;
+
+  if(!withinCooldown){
+    return false;
+  }
+
+  const currentIdentity =
+    scalpSignalIdentity(
+      pairKey,
+      signal
+    );
+
+  if(
+    currentIdentity &&
+    previous.identity ===
+    currentIdentity
+  ){
+    return true;
+  }
+
+  return signalPricesAreSimilar(
+    previous,
+    signal
+  );
+}
+
+function rememberScalpSignal(
+  pairKey,
+  signal
+){
+  const lastSignals =
+    loadLastScalpSignals();
+
+  lastSignals[pairKey] = {
+    identity:
+      scalpSignalIdentity(
+        pairKey,
+        signal
+      ),
+
+    decision:
+      normalizeSignalDecision(
+        signal.decision ||
+        signal.signal
+      ),
+
+    entry:
+      safeNumber(
+        signal.rawEntry ??
+        signal.entry,
+        null
+      ),
+
+    createdAt:
+      new Date().toISOString()
+  };
+
+  saveLastScalpSignals(
+    lastSignals
+  );
+}
+
+// ════════════════════════════════════════════════════════════════
+// OPEN SCALP TRADE CREATION
+// ════════════════════════════════════════════════════════════════
+
+function buildOpenScalpTrade(
+  pair,
+  signal
+){
+  const decision =
+    normalizeSignalDecision(
+      signal.decision ||
+      signal.signal
+    );
+
+  const entry =
+    safeNumber(
+      signal.rawEntry ??
+      (
+        signal.tradePlan &&
+        signal.tradePlan.entry
+      ),
+      null
+    );
+
+  const stop =
+    safeNumber(
+      signal.rawSl ??
+      (
+        signal.tradePlan &&
+        signal.tradePlan.stop
+      ),
+      null
+    );
+
+  const target1 =
+    safeNumber(
+      signal.rawTp1 ??
+      signal.rawTp ??
+      (
+        signal.tradePlan &&
+        signal.tradePlan.target1
+      ),
+      null
+    );
+
+  const target2 =
+    safeNumber(
+      signal.rawTp2 ??
+      (
+        signal.tradePlan &&
+        signal.tradePlan.target2
+      ),
+      null
+    );
+
+  const target3 =
+    safeNumber(
+      signal.rawTp3 ??
+      (
+        signal.tradePlan &&
+        signal.tradePlan.target3
+      ),
+      null
+    );
+
+  if(
+    (
+      decision !== "BUY" &&
+      decision !== "SELL"
+    ) ||
+    entry == null ||
+    stop == null ||
+    target1 == null
+  ){
+    return null;
+  }
+
+  const risk =
+    Math.abs(
+      entry -
+      stop
+    );
+
+  if(
+    risk <= 0 ||
+    !Number.isFinite(risk)
+  ){
+    return null;
+  }
+
+  const rr =
+    safeNumber(
+      signal.rr,
+      Math.abs(
+        target1 -
+        entry
+      ) /
+      risk
+    );
+
+  return {
+    id:
+      [
+        pair.key,
+        decision,
+        Date.now()
+      ].join("-"),
+
+    pairKey:
+      pair.key,
+
+    pairLabel:
+      pair.label,
+
+    decimals:
+      pair.decimals,
+
+    decision,
+
+    entry,
+
+    stop,
+
+    target1,
+
+    target2,
+
+    target3,
+
+    risk,
+
+    rr,
+
+    confidence:
+      safeNumber(
+        signal.confidence,
+        null
+      ),
+
+    source:
+      typeof signal.source === "string"
+        ? signal.source
+        : "unknown",
+
+    sourceLabel:
+      typeof signal.sourceLabel === "string"
+        ? signal.sourceLabel
+        : "",
+
+    signalGeneratedAt:
+      safeISODate(
+        signal.generatedAt
+      ),
+
+    openedAt:
+      new Date().toISOString(),
+
+    status:
+      "OPEN",
+
+    result:
+      null,
+
+    closePrice:
+      null,
+
+    closedAt:
+      null
+  };
+}
+
+function registerScalpSignal(
+  pair,
+  signal
+){
+  const decision =
+    normalizeSignalDecision(
+      signal &&
+      (
+        signal.decision ||
+        signal.signal
+      )
+    );
+
+  if(
+    decision !== "BUY" &&
+    decision !== "SELL"
+  ){
+    return {
+      registered:false,
+      reason:"HOLD signals are not tracked",
+      trade:null
+    };
+  }
+
+  const openTrades =
+    loadScalpOpen();
+
+  const existingOpen =
+    openTrades[
+      pair.key
+    ];
+
+  if(
+    existingOpen &&
+    existingOpen.status === "OPEN"
+  ){
+    return {
+      registered:false,
+      reason:
+        `${pair.label} already has an open ${existingOpen.decision} scalp signal`,
+      trade:
+        existingOpen
+    };
+  }
+
+  if(
+    isDuplicateScalpSignal(
+      pair.key,
+      signal
+    )
+  ){
+    return {
+      registered:false,
+      reason:
+        "Duplicate signal suppressed during cooldown window",
+      trade:null
+    };
+  }
+
+  const trade =
+    buildOpenScalpTrade(
+      pair,
+      signal
+    );
+
+  if(!trade){
+    return {
+      registered:false,
+      reason:
+        "Signal has no valid entry, stop or TP1",
+      trade:null
+    };
+  }
+
+  openTrades[
+    pair.key
+  ] =
+    trade;
+
+  saveScalpOpen(
+    openTrades
+  );
+
+  rememberScalpSignal(
+    pair.key,
+    signal
+  );
+
+  return {
+    registered:true,
+    reason:null,
+    trade
+  };
+}
+
+// ════════════════════════════════════════════════════════════════
+// SCALP TRADE OUTCOME CHECK
+// ════════════════════════════════════════════════════════════════
+
+function resolveScalpTradeAgainstCandle(
+  trade,
+  candle
+){
+  if(
+    !trade ||
+    !candle
+  ){
+    return null;
+  }
+
+  const direction =
+    trade.decision;
+
+  const stop =
+    safeNumber(
+      trade.stop,
+      null
+    );
+
+  const target1 =
+    safeNumber(
+      trade.target1,
+      null
+    );
+
+  const high =
+    safeNumber(
+      candle.high,
+      null
+    );
+
+  const low =
+    safeNumber(
+      candle.low,
+      null
+    );
+
+  if(
+    stop == null ||
+    target1 == null ||
+    high == null ||
+    low == null
+  ){
+    return null;
+  }
+
+  if(direction === "BUY"){
+    const stopHit =
+      low <=
+      stop;
+
+    const targetHit =
+      high >=
+      target1;
+
+    if(
+      stopHit &&
+      targetHit
+    ){
+      return {
+        result:"LOSS",
+        closePrice:stop,
+        reason:
+          "SL and TP1 were both crossed within one candle; conservative SL-first resolution applied"
+      };
+    }
+
+    if(stopHit){
+      return {
+        result:"LOSS",
+        closePrice:stop,
+        reason:
+          "Candle low crossed stop loss"
+      };
+    }
+
+    if(targetHit){
+      return {
+        result:"WIN",
+        closePrice:target1,
+        reason:
+          "Candle high crossed TP1"
+      };
+    }
+  }
+
+  if(direction === "SELL"){
+    const stopHit =
+      high >=
+      stop;
+
+    const targetHit =
+      low <=
+      target1;
+
+    if(
+      stopHit &&
+      targetHit
+    ){
+      return {
+        result:"LOSS",
+        closePrice:stop,
+        reason:
+          "SL and TP1 were both crossed within one candle; conservative SL-first resolution applied"
+      };
+    }
+
+    if(stopHit){
+      return {
+        result:"LOSS",
+        closePrice:stop,
+        reason:
+          "Candle high crossed stop loss"
+      };
+    }
+
+    if(targetHit){
+      return {
+        result:"WIN",
+        closePrice:target1,
+        reason:
+          "Candle low crossed TP1"
+      };
+    }
+  }
+
+  return null;
+}
+
+// ════════════════════════════════════════════════════════════════
+// LEARNER OUTCOME RECORDING
+// ════════════════════════════════════════════════════════════════
+
+function recordScalpOutcomeInLearner(
+  closedTrade
+){
+  if(
+    !pipLearner ||
+    !closedTrade
+  ){
+    return;
+  }
+
+  try{
+    if(
+      typeof pipLearner.recordOutcome === "function"
+    ){
+      pipLearner.recordOutcome({
+        strategy:"scalp",
+
+        pair:
+          closedTrade.pairKey,
+
+        signal:
+          closedTrade.decision,
+
+        result:
+          closedTrade.result,
+
+        confidence:
+          closedTrade.confidence,
+
+        entry:
+          closedTrade.entry,
+
+        stop:
+          closedTrade.stop,
+
+        target:
+          closedTrade.target1,
+
+        openedAt:
+          closedTrade.openedAt,
+
+        closedAt:
+          closedTrade.closedAt
+      });
+
+      persistLearner();
+      return;
+    }
+
+    if(
+      typeof pipLearner.addResult === "function"
+    ){
+      pipLearner.addResult(
+        "scalp",
+        closedTrade.pairKey,
+        closedTrade.result === "WIN",
+        closedTrade.confidence
+      );
+
+      persistLearner();
+    }
+  }catch(error){
+    console.warn(
+      "Could not record scalp result in learner:",
+      normalizeErrorMessage(error)
+    );
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// SCALP TRACKER UPDATE
+// ════════════════════════════════════════════════════════════════
+
+function updateScalpTracker(
+  pair,
+  rawCandles,
+  signal = null
+){
+  const candles =
+    closedCandlesOnly(
+      rawCandles,
+      5
+    );
+
+  const openTrades =
+    loadScalpOpen();
+
+  const history =
+    loadScalpHistory();
+
+  const openTrade =
+    openTrades[
+      pair.key
+    ];
+
+  let resolvedTrade =
+    null;
+
+  if(
+    openTrade &&
+    openTrade.status === "OPEN"
+  ){
+    const openedAtMs =
+      safeDateMs(
+        openTrade.openedAt
+      );
+
+    const candidateCandles =
+      candles.filter(
+        candle=>{
+          const candleMs =
+            candleTimeMs(
+              candle
+            );
+
+          return (
+            candleMs != null &&
+            (
+              openedAtMs == null ||
+              candleMs >=
+              openedAtMs
+            )
+          );
+        }
+      );
+
+    for(const candle of candidateCandles){
+      const outcome =
+        resolveScalpTradeAgainstCandle(
+          openTrade,
+          candle
+        );
+
+      if(!outcome){
+        continue;
+      }
+
+      resolvedTrade = {
+        ...openTrade,
+
+        status:
+          outcome.result,
+
+        result:
+          outcome.result,
+
+        closePrice:
+          outcome.closePrice,
+
+        closedAt:
+          candle.time,
+
+        resolutionReason:
+          outcome.reason
+      };
+
+      history.push(
+        resolvedTrade
+      );
+
+      delete openTrades[
+        pair.key
+      ];
+
+      saveScalpHistory(
+        history
+      );
+
+      saveScalpOpen(
+        openTrades
+      );
+
+      recordScalpOutcomeInLearner(
+        resolvedTrade
+      );
+
+      break;
+    }
+  }
+
+  let registration = {
+    registered:false,
+    reason:null,
+    trade:null
+  };
+
+  const refreshedOpenTrades =
+    loadScalpOpen();
+
+  if(
+    signal &&
+    !refreshedOpenTrades[
+      pair.key
+    ]
+  ){
+    registration =
+      registerScalpSignal(
+        pair,
+        signal
+      );
+  }
+
+  return {
+    resolvedTrade,
+
+    registration,
+
+    openTrade:
+      loadScalpOpen()[
+        pair.key
+      ] ||
+      null,
+
+    history:
+      loadScalpHistory()
+  };
+}
+
+// ════════════════════════════════════════════════════════════════
+// SCALP TRACKER SUMMARY
+// ════════════════════════════════════════════════════════════════
+
+function scalpTrackerStats(
+  pairKey = null
+){
+  const history =
+    loadScalpHistory()
+      .filter(
+        entry=>
+          !pairKey ||
+          entry.pairKey ===
+            pairKey
+      );
+
+  const wins =
+    history.filter(
+      entry=>
+        entry.result === "WIN"
+    ).length;
+
+  const losses =
+    history.filter(
+      entry=>
+        entry.result === "LOSS"
+    ).length;
+
+  const resolved =
+    wins +
+    losses;
+
+  const winRate =
+    resolved > 0
+      ? wins /
+        resolved *
+        100
+      : null;
+
+  const averageRR =
+    history.length
+      ? history.reduce(
+          (sum, entry)=>
+            sum +
+            safeNumber(
+              entry.rr,
+              0
+            ),
+          0
+        ) /
+        history.length
+      : null;
+
+  return {
+    total:
+      history.length,
+
+    resolved,
+
+    wins,
+
+    losses,
+
+    winRate,
+
+    averageRR
+  };
+}
+
+// ════════════════════════════════════════════════════════════════
+// CURRENT SCALP PRICE
+// ════════════════════════════════════════════════════════════════
+
+function latestScalpPrice(
+  pairKey
+){
+  const candles =
+    scalpCandlesForPair(
+      pairKey
+    );
+
+  if(!candles.length){
+    return null;
+  }
+
+  return safeNumber(
+    candles[
+      candles.length -
+      1
+    ].close,
+    null
+  );
+}
+
+// ════════════════════════════════════════════════════════════════
+// PREPARE COMPLETE SCALP VIEW MODEL
+// ════════════════════════════════════════════════════════════════
+
+async function buildScalpViewModel(
+  pair,
+  {
+    forceRefresh = false
+  } = {}
+){
+  if(
+    !SCALP_DATA ||
+    forceRefresh
+  ){
+    await fetchScalpCandles({
+      forceRefresh
+    });
+  }
+
+  const candles =
+    scalpCandlesForPair(
+      pair.key
+    );
+
+  const signal =
+    await getScalpSignalForPair(
+      pair,
+      {
+        forceRefresh,
+        allowBrowserFallback:true
+      }
+    );
+
+  const tracker =
+    updateScalpTracker(
+      pair,
+      candles,
+      signal
+    );
+
+  const stats =
+    scalpTrackerStats(
+      pair.key
+    );
+
+  const latestPrice =
+    latestScalpPrice(
+      pair.key
+    );
+
+  return {
+    pair,
+
+    candles,
+
+    signal,
+
+    tracker,
+
+    stats,
+
+    latestPrice,
+
+    candleUpdatedAt:
+      workerUpdatedAt(
+        SCALP_DATA
+      ),
+
+    signalUpdatedAt:
+      signal.generatedAt ||
+      workerUpdatedAt(
+        SCALP_SIGNALS_DATA
+      ),
+
+    candleStale:
+      workerStaleFlagForPair(
+        SCALP_DATA,
+        pair.key
+      ),
+
+    signalStale:
+      signal.source === "backend"
+        ? !isScalpSignalFresh(
+            signal,
+            SCALP_SIGNALS_DATA
+          )
+        : false
+  };
+}
+
+
 
   
 

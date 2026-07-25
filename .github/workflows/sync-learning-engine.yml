@@ -2,47 +2,113 @@ name: Sync Learning Engine State
 
 on:
   schedule:
-    - cron: '0 * * * *'   # every 1 hour
-  workflow_dispatch:
+    - cron: "0 * * * *" # Every hour
+
+  workflow_dispatch: {}
 
 permissions:
   contents: write
 
 concurrency:
-  group: pipsight-robots
+  group: pipsight-learning-state-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   sync-learning:
+    name: Validate and sync learning state
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        shell: bash
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
 
-      - name: Setup Node.js
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: "18"
 
-      - name: Fetch and Save Learning State
+      - name: Check for learning export
+        id: learning-export
+        run: |
+          set -euo pipefail
+
+          export_file="learning-export.json"
+
+          if [[ -f "$export_file" ]]; then
+            echo "Learning export found."
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No learning export found yet."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate learning export
+        if: steps.learning-export.outputs.available == 'true'
+        run: |
+          set -euo pipefail
+
+          test -s learning-export.json
+
+          node - <<'NODE'
+          const fs = require("fs");
+
+          const file = "learning-export.json";
+          const parsed = JSON.parse(
+            fs.readFileSync(file, "utf8")
+          );
+
+          if (
+            parsed === null ||
+            (
+              typeof parsed !== "object" &&
+              !Array.isArray(parsed)
+            )
+          ) {
+            throw new Error(
+              "learning-export.json must contain a JSON object or array"
+            );
+          }
+
+          console.log("Validated:", file);
+          NODE
+
+      - name: Verify learning state script
+        if: steps.learning-export.outputs.available == 'true'
+        run: |
+          set -euo pipefail
+
+          test -f save-learning-state.js
+
+          node --check save-learning-state.js
+
+      - name: Fetch and save learning state
+        if: steps.learning-export.outputs.available == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Checking for learning data exports..."
+          set -euo pipefail
 
-          if [ -f "learning-export.json" ]; then
-            echo "Found learning export, saving to GitHub..."
-            node save-learning-state.js
-          else
-            echo "No learning export found yet"
-          fi
+          node save-learning-state.js
+
+      - name: Report missing learning export
+        if: steps.learning-export.outputs.available == 'false'
+        run: |
+          echo "Learning sync skipped because learning-export.json is not available."
 
       - name: Log execution
         if: always()
         run: |
-          echo "✅ Learning engine sync completed at $(date)"
+          echo "PipSight learning-state sync workflow finished."
+          echo "Status: ${{ job.status }}"
           echo "Repository: ${{ github.repository }}"
-          echo "Workflow completed successfully"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "Completed at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"

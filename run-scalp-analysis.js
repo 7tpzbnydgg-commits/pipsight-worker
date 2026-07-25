@@ -3230,6 +3230,14 @@ function createSignalLogEntry(
 
 function run() {
 
+  const previousSnapshot =
+    readJsonFile(
+      SIGNALS_OUT_PATH,
+      {
+        signals: []
+      }
+    );
+
   const news =
     readNewsFeed();
 

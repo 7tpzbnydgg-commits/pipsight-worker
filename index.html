@@ -12636,9 +12636,1423 @@ async function buildScalpViewModel(
   };
 }
 
+// ════════════════════════════════════════════════════════════════
+// PIPSIGHT PRO AI
+// INDEX.HTML — PART 4B OF 5
+//
+// This section provides:
+//
+// - scalp signal-card rendering
+// - multi-timeframe status rendering
+// - confidence and weight display
+// - trade-plan rendering
+// - scalp pipeline rendering
+// - open-trade and resolved-history rendering
+// - scalp panel refresh
+// - retry and manual-refresh handling
+// - safe UI output
+//
+// Part 4C continues directly below this code.
+// ════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════
+// UI CLASS HELPERS
+// ════════════════════════════════════════════════════════════════
+
+function signalBadgeClass(signal){
+  const normalized =
+    normalizeSignalDecision(
+      signal
+    );
+
+  if(normalized === "BUY"){
+    return "badge-buy";
+  }
+
+  if(normalized === "SELL"){
+    return "badge-sell";
+  }
+
+  return "badge-hold";
+}
+
+function signalTextColor(signal){
+  const normalized =
+    normalizeSignalDecision(
+      signal
+    );
+
+  if(normalized === "BUY"){
+    return "var(--buy)";
+  }
+
+  if(normalized === "SELL"){
+    return "var(--sell)";
+  }
+
+  return "var(--hold)";
+}
+
+function pipelineIcon(status){
+  const normalized =
+    normalizePipelineStatus(
+      status
+    );
+
+  if(normalized === "pass"){
+    return "✓";
+  }
+
+  if(normalized === "fail"){
+    return "×";
+  }
+
+  if(normalized === "skip"){
+    return "–";
+  }
+
+  if(normalized === "na"){
+    return "·";
+  }
+
+  return "i";
+}
+
+function resultStatusClass(result){
+  if(result === "WIN"){
+    return "log-win";
+  }
+
+  if(result === "LOSS"){
+    return "log-loss";
+  }
+
+  return "log-open";
+}
+
+// ════════════════════════════════════════════════════════════════
+// SIGNAL SOURCE DISPLAY
+// ════════════════════════════════════════════════════════════════
+
+function scalpSourceDisplay(signal){
+  if(
+    !signal ||
+    typeof signal !== "object"
+  ){
+    return {
+      dotClass:"robot-off",
+      label:"No scalp engine result",
+      detail:"No signal source is currently available"
+    };
+  }
+
+  if(signal.source === "backend"){
+    return {
+      dotClass:"robot-on",
+      label:"24/7 backend engine",
+      detail:
+        signal.sourceLabel ||
+        "Signal calculated by the scheduled backend worker"
+    };
+  }
+
+  if(signal.source === "browser-fallback"){
+    return {
+      dotClass:"robot-warn",
+      label:"Browser fallback engine",
+      detail:
+        signal.sourceLabel ||
+        "Backend result unavailable; local browser analysis was used"
+    };
+  }
+
+  return {
+    dotClass:"robot-off",
+    label:"No active engine",
+    detail:
+      signal.sourceLabel ||
+      "No qualified scalp signal source"
+  };
+}
+
+// ════════════════════════════════════════════════════════════════
+// SCALP TIMEFRAME CARDS
+// ════════════════════════════════════════════════════════════════
+
+function renderScalpTimeframes(perTF){
+  const timeframes =
+    normalizeScalpPerTF(
+      perTF
+    );
+
+  return `
+    <div class="tf-grid">
+      ${timeframes.map(item=>{
+        const signal =
+          normalizeSignalDecision(
+            item.signal
+          );
+
+        return `
+          <div class="tf-card">
+            <div class="metric-label">
+              ${escapeHTML(item.tf.toUpperCase())}
+            </div>
+
+            <div
+              class="metric-value"
+              style="color:${signalTextColor(signal)};"
+            >
+              ${escapeHTML(signal)}
+            </div>
+
+            <div
+              class="scope-note"
+              style="margin-top:4px;"
+            >
+              ${escapeHTML(item.role || "Timeframe")}
+            </div>
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+// ════════════════════════════════════════════════════════════════
+// SCALP CONFIDENCE DISPLAY
+// ════════════════════════════════════════════════════════════════
+
+function renderScalpConfidence(signal){
+  const confidence =
+    safeNumber(
+      signal &&
+      signal.confidence,
+      null
+    );
+
+  const buyWeight =
+    safeNumber(
+      signal &&
+      signal.bullWeight,
+      0
+    );
+
+  const sellWeight =
+    safeNumber(
+      signal &&
+      signal.bearWeight,
+      0
+    );
+
+  const confidenceLabel =
+    confidence == null
+      ? "—"
+      : `${Math.round(confidence)}%`;
+
+  return `
+    <div class="metric-grid">
+      <div class="metric">
+        <div class="metric-label">
+          Confidence
+        </div>
+
+        <div class="metric-value">
+          ${escapeHTML(confidenceLabel)}
+        </div>
+      </div>
+
+      <div class="metric">
+        <div class="metric-label">
+          Buy Weight
+        </div>
+
+        <div
+          class="metric-value"
+          style="color:var(--buy);"
+        >
+          ${safeFixed(buyWeight,0)}
+        </div>
+      </div>
+
+      <div class="metric">
+        <div class="metric-label">
+          Sell Weight
+        </div>
+
+        <div
+          class="metric-value"
+          style="color:var(--sell);"
+        >
+          ${safeFixed(sellWeight,0)}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ════════════════════════════════════════════════════════════════
+// TRADE PLAN RENDERING
+// ════════════════════════════════════════════════════════════════
+
+function renderScalpTradePlan(
+  signal,
+  pair
+){
+  const tradePlan =
+    signal &&
+    signal.tradePlan
+      ? signal.tradePlan
+      : null;
+
+  if(!tradePlan){
+    return `
+      <div class="empty-note">
+        No active trade plan.<br />
+        Entry, stop and targets are shown only when all scalp gates pass.
+      </div>
+    `;
+  }
+
+  const decimals =
+    decimalsFor(
+      pair
+    );
+
+  const rr =
+    safeNumber(
+      tradePlan.rr,
+      safeNumber(
+        signal.rr,
+        null
+      )
+    );
+
+  return `
+    <div class="plan-grid">
+      <div class="plan-cell">
+        <div class="k">
+          Direction
+        </div>
+
+        <div
+          class="v"
+          style="color:${signalTextColor(tradePlan.direction)};"
+        >
+          ${escapeHTML(
+            normalizeSignalDecision(
+              tradePlan.direction
+            )
+          )}
+        </div>
+      </div>
+
+      <div class="plan-cell">
+        <div class="k">
+          Entry
+        </div>
+
+        <div class="v mono">
+          ${safeFixed(
+            tradePlan.entry,
+            decimals
+          )}
+        </div>
+      </div>
+
+      <div class="plan-cell">
+        <div class="k">
+          Stop Loss
+        </div>
+
+        <div
+          class="v mono"
+          style="color:var(--sell);"
+        >
+          ${safeFixed(
+            tradePlan.stop,
+            decimals
+          )}
+        </div>
+      </div>
+
+      <div class="plan-cell">
+        <div class="k">
+          TP1
+        </div>
+
+        <div
+          class="v mono"
+          style="color:var(--buy);"
+        >
+          ${safeFixed(
+            tradePlan.target1,
+            decimals
+          )}
+        </div>
+      </div>
+
+      <div class="plan-cell">
+        <div class="k">
+          TP2
+        </div>
+
+        <div
+          class="v mono"
+          style="color:var(--buy);"
+        >
+          ${safeFixed(
+            tradePlan.target2,
+            decimals
+          )}
+        </div>
+      </div>
+
+      <div class="plan-cell">
+        <div class="k">
+          TP3
+        </div>
+
+        <div
+          class="v mono"
+          style="color:var(--buy);"
+        >
+          ${safeFixed(
+            tradePlan.target3,
+            decimals
+          )}
+        </div>
+      </div>
+
+      <div class="plan-cell">
+        <div class="k">
+          Risk:Reward
+        </div>
+
+        <div class="v mono">
+          ${
+            rr == null
+              ? "—"
+              : `1:${safeFixed(rr,2)}`
+          }
+        </div>
+      </div>
+
+      <div class="plan-cell">
+        <div class="k">
+          Stop Method
+        </div>
+
+        <div
+          class="v"
+          style="font-size:12px;line-height:1.5;"
+        >
+          ${escapeHTML(
+            tradePlan.stopMethod ||
+            "ATR + market structure"
+          )}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ════════════════════════════════════════════════════════════════
+// PIPELINE RENDERING
+// ════════════════════════════════════════════════════════════════
+
+function renderScalpPipeline(pipeline){
+  const steps =
+    normalizeScalpPipeline(
+      pipeline
+    );
+
+  if(!steps.length){
+    return `
+      <div class="empty-note">
+        No detailed backend pipeline was supplied for this result.
+      </div>
+    `;
+  }
+
+  return steps.map(step=>{
+    const status =
+      normalizePipelineStatus(
+        step.status
+      );
+
+    return `
+      <div class="pipe-step">
+        <div class="pipe-dot ${escapeAttribute(status)}">
+          ${escapeHTML(
+            pipelineIcon(status)
+          )}
+        </div>
+
+        <div class="pipe-name">
+          ${escapeHTML(step.name)}
+        </div>
+
+        <div class="pipe-detail">
+          ${escapeHTML(
+            step.detail ||
+            "No detail supplied"
+          )}
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+// ════════════════════════════════════════════════════════════════
+// OPEN TRADE RENDERING
+// ════════════════════════════════════════════════════════════════
+
+function renderOpenScalpTrade(
+  trade,
+  pair
+){
+  if(
+    !trade ||
+    trade.status !== "OPEN"
+  ){
+    return `
+      <div class="empty-note">
+        No open tracked scalp trade for ${escapeHTML(pair.label)}.
+      </div>
+    `;
+  }
+
+  const decimals =
+    decimalsFor(
+      pair
+    );
+
+  return `
+    <div class="signal-summary">
+      <div
+        style="
+          display:flex;
+          justify-content:space-between;
+          align-items:flex-start;
+          gap:12px;
+          margin-bottom:10px;
+        "
+      >
+        <div>
+          <div class="label">
+            Open Tracked Signal
+          </div>
+
+          <span
+            class="badge ${signalBadgeClass(trade.decision)}"
+          >
+            ${escapeHTML(trade.decision)}
+          </span>
+        </div>
+
+        <div
+          class="mono"
+          style="
+            color:var(--muted);
+            font-size:10px;
+            text-align:right;
+          "
+        >
+          Opened ${escapeHTML(
+            getTimeAgo(
+              trade.openedAt
+            )
+          )}
+        </div>
+      </div>
+
+      <div class="metric-grid">
+        <div class="metric">
+          <div class="metric-label">
+            Entry
+          </div>
+
+          <div class="metric-value">
+            ${safeFixed(
+              trade.entry,
+              decimals
+            )}
+          </div>
+        </div>
+
+        <div class="metric">
+          <div class="metric-label">
+            Stop
+          </div>
+
+          <div
+            class="metric-value"
+            style="color:var(--sell);"
+          >
+            ${safeFixed(
+              trade.stop,
+              decimals
+            )}
+          </div>
+        </div>
+
+        <div class="metric">
+          <div class="metric-label">
+            TP1
+          </div>
+
+          <div
+            class="metric-value"
+            style="color:var(--buy);"
+          >
+            ${safeFixed(
+              trade.target1,
+              decimals
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div
+        class="scope-note"
+        style="margin-top:10px;"
+      >
+        Source:
+        <b>
+          ${escapeHTML(
+            trade.sourceLabel ||
+            trade.source ||
+            "Unknown"
+          )}
+        </b>
+
+        ${
+          safeNumber(
+            trade.confidence,
+            null
+          ) != null
+            ? ` · Confidence <b>${safeFixed(trade.confidence,0)}%</b>`
+            : ""
+        }
+      </div>
+    </div>
+  `;
+}
+
+// ════════════════════════════════════════════════════════════════
+// SCALP HISTORY RENDERING
+// ════════════════════════════════════════════════════════════════
+
+function renderScalpHistory(
+  history,
+  pair,
+  maximumRows = 10
+){
+  const decimals =
+    decimalsFor(
+      pair
+    );
+
+  const rows =
+    sortByTimestampDescending(
+      safeArray(history)
+        .filter(
+          entry=>
+            entry &&
+            entry.pairKey ===
+              pair.key
+        ),
+
+      entry=>
+        entry.closedAt ||
+        entry.openedAt
+    )
+      .slice(
+        0,
+        Math.max(
+          1,
+          safeInteger(
+            maximumRows,
+            10
+          )
+        )
+      );
+
+  if(!rows.length){
+    return `
+      <div class="empty-note">
+        No resolved scalp trades have been recorded for ${escapeHTML(pair.label)} yet.
+      </div>
+    `;
+  }
+
+  return rows.map(entry=>{
+    const result =
+      entry.result ||
+      entry.status ||
+      "OPEN";
+
+    const resultClass =
+      resultStatusClass(
+        result
+      );
+
+    const closePrice =
+      safeNumber(
+        entry.closePrice,
+        null
+      );
+
+    return `
+      <div class="log-row">
+        <div>
+          <div>
+            <span
+              style="
+                color:${signalTextColor(entry.decision)};
+                font-weight:600;
+              "
+            >
+              ${escapeHTML(entry.decision || "HOLD")}
+            </span>
+
+            <span style="color:var(--muted);">
+              · Entry ${safeFixed(entry.entry,decimals)}
+            </span>
+          </div>
+
+          <div
+            style="
+              margin-top:3px;
+              color:var(--muted);
+              font-size:10px;
+            "
+          >
+            ${
+              closePrice == null
+                ? "No close price"
+                : `Closed ${safeFixed(closePrice,decimals)}`
+            }
+
+            · ${escapeHTML(
+              safeDateLabel(
+                entry.closedAt,
+                "Unknown close time"
+              )
+            )}
+          </div>
+        </div>
+
+        <span class="log-status ${resultClass}">
+          ${escapeHTML(result)}
+        </span>
+      </div>
+    `;
+  }).join("");
+}
+
+// ════════════════════════════════════════════════════════════════
+// TRACKER STATISTICS
+// ════════════════════════════════════════════════════════════════
+
+function renderScalpTrackerStats(stats){
+  const winRate =
+    safeNumber(
+      stats &&
+      stats.winRate,
+      null
+    );
+
+  const averageRR =
+    safeNumber(
+      stats &&
+      stats.averageRR,
+      null
+    );
+
+  return `
+    <div class="metric-grid">
+      <div class="metric">
+        <div class="metric-label">
+          Resolved
+        </div>
+
+        <div class="metric-value">
+          ${safeFixed(
+            stats &&
+            stats.resolved,
+            0,
+            "0"
+          )}
+        </div>
+      </div>
+
+      <div class="metric">
+        <div class="metric-label">
+          Win Rate
+        </div>
+
+        <div class="metric-value">
+          ${
+            winRate == null
+              ? "—"
+              : `${safeFixed(winRate,1)}%`
+          }
+        </div>
+      </div>
+
+      <div class="metric">
+        <div class="metric-label">
+          Average R:R
+        </div>
+
+        <div class="metric-value">
+          ${
+            averageRR == null
+              ? "—"
+              : `1:${safeFixed(averageRR,2)}`
+          }
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ════════════════════════════════════════════════════════════════
+// SCALP SIGNAL HERO
+// ════════════════════════════════════════════════════════════════
+
+function renderScalpSignalHero(
+  viewModel
+){
+  const pair =
+    viewModel.pair;
+
+  const signal =
+    viewModel.signal;
+
+  const decision =
+    normalizeSignalDecision(
+      signal.decision ||
+      signal.signal
+    );
+
+  const source =
+    scalpSourceDisplay(
+      signal
+    );
+
+  const decimals =
+    decimalsFor(
+      pair
+    );
+
+  const currentPrice =
+    safeNumber(
+      viewModel.latestPrice,
+      safeNumber(
+        signal.rawEntry,
+        null
+      )
+    );
+
+  const confidence =
+    safeNumber(
+      signal.confidence,
+      null
+    );
+
+  return `
+    <div class="card">
+      <div class="hero">
+        <div>
+          <div class="label">
+            ${escapeHTML(pair.label)} · Professional Scalp Decision
+          </div>
+
+          <div class="price mono">
+            ${safeFixed(
+              currentPrice,
+              decimals
+            )}
+          </div>
+
+          <div class="row">
+            <span
+              class="badge ${signalBadgeClass(decision)}"
+            >
+              ${escapeHTML(decision)}
+            </span>
+
+            ${
+              confidence == null
+                ? ""
+                : `
+                  <span class="mono" style="color:var(--muted);font-size:12px;">
+                    ${safeFixed(confidence,0)}% confidence
+                  </span>
+                `
+            }
+          </div>
+
+          <div
+            class="scope-note"
+            style="margin-top:12px;"
+          >
+            ${escapeHTML(
+              signal.reason ||
+              "No signal explanation is available"
+            )}
+          </div>
+        </div>
+
+        <div
+          style="
+            min-width:190px;
+            text-align:right;
+          "
+        >
+          <div class="label">
+            Signal Engine
+          </div>
+
+          <div
+            class="mono"
+            style="
+              color:var(--text);
+              font-size:12px;
+              line-height:1.5;
+            "
+          >
+            <span
+              class="robot-dot ${escapeAttribute(source.dotClass)}"
+            ></span>
+
+            ${escapeHTML(source.label)}
+          </div>
+
+          <div
+            class="scope-note"
+            style="margin-top:6px;"
+          >
+            ${escapeHTML(source.detail)}
+          </div>
+
+          <div
+            style="margin-top:10px;"
+          >
+            ${
+              signal.source === "backend"
+                ? scalpSignalFreshnessFor(
+                    pair.key
+                  )
+                : scalpFreshnessFor(
+                    pair.key
+                  )
+            }
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ════════════════════════════════════════════════════════════════
+// SCALP DATA-DIAGNOSTIC CARD
+// ════════════════════════════════════════════════════════════════
+
+function renderScalpDataDiagnostics(
+  viewModel
+){
+  const prepared =
+    viewModel.signal &&
+    viewModel.signal.prepared
+      ? viewModel.signal.prepared
+      : null;
+
+  const counts =
+    prepared &&
+    prepared.counts
+      ? prepared.counts
+      : {
+          m5:null,
+          m15:null,
+          m30:null,
+          h1:null
+        };
+
+  const rawCandleCount =
+    safeArray(
+      viewModel.candles
+    ).length;
+
+  return `
+    <div class="card">
+      <div class="label">
+        Market Data Quality
+      </div>
+
+      <div class="metric-grid">
+        <div class="metric">
+          <div class="metric-label">
+            Raw M5
+          </div>
+
+          <div class="metric-value">
+            ${safeFixed(
+              rawCandleCount,
+              0,
+              "0"
+            )}
+          </div>
+        </div>
+
+        <div class="metric">
+          <div class="metric-label">
+            Closed M5
+          </div>
+
+          <div class="metric-value">
+            ${safeFixed(
+              counts.m5,
+              0
+            )}
+          </div>
+        </div>
+
+        <div class="metric">
+          <div class="metric-label">
+            Derived M15
+          </div>
+
+          <div class="metric-value">
+            ${safeFixed(
+              counts.m15,
+              0
+            )}
+          </div>
+        </div>
+
+        <div class="metric">
+          <div class="metric-label">
+            Derived M30
+          </div>
+
+          <div class="metric-value">
+            ${safeFixed(
+              counts.m30,
+              0
+            )}
+          </div>
+        </div>
+
+        <div class="metric">
+          <div class="metric-label">
+            Derived H1
+          </div>
+
+          <div class="metric-value">
+            ${safeFixed(
+              counts.h1,
+              0
+            )}
+          </div>
+        </div>
+
+        <div class="metric">
+          <div class="metric-label">
+            Feed Updated
+          </div>
+
+          <div class="metric-value">
+            ${escapeHTML(
+              getTimeAgo(
+                viewModel.candleUpdatedAt
+              )
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div
+        class="scope-note"
+        style="margin-top:12px;"
+      >
+        Only fully closed M5 candles influence browser fallback signals.
+        M15, M30 and H1 candles are reconstructed on real UTC clock boundaries.
+      </div>
+    </div>
+  `;
+}
+
+// ════════════════════════════════════════════════════════════════
+// FULL SCALP PANEL HTML
+// ════════════════════════════════════════════════════════════════
+
+function scalpPanelHTML(
+  viewModel
+){
+  const pair =
+    viewModel.pair;
+
+  const signal =
+    viewModel.signal;
+
+  const history =
+    viewModel.tracker &&
+    Array.isArray(
+      viewModel.tracker.history
+    )
+      ? viewModel.tracker.history
+      : [];
+
+  return `
+    ${renderScalpSignalHero(viewModel)}
+
+    <div class="card">
+      <div class="label">
+        Multi-Timeframe Alignment
+      </div>
+
+      ${renderScalpTimeframes(
+        signal.perTF
+      )}
+
+      <div style="margin-top:14px;">
+        ${renderScalpConfidence(signal)}
+      </div>
+    </div>
+
+    <div class="card">
+      <div
+        style="
+          display:flex;
+          justify-content:space-between;
+          align-items:center;
+          gap:12px;
+          margin-bottom:10px;
+        "
+      >
+        <div class="label" style="margin-bottom:0;">
+          Professional Trade Plan
+        </div>
+
+        ${
+          signal.rr == null
+            ? ""
+            : `
+              <span class="mono" style="color:var(--accent);font-size:11px;">
+                R:R 1:${safeFixed(signal.rr,2)}
+              </span>
+            `
+        }
+      </div>
+
+      ${renderScalpTradePlan(
+        signal,
+        pair
+      )}
+    </div>
+
+    <div class="card">
+      <div class="label">
+        Decision Pipeline
+      </div>
+
+      ${renderScalpPipeline(
+        signal.pipeline
+      )}
+    </div>
+
+    ${renderScalpDataDiagnostics(viewModel)}
+
+    <div class="card">
+      <div class="label">
+        Open Signal Tracker
+      </div>
+
+      ${renderOpenScalpTrade(
+        viewModel.tracker &&
+        viewModel.tracker.openTrade,
+        pair
+      )}
+    </div>
+
+    <div class="card">
+      <div class="label">
+        Tracker Performance
+      </div>
+
+      ${renderScalpTrackerStats(
+        viewModel.stats
+      )}
+    </div>
+
+    <div class="card">
+      <div class="label">
+        Recent Resolved Scalp Signals
+      </div>
+
+      ${renderScalpHistory(
+        history,
+        pair,
+        10
+      )}
+    </div>
+
+    <div class="footer-note">
+      Scalp signals use probability-based technical analysis.
+      Always size risk independently and verify liquidity, spread and execution conditions.
+    </div>
+  `;
+}
+
+// ════════════════════════════════════════════════════════════════
+// SCALP ERROR PANEL
+// ════════════════════════════════════════════════════════════════
+
+function scalpErrorHTML(error){
+  return `
+    <div class="errbox">
+      <div>
+        Scalp panel could not be loaded.
+      </div>
+
+      <div
+        style="
+          margin-top:8px;
+          color:var(--sell);
+        "
+      >
+        ${escapeHTML(
+          normalizeErrorMessage(
+            error
+          )
+        )}
+      </div>
+
+      <button
+        class="retry"
+        type="button"
+        onclick="renderScalpPanel({forceRefresh:true})"
+      >
+        Retry Scalp Feed
+      </button>
+    </div>
+  `;
+}
+
+// ════════════════════════════════════════════════════════════════
+// SCALP PANEL RENDERER
+// ════════════════════════════════════════════════════════════════
+
+async function renderScalpPanel({
+  forceRefresh = false
+} = {}){
+  const container =
+    document.getElementById(
+      "scalpContainer"
+    );
+
+  if(!container){
+    return null;
+  }
+
+  return withRenderLock(
+    "scalp-panel",
+
+    async({
+      isCurrent
+    })=>{
+      if(
+        currentMode !== "scalp" &&
+        !forceRefresh
+      ){
+        return null;
+      }
+
+      container.style.display =
+        "block";
+
+      container.innerHTML = `
+        <div class="loading">
+          Loading professional scalp analysis…
+        </div>
+      `;
+
+      try{
+        const pair =
+          currentPair ||
+          PAIRS[0];
+
+        const viewModel =
+          await buildScalpViewModel(
+            pair,
+            {
+              forceRefresh
+            }
+          );
+
+        if(!isCurrent()){
+          return viewModel;
+        }
+
+        if(currentMode !== "scalp"){
+          return viewModel;
+        }
+
+        container.innerHTML =
+          scalpPanelHTML(
+            viewModel
+          );
+
+        return viewModel;
+      }catch(error){
+        if(!isCurrent()){
+          return null;
+        }
+
+        console.error(
+          "Scalp panel render failed:",
+          error
+        );
+
+        container.innerHTML =
+          scalpErrorHTML(
+            error
+          );
+
+        return null;
+      }
+    },
+    {
+      shareActive:
+        !forceRefresh
+    }
+  );
+}
+
+// ════════════════════════════════════════════════════════════════
+// MANUAL SCALP REFRESH
+// ════════════════════════════════════════════════════════════════
+
+async function refreshScalpNow(){
+  clearNetworkCache(
+    SHARED_SCALP_CANDLES_URL
+  );
+
+  clearNetworkCache(
+    SHARED_SCALP_SIGNALS_URL
+  );
+
+  return renderScalpPanel({
+    forceRefresh:true
+  });
+}
+
+// ════════════════════════════════════════════════════════════════
+// CLEAR OPEN SCALP TRACKER
+//
+// This is intentionally not exposed as a visible button by default.
+// It remains available in the browser console for maintenance.
+// ════════════════════════════════════════════════════════════════
+
+function clearOpenScalpTrade(
+  pairKey
+){
+  const openTrades =
+    loadScalpOpen();
+
+  if(pairKey){
+    delete openTrades[
+      pairKey
+    ];
+  }else{
+    for(const key of Object.keys(openTrades)){
+      delete openTrades[key];
+    }
+  }
+
+  saveScalpOpen(
+    openTrades
+  );
+
+  return openTrades;
+}
+
+// ════════════════════════════════════════════════════════════════
+// SCALP TRACKER MAINTENANCE
+// ════════════════════════════════════════════════════════════════
+
+function clearScalpTrackerHistory(
+  pairKey = null
+){
+  if(!pairKey){
+    saveScalpHistory(
+      []
+    );
+
+    return [];
+  }
+
+  const remaining =
+    loadScalpHistory()
+      .filter(
+        entry=>
+          entry.pairKey !==
+          pairKey
+      );
+
+  saveScalpHistory(
+    remaining
+  );
+
+  return remaining;
+}
+
+function resetScalpDuplicateProtection(
+  pairKey = null
+){
+  if(!pairKey){
+    saveLastScalpSignals(
+      {}
+    );
+
+    return {};
+  }
+
+  const lastSignals =
+    loadLastScalpSignals();
+
+  delete lastSignals[
+    pairKey
+  ];
+
+  saveLastScalpSignals(
+    lastSignals
+  );
+
+  return lastSignals;
+}
+
+// ════════════════════════════════════════════════════════════════
+// SCALP PAIR-SWITCH HOOK
+// ════════════════════════════════════════════════════════════════
+
+async function refreshScalpForCurrentPair(){
+  if(currentMode !== "scalp"){
+    return null;
+  }
+
+  invalidateRender(
+    "scalp-panel"
+  );
+
+  return renderScalpPanel();
+}
 
 
-  
 
 
 

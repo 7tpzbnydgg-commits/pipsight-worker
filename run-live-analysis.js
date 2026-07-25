@@ -2374,3 +2374,2581 @@ function trendDirectionOf(
     rows
   ).direction;
 }
+
+// ============================================================================
+// PART 4 — CANDLE AGGREGATION + WEEKLY AGGREGATION
+//          + LEGACY-COMPATIBLE ANALYSIS PIPELINE
+// ============================================================================
+//
+// This section:
+// - Normalizes mixed candle formats without changing upstream JSON files.
+// - Aggregates lower-timeframe candles safely.
+// - Builds UTC daily and Monday-based UTC weekly candles.
+// - Preserves completed candles and optionally includes the active candle.
+// - Provides indicator calculations required by the live analysis engines.
+// - Produces a legacy-compatible analysis result.
+// - Keeps WAIT/NEUTRAL-style decisions normalized to HOLD.
+// - Does not change Telegram, history, notification or output-writing logic.
+//
+// Expected integration:
+// - Part 1: constants/configuration
+// - Part 2: JSON safety, normalization and shared helpers
+// - Part 3: input loading / signal-source preparation
+// - Part 4: this section
+// ============================================================================
+
+
+// ---------------------------------------------------------------------------
+// Candle field helpers
+// ---------------------------------------------------------------------------
+
+function candleNumber(value, fallback = null) {
+  if (value === null || value === undefined || value === "") {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function candleInteger(value, fallback = null) {
+  const parsed = candleNumber(value, fallback);
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : fallback;
+}
+
+function firstDefinedValue(object, keys, fallback = undefined) {
+  if (!object || typeof object !== "object") {
+    return fallback;
+  }
+
+  for (const key of keys) {
+    if (
+      Object.prototype.hasOwnProperty.call(object, key) &&
+      object[key] !== null &&
+      object[key] !== undefined &&
+      object[key] !== ""
+    ) {
+      return object[key];
+    }
+  }
+
+  return fallback;
+}
+
+function normalizeTimestampMs(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
+  if (value instanceof Date) {
+    const time = value.getTime();
+    return Number.isFinite(time) ? time : null;
+  }
+
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      return null;
+    }
+
+    // Seconds timestamp.
+    if (value > 0 && value < 10_000_000_000) {
+      return Math.trunc(value * 1000);
+    }
+
+    // Microseconds timestamp.
+    if (value >= 10_000_000_000_000 && value < 10_000_000_000_000_000) {
+      return Math.trunc(value / 1000);
+    }
+
+    // Nanoseconds timestamp.
+    if (value >= 10_000_000_000_000_000) {
+      return Math.trunc(value / 1_000_000);
+    }
+
+    return Math.trunc(value);
+  }
+
+  const raw = String(value).trim();
+
+  if (!raw) {
+    return null;
+  }
+
+  if (/^-?\d+(\.\d+)?$/.test(raw)) {
+    return normalizeTimestampMs(Number(raw));
+  }
+
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function extractCandleTimestampMs(rawCandle) {
+  if (!rawCandle || typeof rawCandle !== "object") {
+    return null;
+  }
+
+  return normalizeTimestampMs(
+    firstDefinedValue(rawCandle, [
+      "timestamp",
+      "timestampMs",
+      "time",
+      "datetime",
+      "dateTime",
+      "date",
+      "openTime",
+      "open_time",
+      "startTime",
+      "start_time",
+      "t",
+      "x",
+    ])
+  );
+}
+
+function extractCandleCloseTimestampMs(rawCandle) {
+  if (!rawCandle || typeof rawCandle !== "object") {
+    return null;
+  }
+
+  return normalizeTimestampMs(
+    firstDefinedValue(rawCandle, [
+      "closeTimestamp",
+      "closeTimestampMs",
+      "closeTime",
+      "close_time",
+      "endTime",
+      "end_time",
+      "closedAt",
+    ])
+  );
+}
+
+function normalizeBooleanValue(value, fallback = null) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "number") {
+    if (value === 1) return true;
+    if (value === 0) return false;
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+
+    if (
+      normalized === "true" ||
+      normalized === "yes" ||
+      normalized === "closed" ||
+      normalized === "complete" ||
+      normalized === "completed" ||
+      normalized === "final"
+    ) {
+      return true;
+    }
+
+    if (
+      normalized === "false" ||
+      normalized === "no" ||
+      normalized === "open" ||
+      normalized === "active" ||
+      normalized === "forming" ||
+      normalized === "incomplete"
+    ) {
+      return false;
+    }
+  }
+
+  return fallback;
+}
+
+
+// ---------------------------------------------------------------------------
+// Canonical candle normalization
+// ---------------------------------------------------------------------------
+
+function normalizeLiveCandle(rawCandle, options = {}) {
+  if (!rawCandle || typeof rawCandle !== "object") {
+    return null;
+  }
+
+  const timestamp = extractCandleTimestampMs(rawCandle);
+
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    return null;
+  }
+
+  const rawOpen = firstDefinedValue(rawCandle, [
+    "open",
+    "Open",
+    "o",
+    "priceOpen",
+    "openPrice",
+  ]);
+
+  const rawHigh = firstDefinedValue(rawCandle, [
+    "high",
+    "High",
+    "h",
+    "priceHigh",
+    "highPrice",
+  ]);
+
+  const rawLow = firstDefinedValue(rawCandle, [
+    "low",
+    "Low",
+    "l",
+    "priceLow",
+    "lowPrice",
+  ]);
+
+  const rawClose = firstDefinedValue(rawCandle, [
+    "close",
+    "Close",
+    "c",
+    "price",
+    "last",
+    "value",
+    "priceClose",
+    "closePrice",
+  ]);
+
+  let open = candleNumber(rawOpen);
+  let high = candleNumber(rawHigh);
+  let low = candleNumber(rawLow);
+  let close = candleNumber(rawClose);
+
+  // Legacy close-only rows remain supported.
+  if (!Number.isFinite(close)) {
+    close = candleNumber(
+      firstDefinedValue(rawCandle, ["mid", "bid", "ask"])
+    );
+  }
+
+  if (!Number.isFinite(close) || close <= 0) {
+    return null;
+  }
+
+  if (!Number.isFinite(open)) {
+    open = close;
+  }
+
+  if (!Number.isFinite(high)) {
+    high = Math.max(open, close);
+  }
+
+  if (!Number.isFinite(low)) {
+    low = Math.min(open, close);
+  }
+
+  // Repair malformed provider values without rejecting otherwise usable data.
+  high = Math.max(high, open, close);
+  low = Math.min(low, open, close);
+
+  if (
+    !Number.isFinite(open) ||
+    !Number.isFinite(high) ||
+    !Number.isFinite(low) ||
+    !Number.isFinite(close) ||
+    open <= 0 ||
+    high <= 0 ||
+    low <= 0 ||
+    close <= 0 ||
+    high < low
+  ) {
+    return null;
+  }
+
+  const volume = Math.max(
+    0,
+    candleNumber(
+      firstDefinedValue(rawCandle, [
+        "volume",
+        "Volume",
+        "v",
+        "tickVolume",
+        "tick_volume",
+        "realVolume",
+        "real_volume",
+      ]),
+      0
+    )
+  );
+
+  const closeTimestamp =
+    extractCandleCloseTimestampMs(rawCandle) ??
+    candleNumber(options.defaultCloseTimestamp, null);
+
+  const explicitClosed = normalizeBooleanValue(
+    firstDefinedValue(rawCandle, [
+      "closed",
+      "isClosed",
+      "is_closed",
+      "complete",
+      "completed",
+      "isComplete",
+      "is_complete",
+      "final",
+      "isFinal",
+    ]),
+    null
+  );
+
+  const source = firstDefinedValue(
+    rawCandle,
+    ["source", "provider", "feed"],
+    options.source || null
+  );
+
+  const normalized = {
+    timestamp,
+    time: new Date(timestamp).toISOString(),
+    open,
+    high,
+    low,
+    close,
+    volume,
+  };
+
+  if (Number.isFinite(closeTimestamp)) {
+    normalized.closeTimestamp = closeTimestamp;
+    normalized.closeTime = new Date(closeTimestamp).toISOString();
+  }
+
+  if (explicitClosed !== null) {
+    normalized.closed = explicitClosed;
+  }
+
+  if (source) {
+    normalized.source = String(source);
+  }
+
+  return normalized;
+}
+
+function normalizeLiveCandleArray(rawRows, options = {}) {
+  const sourceRows = Array.isArray(rawRows) ? rawRows : [];
+  const byTimestamp = new Map();
+
+  for (const rawRow of sourceRows) {
+    const candle = normalizeLiveCandle(rawRow, options);
+
+    if (!candle) {
+      continue;
+    }
+
+    // Latest duplicate wins. This preserves provider corrections to a candle.
+    byTimestamp.set(candle.timestamp, candle);
+  }
+
+  const rows = [...byTimestamp.values()].sort(
+    (left, right) => left.timestamp - right.timestamp
+  );
+
+  const maxRows = Math.max(
+    0,
+    candleInteger(options.maxRows, 0) || 0
+  );
+
+  if (maxRows > 0 && rows.length > maxRows) {
+    return rows.slice(-maxRows);
+  }
+
+  return rows;
+}
+
+
+// ---------------------------------------------------------------------------
+// Timeframe parsing and bucket calculation
+// ---------------------------------------------------------------------------
+
+const LIVE_TIMEFRAME_MS = Object.freeze({
+  M1: 60 * 1000,
+  M2: 2 * 60 * 1000,
+  M3: 3 * 60 * 1000,
+  M5: 5 * 60 * 1000,
+  M10: 10 * 60 * 1000,
+  M15: 15 * 60 * 1000,
+  M20: 20 * 60 * 1000,
+  M30: 30 * 60 * 1000,
+  M45: 45 * 60 * 1000,
+
+  H1: 60 * 60 * 1000,
+  H2: 2 * 60 * 60 * 1000,
+  H3: 3 * 60 * 60 * 1000,
+  H4: 4 * 60 * 60 * 1000,
+  H6: 6 * 60 * 60 * 1000,
+  H8: 8 * 60 * 60 * 1000,
+  H12: 12 * 60 * 60 * 1000,
+
+  D1: 24 * 60 * 60 * 1000,
+  W1: 7 * 24 * 60 * 60 * 1000,
+});
+
+function normalizeLiveTimeframe(value, fallback = "H1") {
+  const raw = String(value || fallback)
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "");
+
+  const aliases = {
+    "1M": "M1",
+    "2M": "M2",
+    "3M": "M3",
+    "5M": "M5",
+    "10M": "M10",
+    "15M": "M15",
+    "20M": "M20",
+    "30M": "M30",
+    "45M": "M45",
+
+    "1H": "H1",
+    "2H": "H2",
+    "3H": "H3",
+    "4H": "H4",
+    "6H": "H6",
+    "8H": "H8",
+    "12H": "H12",
+
+    "1D": "D1",
+    DAY: "D1",
+    DAILY: "D1",
+
+    "1W": "W1",
+    WEEK: "W1",
+    WEEKLY: "W1",
+  };
+
+  const normalized = aliases[raw] || raw;
+
+  if (Object.prototype.hasOwnProperty.call(LIVE_TIMEFRAME_MS, normalized)) {
+    return normalized;
+  }
+
+  return fallback;
+}
+
+function liveTimeframeMs(value, fallback = "H1") {
+  const timeframe = normalizeLiveTimeframe(value, fallback);
+  return LIVE_TIMEFRAME_MS[timeframe] || LIVE_TIMEFRAME_MS[fallback];
+}
+
+function utcDayBucketStart(timestamp) {
+  const date = new Date(timestamp);
+
+  return Date.UTC(
+    date.getUTCFullYear(),
+    date.getUTCMonth(),
+    date.getUTCDate()
+  );
+}
+
+function utcWeekBucketStart(timestamp) {
+  const date = new Date(timestamp);
+
+  const dayStart = Date.UTC(
+    date.getUTCFullYear(),
+    date.getUTCMonth(),
+    date.getUTCDate()
+  );
+
+  // JavaScript UTC day: Sunday=0 ... Saturday=6.
+  // Convert to ISO-style Monday=0 ... Sunday=6.
+  const mondayOffsetDays = (date.getUTCDay() + 6) % 7;
+
+  return dayStart - mondayOffsetDays * LIVE_TIMEFRAME_MS.D1;
+}
+
+function liveBucketStart(timestamp, timeframe) {
+  const normalizedTimeframe = normalizeLiveTimeframe(timeframe);
+
+  if (normalizedTimeframe === "D1") {
+    return utcDayBucketStart(timestamp);
+  }
+
+  if (normalizedTimeframe === "W1") {
+    return utcWeekBucketStart(timestamp);
+  }
+
+  const intervalMs = liveTimeframeMs(normalizedTimeframe);
+  return Math.floor(timestamp / intervalMs) * intervalMs;
+}
+
+
+// ---------------------------------------------------------------------------
+// Generic OHLC aggregation
+// ---------------------------------------------------------------------------
+
+function aggregateLiveCandles(rawRows, timeframe, options = {}) {
+  const normalizedTimeframe = normalizeLiveTimeframe(timeframe);
+  const intervalMs = liveTimeframeMs(normalizedTimeframe);
+  const nowMs = candleNumber(options.nowMs, Date.now());
+  const includeActive = options.includeActive !== false;
+
+  const rows = normalizeLiveCandleArray(rawRows, {
+    source: options.source,
+  });
+
+  if (rows.length === 0) {
+    return [];
+  }
+
+  const buckets = new Map();
+
+  for (const row of rows) {
+    const bucketTimestamp = liveBucketStart(
+      row.timestamp,
+      normalizedTimeframe
+    );
+
+    let bucket = buckets.get(bucketTimestamp);
+
+    if (!bucket) {
+      bucket = {
+        timestamp: bucketTimestamp,
+        time: new Date(bucketTimestamp).toISOString(),
+
+        open: row.open,
+        high: row.high,
+        low: row.low,
+        close: row.close,
+        volume: row.volume || 0,
+
+        sourceCount: 1,
+        firstSourceTimestamp: row.timestamp,
+        lastSourceTimestamp: row.timestamp,
+      };
+
+      buckets.set(bucketTimestamp, bucket);
+      continue;
+    }
+
+    bucket.high = Math.max(bucket.high, row.high);
+    bucket.low = Math.min(bucket.low, row.low);
+    bucket.close = row.close;
+    bucket.volume += row.volume || 0;
+    bucket.sourceCount += 1;
+    bucket.lastSourceTimestamp = row.timestamp;
+  }
+
+  let aggregated = [...buckets.values()].sort(
+    (left, right) => left.timestamp - right.timestamp
+  );
+
+  aggregated = aggregated.map((bucket) => {
+    const closeTimestamp = bucket.timestamp + intervalMs;
+    const closed = closeTimestamp <= nowMs;
+
+    return {
+      timestamp: bucket.timestamp,
+      time: bucket.time,
+
+      open: bucket.open,
+      high: bucket.high,
+      low: bucket.low,
+      close: bucket.close,
+      volume: bucket.volume,
+
+      closeTimestamp,
+      closeTime: new Date(closeTimestamp).toISOString(),
+      closed,
+
+      timeframe: normalizedTimeframe,
+      sourceCount: bucket.sourceCount,
+      firstSourceTimestamp: bucket.firstSourceTimestamp,
+      lastSourceTimestamp: bucket.lastSourceTimestamp,
+    };
+  });
+
+  if (!includeActive) {
+    aggregated = aggregated.filter((row) => row.closed);
+  }
+
+  const maxRows = Math.max(
+    0,
+    candleInteger(options.maxRows, 0) || 0
+  );
+
+  if (maxRows > 0 && aggregated.length > maxRows) {
+    aggregated = aggregated.slice(-maxRows);
+  }
+
+  return aggregated;
+}
+
+function aggregateDailyCandles(rawRows, options = {}) {
+  return aggregateLiveCandles(rawRows, "D1", options);
+}
+
+function aggregateWeeklyCandles(rawRows, options = {}) {
+  return aggregateLiveCandles(rawRows, "W1", options);
+}
+
+
+// ---------------------------------------------------------------------------
+// Weekly aggregation preserving legacy-compatible date fields
+// ---------------------------------------------------------------------------
+
+function buildLegacyWeeklyCandles(rawDailyRows, options = {}) {
+  const weeklyRows = aggregateWeeklyCandles(rawDailyRows, {
+    ...options,
+    includeActive: options.includeActive !== false,
+  });
+
+  return weeklyRows.map((row) => {
+    const isoDate = row.time.slice(0, 10);
+
+    return {
+      timestamp: row.timestamp,
+      time: row.time,
+      date: isoDate,
+
+      open: row.open,
+      high: row.high,
+      low: row.low,
+      close: row.close,
+      volume: row.volume,
+
+      closeTimestamp: row.closeTimestamp,
+      closeTime: row.closeTime,
+      closed: row.closed,
+
+      timeframe: "W1",
+      sourceCount: row.sourceCount,
+    };
+  });
+}
+
+
+// ---------------------------------------------------------------------------
+// Candle-frame preparation
+// ---------------------------------------------------------------------------
+
+function prepareLiveAnalysisFrames(input = {}) {
+  const scalpRows = normalizeLiveCandleArray(
+    input.scalpCandles || input.scalpRows || [],
+    {
+      source: "scalp",
+      maxRows: input.maxScalpRows || 5000,
+    }
+  );
+
+  const intradayRows = normalizeLiveCandleArray(
+    input.intradayCandles ||
+      input.intradayRows ||
+      input.h1Candles ||
+      input.h1Rows ||
+      [],
+    {
+      source: "intraday",
+      maxRows: input.maxIntradayRows || 3000,
+    }
+  );
+
+  const suppliedDailyRows = normalizeLiveCandleArray(
+    input.dailyCandles ||
+      input.dailyRows ||
+      input.dailyOhlc ||
+      [],
+    {
+      source: "daily",
+      maxRows: input.maxDailyRows || 1500,
+    }
+  );
+
+  const derivedH1Rows =
+    intradayRows.length > 0
+      ? intradayRows
+      : aggregateLiveCandles(scalpRows, "H1", {
+          includeActive: true,
+          maxRows: input.maxIntradayRows || 3000,
+          source: "scalp-derived-h1",
+        });
+
+  const derivedDailyRows =
+    suppliedDailyRows.length > 0
+      ? suppliedDailyRows
+      : aggregateDailyCandles(derivedH1Rows, {
+          includeActive: true,
+          maxRows: input.maxDailyRows || 1500,
+          source: "h1-derived-d1",
+        });
+
+  const weeklyRows = buildLegacyWeeklyCandles(derivedDailyRows, {
+    includeActive: true,
+    maxRows: input.maxWeeklyRows || 500,
+    source: "daily-derived-w1",
+  });
+
+  return {
+    scalp: scalpRows,
+    intraday: derivedH1Rows,
+    daily: derivedDailyRows,
+    weekly: weeklyRows,
+
+    metadata: {
+      scalpCount: scalpRows.length,
+      intradayCount: derivedH1Rows.length,
+      dailyCount: derivedDailyRows.length,
+      weeklyCount: weeklyRows.length,
+
+      intradayDerived: intradayRows.length === 0 && scalpRows.length > 0,
+      dailyDerived:
+        suppliedDailyRows.length === 0 && derivedH1Rows.length > 0,
+      weeklyDerived: derivedDailyRows.length > 0,
+    },
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Indicator helpers
+// ---------------------------------------------------------------------------
+
+function liveCloseValues(rows) {
+  return (Array.isArray(rows) ? rows : [])
+    .map((row) => candleNumber(row && row.close))
+    .filter((value) => Number.isFinite(value));
+}
+
+function liveLastFinite(values) {
+  if (!Array.isArray(values)) {
+    return null;
+  }
+
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    if (Number.isFinite(values[index])) {
+      return values[index];
+    }
+  }
+
+  return null;
+}
+
+function liveSma(values, period) {
+  const source = Array.isArray(values) ? values : [];
+  const safePeriod = Math.max(1, candleInteger(period, 1));
+  const output = Array(source.length).fill(null);
+
+  if (source.length < safePeriod) {
+    return output;
+  }
+
+  let rollingSum = 0;
+  let finiteCount = 0;
+
+  for (let index = 0; index < source.length; index += 1) {
+    const value = source[index];
+
+    if (Number.isFinite(value)) {
+      rollingSum += value;
+      finiteCount += 1;
+    }
+
+    if (index >= safePeriod) {
+      const removed = source[index - safePeriod];
+
+      if (Number.isFinite(removed)) {
+        rollingSum -= removed;
+        finiteCount -= 1;
+      }
+    }
+
+    if (index >= safePeriod - 1 && finiteCount === safePeriod) {
+      output[index] = rollingSum / safePeriod;
+    }
+  }
+
+  return output;
+}
+
+function liveEma(values, period) {
+  const source = Array.isArray(values) ? values : [];
+  const safePeriod = Math.max(1, candleInteger(period, 1));
+  const output = Array(source.length).fill(null);
+
+  if (source.length < safePeriod) {
+    return output;
+  }
+
+  let seedSum = 0;
+
+  for (let index = 0; index < safePeriod; index += 1) {
+    if (!Number.isFinite(source[index])) {
+      return output;
+    }
+
+    seedSum += source[index];
+  }
+
+  const multiplier = 2 / (safePeriod + 1);
+  let previous = seedSum / safePeriod;
+
+  output[safePeriod - 1] = previous;
+
+  for (let index = safePeriod; index < source.length; index += 1) {
+    const value = source[index];
+
+    if (!Number.isFinite(value)) {
+      output[index] = previous;
+      continue;
+    }
+
+    previous = (value - previous) * multiplier + previous;
+    output[index] = previous;
+  }
+
+  return output;
+}
+
+function liveRsi(values, period = 14) {
+  const source = Array.isArray(values) ? values : [];
+  const safePeriod = Math.max(2, candleInteger(period, 14));
+  const output = Array(source.length).fill(null);
+
+  if (source.length <= safePeriod) {
+    return output;
+  }
+
+  let gainSum = 0;
+  let lossSum = 0;
+
+  for (let index = 1; index <= safePeriod; index += 1) {
+    const current = source[index];
+    const previous = source[index - 1];
+
+    if (!Number.isFinite(current) || !Number.isFinite(previous)) {
+      return output;
+    }
+
+    const change = current - previous;
+
+    if (change > 0) {
+      gainSum += change;
+    } else {
+      lossSum += Math.abs(change);
+    }
+  }
+
+  let averageGain = gainSum / safePeriod;
+  let averageLoss = lossSum / safePeriod;
+
+  if (averageLoss === 0) {
+    output[safePeriod] = averageGain === 0 ? 50 : 100;
+  } else {
+    const relativeStrength = averageGain / averageLoss;
+    output[safePeriod] = 100 - 100 / (1 + relativeStrength);
+  }
+
+  for (
+    let index = safePeriod + 1;
+    index < source.length;
+    index += 1
+  ) {
+    const current = source[index];
+    const previous = source[index - 1];
+
+    if (!Number.isFinite(current) || !Number.isFinite(previous)) {
+      output[index] = output[index - 1];
+      continue;
+    }
+
+    const change = current - previous;
+    const gain = change > 0 ? change : 0;
+    const loss = change < 0 ? Math.abs(change) : 0;
+
+    averageGain =
+      (averageGain * (safePeriod - 1) + gain) / safePeriod;
+
+    averageLoss =
+      (averageLoss * (safePeriod - 1) + loss) / safePeriod;
+
+    if (averageLoss === 0) {
+      output[index] = averageGain === 0 ? 50 : 100;
+    } else {
+      const relativeStrength = averageGain / averageLoss;
+      output[index] = 100 - 100 / (1 + relativeStrength);
+    }
+  }
+
+  return output;
+}
+
+function liveTrueRangeSeries(rows) {
+  const sourceRows = Array.isArray(rows) ? rows : [];
+  const output = Array(sourceRows.length).fill(null);
+
+  for (let index = 0; index < sourceRows.length; index += 1) {
+    const row = sourceRows[index];
+    const high = candleNumber(row && row.high);
+    const low = candleNumber(row && row.low);
+
+    if (!Number.isFinite(high) || !Number.isFinite(low)) {
+      continue;
+    }
+
+    if (index === 0) {
+      output[index] = high - low;
+      continue;
+    }
+
+    const previousClose = candleNumber(
+      sourceRows[index - 1] && sourceRows[index - 1].close
+    );
+
+    if (!Number.isFinite(previousClose)) {
+      output[index] = high - low;
+      continue;
+    }
+
+    output[index] = Math.max(
+      high - low,
+      Math.abs(high - previousClose),
+      Math.abs(low - previousClose)
+    );
+  }
+
+  return output;
+}
+
+function liveAtr(rows, period = 14) {
+  const trueRanges = liveTrueRangeSeries(rows);
+  const safePeriod = Math.max(2, candleInteger(period, 14));
+  const output = Array(trueRanges.length).fill(null);
+
+  if (trueRanges.length < safePeriod) {
+    return output;
+  }
+
+  let seedSum = 0;
+
+  for (let index = 0; index < safePeriod; index += 1) {
+    if (!Number.isFinite(trueRanges[index])) {
+      return output;
+    }
+
+    seedSum += trueRanges[index];
+  }
+
+  let previousAtr = seedSum / safePeriod;
+  output[safePeriod - 1] = previousAtr;
+
+  for (
+    let index = safePeriod;
+    index < trueRanges.length;
+    index += 1
+  ) {
+    const currentTrueRange = trueRanges[index];
+
+    if (!Number.isFinite(currentTrueRange)) {
+      output[index] = previousAtr;
+      continue;
+    }
+
+    previousAtr =
+      (previousAtr * (safePeriod - 1) + currentTrueRange) /
+      safePeriod;
+
+    output[index] = previousAtr;
+  }
+
+  return output;
+}
+
+function liveMacd(
+  values,
+  fastPeriod = 12,
+  slowPeriod = 26,
+  signalPeriod = 9
+) {
+  const source = Array.isArray(values) ? values : [];
+  const fast = liveEma(source, fastPeriod);
+  const slow = liveEma(source, slowPeriod);
+
+  const macdLine = source.map((_, index) => {
+    if (
+      !Number.isFinite(fast[index]) ||
+      !Number.isFinite(slow[index])
+    ) {
+      return null;
+    }
+
+    return fast[index] - slow[index];
+  });
+
+  const compactMacdValues = [];
+  const compactIndexes = [];
+
+  for (let index = 0; index < macdLine.length; index += 1) {
+    if (Number.isFinite(macdLine[index])) {
+      compactMacdValues.push(macdLine[index]);
+      compactIndexes.push(index);
+    }
+  }
+
+  const compactSignal = liveEma(compactMacdValues, signalPeriod);
+  const signalLine = Array(source.length).fill(null);
+
+  for (let index = 0; index < compactIndexes.length; index += 1) {
+    signalLine[compactIndexes[index]] = compactSignal[index];
+  }
+
+  const histogram = source.map((_, index) => {
+    if (
+      !Number.isFinite(macdLine[index]) ||
+      !Number.isFinite(signalLine[index])
+    ) {
+      return null;
+    }
+
+    return macdLine[index] - signalLine[index];
+  });
+
+  return {
+    macdLine,
+    signalLine,
+    histogram,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Market structure and support/resistance
+// ---------------------------------------------------------------------------
+
+function liveSwingPoints(rows, radius = 2) {
+  const sourceRows = Array.isArray(rows) ? rows : [];
+  const safeRadius = Math.max(1, candleInteger(radius, 2));
+
+  const highs = [];
+  const lows = [];
+
+  for (
+    let index = safeRadius;
+    index < sourceRows.length - safeRadius;
+    index += 1
+  ) {
+    const candidateHigh = candleNumber(sourceRows[index].high);
+    const candidateLow = candleNumber(sourceRows[index].low);
+
+    if (
+      !Number.isFinite(candidateHigh) ||
+      !Number.isFinite(candidateLow)
+    ) {
+      continue;
+    }
+
+    let isSwingHigh = true;
+    let isSwingLow = true;
+
+    for (
+      let offset = 1;
+      offset <= safeRadius;
+      offset += 1
+    ) {
+      const previousHigh = candleNumber(
+        sourceRows[index - offset].high
+      );
+
+      const nextHigh = candleNumber(
+        sourceRows[index + offset].high
+      );
+
+      const previousLow = candleNumber(
+        sourceRows[index - offset].low
+      );
+
+      const nextLow = candleNumber(
+        sourceRows[index + offset].low
+      );
+
+      if (
+        !Number.isFinite(previousHigh) ||
+        !Number.isFinite(nextHigh) ||
+        candidateHigh <= previousHigh ||
+        candidateHigh < nextHigh
+      ) {
+        isSwingHigh = false;
+      }
+
+      if (
+        !Number.isFinite(previousLow) ||
+        !Number.isFinite(nextLow) ||
+        candidateLow >= previousLow ||
+        candidateLow > nextLow
+      ) {
+        isSwingLow = false;
+      }
+    }
+
+    if (isSwingHigh) {
+      highs.push({
+        index,
+        timestamp: sourceRows[index].timestamp,
+        price: candidateHigh,
+      });
+    }
+
+    if (isSwingLow) {
+      lows.push({
+        index,
+        timestamp: sourceRows[index].timestamp,
+        price: candidateLow,
+      });
+    }
+  }
+
+  return {
+    highs,
+    lows,
+  };
+}
+
+function liveUniquePriceLevels(levels, thresholdRatio = 0.0015) {
+  const sorted = [...levels]
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .sort((left, right) => left - right);
+
+  const output = [];
+
+  for (const level of sorted) {
+    const duplicate = output.some((existing) => {
+      const denominator = Math.max(Math.abs(existing), Math.abs(level), 1);
+      return Math.abs(existing - level) / denominator <= thresholdRatio;
+    });
+
+    if (!duplicate) {
+      output.push(level);
+    }
+  }
+
+  return output;
+}
+
+function liveSupportResistance(rows, currentPrice) {
+  const sourceRows = Array.isArray(rows) ? rows : [];
+  const price = candleNumber(currentPrice);
+
+  if (!Number.isFinite(price) || sourceRows.length === 0) {
+    return {
+      supports: [],
+      resistances: [],
+      nearestSupport: null,
+      nearestResistance: null,
+    };
+  }
+
+  const radius =
+    sourceRows.length > 80 ? 3 :
+    sourceRows.length > 35 ? 2 :
+    1;
+
+  const swings = liveSwingPoints(sourceRows, radius);
+
+  let highLevels = liveUniquePriceLevels(
+    swings.highs.map((point) => point.price)
+  );
+
+  let lowLevels = liveUniquePriceLevels(
+    swings.lows.map((point) => point.price)
+  );
+
+  const allHighs = sourceRows
+    .map((row) => candleNumber(row.high))
+    .filter(Number.isFinite);
+
+  const allLows = sourceRows
+    .map((row) => candleNumber(row.low))
+    .filter(Number.isFinite);
+
+  const maximumHigh =
+    allHighs.length > 0 ? Math.max(...allHighs) : null;
+
+  const minimumLow =
+    allLows.length > 0 ? Math.min(...allLows) : null;
+
+  if (
+    highLevels.every((level) => level <= price) &&
+    Number.isFinite(maximumHigh) &&
+    maximumHigh > price * 1.0005
+  ) {
+    highLevels.push(maximumHigh);
+  }
+
+  if (
+    lowLevels.every((level) => level >= price) &&
+    Number.isFinite(minimumLow) &&
+    minimumLow < price * 0.9995
+  ) {
+    lowLevels.push(minimumLow);
+  }
+
+  const supports = liveUniquePriceLevels(
+    lowLevels.filter((level) => level < price)
+  )
+    .sort((left, right) => right - left)
+    .slice(0, 3);
+
+  const resistances = liveUniquePriceLevels(
+    highLevels.filter((level) => level > price)
+  )
+    .sort((left, right) => left - right)
+    .slice(0, 3);
+
+  return {
+    supports,
+    resistances,
+    nearestSupport: supports[0] ?? null,
+    nearestResistance: resistances[0] ?? null,
+  };
+}
+
+function liveMarketStructure(rows) {
+  const sourceRows = Array.isArray(rows) ? rows : [];
+
+  if (sourceRows.length < 8) {
+    return {
+      direction: "NEUTRAL",
+      label: "Not enough structure data",
+      score: 0,
+      latestHighs: [],
+      latestLows: [],
+    };
+  }
+
+  const radius =
+    sourceRows.length > 60 ? 3 :
+    sourceRows.length > 30 ? 2 :
+    1;
+
+  const swings = liveSwingPoints(sourceRows, radius);
+
+  const latestHighs = swings.highs.slice(-2);
+  const latestLows = swings.lows.slice(-2);
+
+  if (latestHighs.length < 2 || latestLows.length < 2) {
+    return {
+      direction: "NEUTRAL",
+      label: "Mixed structure",
+      score: 0,
+      latestHighs,
+      latestLows,
+    };
+  }
+
+  const higherHigh =
+    latestHighs[1].price > latestHighs[0].price;
+
+  const lowerHigh =
+    latestHighs[1].price < latestHighs[0].price;
+
+  const higherLow =
+    latestLows[1].price > latestLows[0].price;
+
+  const lowerLow =
+    latestLows[1].price < latestLows[0].price;
+
+  if (higherHigh && higherLow) {
+    return {
+      direction: "BUY",
+      label: "Bullish structure",
+      score: 15,
+      latestHighs,
+      latestLows,
+    };
+  }
+
+  if (lowerHigh && lowerLow) {
+    return {
+      direction: "SELL",
+      label: "Bearish structure",
+      score: -15,
+      latestHighs,
+      latestLows,
+    };
+  }
+
+  return {
+    direction: "NEUTRAL",
+    label: "Mixed structure",
+    score: 0,
+    latestHighs,
+    latestLows,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Adaptive EMA trend
+// ---------------------------------------------------------------------------
+
+function liveAdaptiveEmaPeriods(rowCount) {
+  const count = Math.max(2, candleInteger(rowCount, 2));
+
+  const ema200 = Math.max(2, Math.min(200, count - 1));
+  const ema100 = Math.max(2, Math.min(100, Math.round(ema200 * 0.5)));
+  const ema50 = Math.max(2, Math.min(50, Math.round(ema100 * 0.6)));
+  const ema20 = Math.max(2, Math.min(20, Math.round(ema50 * 0.5)));
+
+  return {
+    ema20,
+    ema50,
+    ema100,
+    ema200,
+  };
+}
+
+function liveTrendSnapshot(rows) {
+  const sourceRows = Array.isArray(rows) ? rows : [];
+  const closes = liveCloseValues(sourceRows);
+
+  if (closes.length < 5) {
+    return {
+      direction: "NEUTRAL",
+      legacyDirection: null,
+      fullAlignment: false,
+      partialAlignment: false,
+      periods: liveAdaptiveEmaPeriods(closes.length),
+      values: {
+        ema20: null,
+        ema50: null,
+        ema100: null,
+        ema200: null,
+      },
+      reason: "Insufficient candle history",
+    };
+  }
+
+  const periods = liveAdaptiveEmaPeriods(closes.length);
+
+  const ema20Series = liveEma(closes, periods.ema20);
+  const ema50Series = liveEma(closes, periods.ema50);
+  const ema100Series = liveEma(closes, periods.ema100);
+  const ema200Series = liveEma(closes, periods.ema200);
+
+  const ema20 = liveLastFinite(ema20Series);
+  const ema50 = liveLastFinite(ema50Series);
+  const ema100 = liveLastFinite(ema100Series);
+  const ema200 = liveLastFinite(ema200Series);
+  const price = closes[closes.length - 1];
+
+  const valuesAvailable = [
+    ema20,
+    ema50,
+    ema100,
+    ema200,
+    price,
+  ].every(Number.isFinite);
+
+  if (!valuesAvailable) {
+    return {
+      direction: "NEUTRAL",
+      legacyDirection: null,
+      fullAlignment: false,
+      partialAlignment: false,
+      periods,
+      values: {
+        ema20,
+        ema50,
+        ema100,
+        ema200,
+      },
+      reason: "EMA values unavailable",
+    };
+  }
+
+  const bullishComparisons = [
+    price > ema20,
+    ema20 > ema50,
+    ema50 > ema100,
+    ema100 > ema200,
+  ];
+
+  const bearishComparisons = [
+    price < ema20,
+    ema20 < ema50,
+    ema50 < ema100,
+    ema100 < ema200,
+  ];
+
+  const bullishCount = bullishComparisons.filter(Boolean).length;
+  const bearishCount = bearishComparisons.filter(Boolean).length;
+
+  const bullishFull = bullishCount === 4;
+  const bearishFull = bearishCount === 4;
+
+  let direction = "NEUTRAL";
+  let legacyDirection = null;
+  let reason = "EMA stack mixed";
+
+  if (bullishFull) {
+    direction = "BUY";
+    legacyDirection = "BUY";
+    reason = "Full bullish EMA alignment";
+  } else if (bearishFull) {
+    direction = "SELL";
+    legacyDirection = "SELL";
+    reason = "Full bearish EMA alignment";
+  } else if (bullishCount >= 3) {
+    reason = "Partial bullish EMA alignment";
+  } else if (bearishCount >= 3) {
+    reason = "Partial bearish EMA alignment";
+  }
+
+  return {
+    direction,
+    legacyDirection,
+    fullAlignment: bullishFull || bearishFull,
+    partialAlignment:
+      !bullishFull &&
+      !bearishFull &&
+      Math.max(bullishCount, bearishCount) >= 3,
+
+    bullishCount,
+    bearishCount,
+
+    periods,
+    values: {
+      ema20,
+      ema50,
+      ema100,
+      ema200,
+    },
+
+    reason,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Legacy-compatible step records
+// ---------------------------------------------------------------------------
+
+function livePipelineStep(
+  name,
+  status,
+  detail,
+  extra = {}
+) {
+  const normalizedStatus = String(status || "na").toLowerCase();
+
+  return {
+    name,
+    status: [
+      "pass",
+      "fail",
+      "skip",
+      "na",
+      "info",
+    ].includes(normalizedStatus)
+      ? normalizedStatus
+      : "na",
+
+    passed:
+      normalizedStatus === "pass"
+        ? true
+        : normalizedStatus === "fail"
+          ? false
+          : null,
+
+    detail: String(detail || ""),
+    ...extra,
+  };
+}
+
+function normalizePipelineDecision(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toUpperCase();
+
+  if (
+    normalized === "BUY" ||
+    normalized === "LONG" ||
+    normalized === "BULLISH"
+  ) {
+    return "BUY";
+  }
+
+  if (
+    normalized === "SELL" ||
+    normalized === "SHORT" ||
+    normalized === "BEARISH"
+  ) {
+    return "SELL";
+  }
+
+  return "HOLD";
+}
+
+function liveRoundPrice(value, decimals = 5) {
+  const parsed = candleNumber(value);
+
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+
+  const safeDecimals = Math.max(
+    0,
+    Math.min(10, candleInteger(decimals, 5))
+  );
+
+  return Number(parsed.toFixed(safeDecimals));
+}
+
+function livePairPriceDecimals(pair) {
+  const normalized = String(pair || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z]/g, "");
+
+  if (normalized === "XAUUSD") {
+    return 2;
+  }
+
+  if (normalized.endsWith("JPY")) {
+    return 3;
+  }
+
+  return 5;
+}
+
+
+// ---------------------------------------------------------------------------
+// Trade-plan builder
+// ---------------------------------------------------------------------------
+
+function buildLiveTradePlan({
+  direction,
+  price,
+  atr,
+  supportResistance,
+  pair,
+}) {
+  const normalizedDirection = normalizePipelineDecision(direction);
+  const currentPrice = candleNumber(price);
+  const currentAtr = candleNumber(atr);
+  const decimals = livePairPriceDecimals(pair);
+
+  if (
+    normalizedDirection === "HOLD" ||
+    !Number.isFinite(currentPrice) ||
+    currentPrice <= 0
+  ) {
+    return null;
+  }
+
+  const volatilityBuffer = Math.max(
+    Number.isFinite(currentAtr) ? currentAtr * 0.5 : 0,
+    currentPrice * 0.0004
+  );
+
+  const nearestSupport = candleNumber(
+    supportResistance &&
+      supportResistance.nearestSupport
+  );
+
+  const nearestResistance = candleNumber(
+    supportResistance &&
+      supportResistance.nearestResistance
+  );
+
+  let stopLoss;
+  let takeProfit1;
+  let takeProfit2;
+  let takeProfit3;
+
+  if (normalizedDirection === "BUY") {
+    stopLoss =
+      Number.isFinite(nearestSupport) &&
+      nearestSupport < currentPrice
+        ? nearestSupport - volatilityBuffer
+        : currentPrice - volatilityBuffer * 3;
+
+    const risk = currentPrice - stopLoss;
+
+    if (!Number.isFinite(risk) || risk <= 0) {
+      return null;
+    }
+
+    takeProfit1 =
+      Number.isFinite(nearestResistance) &&
+      nearestResistance > currentPrice
+        ? Math.max(
+            nearestResistance,
+            currentPrice + risk * 2
+          )
+        : currentPrice + risk * 2;
+
+    takeProfit2 = Math.max(
+      takeProfit1,
+      currentPrice + risk * 3
+    );
+
+    takeProfit3 = Math.max(
+      takeProfit2,
+      currentPrice + risk * 4
+    );
+  } else {
+    stopLoss =
+      Number.isFinite(nearestResistance) &&
+      nearestResistance > currentPrice
+        ? nearestResistance + volatilityBuffer
+        : currentPrice + volatilityBuffer * 3;
+
+    const risk = stopLoss - currentPrice;
+
+    if (!Number.isFinite(risk) || risk <= 0) {
+      return null;
+    }
+
+    takeProfit1 =
+      Number.isFinite(nearestSupport) &&
+      nearestSupport < currentPrice
+        ? Math.min(
+            nearestSupport,
+            currentPrice - risk * 2
+          )
+        : currentPrice - risk * 2;
+
+    takeProfit2 = Math.min(
+      takeProfit1,
+      currentPrice - risk * 3
+    );
+
+    takeProfit3 = Math.min(
+      takeProfit2,
+      currentPrice - risk * 4
+    );
+  }
+
+  const risk = Math.abs(currentPrice - stopLoss);
+  const reward1 = Math.abs(takeProfit1 - currentPrice);
+  const riskReward =
+    risk > 0 ? reward1 / risk : 0;
+
+  return {
+    direction: normalizedDirection,
+
+    entry: liveRoundPrice(currentPrice, decimals),
+    entryPrice: liveRoundPrice(currentPrice, decimals),
+
+    stop: liveRoundPrice(stopLoss, decimals),
+    stopLoss: liveRoundPrice(stopLoss, decimals),
+    sl: liveRoundPrice(stopLoss, decimals),
+
+    target1: liveRoundPrice(takeProfit1, decimals),
+    target2: liveRoundPrice(takeProfit2, decimals),
+    target3: liveRoundPrice(takeProfit3, decimals),
+
+    takeProfit1: liveRoundPrice(takeProfit1, decimals),
+    takeProfit2: liveRoundPrice(takeProfit2, decimals),
+    takeProfit3: liveRoundPrice(takeProfit3, decimals),
+
+    tp1: liveRoundPrice(takeProfit1, decimals),
+    tp2: liveRoundPrice(takeProfit2, decimals),
+    tp3: liveRoundPrice(takeProfit3, decimals),
+
+    risk: liveRoundPrice(risk, decimals),
+    reward: liveRoundPrice(reward1, decimals),
+    riskReward: Number(riskReward.toFixed(2)),
+    rr: Number(riskReward.toFixed(2)),
+
+    atr: Number.isFinite(currentAtr)
+      ? liveRoundPrice(currentAtr, decimals)
+      : null,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Single-timeframe analysis
+// ---------------------------------------------------------------------------
+
+function analyzeLiveTimeframe(rows, options = {}) {
+  const normalizedRows = normalizeLiveCandleArray(rows, {
+    maxRows: options.maxRows || 2000,
+  });
+
+  const pair =
+    options.pair ||
+    options.symbol ||
+    "UNKNOWN";
+
+  const timeframe =
+    options.timeframe ||
+    "unknown";
+
+  const steps = [];
+
+  if (normalizedRows.length < 5) {
+    steps.push(
+      livePipelineStep(
+        "Data Availability",
+        "fail",
+        `Only ${normalizedRows.length} usable candles available`
+      )
+    );
+
+    return {
+      pair,
+      timeframe,
+      decision: "HOLD",
+      signal: "HOLD",
+      action: "HOLD",
+      direction: "HOLD",
+
+      confidence: 0,
+      score: 0,
+
+      price: normalizedRows.length
+        ? normalizedRows[normalizedRows.length - 1].close
+        : null,
+
+      trend: "NEUTRAL",
+      trendDirection: "NEUTRAL",
+      tradePlan: null,
+      plan: null,
+      steps,
+      pipeline: steps,
+      candleCount: normalizedRows.length,
+      reason: "Insufficient candle history",
+    };
+  }
+
+  const closes = liveCloseValues(normalizedRows);
+  const lastCandle = normalizedRows[normalizedRows.length - 1];
+  const currentPrice = candleNumber(lastCandle.close);
+
+  const trend = liveTrendSnapshot(normalizedRows);
+  const structure = liveMarketStructure(normalizedRows);
+  const supportResistance = liveSupportResistance(
+    normalizedRows,
+    currentPrice
+  );
+
+  const rsiSeries = liveRsi(
+    closes,
+    Math.min(14, Math.max(4, closes.length - 2))
+  );
+
+  const rsi = liveLastFinite(rsiSeries);
+
+  const macd = liveMacd(closes);
+  const macdValue = liveLastFinite(macd.macdLine);
+  const macdSignal = liveLastFinite(macd.signalLine);
+  const macdHistogram = liveLastFinite(macd.histogram);
+
+  const atrSeries = liveAtr(normalizedRows, 14);
+  const atr = liveLastFinite(atrSeries);
+
+  let alive = true;
+  let direction = trend.legacyDirection;
+
+  steps.push(
+    livePipelineStep(
+      "Trend",
+      trend.fullAlignment ? "pass" : "fail",
+      trend.reason,
+      {
+        direction: trend.direction,
+        periods: trend.periods,
+        values: trend.values,
+      }
+    )
+  );
+
+  if (!trend.fullAlignment || !direction) {
+    alive = false;
+  }
+
+  steps.push(
+    livePipelineStep(
+      "EMA Alignment",
+      trend.fullAlignment ? "pass" : "fail",
+      trend.fullAlignment
+        ? `${direction} EMA stack confirmed`
+        : "Full EMA stack not confirmed"
+    )
+  );
+
+  // Retain legacy behavior: ADX unavailable when the supplied feed does not
+  // contain a dedicated ADX calculation.
+  steps.push(
+    livePipelineStep(
+      "ADX > 25?",
+      "na",
+      "ADX confirmation unavailable in the legacy-compatible candle pipeline"
+    )
+  );
+
+  const hasMeaningfulVolume = normalizedRows.some(
+    (row) => candleNumber(row.volume, 0) > 0
+  );
+
+  steps.push(
+    livePipelineStep(
+      "Volume Confirmed?",
+      hasMeaningfulVolume ? "info" : "na",
+      hasMeaningfulVolume
+        ? "Volume data present; retained as informational"
+        : "Reliable centralized volume unavailable"
+    )
+  );
+
+  if (!alive) {
+    steps.push(
+      livePipelineStep(
+        "MACD Confirmation",
+        "skip",
+        "Skipped because trend alignment failed"
+      )
+    );
+  } else {
+    const macdPassed =
+      direction === "BUY"
+        ? Number.isFinite(macdValue) &&
+          Number.isFinite(macdSignal) &&
+          macdValue > macdSignal
+        : Number.isFinite(macdValue) &&
+          Number.isFinite(macdSignal) &&
+          macdValue < macdSignal;
+
+    steps.push(
+      livePipelineStep(
+        "MACD Confirmation",
+        macdPassed ? "pass" : "fail",
+        Number.isFinite(macdValue) &&
+        Number.isFinite(macdSignal)
+          ? `MACD ${macdValue.toFixed(6)} vs signal ${macdSignal.toFixed(6)}`
+          : "MACD values unavailable",
+        {
+          macd: macdValue,
+          signal: macdSignal,
+          histogram: macdHistogram,
+        }
+      )
+    );
+
+    if (!macdPassed) {
+      alive = false;
+    }
+  }
+
+  if (!alive) {
+    steps.push(
+      livePipelineStep(
+        "RSI Confirmation",
+        "skip",
+        "Skipped because an earlier required confirmation failed"
+      )
+    );
+  } else {
+    const rsiPassed =
+      direction === "BUY"
+        ? Number.isFinite(rsi) && rsi >= 45 && rsi <= 65
+        : Number.isFinite(rsi) && rsi >= 35 && rsi <= 55;
+
+    steps.push(
+      livePipelineStep(
+        "RSI Confirmation",
+        rsiPassed ? "pass" : "fail",
+        Number.isFinite(rsi)
+          ? `RSI ${rsi.toFixed(2)}`
+          : "RSI unavailable",
+        {
+          rsi,
+        }
+      )
+    );
+
+    if (!rsiPassed) {
+      alive = false;
+    }
+  }
+
+  steps.push(
+    livePipelineStep(
+      "Market Structure",
+      structure.direction === direction
+        ? "pass"
+        : structure.direction === "NEUTRAL"
+          ? "info"
+          : "fail",
+      structure.label,
+      {
+        direction: structure.direction,
+        score: structure.score,
+      }
+    )
+  );
+
+  if (
+    alive &&
+    structure.direction !== "NEUTRAL" &&
+    structure.direction !== direction
+  ) {
+    alive = false;
+  }
+
+  if (!alive) {
+    steps.push(
+      livePipelineStep(
+        "Support/Resistance",
+        "skip",
+        "Skipped because an earlier required confirmation failed"
+      )
+    );
+  } else {
+    let distanceRatio = null;
+    let level = null;
+
+    if (direction === "BUY") {
+      level = supportResistance.nearestResistance;
+
+      if (Number.isFinite(level) && level > currentPrice) {
+        distanceRatio = (level - currentPrice) / currentPrice;
+      }
+    } else {
+      level = supportResistance.nearestSupport;
+
+      if (Number.isFinite(level) && level < currentPrice) {
+        distanceRatio = (currentPrice - level) / currentPrice;
+      }
+    }
+
+    const srPassed =
+      !Number.isFinite(level) ||
+      !Number.isFinite(distanceRatio) ||
+      distanceRatio >= 0.003;
+
+    steps.push(
+      livePipelineStep(
+        "Support/Resistance",
+        srPassed ? "pass" : "fail",
+        !Number.isFinite(level)
+          ? "No blocking nearby level detected"
+          : `${direction === "BUY" ? "Resistance" : "Support"} distance ${(distanceRatio * 100).toFixed(2)}%`,
+        {
+          level,
+          distanceRatio,
+          supports: supportResistance.supports,
+          resistances: supportResistance.resistances,
+        }
+      )
+    );
+
+    if (!srPassed) {
+      alive = false;
+    }
+  }
+
+  steps.push(
+    livePipelineStep(
+      "ATR-style Stop Loss",
+      Number.isFinite(atr) ? "info" : "na",
+      Number.isFinite(atr)
+        ? `ATR ${atr.toFixed(livePairPriceDecimals(pair))}`
+        : "ATR unavailable",
+      {
+        atr,
+      }
+    )
+  );
+
+  const preliminaryDecision = alive
+    ? normalizePipelineDecision(direction)
+    : "HOLD";
+
+  const tradePlan =
+    preliminaryDecision !== "HOLD"
+      ? buildLiveTradePlan({
+          direction: preliminaryDecision,
+          price: currentPrice,
+          atr,
+          supportResistance,
+          pair,
+        })
+      : null;
+
+  let finalDecision = preliminaryDecision;
+
+  if (preliminaryDecision === "HOLD") {
+    steps.push(
+      livePipelineStep(
+        "Trade Plan + Risk:Reward",
+        "skip",
+        "No trade plan because required confirmations did not pass"
+      )
+    );
+  } else if (!tradePlan) {
+    finalDecision = "HOLD";
+
+    steps.push(
+      livePipelineStep(
+        "Trade Plan + Risk:Reward",
+        "fail",
+        "A valid risk-managed trade plan could not be constructed"
+      )
+    );
+  } else if (tradePlan.riskReward < 2) {
+    finalDecision = "HOLD";
+
+    steps.push(
+      livePipelineStep(
+        "Trade Plan + Risk:Reward",
+        "fail",
+        `Risk:Reward ${tradePlan.riskReward.toFixed(2)} is below 2.00`,
+        {
+          riskReward: tradePlan.riskReward,
+        }
+      )
+    );
+  } else {
+    steps.push(
+      livePipelineStep(
+        "Trade Plan + Risk:Reward",
+        "pass",
+        `Risk:Reward ${tradePlan.riskReward.toFixed(2)}`,
+        {
+          riskReward: tradePlan.riskReward,
+        }
+      )
+    );
+  }
+
+  const requiredSteps = steps.filter(
+    (step) =>
+      step.status === "pass" ||
+      step.status === "fail"
+  );
+
+  const passedRequiredSteps = requiredSteps.filter(
+    (step) => step.status === "pass"
+  ).length;
+
+  const failedRequiredSteps = requiredSteps.filter(
+    (step) => step.status === "fail"
+  ).length;
+
+  const confirmationRatio =
+    requiredSteps.length > 0
+      ? passedRequiredSteps / requiredSteps.length
+      : 0;
+
+  let score = 0;
+
+  if (trend.direction === "BUY") score += 30;
+  if (trend.direction === "SELL") score -= 30;
+
+  score += structure.score;
+
+  if (
+    Number.isFinite(macdHistogram) &&
+    macdHistogram > 0
+  ) {
+    score += 15;
+  } else if (
+    Number.isFinite(macdHistogram) &&
+    macdHistogram < 0
+  ) {
+    score -= 15;
+  }
+
+  if (Number.isFinite(rsi)) {
+    if (rsi >= 50 && rsi <= 65) {
+      score += 10;
+    } else if (rsi >= 35 && rsi < 50) {
+      score -= 10;
+    }
+  }
+
+  score = Math.max(-100, Math.min(100, score));
+
+  const confidence =
+    finalDecision === "HOLD"
+      ? Math.max(
+          0,
+          Math.min(
+            69,
+            Math.round(confirmationRatio * 70)
+          )
+        )
+      : Math.max(
+          50,
+          Math.min(
+            99,
+            Math.round(60 + confirmationRatio * 35)
+          )
+        );
+
+  const reason =
+    finalDecision === "HOLD"
+      ? failedRequiredSteps > 0
+        ? `${failedRequiredSteps} required confirmation(s) failed`
+        : "No fully confirmed directional setup"
+      : `${finalDecision} setup confirmed by the legacy-compatible pipeline`;
+
+  return {
+    pair,
+    timeframe,
+
+    decision: finalDecision,
+    signal: finalDecision,
+    action: finalDecision,
+    direction: finalDecision,
+
+    rawDirection: direction || "NEUTRAL",
+    trend: trend.direction,
+    trendDirection: trend.direction,
+
+    confidence,
+    score,
+
+    price: currentPrice,
+    currentPrice,
+    lastPrice: currentPrice,
+
+    timestamp: lastCandle.timestamp,
+    time: lastCandle.time,
+
+    candleCount: normalizedRows.length,
+
+    indicators: {
+      rsi,
+      macd: macdValue,
+      macdSignal,
+      macdHistogram,
+      atr,
+
+      ema20: trend.values.ema20,
+      ema50: trend.values.ema50,
+      ema100: trend.values.ema100,
+      ema200: trend.values.ema200,
+    },
+
+    rsi,
+    macd: macdValue,
+    macdSignal,
+    macdHistogram,
+    atr,
+
+    ema20: trend.values.ema20,
+    ema50: trend.values.ema50,
+    ema100: trend.values.ema100,
+    ema200: trend.values.ema200,
+
+    marketStructure: structure,
+    structure,
+
+    supportResistance,
+    supports: supportResistance.supports,
+    resistances: supportResistance.resistances,
+    nearestSupport: supportResistance.nearestSupport,
+    nearestResistance: supportResistance.nearestResistance,
+
+    tradePlan:
+      finalDecision !== "HOLD" ? tradePlan : null,
+
+    plan:
+      finalDecision !== "HOLD" ? tradePlan : null,
+
+    entry:
+      finalDecision !== "HOLD" && tradePlan
+        ? tradePlan.entry
+        : null,
+
+    stop:
+      finalDecision !== "HOLD" && tradePlan
+        ? tradePlan.stop
+        : null,
+
+    stopLoss:
+      finalDecision !== "HOLD" && tradePlan
+        ? tradePlan.stopLoss
+        : null,
+
+    target1:
+      finalDecision !== "HOLD" && tradePlan
+        ? tradePlan.target1
+        : null,
+
+    target2:
+      finalDecision !== "HOLD" && tradePlan
+        ? tradePlan.target2
+        : null,
+
+    target3:
+      finalDecision !== "HOLD" && tradePlan
+        ? tradePlan.target3
+        : null,
+
+    tp1:
+      finalDecision !== "HOLD" && tradePlan
+        ? tradePlan.tp1
+        : null,
+
+    tp2:
+      finalDecision !== "HOLD" && tradePlan
+        ? tradePlan.tp2
+        : null,
+
+    tp3:
+      finalDecision !== "HOLD" && tradePlan
+        ? tradePlan.tp3
+        : null,
+
+    riskReward:
+      finalDecision !== "HOLD" && tradePlan
+        ? tradePlan.riskReward
+        : null,
+
+    rr:
+      finalDecision !== "HOLD" && tradePlan
+        ? tradePlan.rr
+        : null,
+
+    reason,
+
+    steps,
+    pipeline: steps,
+
+    diagnostics: {
+      requiredSteps: requiredSteps.length,
+      passedRequiredSteps,
+      failedRequiredSteps,
+      confirmationRatio: Number(
+        confirmationRatio.toFixed(4)
+      ),
+    },
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Multi-timeframe confirmation
+// ---------------------------------------------------------------------------
+
+function applyLiveHigherTimeframeConfirmation(
+  lowerAnalysis,
+  higherAnalysis,
+  options = {}
+) {
+  const lower =
+    lowerAnalysis && typeof lowerAnalysis === "object"
+      ? { ...lowerAnalysis }
+      : null;
+
+  if (!lower) {
+    return lowerAnalysis;
+  }
+
+  const higher =
+    higherAnalysis && typeof higherAnalysis === "object"
+      ? higherAnalysis
+      : null;
+
+  const steps = Array.isArray(lower.steps)
+    ? [...lower.steps]
+    : [];
+
+  if (!higher) {
+    steps.push(
+      livePipelineStep(
+        "Multi-Timeframe Confirmation",
+        "na",
+        "Higher-timeframe analysis unavailable"
+      )
+    );
+
+    lower.steps = steps;
+    lower.pipeline = steps;
+
+    return lower;
+  }
+
+  const lowerDecision = normalizePipelineDecision(
+    lower.decision || lower.signal
+  );
+
+  const higherTrend = normalizePipelineDecision(
+    higher.rawDirection ||
+      higher.trendDirection ||
+      higher.trend ||
+      higher.decision
+  );
+
+  if (lowerDecision === "HOLD") {
+    steps.push(
+      livePipelineStep(
+        "Multi-Timeframe Confirmation",
+        "skip",
+        "Lower timeframe has no active directional setup",
+        {
+          higherTimeframe:
+            options.higherTimeframe ||
+            higher.timeframe ||
+            null,
+
+          higherDirection: higherTrend,
+        }
+      )
+    );
+
+    lower.steps = steps;
+    lower.pipeline = steps;
+
+    return lower;
+  }
+
+  const confirmed = higherTrend === lowerDecision;
+
+  steps.push(
+    livePipelineStep(
+      "Multi-Timeframe Confirmation",
+      confirmed ? "pass" : "fail",
+      confirmed
+        ? `${higher.timeframe || "Higher timeframe"} confirms ${lowerDecision}`
+        : `${higher.timeframe || "Higher timeframe"} does not confirm ${lowerDecision}`,
+      {
+        higherTimeframe:
+          options.higherTimeframe ||
+          higher.timeframe ||
+          null,
+
+        higherDirection: higherTrend,
+      }
+    )
+  );
+
+  lower.steps = steps;
+  lower.pipeline = steps;
+
+  lower.higherTimeframe = {
+    timeframe:
+      options.higherTimeframe ||
+      higher.timeframe ||
+      null,
+
+    decision:
+      normalizePipelineDecision(
+        higher.decision || higher.signal
+      ),
+
+    direction: higherTrend,
+    confidence: candleNumber(higher.confidence, 0),
+  };
+
+  lower.mtfConfirmed = confirmed;
+
+  if (!confirmed) {
+    lower.decision = "HOLD";
+    lower.signal = "HOLD";
+    lower.action = "HOLD";
+    lower.direction = "HOLD";
+
+    lower.tradePlan = null;
+    lower.plan = null;
+
+    lower.entry = null;
+    lower.stop = null;
+    lower.stopLoss = null;
+
+    lower.target1 = null;
+    lower.target2 = null;
+    lower.target3 = null;
+
+    lower.tp1 = null;
+    lower.tp2 = null;
+    lower.tp3 = null;
+
+    lower.riskReward = null;
+    lower.rr = null;
+
+    lower.confidence = Math.min(
+      candleInteger(lower.confidence, 0),
+      69
+    );
+
+    lower.reason =
+      "Higher timeframe did not confirm the lower-timeframe setup";
+  }
+
+  return lower;
+}
+
+
+// ---------------------------------------------------------------------------
+// Legacy-compatible complete analysis pipeline
+// ---------------------------------------------------------------------------
+
+function runLegacyCompatibleAnalysisPipeline(input = {}) {
+  const pair =
+    input.pair ||
+    input.symbol ||
+    input.pairLabel ||
+    "UNKNOWN";
+
+  const frames =
+    input.frames &&
+    typeof input.frames === "object"
+      ? input.frames
+      : prepareLiveAnalysisFrames(input);
+
+  const scalpAnalysis = analyzeLiveTimeframe(
+    frames.scalp || [],
+    {
+      pair,
+      timeframe:
+        input.scalpTimeframe ||
+        input.timeframe ||
+        "SCALP",
+      maxRows: input.maxScalpAnalysisRows || 1200,
+    }
+  );
+
+  const intradayBase = analyzeLiveTimeframe(
+    frames.intraday || [],
+    {
+      pair,
+      timeframe: "H1",
+      maxRows: input.maxIntradayAnalysisRows || 1000,
+    }
+  );
+
+  const dailyBase = analyzeLiveTimeframe(
+    frames.daily || [],
+    {
+      pair,
+      timeframe: "D1",
+      maxRows: input.maxDailyAnalysisRows || 600,
+    }
+  );
+
+  const weeklyAnalysis = analyzeLiveTimeframe(
+    frames.weekly || [],
+    {
+      pair,
+      timeframe: "W1",
+      maxRows: input.maxWeeklyAnalysisRows || 300,
+    }
+  );
+
+  const dailyAnalysis =
+    frames.weekly && frames.weekly.length > 0
+      ? applyLiveHigherTimeframeConfirmation(
+          dailyBase,
+          weeklyAnalysis,
+          {
+            higherTimeframe: "W1",
+          }
+        )
+      : dailyBase;
+
+  const intradayAnalysis =
+    frames.daily && frames.daily.length > 0
+      ? applyLiveHigherTimeframeConfirmation(
+          intradayBase,
+          dailyAnalysis,
+          {
+            higherTimeframe: "D1",
+          }
+        )
+      : intradayBase;
+
+  const confirmedScalpAnalysis =
+    frames.intraday && frames.intraday.length > 0
+      ? applyLiveHigherTimeframeConfirmation(
+          scalpAnalysis,
+          intradayAnalysis,
+          {
+            higherTimeframe: "H1",
+          }
+        )
+      : scalpAnalysis;
+
+  return {
+    pair,
+
+    generatedAt: new Date().toISOString(),
+    timestamp: Date.now(),
+
+    scalp: confirmedScalpAnalysis,
+    intraday: intradayAnalysis,
+    daily: dailyAnalysis,
+    weekly: weeklyAnalysis,
+
+    analyses: {
+      scalp: confirmedScalpAnalysis,
+      intraday: intradayAnalysis,
+      daily: dailyAnalysis,
+      weekly: weeklyAnalysis,
+    },
+
+    frames: {
+      scalp: frames.scalp || [],
+      intraday: frames.intraday || [],
+      daily: frames.daily || [],
+      weekly: frames.weekly || [],
+    },
+
+    frameMetadata:
+      frames.metadata &&
+      typeof frames.metadata === "object"
+        ? frames.metadata
+        : {
+            scalpCount: Array.isArray(frames.scalp)
+              ? frames.scalp.length
+              : 0,
+
+            intradayCount: Array.isArray(frames.intraday)
+              ? frames.intraday.length
+              : 0,
+
+            dailyCount: Array.isArray(frames.daily)
+              ? frames.daily.length
+              : 0,
+
+            weeklyCount: Array.isArray(frames.weekly)
+              ? frames.weekly.length
+              : 0,
+          },
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Legacy analysis aliases
+// ---------------------------------------------------------------------------
+//
+// These wrappers preserve compatibility for callers that use older analysis
+// helper names while keeping the revised implementation centralized.
+// ---------------------------------------------------------------------------
+
+function aggregateCandles(rows, timeframe, options = {}) {
+  return aggregateLiveCandles(rows, timeframe, options);
+}
+
+function aggregateToDaily(rows, options = {}) {
+  return aggregateDailyCandles(rows, options);
+}
+
+function aggregateToWeekly(rows, options = {}) {
+  return aggregateWeeklyCandles(rows, options);
+}
+
+function buildWeeklyCandles(rows, options = {}) {
+  return buildLegacyWeeklyCandles(rows, options);
+}
+
+function prepareAnalysisFrames(input = {}) {
+  return prepareLiveAnalysisFrames(input);
+}
+
+function analyzeLegacyCompatible(rows, options = {}) {
+  return analyzeLiveTimeframe(rows, options);
+}
+
+function runAnalysisPipeline(input = {}) {
+  return runLegacyCompatibleAnalysisPipeline(input);
+}
+

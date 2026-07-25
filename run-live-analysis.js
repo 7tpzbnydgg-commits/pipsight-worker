@@ -3417,27 +3417,27 @@ TP: ${formatScalpValue(
     };
 
     const masterNotifyKey =
-      `${pairKey}:master`;
+  `${pairKey}:master`;
 
-    if (
-      (
-        verdict === "BUY" ||
-        verdict === "SELL"
-      ) &&
-      notifyState[
-        masterNotifyKey
-      ] !== verdict
-    ) {
-      const voteSummary =
-        votes
-          .map(
-            (vote) =>
-              `${vote.engine}: ${vote.signal}`
-          )
-          .join(" · ");
+if (
+  (
+    verdict === "BUY" ||
+    verdict === "SELL"
+  ) &&
+  notifyState[
+    masterNotifyKey
+  ] !== verdict
+) {
+  const voteSummary =
+    votes
+      .map(
+        (vote) =>
+          `${vote.engine}: ${vote.signal}`
+      )
+      .join(" · ");
 
-      await sendTelegram(
-        `⭐ PipSight — Master Signal
+  await sendTelegram(
+    `⭐ PipSight — Master Signal
 ${pairKey}
 ${
   verdict === "BUY"
@@ -3445,12 +3445,12 @@ ${
     : "🔴"
 } ${verdict} (2+ engines agree)
 ${voteSummary}`
-      );
-    }
+  );
+}
 
-    notifyState[
-      masterNotifyKey
-    ] = verdict;
+notifyState[
+  masterNotifyKey
+] = verdict;
 
     output.pairs[
       pairKey

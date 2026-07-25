@@ -1,6 +1,6 @@
 {
-  "updatedAt": "2026-07-25T16:15:44.829Z",
-  "engineVersion": "1.1.0-pro-foundation",
+  "updatedAt": "2026-07-25T17:02:43.763Z",
+  "engineVersion": "1.2.0-pro-integrated",
   "strategyVersion": "legacy-compatible-1.0",
   "compatibilityMode": "legacy",
   "pairs": {
@@ -12,6 +12,7 @@
         "passCount": 2,
         "gatedCount": 3,
         "diagnostics": {
+          "pair": "XAUUSD",
           "adx14": 36.05205405910288,
           "atr14": 64.31255775123739,
           "trendLabel": "Bearish — full EMA stack 20<50<100<200",
@@ -86,8 +87,9 @@
         "passCount": 0,
         "gatedCount": 1,
         "diagnostics": {
-          "adx14": 23.730982332486974,
-          "atr14": 3.0874652777197995,
+          "pair": "XAUUSD",
+          "adx14": 23.40756460128977,
+          "atr14": 2.6851334282379997,
           "trendLabel": "Partial bearish lean only (3/4) — not enough to qualify",
           "pipeline": [
             {
@@ -103,7 +105,7 @@
             {
               "name": "ADX > 25?",
               "status": "na",
-              "detail": "Informational — ADX(14) = 23.7"
+              "detail": "Informational — ADX(14) = 23.4"
             },
             {
               "name": "Volume Confirmed?",
@@ -154,33 +156,23 @@
         }
       },
       "scalp": {
-        "decision": "BUY",
-        "reason": "",
-        "perTF": [
-          {
-            "tf": "5m",
-            "signal": "BUY"
-          },
-          {
-            "tf": "15m",
-            "signal": "BUY"
-          },
-          {
-            "tf": "30m",
-            "signal": "HOLD"
-          }
-        ],
-        "entry": 4056,
-        "sl": 4055.76,
-        "tp": 4056.48,
-        "rr": 2
+        "decision": "HOLD",
+        "reason": "Dedicated scalp engine returned HOLD",
+        "perTF": [],
+        "entry": null,
+        "sl": null,
+        "tp": null,
+        "rr": null,
+        "source": "scalp-signals.json",
+        "sourceMode": "primary",
+        "updatedAt": "2026-07-25T16:50:31.470Z"
       },
       "master": {
-        "verdict": "MIXED",
+        "verdict": "HOLD",
         "votes": [
           {
             "engine": "Scalp",
-            "signal": "BUY"
+            "signal": "HOLD"
           },
           {
             "engine": "Intraday",
@@ -201,6 +193,7 @@
         "passCount": 2,
         "gatedCount": 3,
         "diagnostics": {
+          "pair": "GBPJPY",
           "adx14": 24.176377622309527,
           "atr14": 0.8754749367174811,
           "trendLabel": "Bullish — full EMA stack 20>50>100>200",
@@ -270,29 +263,30 @@
       },
       "intraday": {
         "signal": "HOLD",
-        "suppressionReason": "NO TRADE — no confirmed trend direction yet",
+        "suppressionReason": "NO TRADE — stopped at \"MACD Confirmation\"",
         "tradePlan": null,
-        "passCount": 0,
-        "gatedCount": 1,
+        "passCount": 2,
+        "gatedCount": 3,
         "diagnostics": {
-          "adx14": 9.04400423626233,
-          "atr14": 0.08825079578217222,
-          "trendLabel": "Partial bullish lean only (3/4) — not enough to qualify",
+          "pair": "GBPJPY",
+          "adx14": 9.755491509269788,
+          "atr14": 0.0817164514652391,
+          "trendLabel": "Bullish — full EMA stack 20>50>100>200",
           "pipeline": [
             {
               "name": "Trend",
-              "status": "fail",
-              "detail": "Partial bullish lean only (3/4) — not enough to qualify"
+              "status": "pass",
+              "detail": "Bullish — full EMA stack 20>50>100>200"
             },
             {
               "name": "EMA Alignment",
-              "status": "skip",
-              "detail": "Not reached — an earlier required step failed"
+              "status": "pass",
+              "detail": "Full EMA stack confirms bullish alignment"
             },
             {
               "name": "ADX > 25?",
               "status": "na",
-              "detail": "Informational — ADX(14) = 9.0"
+              "detail": "Informational — ADX(14) = 9.8"
             },
             {
               "name": "Volume Confirmed?",
@@ -301,8 +295,8 @@
             },
             {
               "name": "MACD Confirmation",
-              "status": "skip",
-              "detail": "Not reached — an earlier required step failed"
+              "status": "fail",
+              "detail": "MACD 0.0084 vs signal 0.0131 — does not confirm BUY"
             },
             {
               "name": "RSI Confirmation",
@@ -316,8 +310,8 @@
             },
             {
               "name": "Candle Pattern",
-              "status": "na",
-              "detail": "Not available"
+              "status": "skip",
+              "detail": "Not reached — an earlier required step failed"
             },
             {
               "name": "High-Impact News Filter",
@@ -343,33 +337,23 @@
         }
       },
       "scalp": {
-        "decision": "BUY",
-        "reason": "",
-        "perTF": [
-          {
-            "tf": "5m",
-            "signal": "BUY"
-          },
-          {
-            "tf": "15m",
-            "signal": "BUY"
-          },
-          {
-            "tf": "30m",
-            "signal": "BUY"
-          }
-        ],
-        "entry": 218.323,
-        "sl": 218.285,
-        "tp": 218.398,
-        "rr": 2
+        "decision": "HOLD",
+        "reason": "Dedicated scalp engine returned HOLD",
+        "perTF": [],
+        "entry": null,
+        "sl": null,
+        "tp": null,
+        "rr": null,
+        "source": "scalp-signals.json",
+        "sourceMode": "primary",
+        "updatedAt": "2026-07-25T16:50:31.470Z"
       },
       "master": {
-        "verdict": "MIXED",
+        "verdict": "HOLD",
         "votes": [
           {
             "engine": "Scalp",
-            "signal": "BUY"
+            "signal": "HOLD"
           },
           {
             "engine": "Intraday",
@@ -394,11 +378,11 @@
         "stale": false
       },
       "intraday": {
-        "sourceRows": 816,
-        "validRows": 816,
+        "sourceRows": 818,
+        "validRows": 818,
         "invalidRows": 0,
         "duplicateRows": 0,
-        "latest": "2026-07-26 01:00:00",
+        "latest": "2026-07-26 03:00:00",
         "stale": false
       },
       "scalp": {
@@ -406,7 +390,15 @@
         "validRows": 360,
         "invalidRows": 0,
         "duplicateRows": 0,
-        "latest": "2026-07-26 02:05:00",
+        "latest": "2026-07-26 02:45:00",
+        "stale": false
+      },
+      "dedicatedScalp": {
+        "available": true,
+        "pairFound": true,
+        "valid": true,
+        "decision": "HOLD",
+        "updatedAt": "2026-07-25T16:50:31.470Z",
         "stale": false
       }
     },
@@ -420,11 +412,11 @@
         "stale": false
       },
       "intraday": {
-        "sourceRows": 816,
-        "validRows": 816,
+        "sourceRows": 818,
+        "validRows": 818,
         "invalidRows": 0,
         "duplicateRows": 0,
-        "latest": "2026-07-26 01:00:00",
+        "latest": "2026-07-26 03:00:00",
         "stale": false
       },
       "scalp": {
@@ -432,7 +424,15 @@
         "validRows": 360,
         "invalidRows": 0,
         "duplicateRows": 0,
-        "latest": "2026-07-26 02:05:00",
+        "latest": "2026-07-26 02:45:00",
+        "stale": false
+      },
+      "dedicatedScalp": {
+        "available": true,
+        "pairFound": true,
+        "valid": true,
+        "decision": "HOLD",
+        "updatedAt": "2026-07-25T16:50:31.470Z",
         "stale": false
       }
     }

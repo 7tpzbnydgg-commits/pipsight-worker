@@ -579,6 +579,656 @@ function unwrapScalpRecord(record) {
   };
 }
 
+function normalizeScalpMode(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized =
+    value
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, "");
+
+  if (
+    normalized === "M5" ||
+    normalized === "5M" ||
+    normalized === "5MIN"
+  ) {
+    return "M5";
+  }
+
+  if (
+    normalized === "M15" ||
+    normalized === "15M" ||
+    normalized === "15MIN"
+  ) {
+    return "M15";
+  }
+
+  if (
+    normalized === "M30" ||
+    normalized === "30M" ||
+    normalized === "30MIN"
+  ) {
+    return "M30";
+  }
+
+  return null;
+}
+
+function collectDedicatedScalpPairRecords(
+  rawScalpSignals,
+  pairKey
+) {
+  if (
+    !rawScalpSignals ||
+    typeof rawScalpSignals !== "object"
+  ) {
+    return [];
+  }
+
+  const records = [];
+  const seen = new Set();
+
+  function addRecord(record) {
+    if (
+      !record ||
+      typeof record !== "object"
+    ) {
+      return;
+    }
+
+    if (seen.has(record)) {
+      return;
+    }
+
+    const rawPair =
+      firstString(
+        record.pair,
+        record.symbol,
+        record.pairKey,
+        record.instrument,
+        record.market
+      );
+
+    if (
+      rawPair &&
+      normalizePairKey(rawPair) !== pairKey
+    ) {
+      return;
+    }
+
+    const unwrapped =
+      unwrapScalpRecord(record);
+
+    const decision =
+      extractDecisionFromRecord(
+        unwrapped
+      );
+
+    if (!decision) {
+      return;
+    }
+
+    seen.add(record);
+    records.push(record);
+  }
+
+  function inspectContainer(
+    container
+  ) {
+    if (!container) {
+      return;
+    }
+
+    if (Array.isArray(container)) {
+      for (const record of container) {
+        addRecord(record);
+      }
+
+      return;
+    }
+
+    if (
+      typeof container !== "object"
+    ) {
+      return;
+    }
+
+    const aliases =
+      PAIR_ALIASES[pairKey] ||
+      [pairKey];
+
+    for (const alias of aliases) {
+      if (
+        Object.prototype.hasOwnProperty.call(
+          container,
+          alias
+        )
+      ) {
+        const pairValue =
+          container[alias];
+
+        if (Array.isArray(pairValue)) {
+          for (
+            const record of
+            pairValue
+          ) {
+            addRecord(record);
+          }
+        } else {
+          addRecord(pairValue);
+        }
+      }
+    }
+
+    for (
+      const [rawKey, value] of
+      Object.entries(container)
+    ) {
+      if (
+        normalizePairKey(rawKey) ===
+        pairKey
+      ) {
+        if (Array.isArray(value)) {
+          for (
+            const record of value
+          ) {
+            addRecord(record);
+          }
+        } else {
+          addRecord(value);
+        }
+      }
+    }
+  }
+
+  inspectContainer(
+    rawScalpSignals.signals
+  );
+
+  inspectContainer(
+    rawScalpSignals.pairs
+  );
+
+  inspectContainer(
+    rawScalpSignals.results
+  );
+
+  inspectContainer(
+    rawScalpSignals.data
+  );
+
+  inspectContainer(
+    rawScalpSignals.latest
+  );
+
+  inspectContainer(
+    rawScalpSignals
+  );
+
+  return records;
+}
+
+function parseDedicatedScalpRecord(
+  pairRecord,
+  rawScalpSignals,
+  decimals
+) {
+  const record =
+    unwrapScalpRecord(pairRecord);
+
+  const decision =
+    extractDecisionFromRecord(record);
+
+  if (!decision) {
+    return null;
+  }
+
+  const tradePlan =
+    record.tradePlan &&
+    typeof record.tradePlan ===
+      "object"
+      ? record.tradePlan
+      : {};
+
+  const entry =
+    firstFiniteNumber(
+      record.entry,
+      record.entryPrice,
+      record.price,
+      record.currentPrice,
+      tradePlan.entry,
+      tradePlan.entryPrice
+    );
+
+  const sl =
+    firstFiniteNumber(
+      record.sl,
+      record.stop,
+      record.stopLoss,
+      record.stop_loss,
+      tradePlan.sl,
+      tradePlan.stop,
+      tradePlan.stopLoss
+    );
+
+  const tp =
+    firstFiniteNumber(
+      record.tp,
+      record.target,
+      record.target1,
+      record.takeProfit,
+      record.take_profit,
+      tradePlan.tp,
+      tradePlan.target,
+      tradePlan.target1,
+      tradePlan.takeProfit
+    );
+
+  let rr =
+    firstFiniteNumber(
+      record.rr,
+      record.riskReward,
+      record.risk_reward,
+      tradePlan.rr,
+      tradePlan.riskReward
+    );
+
+  if (
+    rr == null &&
+    entry != null &&
+    sl != null &&
+    tp != null
+  ) {
+    const risk =
+      Math.abs(entry - sl);
+
+    const reward =
+      Math.abs(tp - entry);
+
+    rr =
+      risk > 0
+        ? reward / risk
+        : null;
+  }
+
+  const mode =
+    normalizeScalpMode(
+      firstString(
+        record.mode,
+        record.timeframe,
+        record.tf,
+        pairRecord.mode,
+        pairRecord.timeframe,
+        pairRecord.tf
+      )
+    );
+
+  const updatedAt =
+    normalizeTime(
+      firstString(
+        record.updatedAt,
+        record.generatedAt,
+        record.timestamp,
+        record.time,
+        pairRecord.updatedAt,
+        pairRecord.generatedAt,
+        rawScalpSignals.updatedAt,
+        rawScalpSignals.generatedAt,
+        rawScalpSignals.timestamp,
+        rawScalpSignals.time
+      )
+    );
+
+  return {
+    mode,
+    decision,
+    entry:
+      roundPrice(
+        entry,
+        decimals
+      ),
+    sl:
+      roundPrice(
+        sl,
+        decimals
+      ),
+    tp:
+      roundPrice(
+        tp,
+        decimals
+      ),
+    rr:
+      rr == null
+        ? null
+        : Number(
+            rr.toFixed(2)
+          ),
+    reason:
+      firstString(
+        record.reason,
+        record.explanation,
+        record.suppressionReason,
+        record.message
+      ),
+    updatedAt,
+  };
+}
+
+function resolveDedicatedScalpSignal(
+  rawScalpSignals,
+  pairKey,
+  decimals
+) {
+  if (
+    !rawScalpSignals ||
+    typeof rawScalpSignals !== "object"
+  ) {
+    return {
+      valid: false,
+      reason:
+        "data/scalp-signals.json is missing or unreadable",
+      signal: null,
+      meta: {
+        available: false,
+        pairFound: false,
+        valid: false,
+        decision: null,
+        updatedAt: null,
+        stale: null,
+      },
+    };
+  }
+
+  const rawRecords =
+    collectDedicatedScalpPairRecords(
+      rawScalpSignals,
+      pairKey
+    );
+
+  if (rawRecords.length === 0) {
+    return {
+      valid: false,
+      reason:
+        `No dedicated scalp record found for ${pairKey}`,
+      signal: null,
+      meta: {
+        available: true,
+        pairFound: false,
+        valid: false,
+        decision: null,
+        updatedAt:
+          normalizeTime(
+            firstString(
+              rawScalpSignals.updatedAt,
+              rawScalpSignals.generatedAt,
+              rawScalpSignals.timestamp,
+              rawScalpSignals.time
+            )
+          ),
+        stale: null,
+      },
+    };
+  }
+
+  const parsedRecords =
+    rawRecords
+      .map(
+        (record) =>
+          parseDedicatedScalpRecord(
+            record,
+            rawScalpSignals,
+            decimals
+          )
+      )
+      .filter(Boolean);
+
+  if (
+    parsedRecords.length === 0
+  ) {
+    return {
+      valid: false,
+      reason:
+        `Dedicated scalp records for ${pairKey} contain no valid decisions`,
+      signal: null,
+      meta: {
+        available: true,
+        pairFound: true,
+        valid: false,
+        decision: null,
+        updatedAt: null,
+        stale: null,
+      },
+    };
+  }
+
+  const recordsByMode =
+    new Map();
+
+  for (
+    const record of
+    parsedRecords
+  ) {
+    if (record.mode) {
+      recordsByMode.set(
+        record.mode,
+        record
+      );
+    }
+  }
+
+  const record5m =
+    recordsByMode.get("M5") ||
+    null;
+
+  const record15m =
+    recordsByMode.get("M15") ||
+    null;
+
+  const record30m =
+    recordsByMode.get("M30") ||
+    null;
+
+  let decision = "HOLD";
+  let selectedRecord = null;
+  let reason = null;
+
+  if (record15m) {
+    selectedRecord =
+      record15m;
+
+    if (
+      record15m.decision ===
+      "HOLD"
+    ) {
+      decision = "HOLD";
+      reason =
+        "15-min anchor timeframe is not aligned";
+    } else {
+      const agreements =
+        (
+          record5m &&
+          record5m.decision ===
+            record15m.decision
+            ? 1
+            : 0
+        ) +
+        (
+          record30m &&
+          record30m.decision ===
+            record15m.decision
+            ? 1
+            : 0
+        );
+
+      if (agreements >= 1) {
+        decision =
+          record15m.decision;
+
+        reason =
+          "Dedicated scalp timeframes confirmed the 15-min anchor";
+      } else {
+        decision = "HOLD";
+
+        reason =
+          "5-min and 30-min do not confirm the 15-min anchor";
+      }
+    }
+  } else if (
+    parsedRecords.length === 1
+  ) {
+    selectedRecord =
+      parsedRecords[0];
+
+    decision =
+      selectedRecord.decision;
+
+    reason =
+      selectedRecord.reason ||
+      "Single dedicated scalp record used for backward compatibility";
+  } else {
+    const buyCount =
+      parsedRecords.filter(
+        (record) =>
+          record.decision ===
+          "BUY"
+      ).length;
+
+    const sellCount =
+      parsedRecords.filter(
+        (record) =>
+          record.decision ===
+          "SELL"
+      ).length;
+
+    if (
+      buyCount >= 2 &&
+      buyCount > sellCount
+    ) {
+      decision = "BUY";
+    } else if (
+      sellCount >= 2 &&
+      sellCount > buyCount
+    ) {
+      decision = "SELL";
+    } else {
+      decision = "HOLD";
+    }
+
+    selectedRecord =
+      parsedRecords.find(
+        (record) =>
+          record.decision ===
+          decision
+      ) ||
+      parsedRecords[0];
+
+    reason =
+      decision === "HOLD"
+        ? "Dedicated scalp timeframes are mixed"
+        : "Dedicated scalp decision selected by timeframe majority";
+  }
+
+  const timestamps =
+    parsedRecords
+      .map(
+        (record) =>
+          record.updatedAt
+      )
+      .filter(Boolean)
+      .sort();
+
+  const updatedAt =
+    timestamps.length
+      ? timestamps[
+          timestamps.length - 1
+        ]
+      : normalizeTime(
+          firstString(
+            rawScalpSignals.updatedAt,
+            rawScalpSignals.generatedAt,
+            rawScalpSignals.timestamp,
+            rawScalpSignals.time
+          )
+        );
+
+  const perTF = [
+    {
+      tf: "5m",
+      signal:
+        record5m
+          ? record5m.decision
+          : "HOLD",
+    },
+    {
+      tf: "15m",
+      signal:
+        record15m
+          ? record15m.decision
+          : "HOLD",
+    },
+    {
+      tf: "30m",
+      signal:
+        record30m
+          ? record30m.decision
+          : "HOLD",
+    },
+  ];
+
+  return {
+    valid: true,
+    reason: null,
+    signal: {
+      decision,
+      reason,
+      perTF,
+      entry:
+        decision === "HOLD"
+          ? null
+          : selectedRecord.entry,
+      sl:
+        decision === "HOLD"
+          ? null
+          : selectedRecord.sl,
+      tp:
+        decision === "HOLD"
+          ? null
+          : selectedRecord.tp,
+      rr:
+        decision === "HOLD"
+          ? null
+          : selectedRecord.rr,
+      source:
+        "scalp-signals.json",
+      sourceMode:
+        "primary",
+      updatedAt,
+    },
+    meta: {
+      available: true,
+      pairFound: true,
+      valid: true,
+      decision,
+      updatedAt,
+      stale:
+        updatedAt
+          ? Date.now() -
+              Date.parse(
+                updatedAt
+              ) >
+            DAY_MS
+          : null,
+      recordCount:
+        parsedRecords.length,
+      timeframeCount:
+        recordsByMode.size,
+    },
+  };
+}
+
 // ===================== Indicator helpers =====================
 
 function emaSeries(values, period) {

@@ -2216,3 +2216,1270 @@ function analyze(
     },
   };
 }
+
+// ===================== Legacy scalp engine =====================
+
+function analyzeScalp(candles) {
+  if (
+    !Array.isArray(candles) ||
+    candles.length < 30
+  ) {
+    return {
+      signal: "HOLD",
+      bull: 0,
+      bear: 0,
+    };
+  }
+
+  const closes = candles.map(
+    (candle) => candle.close
+  );
+
+  const last =
+    candles[candles.length - 1];
+
+  const ema9 =
+    emaSeries(closes, 9);
+
+  const ema21 =
+    emaSeries(closes, 21);
+
+  const rsi14 =
+    rsiSeries(closes, 14);
+
+  const ema12 =
+    emaSeries(closes, 12);
+
+  const ema26 =
+    emaSeries(closes, 26);
+
+  const macdLine = closes.map(
+    (_, index) =>
+      ema12[index] != null &&
+      ema26[index] != null
+        ? ema12[index] -
+          ema26[index]
+        : null
+  );
+
+  const macdValues =
+    macdLine.filter(
+      (value) => value != null
+    );
+
+  const macdSignalSeries =
+    emaSeries(macdValues, 9);
+
+  const lastIndex =
+    closes.length - 1;
+
+  const lastMacd =
+    macdLine[lastIndex];
+
+  const lastMacdSignal =
+    macdSignalSeries[
+      macdSignalSeries.length - 1
+    ];
+
+  const lastRsi =
+    rsi14[lastIndex];
+
+  const lastEma9 =
+    ema9[lastIndex];
+
+  const lastEma21 =
+    ema21[lastIndex];
+
+  let bull = 0;
+  let bear = 0;
+
+  if (
+    lastEma9 != null &&
+    lastEma21 != null
+  ) {
+    if (lastEma9 > lastEma21) {
+      bull += 1;
+    } else {
+      bear += 1;
+    }
+  }
+
+  if (lastRsi != null) {
+    if (lastRsi > 50) {
+      bull += 1;
+    } else {
+      bear += 1;
+    }
+  }
+
+  if (
+    lastMacd != null &&
+    lastMacdSignal != null
+  ) {
+    if (
+      lastMacd >
+      lastMacdSignal
+    ) {
+      bull += 1;
+    } else {
+      bear += 1;
+    }
+  }
+
+  if (lastEma21 != null) {
+    if (
+      last.close >
+      lastEma21
+    ) {
+      bull += 1;
+    } else {
+      bear += 1;
+    }
+  }
+
+  if (
+    last.close >
+    last.open
+  ) {
+    bull += 1;
+  } else {
+    bear += 1;
+  }
+
+  let signal = "HOLD";
+
+  if (
+    bull >= 4 &&
+    bull > bear
+  ) {
+    signal = "BUY";
+  } else if (
+    bear >= 4 &&
+    bear > bull
+  ) {
+    signal = "SELL";
+  }
+
+  return {
+    signal,
+    bull,
+    bear,
+  };
+}
+
+function computeScalpTradeSignal(
+  candles5m,
+  decimals
+) {
+  const candles15m =
+    aggregateCandles(
+      candles5m,
+      3
+    );
+
+  const candles30m =
+    aggregateCandles(
+      candles5m,
+      6
+    );
+
+  const analysis5m =
+    analyzeScalp(candles5m);
+
+  const analysis15m =
+    analyzeScalp(candles15m);
+
+  const analysis30m =
+    analyzeScalp(candles30m);
+
+  const perTF = [
+    {
+      tf: "5m",
+      signal:
+        analysis5m.signal,
+    },
+    {
+      tf: "15m",
+      signal:
+        analysis15m.signal,
+    },
+    {
+      tf: "30m",
+      signal:
+        analysis30m.signal,
+    },
+  ];
+
+  let decision = "HOLD";
+  let reason = "";
+
+  if (
+    analysis15m.signal ===
+    "HOLD"
+  ) {
+    reason =
+      "15-min anchor timeframe is not aligned";
+  } else {
+    const agreements =
+      (
+        analysis5m.signal ===
+        analysis15m.signal
+          ? 1
+          : 0
+      ) +
+      (
+        analysis30m.signal ===
+        analysis15m.signal
+          ? 1
+          : 0
+      );
+
+    if (agreements >= 1) {
+      decision =
+        analysis15m.signal;
+    } else {
+      reason =
+        "5-min and 30-min both disagree with the 15-min lean";
+    }
+  }
+
+  const entry =
+    candles5m[
+      candles5m.length - 1
+    ].close;
+
+  const recent15m =
+    candles15m.slice(-10);
+
+  const averageRange =
+    recent15m.length
+      ? recent15m.reduce(
+          (sum, candle) =>
+            sum +
+            (
+              candle.high -
+              candle.low
+            ),
+          0
+        ) / recent15m.length
+      : entry * 0.001;
+
+  const riskReward = 2;
+
+  let stopLoss = null;
+  let takeProfit = null;
+
+  if (decision === "BUY") {
+    stopLoss =
+      entry - averageRange;
+
+    takeProfit =
+      entry +
+      averageRange *
+        riskReward;
+  } else if (
+    decision === "SELL"
+  ) {
+    stopLoss =
+      entry + averageRange;
+
+    takeProfit =
+      entry -
+      averageRange *
+        riskReward;
+  }
+
+  return {
+    decision,
+    reason,
+    perTF,
+    entry:
+      roundPrice(
+        entry,
+        decimals
+      ),
+    sl:
+      roundPrice(
+        stopLoss,
+        decimals
+      ),
+    tp:
+      roundPrice(
+        takeProfit,
+        decimals
+      ),
+    rr: riskReward,
+  };
+}
+
+function buildLegacyScalpFallback(
+  candles5m,
+  decimals,
+  fallbackReason
+) {
+  const legacySignal =
+    computeScalpTradeSignal(
+      candles5m,
+      decimals
+    );
+
+  return {
+    ...legacySignal,
+    source:
+      "scalp-candles.json",
+    sourceMode:
+      "legacy-fallback",
+    fallbackReason:
+      fallbackReason || null,
+    updatedAt:
+      candles5m.length
+        ? candles5m[
+            candles5m.length - 1
+          ].time
+        : null,
+  };
+}
+
+// ===================== Persistent history =====================
+
+function loadHistory() {
+  if (
+    !fs.existsSync(
+      HISTORY_PATH
+    )
+  ) {
+    return {
+      open: {},
+      closed: [],
+    };
+  }
+
+  try {
+    const parsed =
+      JSON.parse(
+        fs.readFileSync(
+          HISTORY_PATH,
+          "utf8"
+        )
+      );
+
+    return {
+      ...parsed,
+      open:
+        parsed &&
+        parsed.open &&
+        typeof parsed.open ===
+          "object"
+          ? parsed.open
+          : {},
+      closed:
+        parsed &&
+        Array.isArray(
+          parsed.closed
+        )
+          ? parsed.closed
+          : [],
+    };
+  } catch (error) {
+    console.error(
+      "Could not parse analysis-history.json:",
+      error.message
+    );
+
+    return {
+      open: {},
+      closed: [],
+    };
+  }
+}
+
+function updateHistoryForEngine(
+  history,
+  pairKey,
+  engine,
+  decision,
+  entry,
+  stop,
+  target,
+  currentPrice
+) {
+  if (
+    !isFiniteNumber(
+      currentPrice
+    )
+  ) {
+    return;
+  }
+
+  const historyKey =
+    `${pairKey}:${engine}`;
+
+  const existing =
+    history.open[
+      historyKey
+    ];
+
+  if (existing) {
+    let outcome = null;
+
+    if (
+      existing.direction ===
+      "BUY"
+    ) {
+      if (
+        currentPrice >=
+        existing.target
+      ) {
+        outcome = "WIN";
+      } else if (
+        currentPrice <=
+        existing.stop
+      ) {
+        outcome = "LOSS";
+      }
+    } else if (
+      existing.direction ===
+      "SELL"
+    ) {
+      if (
+        currentPrice <=
+        existing.target
+      ) {
+        outcome = "WIN";
+      } else if (
+        currentPrice >=
+        existing.stop
+      ) {
+        outcome = "LOSS";
+      }
+    }
+
+    if (outcome) {
+      history.closed.push({
+        pair: pairKey,
+        engine,
+        direction:
+          existing.direction,
+        entry:
+          existing.entry,
+        stop:
+          existing.stop,
+        target:
+          existing.target,
+        outcome,
+        openedAt:
+          existing.openedAt,
+        closedAt:
+          new Date().toISOString(),
+      });
+
+      delete history.open[
+        historyKey
+      ];
+    }
+
+    return;
+  }
+
+  const validTrade =
+    (
+      decision === "BUY" ||
+      decision === "SELL"
+    ) &&
+    isFiniteNumber(entry) &&
+    isFiniteNumber(stop) &&
+    isFiniteNumber(target);
+
+  if (!validTrade) {
+    return;
+  }
+
+  history.open[
+    historyKey
+  ] = {
+    direction: decision,
+    entry,
+    stop,
+    target,
+    openedAt:
+      new Date().toISOString(),
+  };
+}
+
+function historyStatsSummary(
+  history
+) {
+  const wins =
+    history.closed.filter(
+      (item) =>
+        item.outcome ===
+        "WIN"
+    ).length;
+
+  const losses =
+    history.closed.filter(
+      (item) =>
+        item.outcome ===
+        "LOSS"
+    ).length;
+
+  const totalClosed =
+    wins + losses;
+
+  return {
+    totalClosed,
+    wins,
+    losses,
+    winRate:
+      totalClosed
+        ? Math.round(
+            (
+              wins /
+              totalClosed
+            ) *
+              100
+          )
+        : null,
+    openCount:
+      Object.keys(
+        history.open
+      ).length,
+  };
+}
+
+function buildHistoryStats(
+  history
+) {
+  const stats = {
+    overall:
+      historyStatsSummary(
+        history
+      ),
+  };
+
+  for (const engine of [
+    "scalp",
+    "intraday",
+    "swing",
+  ]) {
+    const engineHistory = {
+      open: Object.fromEntries(
+        Object.entries(
+          history.open
+        ).filter(
+          ([historyKey]) =>
+            historyKey.endsWith(
+              `:${engine}`
+            )
+        )
+      ),
+      closed:
+        history.closed.filter(
+          (item) =>
+            item.engine ===
+            engine
+        ),
+    };
+
+    stats[engine] =
+      historyStatsSummary(
+        engineHistory
+      );
+  }
+
+  return stats;
+}
+
+// ===================== Telegram notifications =====================
+
+const TELEGRAM_BOT_TOKEN =
+  process.env
+    .TELEGRAM_BOT_TOKEN;
+
+const TELEGRAM_CHAT_ID =
+  process.env
+    .TELEGRAM_CHAT_ID;
+
+function loadNotifyState() {
+  if (
+    !fs.existsSync(
+      NOTIFY_STATE_PATH
+    )
+  ) {
+    return {};
+  }
+
+  try {
+    const parsed =
+      JSON.parse(
+        fs.readFileSync(
+          NOTIFY_STATE_PATH,
+          "utf8"
+        )
+      );
+
+    return (
+      parsed &&
+      typeof parsed === "object"
+        ? parsed
+        : {}
+    );
+  } catch (error) {
+    console.error(
+      "Could not parse notify-state.json:",
+      error.message
+    );
+
+    return {};
+  }
+}
+
+async function sendTelegram(
+  text
+) {
+  if (
+    !TELEGRAM_BOT_TOKEN ||
+    !TELEGRAM_CHAT_ID
+  ) {
+    console.log(
+      "Telegram not configured — skipping notification:",
+      text.split("\n")[0]
+    );
+
+    return;
+  }
+
+  const controller =
+    new AbortController();
+
+  const timeout =
+    setTimeout(
+      () =>
+        controller.abort(),
+      TELEGRAM_TIMEOUT_MS
+    );
+
+  try {
+    const response =
+      await fetch(
+        `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body:
+            JSON.stringify({
+              chat_id:
+                TELEGRAM_CHAT_ID,
+              text,
+            }),
+          signal:
+            controller.signal,
+        }
+      );
+
+    if (!response.ok) {
+      console.error(
+        "Telegram send failed:",
+        response.status,
+        await response.text()
+      );
+
+      return;
+    }
+
+    console.log(
+      "Telegram notification sent:",
+      text.split("\n")[0]
+    );
+  } catch (error) {
+    console.error(
+      "Telegram send error:",
+      error.name ===
+        "AbortError"
+        ? `Timed out after ${TELEGRAM_TIMEOUT_MS}ms`
+        : error.message
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function formatTradePlan(
+  tradePlan,
+  decimals
+) {
+  if (!tradePlan) {
+    return "";
+  }
+
+  return `Entry: ${tradePlan.entry.toFixed(
+    decimals
+  )}
+Stop: ${tradePlan.stop.toFixed(
+    decimals
+  )}
+Target: ${tradePlan.target1.toFixed(
+    decimals
+  )}`;
+}
+
+function formatScalpValue(
+  value
+) {
+  return value == null
+    ? "n/a"
+    : String(value);
+}
+
+// ===================== Main =====================
+
+async function main() {
+  const rawScalpSignals =
+    readJSON(
+      "scalp-signals.json"
+    );
+
+  const rawScalpCandles =
+    readJSON(
+      "scalp-candles.json"
+    );
+
+  const rawIntradayData =
+    readJSON(
+      "intraday-h1.json"
+    );
+
+  const rawDailyData =
+    readJSON(
+      "daily-ohlc.json"
+    );
+
+  const history =
+    loadHistory();
+
+  const notifyState =
+    loadNotifyState();
+
+  const output = {
+    updatedAt:
+      new Date().toISOString(),
+    engineVersion:
+      ENGINE_VERSION,
+    strategyVersion:
+      STRATEGY_VERSION,
+    compatibilityMode:
+      "legacy",
+    pairs: {},
+    dataQuality: {},
+  };
+
+  for (const pairKey of PAIR_KEYS) {
+    const decimals =
+      DECIMALS[pairKey];
+
+    const dailyValidation =
+      validateCandles(
+        rawDailyData
+          ? rawDailyData[
+              pairKey
+            ]
+          : null,
+        "date"
+      );
+
+    const intradayValidation =
+      validateCandles(
+        rawIntradayData
+          ? rawIntradayData[
+              pairKey
+            ]
+          : null,
+        "time"
+      );
+
+    const scalpValidation =
+      validateCandles(
+        rawScalpCandles
+          ? rawScalpCandles[
+              pairKey
+            ]
+          : null,
+        "time"
+      );
+
+    const daily =
+      dailyValidation.rows;
+
+    const hourly =
+      intradayValidation.rows;
+
+    const candles5m =
+      scalpValidation.rows;
+
+    const dedicatedScalp =
+      resolveDedicatedScalpSignal(
+        rawScalpSignals,
+        pairKey,
+        decimals
+      );
+
+    output.dataQuality[
+      pairKey
+    ] = {
+      daily:
+        dailyValidation.meta,
+      intraday:
+        intradayValidation.meta,
+      scalp:
+        scalpValidation.meta,
+      dedicatedScalp:
+        dedicatedScalp.meta,
+    };
+
+    const result = {
+      swing: null,
+      intraday: null,
+      scalp: null,
+      master: null,
+    };
+
+    // ===================== Swing =====================
+
+    if (daily.length >= 8) {
+      const weekly =
+        resampleWeekly(daily);
+
+      if (
+        weekly.length >= 8
+      ) {
+        const analysis =
+          analyze(
+            daily,
+            pairKey,
+            weekly,
+            daily
+          );
+
+        result.swing = {
+          signal:
+            analysis.signal,
+          suppressionReason:
+            analysis.suppressionReason,
+          tradePlan:
+            analysis.tradePlan,
+          passCount:
+            analysis.passCount,
+          gatedCount:
+            analysis.gatedCount,
+          diagnostics:
+            analysis.diagnostics,
+        };
+
+        const tradePlan =
+          analysis.tradePlan;
+
+        updateHistoryForEngine(
+          history,
+          pairKey,
+          "swing",
+          analysis.signal,
+          tradePlan
+            ? tradePlan.entry
+            : null,
+          tradePlan
+            ? tradePlan.stop
+            : null,
+          tradePlan
+            ? tradePlan.target1
+            : null,
+          daily[
+            daily.length - 1
+          ].close
+        );
+
+        const notifyKey =
+          `${pairKey}:swing`;
+
+        if (
+          analysis.signal !==
+            "HOLD" &&
+          notifyState[
+            notifyKey
+          ] !== analysis.signal
+        ) {
+          await sendTelegram(
+            `🔔 PipSight — Swing
+${pairKey} · D1+W1
+${
+  analysis.signal ===
+  "BUY"
+    ? "🟢"
+    : "🔴"
+} ${analysis.signal}
+${formatTradePlan(
+  tradePlan,
+  decimals
+)}
+Hold: 2–7 days`
+          );
+        }
+
+        notifyState[
+          notifyKey
+        ] = analysis.signal;
+      }
+    }
+
+    // ===================== Intraday =====================
+
+    if (
+      hourly.length >= 210
+    ) {
+      const hourly4 =
+        aggregateCandles(
+          hourly,
+          4
+        );
+
+      const analysis =
+        analyze(
+          hourly,
+          pairKey,
+          hourly4,
+          hourly
+        );
+
+      result.intraday = {
+        signal:
+          analysis.signal,
+        suppressionReason:
+          analysis.suppressionReason,
+        tradePlan:
+          analysis.tradePlan,
+        passCount:
+          analysis.passCount,
+        gatedCount:
+          analysis.gatedCount,
+        diagnostics:
+          analysis.diagnostics,
+      };
+
+      const tradePlan =
+        analysis.tradePlan;
+
+      updateHistoryForEngine(
+        history,
+        pairKey,
+        "intraday",
+        analysis.signal,
+        tradePlan
+          ? tradePlan.entry
+          : null,
+        tradePlan
+          ? tradePlan.stop
+          : null,
+        tradePlan
+          ? tradePlan.target1
+          : null,
+        hourly[
+          hourly.length - 1
+        ].close
+      );
+
+      const notifyKey =
+        `${pairKey}:intraday`;
+
+      if (
+        analysis.signal !==
+          "HOLD" &&
+        notifyState[
+          notifyKey
+        ] !== analysis.signal
+      ) {
+        await sendTelegram(
+          `🔔 PipSight — Intraday
+${pairKey} · H1+H4
+${
+  analysis.signal ===
+  "BUY"
+    ? "🟢"
+    : "🔴"
+} ${analysis.signal}
+${formatTradePlan(
+  tradePlan,
+  decimals
+)}
+Hold: 2–12 hours`
+        );
+      }
+
+      notifyState[
+        notifyKey
+      ] = analysis.signal;
+    }
+
+    // ===================== Scalp =====================
+
+    if (
+      dedicatedScalp.valid
+    ) {
+      result.scalp =
+        dedicatedScalp.signal;
+    } else if (
+      candles5m.length >= 30
+    ) {
+      result.scalp =
+        buildLegacyScalpFallback(
+          candles5m,
+          decimals,
+          dedicatedScalp.reason
+        );
+    }
+
+    if (result.scalp) {
+      const scalp =
+        result.scalp;
+
+      const currentPrice =
+        candles5m.length
+          ? candles5m[
+              candles5m.length - 1
+            ].close
+          : scalp.entry;
+
+      updateHistoryForEngine(
+        history,
+        pairKey,
+        "scalp",
+        scalp.decision,
+        scalp.entry,
+        scalp.sl,
+        scalp.tp,
+        currentPrice
+      );
+
+      const notifyKey =
+        `${pairKey}:scalp`;
+
+      if (
+        scalp.decision !==
+          "HOLD" &&
+        notifyState[
+          notifyKey
+        ] !== scalp.decision
+      ) {
+        await sendTelegram(
+          `🔔 PipSight — Scalp
+${pairKey} · 5/15/30m
+${
+  scalp.decision ===
+  "BUY"
+    ? "🟢"
+    : "🔴"
+} ${scalp.decision}
+Entry: ${formatScalpValue(
+  scalp.entry
+)}
+SL: ${formatScalpValue(
+  scalp.sl
+)}
+TP: ${formatScalpValue(
+  scalp.tp
+)}`
+        );
+      }
+
+      notifyState[
+        notifyKey
+      ] = scalp.decision;
+    }
+
+    // ===================== Master =====================
+
+    const votes = [
+      {
+        engine: "Scalp",
+        signal:
+          result.scalp
+            ? result.scalp
+                .decision
+            : "HOLD",
+      },
+      {
+        engine:
+          "Intraday",
+        signal:
+          result.intraday
+            ? result.intraday
+                .signal
+            : "HOLD",
+      },
+      {
+        engine: "Swing",
+        signal:
+          result.swing
+            ? result.swing
+                .signal
+            : "HOLD",
+      },
+    ];
+
+    const buyCount =
+      votes.filter(
+        (vote) =>
+          vote.signal ===
+          "BUY"
+      ).length;
+
+    const sellCount =
+      votes.filter(
+        (vote) =>
+          vote.signal ===
+          "SELL"
+      ).length;
+
+    let verdict = "MIXED";
+
+    if (
+      buyCount >= 2 &&
+      buyCount > sellCount
+    ) {
+      verdict = "BUY";
+    } else if (
+      sellCount >= 2 &&
+      sellCount > buyCount
+    ) {
+      verdict = "SELL";
+    } else if (
+      buyCount === 0 &&
+      sellCount === 0
+    ) {
+      verdict = "HOLD";
+    }
+
+    result.master = {
+      verdict,
+      votes,
+    };
+
+    const masterNotifyKey =
+      `${pairKey}:master`;
+
+    if (
+      (
+        verdict === "BUY" ||
+        verdict === "SELL"
+      ) &&
+      notifyState[
+        masterNotifyKey
+      ] !== verdict
+    ) {
+      const voteSummary =
+        votes
+          .map(
+            (vote) =>
+              `${vote.engine}: ${vote.signal}`
+          )
+          .join(" · ");
+
+      await sendTelegram(
+        `⭐ PipSight — Master Signal
+${pairKey}
+${
+  verdict === "BUY"
+    ? "🟢"
+    : "🔴"
+} ${verdict} (2+ engines agree)
+${voteSummary}`
+      );
+    }
+
+    notifyState[
+      masterNotifyKey
+    ] = verdict;
+
+    output.pairs[
+      pairKey
+    ] = result;
+
+    console.log(
+      `${pairKey}: ` +
+      `swing=${
+        result.swing
+          ? result.swing.signal
+          : "n/a"
+      } ` +
+      `intraday=${
+        result.intraday
+          ? result.intraday.signal
+          : "n/a"
+      } ` +
+      `scalp=${
+        result.scalp
+          ? result.scalp.decision
+          : "n/a"
+      } ` +
+      `master=${verdict}`
+    );
+  }
+
+  atomicWriteJSON(
+    LIVE_ANALYSIS_PATH,
+    output
+  );
+
+  console.log(
+    "Wrote data/live-analysis.json"
+  );
+
+  atomicWriteJSON(
+    NOTIFY_STATE_PATH,
+    notifyState
+  );
+
+  history.updatedAt =
+    new Date().toISOString();
+
+  history.engineVersion =
+    ENGINE_VERSION;
+
+  history.strategyVersion =
+    STRATEGY_VERSION;
+
+  history.stats =
+    buildHistoryStats(
+      history
+    );
+
+  atomicWriteJSON(
+    HISTORY_PATH,
+    history
+  );
+
+  const overallStats =
+    history.stats.overall;
+
+  console.log(
+    `History: ${overallStats.totalClosed} closed ` +
+    `(${
+      overallStats.winRate == null
+        ? "n/a"
+        : overallStats.winRate
+    }% win rate), ` +
+    `${overallStats.openCount} open`
+  );
+}
+
+main().catch(
+  (error) => {
+    console.error(
+      "Fatal error:",
+      error
+    );
+
+    process.exit(1);
+  }
+);

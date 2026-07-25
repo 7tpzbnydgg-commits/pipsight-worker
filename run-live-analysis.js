@@ -3132,17 +3132,23 @@ async function main() {
         );
 
         const notifyKey =
-          `${pairKey}:swing`;
+  `${pairKey}:swing`;
 
-        if (
-          analysis.signal !==
-            "HOLD" &&
-          notifyState[
-            notifyKey
-          ] !== analysis.signal
-        ) {
-          await sendTelegram(
-            `🔔 PipSight — Swing
+if (
+  analysis.signal ===
+  "HOLD"
+) {
+  notifyState[
+    notifyKey
+  ] = "HOLD";
+} else if (
+  notifyState[
+    notifyKey
+  ] !== analysis.signal
+) {
+  const notificationSent =
+    await sendTelegram(
+      `🔔 PipSight — Swing
 ${pairKey} · D1+W1
 ${
   analysis.signal ===
@@ -3155,14 +3161,14 @@ ${formatTradePlan(
   decimals
 )}
 Hold: 2–7 days`
-          );
-        }
+    );
 
-        notifyState[
-          notifyKey
-        ] = analysis.signal;
-      }
-    }
+  if (notificationSent) {
+    notifyState[
+      notifyKey
+    ] = analysis.signal;
+  }
+}
 
     // ===================== Intraday =====================
 

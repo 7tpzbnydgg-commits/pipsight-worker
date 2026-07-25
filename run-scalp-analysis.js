@@ -2320,3 +2320,184 @@ function calculateRiskReward(
     : reward/risk;
 
 }
+
+/* =====================================================================
+   Main Analysis Engine
+   ===================================================================== */
+
+function analyze(
+  rows,
+  pairLabel,
+  newsScoreRaw,
+  htfRows,
+  newsItems
+) {
+
+  const result = {
+    pair: pairLabel,
+    signal: "WAIT",
+    confidence: 0,
+    reasons: [],
+    steps: [],
+    tradePlan: null
+  };
+
+  if (!hasEnoughRows(rows, 35)) {
+    result.reasons.push("Not enough candles");
+    return result;
+  }
+
+  const closes = closeSeries(rows);
+
+  const emaState =
+    getEMAState(rows);
+
+  const macd =
+    computeMACD(closes);
+
+  const rsi =
+    rsiSeries(closes);
+
+  const lastRSI =
+    rsi[rsi.length - 1];
+
+  const market =
+    computeMarketStructure(rows);
+
+  const sr =
+    computeSupportResistance(rows);
+
+  const candlePattern =
+    detectCandlePattern(rows);
+
+  /* =============================
+     STEP 1 : EMA Trend
+     ============================= */
+
+  if (!emaState.fullAlignment) {
+
+    result.steps.push({
+      name: "EMA Trend",
+      pass: false
+    });
+
+    result.reasons.push(
+      "EMA alignment failed"
+    );
+
+    return result;
+
+  }
+
+  result.steps.push({
+    name: "EMA Trend",
+    pass: true
+  });
+
+  let direction =
+    emaState.direction;
+
+  /* =============================
+     STEP 2 : MACD
+     ============================= */
+
+  let macdPass = false;
+
+  if (
+    direction === "BUY" &&
+    macd.available &&
+    macd.macd > macd.signal
+  ) {
+    macdPass = true;
+  }
+
+  if (
+    direction === "SELL" &&
+    macd.available &&
+    macd.macd < macd.signal
+  ) {
+    macdPass = true;
+  }
+
+  result.steps.push({
+    name: "MACD",
+    pass: macdPass
+  });
+
+  if (!macdPass) {
+    result.reasons.push(
+      "MACD confirmation failed"
+    );
+    return result;
+  }
+
+  /* =============================
+     STEP 3 : RSI
+     ============================= */
+
+  let rsiPass = false;
+
+  if (
+    direction === "BUY" &&
+    lastRSI >= 45 &&
+    lastRSI <= 65
+  ) {
+    rsiPass = true;
+  }
+
+  if (
+    direction === "SELL" &&
+    lastRSI >= 35 &&
+    lastRSI <= 55
+  ) {
+    rsiPass = true;
+  }
+
+  result.steps.push({
+    name: "RSI",
+    pass: rsiPass
+  });
+
+  if (!rsiPass) {
+
+    result.reasons.push(
+      "RSI confirmation failed"
+    );
+
+    return result;
+
+  }
+
+  /* =============================
+     STEP 4 : Higher TF
+     ============================= */
+
+  if (htfRows) {
+
+    const htfTrend =
+      trendDirectionOf(htfRows);
+
+    if (
+      htfTrend &&
+      htfTrend !== direction
+    ) {
+
+      result.steps.push({
+        name: "Higher TF",
+        pass: false
+      });
+
+      result.reasons.push(
+        "Higher timeframe mismatch"
+      );
+
+      return result;
+
+    }
+
+    result.steps.push({
+      name: "Higher TF",
+      pass: true
+    });
+
+  }

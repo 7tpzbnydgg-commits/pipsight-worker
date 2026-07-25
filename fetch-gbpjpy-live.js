@@ -646,3 +646,60 @@ main().catch((error) => {
   // a failed workflow instead of silently succeeding without an update.
   process.exitCode = 1;
 });
+
+ // -----------------------------------------------------------------------
+ // Direct-execution guard
+ // -----------------------------------------------------------------------
+
+ // Run the worker only when this file is executed directly:
+ //
+ //   node run-live-gbpjpy.js
+ //
+ // Importing this file from tests or another worker will not accidentally
+ // call Twelve Data or overwrite the existing JSON output.
+ if (require.main === module) {
+   main().catch((error) => {
+     logFatalError(error);
+
+     // Existing failure behavior is retained:
+     // GitHub Actions receives a non-zero exit status when all retries,
+     // validation, or output writing fail.
+     process.exitCode = 1;
+   });
+ }
+
+ // -----------------------------------------------------------------------
+ // Test and integration exports
+ // -----------------------------------------------------------------------
+
+ // Exporting internal helpers does not change direct script behavior.
+ // These exports allow future unit tests and other server-side workers to
+ // reuse the validated logic without duplicating implementation.
+ //
+ // Existing integrations that execute this file directly remain unchanged.
+ module.exports = Object.freeze({
+   CONFIG,
+
+   validateStartupConfig,
+
+   sleep,
+   buildPriceUrl,
+   normalizeError,
+   formatRequestError,
+
+   fetchJsonWithRetry,
+
+   getProviderErrorMessage,
+   parseLivePrice,
+
+   createOutputPayload,
+   validateOutputPayload,
+   serializeOutputPayload,
+   ensureOutputDirectory,
+   writeJsonAtomic,
+   writeLivePriceOutput,
+
+   fetchLivePrice,
+   main,
+   logFatalError,
+ });

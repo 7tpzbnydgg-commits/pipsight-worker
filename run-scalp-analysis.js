@@ -3293,10 +3293,19 @@ function run() {
           pairNews
         );
 
-      analysis.mode = mode;
-      analysis.generatedAt = generatedAt;
+            analysis.mode =
+        mode;
 
-      signals.push(analysis);
+      analysis.generatedAt =
+        generatedAt;
+
+      analysis.analyzedCandleAt =
+        latestRow(rows)?.date ??
+        null;
+
+      signals.push(
+        analysis
+      );
 
     }
 

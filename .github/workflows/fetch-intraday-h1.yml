@@ -3,58 +3,201 @@ name: PipSight Robot — intraday H1 (H4 derived)
 on:
   schedule:
     - cron: "*/15 * * * *"
+
   workflow_dispatch: {}
 
 permissions:
   contents: write
 
 concurrency:
-  group: pipsight-robots
+  group: pipsight-intraday-h1-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   fetch:
+    name: Fetch and publish intraday H1 data
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        shell: bash
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
 
-      - uses: actions/setup-node@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: "20"
+
+      - name: Verify API secret
+        env:
+          TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${TWELVEDATA_API_KEY:-}" ]]; then
+            echo "TWELVEDATA_API_KEY is not configured."
+            exit 1
+          fi
 
       - name: Fetch intraday H1
         env:
           TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
-        run: node fetch-intraday-h1.js
+        run: |
+          set -euo pipefail
 
-      - name: Commit updated H1 data
+          node fetch-intraday-h1.js
+
+      - name: Validate intraday H1 output
+        run: |
+          set -euo pipefail
+
+          test -s data/intraday-h1.json
+
+          node - <<'NODE'
+          const fs = require("fs");
+
+          const file = "data/intraday-h1.json";
+          const parsed = JSON.parse(
+            fs.readFileSync(file, "utf8")
+          );
+
+          if (
+            parsed === null ||
+            typeof parsed !== "object" ||
+            Array.isArray(parsed)
+          ) {
+            throw new Error(
+              "intraday-h1.json must contain a JSON object"
+            );
+          }
+
+          const pairKeys = ["XAUUSD", "GBPJPY"];
+
+          for (const pairKey of pairKeys) {
+            const rows = parsed[pairKey];
+
+            if (!Array.isArray(rows)) {
+              throw new Error(
+                `${pairKey} must contain an array`
+              );
+            }
+
+            if (rows.length === 0) {
+              throw new Error(
+                `${pairKey} contains no H1 candles`
+              );
+            }
+
+            const latest = rows[rows.length - 1];
+
+            if (
+              !latest ||
+              typeof latest !== "object"
+            ) {
+              throw new Error(
+                `${pairKey} latest candle is invalid`
+              );
+            }
+
+            for (const field of [
+              "open",
+              "high",
+              "low",
+              "close"
+            ]) {
+              const value = Number(latest[field]);
+
+              if (
+                !Number.isFinite(value) ||
+                value <= 0
+              ) {
+                throw new Error(
+                  `${pairKey} latest ${field} is invalid`
+                );
+              }
+            }
+
+            const open = Number(latest.open);
+            const high = Number(latest.high);
+            const low = Number(latest.low);
+            const close = Number(latest.close);
+
+            if (
+              high < low ||
+              high < open ||
+              high < close ||
+              low > open ||
+              low > close
+            ) {
+              throw new Error(
+                `${pairKey} latest OHLC relationships are invalid`
+              );
+            }
+          }
+
+          console.log("Validated:", file);
+          NODE
+
+      - name: Commit and push updated H1 data
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
+
           git config user.name "pipsight-robot"
           git config user.email "actions@users.noreply.github.com"
 
-          git add data/intraday-h1.json
+          # Strictly stage only the file owned by this workflow.
+          git add -- data/intraday-h1.json
 
-          if [[ -n "$(git status --porcelain)" ]]; then
-            git commit -m "robot: refresh intraday H1"
-
-            # Sync with latest remote changes
-            git pull --rebase origin main
-
-            # Push changes
-            git push origin main
-          else
-            echo "No changes to commit"
+          if git diff --cached --quiet; then
+            echo "No intraday H1 changes to commit."
+            exit 0
           fi
+
+          git commit -m "robot: refresh intraday H1"
+
+          max_attempts=5
+
+          for attempt in $(seq 1 "$max_attempts"); do
+            echo "Push attempt ${attempt}/${max_attempts}"
+
+            if git push origin HEAD:main; then
+              echo "Intraday H1 data pushed successfully."
+              exit 0
+            fi
+
+            if [[ "$attempt" -eq "$max_attempts" ]]; then
+              echo "Push failed after ${max_attempts} attempts."
+              exit 1
+            fi
+
+            echo "Remote branch changed. Rebasing before retry..."
+
+            git fetch origin main
+
+            if ! git rebase origin/main; then
+              echo "Rebase conflict detected."
+              git rebase --abort || true
+              exit 1
+            fi
+
+            sleep $((attempt * 5))
+          done
 
       - name: Log execution
         if: always()
         run: |
-          echo "✅ Intraday H1 updated at $(date)"
+          echo "PipSight intraday H1 workflow finished."
+          echo "Status: ${{ job.status }}"
           echo "Repository: ${{ github.repository }}"
-          echo "Workflow completed successfully"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "Completed at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"

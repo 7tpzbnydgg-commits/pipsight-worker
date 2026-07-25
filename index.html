@@ -10584,17 +10584,19 @@ function backendScalpEntryForPair(
    */
   if(Array.isArray(payload.signals)){
     const pairSignals =
-      payload.signals.filter(
-        item=>
-          item &&
-          typeof item === "object" &&
-          String(item.pair || "")
-            .trim()
-            .toUpperCase() ===
-          pairKey
-            .trim()
-            .toUpperCase()
-      );
+  payload.signals.filter(
+    item=>
+      item &&
+      typeof item === "object" &&
+      String(item.pair || "")
+        .trim()
+        .toUpperCase()
+        .replace(/[^A-Z0-9]/g, "") ===
+      String(pairKey || "")
+        .trim()
+        .toUpperCase()
+        .replace(/[^A-Z0-9]/g, "")
+  );
 
     if(!pairSignals.length){
       return null;

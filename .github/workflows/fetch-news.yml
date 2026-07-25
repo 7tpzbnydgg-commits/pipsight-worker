@@ -3,59 +3,166 @@ name: PipSight Robot — fetch news
 on:
   schedule:
     - cron: "*/30 * * * *"
+
   workflow_dispatch: {}
 
 permissions:
   contents: write
 
 concurrency:
-  group: pipsight-robots
+  group: pipsight-fetch-news-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   fetch:
+    name: Fetch and publish news feed
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        shell: bash
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
 
-      - uses: actions/setup-node@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: "20"
 
       - name: Install dependencies
-        run: npm install
+        run: |
+          set -euo pipefail
 
-      - name: Run robot
-        run: node fetch-news.js
+          npm install \
+            --no-audit \
+            --no-fund
 
-      - name: Commit updated feed
+      - name: Run news robot
+        run: |
+          set -euo pipefail
+
+          node fetch-news.js
+
+      - name: Validate news feed output
+        run: |
+          set -euo pipefail
+
+          test -s data/news-feed.json
+
+          node - <<'NODE'
+          const fs = require("fs");
+
+          const file = "data/news-feed.json";
+
+          const parsed = JSON.parse(
+            fs.readFileSync(file, "utf8")
+          );
+
+          if (
+            parsed === null ||
+            (
+              typeof parsed !== "object" &&
+              !Array.isArray(parsed)
+            )
+          ) {
+            throw new Error(
+              "news-feed.json must contain a valid JSON array or object"
+            );
+          }
+
+          const possibleItems = Array.isArray(parsed)
+            ? parsed
+            : Array.isArray(parsed.items)
+              ? parsed.items
+              : Array.isArray(parsed.news)
+                ? parsed.news
+                : Array.isArray(parsed.articles)
+                  ? parsed.articles
+                  : Array.isArray(parsed.data)
+                    ? parsed.data
+                    : null;
+
+          if (
+            possibleItems &&
+            possibleItems.some(
+              (item) =>
+                !item ||
+                typeof item !== "object"
+            )
+          ) {
+            throw new Error(
+              "news-feed.json contains an invalid news item"
+            );
+          }
+
+          console.log(
+            "Validated:",
+            file,
+            possibleItems
+              ? `(${possibleItems.length} items)`
+              : "(valid object structure)"
+          );
+          NODE
+
+      - name: Commit and push updated feed
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
+
           git config user.name "pipsight-robot"
           git config user.email "actions@users.noreply.github.com"
 
-          git add data/news-feed.json
+          # Strictly stage only the file owned by this workflow.
+          git add -- data/news-feed.json
 
-          if [[ -n "$(git status --porcelain)" ]]; then
-            git commit -m "robot: refresh news feed"
-
-            # Sync with latest remote changes
-            git pull --rebase origin main
-
-            # Push changes
-            git push origin main
-          else
-            echo "No changes to commit"
+          if git diff --cached --quiet; then
+            echo "No news feed changes to commit."
+            exit 0
           fi
+
+          git commit -m "robot: refresh news feed"
+
+          max_attempts=5
+
+          for attempt in $(seq 1 "$max_attempts"); do
+            echo "Push attempt ${attempt}/${max_attempts}"
+
+            if git push origin HEAD:main; then
+              echo "News feed pushed successfully."
+              exit 0
+            fi
+
+            if [[ "$attempt" -eq "$max_attempts" ]]; then
+              echo "Push failed after ${max_attempts} attempts."
+              exit 1
+            fi
+
+            echo "Remote branch changed. Rebasing before retry..."
+
+            git fetch origin main
+
+            if ! git rebase origin/main; then
+              echo "Rebase conflict detected."
+              git rebase --abort || true
+              exit 1
+            fi
+
+            sleep $((attempt * 5))
+          done
 
       - name: Log execution
         if: always()
         run: |
-          echo "✅ News feed updated at $(date)"
+          echo "PipSight fetch-news workflow finished."
+          echo "Status: ${{ job.status }}"
           echo "Repository: ${{ github.repository }}"
-          echo "Workflow completed successfully"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "Completed at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"

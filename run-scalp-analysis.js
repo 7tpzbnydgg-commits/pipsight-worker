@@ -3331,24 +3331,52 @@ function run() {
     log = [];
   }
 
-  for (const signal of signals) {
+    let appendedLogEntries = 0;
+  let suppressedLogEntries = 0;
 
-    if (
-      signal.signal === "BUY" ||
-      signal.signal === "SELL"
-    ) {
-
-      log.push({
-        pair: signal.pair,
-        mode: signal.mode,
-        signal: signal.signal,
-        confidence: signal.confidence,
-        tradePlan: signal.tradePlan,
-        generatedAt
+  for (
+    const signal of signals
+  ) {
+    const decision =
+      shouldAppendSignalLogEntry({
+        signal,
+        previousSnapshot,
+        log
       });
 
+    if (!decision.append) {
+      if (
+        decision.reason ===
+        "unchanged-active-signal"
+      ) {
+        suppressedLogEntries++;
+
+        console.log(
+          `[Scalp Engine] Duplicate log suppressed: ` +
+          `${signal.pair} ${signal.mode} ` +
+          `${signal.signal}`
+        );
+      }
+
+      continue;
     }
 
+    log.push(
+      createSignalLogEntry(
+        signal,
+        generatedAt,
+        decision.reason
+      )
+    );
+
+    appendedLogEntries++;
+
+    console.log(
+      `[Scalp Engine] Signal logged: ` +
+      `${signal.pair} ${signal.mode} ` +
+      `${signal.signal} ` +
+      `(${decision.reason})`
+    );
   }
 
   if (log.length > MAX_SIGNAL_LOG) {
@@ -3364,8 +3392,12 @@ function run() {
     log
   );
 
-  console.log(
-    `[Scalp Engine] ${signals.length} analyses completed.`
+    console.log(
+    `[Scalp Engine] ${signals.length} analyses completed; ` +
+    `${appendedLogEntries} signal log entr` +
+    `${appendedLogEntries === 1 ? "y" : "ies"} added; ` +
+    `${suppressedLogEntries} duplicate` +
+    `${suppressedLogEntries === 1 ? "" : "s"} suppressed.`
   );
 
 }

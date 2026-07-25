@@ -845,3 +845,268 @@ function candleDataQuality(
       )
   };
 }
+
+/* =====================================================================
+   Timeframe Aggregation Engine
+   ===================================================================== */
+
+function floorToBucket(timestamp, minutes) {
+  const date =
+    timestamp instanceof Date
+      ? new Date(timestamp.getTime())
+      : parseTimestamp(timestamp);
+
+  if (!date) {
+    return null;
+  }
+
+  date.setUTCSeconds(0, 0);
+
+  const bucketMinute =
+    Math.floor(
+      date.getUTCMinutes() / minutes
+    ) * minutes;
+
+  date.setUTCMinutes(bucketMinute);
+
+  return date;
+}
+
+function aggregateCandles(
+  rows,
+  timeframeMinutes
+) {
+  if (
+    !Array.isArray(rows) ||
+    rows.length === 0
+  ) {
+    return [];
+  }
+
+  const buckets =
+    new Map();
+
+  for (const row of rows) {
+
+    if (
+      !row ||
+      !row.isClosed
+    ) {
+      continue;
+    }
+
+    const bucketTime =
+      floorToBucket(
+        row.date,
+        timeframeMinutes
+      );
+
+    if (!bucketTime) {
+      continue;
+    }
+
+    const key =
+      bucketTime.toISOString();
+
+    if (!buckets.has(key)) {
+
+      buckets.set(key, {
+
+        date: key,
+
+        timestamp:
+          bucketTime.getTime(),
+
+        open:
+          row.open,
+
+        high:
+          row.high,
+
+        low:
+          row.low,
+
+        close:
+          row.close,
+
+        volume:
+          row.volume || 0,
+
+        hasOHLC:
+          row.hasOHLC,
+
+        isClosed: true
+
+      });
+
+      continue;
+    }
+
+    const candle =
+      buckets.get(key);
+
+    candle.high =
+      Math.max(
+        candle.high,
+        row.high
+      );
+
+    candle.low =
+      Math.min(
+        candle.low,
+        row.low
+      );
+
+    candle.close =
+      row.close;
+
+    candle.volume +=
+      row.volume || 0;
+
+    candle.hasOHLC =
+      candle.hasOHLC &&
+      row.hasOHLC;
+  }
+
+  return Array
+    .from(
+      buckets.values()
+    )
+    .sort(
+      (a, b) =>
+        a.timestamp -
+        b.timestamp
+    );
+}
+
+/* =====================================================================
+   Internal Timeframes
+   ===================================================================== */
+
+function buildM15Rows(
+  m5Rows
+) {
+  return aggregateCandles(
+    m5Rows,
+    15
+  );
+}
+
+function buildM30Rows(
+  m5Rows
+) {
+  return aggregateCandles(
+    m5Rows,
+    30
+  );
+}
+
+/* =====================================================================
+   Mode Selection
+   ===================================================================== */
+
+function rowsForMode(
+  mode,
+  m5Rows
+) {
+
+  switch (mode) {
+
+    case "M5":
+      return m5Rows;
+
+    case "M15":
+      return buildM15Rows(
+        m5Rows
+      );
+
+    case "M30":
+      return buildM30Rows(
+        m5Rows
+      );
+
+    default:
+      return [];
+
+  }
+
+}
+
+function higherTimeframeRows(
+  mode,
+  m5Rows,
+  h1Rows
+) {
+
+  switch (mode) {
+
+    case "M5":
+      return buildM15Rows(
+        m5Rows
+      );
+
+    case "M15":
+      return buildM30Rows(
+        m5Rows
+      );
+
+    case "M30":
+      return h1Rows;
+
+    default:
+      return null;
+
+  }
+
+}
+
+/* =====================================================================
+   Row Helpers
+   ===================================================================== */
+
+function latestRow(
+  rows
+) {
+
+  if (
+    !Array.isArray(rows) ||
+    rows.length === 0
+  ) {
+    return null;
+  }
+
+  return rows[
+    rows.length - 1
+  ];
+
+}
+
+function closeSeries(
+  rows
+) {
+
+  return rows.map(
+    row => row.close
+  );
+
+}
+
+function highSeries(
+  rows
+) {
+
+  return rows.map(
+    row => row.high
+  );
+
+}
+
+function lowSeries(
+  rows
+) {
+
+  return rows.map(
+    row => row.low
+  );
+
+}

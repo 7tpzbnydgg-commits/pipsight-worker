@@ -1669,3 +1669,541 @@ function getAdaptivePeriods(
   };
 
 }
+
+/* =====================================================================
+   MACD Engine
+   ===================================================================== */
+
+function computeMACD(
+  values,
+  fastPeriod = 12,
+  slowPeriod = 26,
+  signalPeriod = 9
+) {
+  const emptyResult = {
+    macdSeries: [],
+    signalSeries: [],
+    histogramSeries: [],
+    macd: null,
+    signal: null,
+    histogram: null,
+    available: false
+  };
+
+  if (
+    !Array.isArray(values) ||
+    values.length <
+      slowPeriod + signalPeriod
+  ) {
+    return emptyResult;
+  }
+
+  const fastEMA =
+    emaSeries(
+      values,
+      fastPeriod
+    );
+
+  const slowEMA =
+    emaSeries(
+      values,
+      slowPeriod
+    );
+
+  const macdSeries =
+    new Array(values.length)
+      .fill(null);
+
+  const compactMACD = [];
+  const compactIndexes = [];
+
+  for (
+    let i = 0;
+    i < values.length;
+    i++
+  ) {
+    if (
+      !isFiniteNumber(fastEMA[i]) ||
+      !isFiniteNumber(slowEMA[i])
+    ) {
+      continue;
+    }
+
+    const value =
+      fastEMA[i] -
+      slowEMA[i];
+
+    macdSeries[i] =
+      value;
+
+    compactMACD.push(value);
+    compactIndexes.push(i);
+  }
+
+  if (
+    compactMACD.length <
+    signalPeriod
+  ) {
+    return {
+      ...emptyResult,
+      macdSeries
+    };
+  }
+
+  const compactSignal =
+    emaSeries(
+      compactMACD,
+      signalPeriod
+    );
+
+  const signalSeries =
+    new Array(values.length)
+      .fill(null);
+
+  const histogramSeries =
+    new Array(values.length)
+      .fill(null);
+
+  for (
+    let i = 0;
+    i < compactIndexes.length;
+    i++
+  ) {
+    const sourceIndex =
+      compactIndexes[i];
+
+    const signalValue =
+      compactSignal[i];
+
+    if (
+      !isFiniteNumber(signalValue)
+    ) {
+      continue;
+    }
+
+    signalSeries[sourceIndex] =
+      signalValue;
+
+    histogramSeries[sourceIndex] =
+      macdSeries[sourceIndex] -
+      signalValue;
+  }
+
+  const lastIndex =
+    values.length - 1;
+
+  const macd =
+    macdSeries[lastIndex];
+
+  const signal =
+    signalSeries[lastIndex];
+
+  const histogram =
+    histogramSeries[lastIndex];
+
+  return {
+    macdSeries,
+    signalSeries,
+    histogramSeries,
+
+    macd:
+      isFiniteNumber(macd)
+        ? macd
+        : null,
+
+    signal:
+      isFiniteNumber(signal)
+        ? signal
+        : null,
+
+    histogram:
+      isFiniteNumber(histogram)
+        ? histogram
+        : null,
+
+    available:
+      isFiniteNumber(macd) &&
+      isFiniteNumber(signal)
+  };
+}
+
+/* =====================================================================
+   EMA State
+   ===================================================================== */
+
+function getEMAState(rows) {
+  const unavailable = {
+    available: false,
+    direction: null,
+    alignmentCount: 0,
+    fullAlignment: false,
+    partialAlignment: false,
+    lastClose: null,
+    periods: null,
+    values: {
+      ema20: null,
+      ema50: null,
+      ema100: null,
+      ema200: null
+    }
+  };
+
+  if (
+    !Array.isArray(rows) ||
+    rows.length < 10
+  ) {
+    return unavailable;
+  }
+
+  const closes =
+    closeSeries(rows);
+
+  const periods =
+    getAdaptivePeriods(
+      rows.length
+    );
+
+  const ema20 =
+    emaSeries(
+      closes,
+      periods.p20
+    );
+
+  const ema50 =
+    emaSeries(
+      closes,
+      periods.p50
+    );
+
+  const ema100 =
+    emaSeries(
+      closes,
+      periods.p100
+    );
+
+  const ema200 =
+    emaSeries(
+      closes,
+      periods.p200
+    );
+
+  const lastIndex =
+    closes.length - 1;
+
+  const lastCloseValue =
+    closes[lastIndex];
+
+  const v20 =
+    ema20[lastIndex];
+
+  const v50 =
+    ema50[lastIndex];
+
+  const v100 =
+    ema100[lastIndex];
+
+  const v200 =
+    ema200[lastIndex];
+
+  if (
+    ![
+      lastCloseValue,
+      v20,
+      v50,
+      v100,
+      v200
+    ].every(isFiniteNumber)
+  ) {
+    return {
+      ...unavailable,
+      lastClose:
+        isFiniteNumber(lastCloseValue)
+          ? lastCloseValue
+          : null,
+      periods
+    };
+  }
+
+  const bullishChecks = [
+    lastCloseValue > v20,
+    v20 > v50,
+    v50 > v100,
+    v100 > v200
+  ];
+
+  const bearishChecks = [
+    lastCloseValue < v20,
+    v20 < v50,
+    v50 < v100,
+    v100 < v200
+  ];
+
+  const bullishCount =
+    bullishChecks.filter(Boolean)
+      .length;
+
+  const bearishCount =
+    bearishChecks.filter(Boolean)
+      .length;
+
+  let direction = null;
+  let alignmentCount = 0;
+
+  if (bullishCount === 4) {
+    direction = "BUY";
+    alignmentCount = 4;
+  } else if (bearishCount === 4) {
+    direction = "SELL";
+    alignmentCount = 4;
+  } else if (
+    bullishCount >
+    bearishCount
+  ) {
+    alignmentCount =
+      bullishCount;
+  } else if (
+    bearishCount >
+    bullishCount
+  ) {
+    alignmentCount =
+      bearishCount;
+  } else {
+    alignmentCount =
+      bullishCount;
+  }
+
+  return {
+    available: true,
+    direction,
+    alignmentCount,
+
+    fullAlignment:
+      alignmentCount === 4 &&
+      direction !== null,
+
+    partialAlignment:
+      alignmentCount === 3 &&
+      direction === null,
+
+    lastClose:
+      lastCloseValue,
+
+    periods,
+
+    values: {
+      ema20: v20,
+      ema50: v50,
+      ema100: v100,
+      ema200: v200
+    },
+
+    bullishCount,
+    bearishCount
+  };
+}
+
+/* =====================================================================
+   Trend Direction
+   ===================================================================== */
+
+function trendDirectionOf(rows) {
+  const state =
+    getEMAState(rows);
+
+  if (
+    !state.available ||
+    !state.fullAlignment
+  ) {
+    return null;
+  }
+
+  return state.direction;
+}
+
+/* =====================================================================
+   Market Structure
+   ===================================================================== */
+
+function computeMarketStructure(rows) {
+  const unavailable = {
+    direction: null,
+    score: 0,
+    label:
+      "Not enough swing points",
+    swingHighs: [],
+    swingLows: [],
+    latestHigh: null,
+    previousHigh: null,
+    latestLow: null,
+    previousLow: null
+  };
+
+  if (
+    !Array.isArray(rows) ||
+    rows.length < 7
+  ) {
+    return unavailable;
+  }
+
+  const radius =
+    rows.length > 60
+      ? 3
+      : rows.length > 30
+      ? 2
+      : 1;
+
+  const swingHighs = [];
+  const swingLows = [];
+
+  for (
+    let i = radius;
+    i < rows.length - radius;
+    i++
+  ) {
+    const current =
+      rows[i];
+
+    let isSwingHigh = true;
+    let isSwingLow = true;
+
+    for (
+      let offset = 1;
+      offset <= radius;
+      offset++
+    ) {
+      const left =
+        rows[i - offset];
+
+      const right =
+        rows[i + offset];
+
+      if (
+        current.high <= left.high ||
+        current.high <= right.high
+      ) {
+        isSwingHigh = false;
+      }
+
+      if (
+        current.low >= left.low ||
+        current.low >= right.low
+      ) {
+        isSwingLow = false;
+      }
+
+      if (
+        !isSwingHigh &&
+        !isSwingLow
+      ) {
+        break;
+      }
+    }
+
+    if (isSwingHigh) {
+      swingHighs.push({
+        index: i,
+        date: current.date,
+        price: current.high
+      });
+    }
+
+    if (isSwingLow) {
+      swingLows.push({
+        index: i,
+        date: current.date,
+        price: current.low
+      });
+    }
+  }
+
+  if (
+    swingHighs.length < 2 ||
+    swingLows.length < 2
+  ) {
+    return {
+      ...unavailable,
+      swingHighs,
+      swingLows
+    };
+  }
+
+  const previousHigh =
+    swingHighs[
+      swingHighs.length - 2
+    ];
+
+  const latestHigh =
+    swingHighs[
+      swingHighs.length - 1
+    ];
+
+  const previousLow =
+    swingLows[
+      swingLows.length - 2
+    ];
+
+  const latestLow =
+    swingLows[
+      swingLows.length - 1
+    ];
+
+  const higherHigh =
+    latestHigh.price >
+    previousHigh.price;
+
+  const lowerHigh =
+    latestHigh.price <
+    previousHigh.price;
+
+  const higherLow =
+    latestLow.price >
+    previousLow.price;
+
+  const lowerLow =
+    latestLow.price <
+    previousLow.price;
+
+  let direction = null;
+  let score = 0;
+  let label =
+    "Mixed market structure";
+
+  if (
+    higherHigh &&
+    higherLow
+  ) {
+    direction = "BUY";
+    score = 15;
+    label =
+      "Bullish structure: HH + HL";
+  } else if (
+    lowerHigh &&
+    lowerLow
+  ) {
+    direction = "SELL";
+    score = -15;
+    label =
+      "Bearish structure: LH + LL";
+  }
+
+  return {
+    direction,
+    score,
+    label,
+
+    radius,
+
+    swingHighs,
+    swingLows,
+
+    latestHigh,
+    previousHigh,
+    latestLow,
+    previousLow,
+
+    higherHigh,
+    lowerHigh,
+    higherLow,
+    lowerLow
+  };
+}

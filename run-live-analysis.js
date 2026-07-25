@@ -2846,7 +2846,7 @@ async function sendTelegram(
       text.split("\n")[0]
     );
 
-    return;
+    return false;
   }
 
   const controller =
@@ -2880,20 +2880,49 @@ async function sendTelegram(
         }
       );
 
+    const responseText =
+      await response.text();
+
     if (!response.ok) {
       console.error(
         "Telegram send failed:",
         response.status,
-        await response.text()
+        responseText
       );
 
-      return;
+      return false;
+    }
+
+    let responseBody = null;
+
+    try {
+      responseBody =
+        responseText
+          ? JSON.parse(responseText)
+          : null;
+    } catch {
+      responseBody = null;
+    }
+
+    if (
+      responseBody &&
+      responseBody.ok === false
+    ) {
+      console.error(
+        "Telegram API rejected notification:",
+        responseBody.description ||
+          "Unknown Telegram API error"
+      );
+
+      return false;
     }
 
     console.log(
       "Telegram notification sent:",
       text.split("\n")[0]
     );
+
+    return true;
   } catch (error) {
     console.error(
       "Telegram send error:",
@@ -2902,6 +2931,8 @@ async function sendTelegram(
         ? `Timed out after ${TELEGRAM_TIMEOUT_MS}ms`
         : error.message
     );
+
+    return false;
   } finally {
     clearTimeout(timeout);
   }

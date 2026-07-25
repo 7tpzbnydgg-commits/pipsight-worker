@@ -11306,7 +11306,7 @@ async function fetchBackendScalpSignals({
         null,
 
       note:
-        "Backend scalp analysis unavailable — browser fallback active: " +
+        "Backend scalp analysis unavailable: " +
         normalizeErrorMessage(
           error
         )
@@ -11381,14 +11381,13 @@ function isScalpSignalFresh(
 }
 
 // ════════════════════════════════════════════════════════════════
-// BACKEND / BROWSER FALLBACK SELECTION
+// BACKEND-ONLY SCALP SIGNAL SELECTION
 // ════════════════════════════════════════════════════════════════
 
 async function getScalpSignalForPair(
   pair,
   {
-    forceRefresh = false,
-    allowBrowserFallback = true
+    forceRefresh = false
   } = {}
 ){
   if(
@@ -11434,162 +11433,68 @@ async function getScalpSignalForPair(
     };
   }
 
-  if(!allowBrowserFallback){
-    return {
-      decision:"HOLD",
-      signal:"HOLD",
-
-      reason:
-        backendSignal
-          ? "Backend scalp signal is stale"
-          : "Backend scalp signal is unavailable",
-
-      confidence:null,
-
-      source:
-        "none",
-
-      sourceLabel:
-        "No active scalp engine",
-
-      generatedAt:
-        null,
-
-      pipeline:[
-        {
-          name:"Scalp Signal Source",
-          status:"fail",
-          detail:
-            backendSignal
-              ? "Backend result is stale and browser fallback is disabled"
-              : "Backend result is unavailable and browser fallback is disabled"
-        }
-      ],
-
-      perTF:
-        normalizeScalpPerTF(
-          []
-        ),
-
-      entry:"—",
-      sl:"—",
-      tp:"—",
-      tp1:"—",
-      tp2:"—",
-      tp3:"—",
-      rr:null,
-
-      rawEntry:null,
-      rawSl:null,
-      rawTp:null,
-      rawTp1:null,
-      rawTp2:null,
-      rawTp3:null,
-
-      tradePlan:null,
-
-      bullWeight:0,
-      bearWeight:0,
-
-      indicators:{}
-    };
-  }
-
-  if(
-    !SCALP_DATA ||
-    forceRefresh
-  ){
-    await fetchScalpCandles({
-      forceRefresh
-    });
-  }
-
-  const rawCandles =
-    scalpCandlesForPair(
-      pair.key
-    );
-
-  if(!rawCandles.length){
-    return {
-      decision:"HOLD",
-      signal:"HOLD",
-
-      reason:
-        "No valid M5 scalp candles are available",
-
-      confidence:null,
-
-      source:
-        "browser-fallback",
-
-      sourceLabel:
-        "Browser fallback engine",
-
-      generatedAt:
-        new Date().toISOString(),
-
-      pipeline:[
-        {
-          name:"Scalp Candle Feed",
-          status:"fail",
-          detail:"No valid M5 candles were returned by the worker"
-        }
-      ],
-
-      perTF:
-        normalizeScalpPerTF(
-          []
-        ),
-
-      entry:"—",
-      sl:"—",
-      tp:"—",
-      tp1:"—",
-      tp2:"—",
-      tp3:"—",
-      rr:null,
-
-      rawEntry:null,
-      rawSl:null,
-      rawTp:null,
-      rawTp1:null,
-      rawTp2:null,
-      rawTp3:null,
-
-      tradePlan:null,
-
-      bullWeight:0,
-      bearWeight:0,
-
-      indicators:{}
-    };
-  }
-
-  let fallbackSignal =
-    computeProfessionalScalpSignal(
-      rawCandles,
-      pair
-    );
-
-  fallbackSignal =
-    applyScalpLearnerGate(
-      fallbackSignal,
-      pair.key
-    );
+  const reason =
+    backendSignal
+      ? "Backend scalp signal is stale"
+      : "Backend scalp signal is unavailable";
 
   return {
-    ...fallbackSignal,
+    decision:"HOLD",
+    signal:"HOLD",
+
+    reason,
+
+    confidence:null,
 
     source:
-      "browser-fallback",
+      "none",
 
     sourceLabel:
-      backendSignal
-        ? "Browser fallback · backend result stale"
-        : "Browser fallback · backend unavailable",
+      "Backend scalp worker unavailable",
 
     generatedAt:
-      new Date().toISOString()
+      backendSignal &&
+      backendSignal.generatedAt
+        ? backendSignal.generatedAt
+        : null,
+
+    pipeline:[
+      {
+        name:"Scalp Signal Source",
+        status:"fail",
+        detail:
+          backendSignal
+            ? "Backend scalp result is stale. Browser-side analysis is disabled."
+            : "Backend scalp result is unavailable. Browser-side analysis is disabled."
+      }
+    ],
+
+    perTF:
+      normalizeScalpPerTF(
+        []
+      ),
+
+    entry:"—",
+    sl:"—",
+    tp:"—",
+    tp1:"—",
+    tp2:"—",
+    tp3:"—",
+    rr:null,
+
+    rawEntry:null,
+    rawSl:null,
+    rawTp:null,
+    rawTp1:null,
+    rawTp2:null,
+    rawTp3:null,
+
+    tradePlan:null,
+
+    bullWeight:0,
+    bearWeight:0,
+
+    indicators:{}
   };
 }
 

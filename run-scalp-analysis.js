@@ -2670,3 +2670,151 @@ function analyze(
   return result;
 
 }
+
+/* =====================================================================
+   Main Worker
+   ===================================================================== */
+
+function run() {
+
+  const news =
+    readNewsFeed();
+
+  const signals = [];
+  const generatedAt =
+    new Date().toISOString();
+
+  for (const pair of PAIRS) {
+
+    const scalp =
+      readScalpRows(pair);
+
+    const h1 =
+      readH1Rows(pair);
+
+    if (!hasEnoughRows(scalp.rows, MIN_M5_ROWS)) {
+      continue;
+    }
+
+    for (const mode of MODES) {
+
+      const rows =
+        rowsForMode(
+          mode,
+          scalp.rows
+        );
+
+      const higherRows =
+        higherTimeframeRows(
+          mode,
+          scalp.rows,
+          h1.rows
+        );
+
+      const pairNews =
+        newsForPair(
+          pair.label,
+          news
+        );
+
+      const score =
+        newsScoreForPair(
+          pair.label,
+          pairNews
+        );
+
+      const analysis =
+        analyze(
+          rows,
+          pair.label,
+          score,
+          higherRows,
+          pairNews
+        );
+
+      analysis.mode = mode;
+      analysis.generatedAt = generatedAt;
+
+      signals.push(analysis);
+
+    }
+
+  }
+
+  atomicWriteJson(
+    SIGNALS_OUT_PATH,
+    {
+      generatedAt,
+      engineVersion: ENGINE_VERSION,
+      strategyVersion: STRATEGY_VERSION,
+      signals
+    }
+  );
+
+  let log =
+    readJsonFile(
+      LOG_OUT_PATH,
+      []
+    );
+
+  if (!Array.isArray(log)) {
+    log = [];
+  }
+
+  for (const signal of signals) {
+
+    if (
+      signal.signal === "BUY" ||
+      signal.signal === "SELL"
+    ) {
+
+      log.push({
+        pair: signal.pair,
+        mode: signal.mode,
+        signal: signal.signal,
+        confidence: signal.confidence,
+        tradePlan: signal.tradePlan,
+        generatedAt
+      });
+
+    }
+
+  }
+
+  if (log.length > MAX_SIGNAL_LOG) {
+    log =
+      log.slice(
+        log.length -
+        MAX_SIGNAL_LOG
+      );
+  }
+
+  atomicWriteJson(
+    LOG_OUT_PATH,
+    log
+  );
+
+  console.log(
+    `[Scalp Engine] ${signals.length} analyses completed.`
+  );
+
+}
+
+if (require.main === module) {
+
+  try {
+
+    run();
+
+  } catch (error) {
+
+    console.error(
+      "[Scalp Engine]",
+      error
+    );
+
+    process.exit(1);
+
+  }
+
+}

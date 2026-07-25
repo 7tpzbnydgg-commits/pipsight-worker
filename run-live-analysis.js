@@ -3306,17 +3306,23 @@ Hold: 2–12 hours`
       );
 
       const notifyKey =
-        `${pairKey}:scalp`;
+  `${pairKey}:scalp`;
 
-      if (
-        scalp.decision !==
-          "HOLD" &&
-        notifyState[
-          notifyKey
-        ] !== scalp.decision
-      ) {
-        await sendTelegram(
-          `🔔 PipSight — Scalp
+if (
+  scalp.decision ===
+  "HOLD"
+) {
+  notifyState[
+    notifyKey
+  ] = "HOLD";
+} else if (
+  notifyState[
+    notifyKey
+  ] !== scalp.decision
+) {
+  const notificationSent =
+    await sendTelegram(
+      `🔔 PipSight — Scalp
 ${pairKey} · 5/15/30m
 ${
   scalp.decision ===
@@ -3333,13 +3339,14 @@ SL: ${formatScalpValue(
 TP: ${formatScalpValue(
   scalp.tp
 )}`
-        );
-      }
+    );
 
-      notifyState[
-        notifyKey
-      ] = scalp.decision;
-    }
+  if (notificationSent) {
+    notifyState[
+      notifyKey
+    ] = scalp.decision;
+  }
+}
 
     // ===================== Master =====================
 

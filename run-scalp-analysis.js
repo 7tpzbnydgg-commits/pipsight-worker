@@ -1326,3 +1326,346 @@ function cloneRows(
   );
 
 }
+
+/* =====================================================================
+   Technical Indicator Engine
+   (Ported from fetch-signals.js)
+   ===================================================================== */
+
+function emaSeries(values, period) {
+
+  if (!Array.isArray(values)) {
+    return [];
+  }
+
+  const ema =
+    new Array(values.length).fill(null);
+
+  if (
+    values.length < period ||
+    period < 2
+  ) {
+    return ema;
+  }
+
+  let seed = 0;
+
+  for (
+    let i = 0;
+    i < period;
+    i++
+  ) {
+    seed += values[i];
+  }
+
+  seed /= period;
+
+  ema[
+    period - 1
+  ] = seed;
+
+  const multiplier =
+    2 / (period + 1);
+
+  for (
+    let i = period;
+    i < values.length;
+    i++
+  ) {
+
+    ema[i] =
+      (
+        values[i] -
+        ema[i - 1]
+      ) *
+      multiplier +
+      ema[i - 1];
+
+  }
+
+  return ema;
+
+}
+
+function rsiSeries(
+  values,
+  period = 14
+) {
+
+  const output =
+    new Array(values.length)
+      .fill(null);
+
+  if (
+    values.length <= period
+  ) {
+    return output;
+  }
+
+  let gain = 0;
+  let loss = 0;
+
+  for (
+    let i = 1;
+    i <= period;
+    i++
+  ) {
+
+    const diff =
+      values[i] -
+      values[i - 1];
+
+    if (diff >= 0) {
+      gain += diff;
+    } else {
+      loss -= diff;
+    }
+
+  }
+
+  let avgGain =
+    gain / period;
+
+  let avgLoss =
+    loss / period;
+
+  output[period] =
+    avgLoss === 0
+      ? 100
+      : 100 -
+        (
+          100 /
+          (
+            1 +
+            avgGain /
+            avgLoss
+          )
+        );
+
+  for (
+    let i = period + 1;
+    i < values.length;
+    i++
+  ) {
+
+    const diff =
+      values[i] -
+      values[i - 1];
+
+    const currentGain =
+      diff > 0
+        ? diff
+        : 0;
+
+    const currentLoss =
+      diff < 0
+        ? -diff
+        : 0;
+
+    avgGain =
+      (
+        avgGain *
+        (period - 1) +
+        currentGain
+      ) / period;
+
+    avgLoss =
+      (
+        avgLoss *
+        (period - 1) +
+        currentLoss
+      ) / period;
+
+    output[i] =
+      avgLoss === 0
+        ? 100
+        : 100 -
+          (
+            100 /
+            (
+              1 +
+              avgGain /
+              avgLoss
+            )
+          );
+
+  }
+
+  return output;
+
+}
+
+function trueRange(
+  current,
+  previous
+) {
+
+  if (!previous) {
+    return (
+      current.high -
+      current.low
+    );
+  }
+
+  return Math.max(
+    current.high -
+      current.low,
+
+    Math.abs(
+      current.high -
+      previous.close
+    ),
+
+    Math.abs(
+      current.low -
+      previous.close
+    )
+  );
+
+}
+
+function atrSeries(
+  rows,
+  period = 14
+) {
+
+  const atr =
+    new Array(rows.length)
+      .fill(null);
+
+  if (
+    rows.length <= period
+  ) {
+    return atr;
+  }
+
+  const tr = [];
+
+  for (
+    let i = 0;
+    i < rows.length;
+    i++
+  ) {
+
+    tr.push(
+      trueRange(
+        rows[i],
+        i > 0
+          ? rows[i - 1]
+          : null
+      )
+    );
+
+  }
+
+  let sum = 0;
+
+  for (
+    let i = 0;
+    i < period;
+    i++
+  ) {
+    sum += tr[i];
+  }
+
+  atr[
+    period - 1
+  ] = sum / period;
+
+  for (
+    let i = period;
+    i < rows.length;
+    i++
+  ) {
+
+    atr[i] =
+      (
+        atr[i - 1] *
+        (period - 1) +
+        tr[i]
+      ) / period;
+
+  }
+
+  return atr;
+
+}
+
+function computeVolatility(
+  rows
+) {
+
+  if (
+    rows.length < 3
+  ) {
+    return 0.004;
+  }
+
+  let total = 0;
+
+  for (
+    let i = 1;
+    i < rows.length;
+    i++
+  ) {
+
+    total +=
+      Math.abs(
+        (
+          rows[i].close -
+          rows[i - 1].close
+        ) /
+        rows[i - 1].close
+      );
+
+  }
+
+  return (
+    total /
+    (rows.length - 1)
+  );
+
+}
+
+function getAdaptivePeriods(
+  rowCount
+) {
+
+  const p200 =
+    Math.min(
+      200,
+      rowCount - 1
+    );
+
+  const p100 =
+    Math.max(
+      30,
+      Math.round(
+        p200 * 0.5
+      )
+    );
+
+  const p50 =
+    Math.max(
+      15,
+      Math.round(
+        p100 * 0.6
+      )
+    );
+
+  const p20 =
+    Math.max(
+      8,
+      Math.round(
+        p50 * 0.5
+      )
+    );
+
+  return {
+    p20,
+    p50,
+    p100,
+    p200
+  };
+
+}

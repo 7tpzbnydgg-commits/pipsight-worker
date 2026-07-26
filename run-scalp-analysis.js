@@ -2335,6 +2335,26 @@ function calculateRiskReward(
    Main Analysis Engine
    ===================================================================== */
 
+function appendSkippedPipelineSteps(
+  result,
+  stepNames,
+  failedStepName
+) {
+
+  for (const name of stepNames) {
+
+    result.steps.push({
+      name,
+      pass: null,
+      status: "skip",
+      detail:
+        `Skipped because ${failedStepName} did not pass`
+    });
+
+  }
+
+}
+
 function analyze(
   rows,
   pairLabel,
@@ -2410,6 +2430,18 @@ function analyze(
       "EMA alignment failed"
     );
 
+    appendSkippedPipelineSteps(
+      result,
+      [
+        "MACD",
+        "RSI",
+        "Higher TF",
+        "News",
+        "Risk Reward"
+      ],
+      "EMA Trend"
+    );
+
     return result;
   }
 
@@ -2473,6 +2505,17 @@ function analyze(
       "MACD confirmation failed"
     );
 
+    appendSkippedPipelineSteps(
+      result,
+      [
+        "RSI",
+        "Higher TF",
+        "News",
+        "Risk Reward"
+      ],
+      "MACD"
+    );
+
     return result;
   }
 
@@ -2522,6 +2565,16 @@ function analyze(
       "RSI confirmation failed"
     );
 
+    appendSkippedPipelineSteps(
+      result,
+      [
+        "Higher TF",
+        "News",
+        "Risk Reward"
+      ],
+      "RSI"
+    );
+
     return result;
   }
 
@@ -2557,6 +2610,15 @@ function analyze(
 
       result.reasons.push(
         "Higher timeframe mismatch"
+      );
+
+      appendSkippedPipelineSteps(
+        result,
+        [
+          "News",
+          "Risk Reward"
+        ],
+        "Higher TF"
       );
 
       return result;
@@ -2607,6 +2669,14 @@ function analyze(
 
     result.reasons.push(
       "High impact news conflict"
+    );
+
+    appendSkippedPipelineSteps(
+      result,
+      [
+        "Risk Reward"
+      ],
+      "News"
     );
 
     return result;

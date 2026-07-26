@@ -3501,6 +3501,7 @@ function run() {
     readNewsFeed();
 
   const signals = [];
+
   const generatedAt =
     new Date().toISOString();
 
@@ -3512,9 +3513,102 @@ function run() {
     const h1 =
       readH1Rows(pair);
 
-    if (!hasEnoughRows(scalp.rows, MIN_M5_ROWS)) {
+    if (
+      !hasEnoughRows(
+        scalp.rows,
+        MIN_M5_ROWS
+      )
+    ) {
       continue;
     }
+
+    /*
+     * Prepared market-data information is calculated
+     * once per pair and shared across all scalp modes.
+     *
+     * This is additive only and does not change the
+     * existing analysis or signal-generation logic.
+     */
+
+    const derivedM15Rows =
+      buildM15Rows(
+        scalp.rows
+      );
+
+    const derivedM30Rows =
+      buildM30Rows(
+        scalp.rows
+      );
+
+    const prepared = {
+
+      counts: {
+
+        m5:
+          Array.isArray(scalp.rows)
+            ? scalp.rows.length
+            : 0,
+
+        m15:
+          Array.isArray(derivedM15Rows)
+            ? derivedM15Rows.length
+            : 0,
+
+        m30:
+          Array.isArray(derivedM30Rows)
+            ? derivedM30Rows.length
+            : 0,
+
+        h1:
+          Array.isArray(h1.rows)
+            ? h1.rows.length
+            : 0
+
+      },
+
+      source: {
+
+        m5:
+          scalp.source ??
+          null,
+
+        h1:
+          h1.source ??
+          null
+
+      },
+
+      updatedAt: {
+
+        m5:
+          scalp.sourceUpdatedAt ??
+          latestRow(scalp.rows)?.date ??
+          null,
+
+        h1:
+          h1.sourceUpdatedAt ??
+          latestRow(h1.rows)?.date ??
+          null
+
+      },
+
+      quality: {
+
+        m5:
+          candleDataQuality(
+            scalp,
+            5
+          ),
+
+        h1:
+          candleDataQuality(
+            h1,
+            60
+          )
+
+      }
+
+    };
 
     for (const mode of MODES) {
 
@@ -3552,73 +3646,42 @@ function run() {
           pairNews
         );
 
-            analysis.mode =
-  mode;
+      analysis.mode =
+        mode;
 
-analysis.generatedAt =
-  generatedAt;
+      analysis.generatedAt =
+        generatedAt;
 
-analysis.analyzedCandleAt =
-  latestRow(rows)?.date ??
-  null;
+      analysis.analyzedCandleAt =
+        latestRow(rows)?.date ??
+        null;
 
-const derivedM15Rows =
-  buildM15Rows(
-    scalp.rows
-  );
+      /*
+       * Preserve prepared market-data diagnostics
+       * in every generated signal.
+       */
 
-const derivedM30Rows =
-  buildM30Rows(
-    scalp.rows
-  );
+      analysis.prepared = {
+        counts: {
+          ...prepared.counts
+        },
 
-analysis.prepared = {
-  counts: {
-    m5:
-      scalp.rows.length,
+        source: {
+          ...prepared.source
+        },
 
-    m15:
-      derivedM15Rows.length,
+        updatedAt: {
+          ...prepared.updatedAt
+        },
 
-    m30:
-      derivedM30Rows.length,
+        quality: {
+          ...prepared.quality
+        }
+      };
 
-    h1:
-      h1.rows.length
-  },
-
-  quality: {
-    m5:
-      candleDataQuality(
-        scalp,
-        5
-      ),
-
-    h1:
-      candleDataQuality(
-        h1,
-        60
-      )
-  },
-
-  source: {
-    m5:
-      scalp.source,
-
-    h1:
-      h1.source,
-
-    m5UpdatedAt:
-      scalp.sourceUpdatedAt,
-
-    h1UpdatedAt:
-      h1.sourceUpdatedAt
-  }
-};
-
-signals.push(
-  analysis
-);
+      signals.push(
+        analysis
+      );
 
     }
 
@@ -3628,8 +3691,10 @@ signals.push(
     SIGNALS_OUT_PATH,
     {
       generatedAt,
-      engineVersion: ENGINE_VERSION,
-      strategyVersion: STRATEGY_VERSION,
+      engineVersion:
+        ENGINE_VERSION,
+      strategyVersion:
+        STRATEGY_VERSION,
       signals
     }
   );
@@ -3644,12 +3709,14 @@ signals.push(
     log = [];
   }
 
-    let appendedLogEntries = 0;
-  let suppressedLogEntries = 0;
+  let appendedLogEntries =
+    0;
 
-  for (
-    const signal of signals
-  ) {
+  let suppressedLogEntries =
+    0;
+
+  for (const signal of signals) {
+
     const decision =
       shouldAppendSignalLogEntry({
         signal,
@@ -3658,10 +3725,12 @@ signals.push(
       });
 
     if (!decision.append) {
+
       if (
         decision.reason ===
         "unchanged-active-signal"
       ) {
+
         suppressedLogEntries++;
 
         console.log(
@@ -3669,9 +3738,11 @@ signals.push(
           `${signal.pair} ${signal.mode} ` +
           `${signal.signal}`
         );
+
       }
 
       continue;
+
     }
 
     log.push(
@@ -3690,14 +3761,17 @@ signals.push(
       `${signal.signal} ` +
       `(${decision.reason})`
     );
+
   }
 
   if (log.length > MAX_SIGNAL_LOG) {
+
     log =
       log.slice(
         log.length -
         MAX_SIGNAL_LOG
       );
+
   }
 
   atomicWriteJson(
@@ -3705,7 +3779,7 @@ signals.push(
     log
   );
 
-    console.log(
+  console.log(
     `[Scalp Engine] ${signals.length} analyses completed; ` +
     `${appendedLogEntries} signal log entr` +
     `${appendedLogEntries === 1 ? "y" : "ies"} added; ` +

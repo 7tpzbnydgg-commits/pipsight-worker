@@ -3399,19 +3399,73 @@ function run() {
           pairNews
         );
 
-      analysis.mode =
-        mode;
+            analysis.mode =
+  mode;
 
-      analysis.generatedAt =
-        generatedAt;
+analysis.generatedAt =
+  generatedAt;
 
-      analysis.analyzedCandleAt =
-        latestRow(rows)?.date ??
-        null;
+analysis.analyzedCandleAt =
+  latestRow(rows)?.date ??
+  null;
 
-      signals.push(
-        analysis
-      );
+const derivedM15Rows =
+  buildM15Rows(
+    scalp.rows
+  );
+
+const derivedM30Rows =
+  buildM30Rows(
+    scalp.rows
+  );
+
+analysis.prepared = {
+  counts: {
+    m5:
+      scalp.rows.length,
+
+    m15:
+      derivedM15Rows.length,
+
+    m30:
+      derivedM30Rows.length,
+
+    h1:
+      h1.rows.length
+  },
+
+  quality: {
+    m5:
+      candleDataQuality(
+        scalp,
+        5
+      ),
+
+    h1:
+      candleDataQuality(
+        h1,
+        60
+      )
+  },
+
+  source: {
+    m5:
+      scalp.source,
+
+    h1:
+      h1.source,
+
+    m5UpdatedAt:
+      scalp.sourceUpdatedAt,
+
+    h1UpdatedAt:
+      h1.sourceUpdatedAt
+  }
+};
+
+signals.push(
+  analysis
+);
 
     }
 
@@ -3437,7 +3491,7 @@ function run() {
     log = [];
   }
 
-  let appendedLogEntries = 0;
+    let appendedLogEntries = 0;
   let suppressedLogEntries = 0;
 
   for (
@@ -3498,7 +3552,7 @@ function run() {
     log
   );
 
-  console.log(
+    console.log(
     `[Scalp Engine] ${signals.length} analyses completed; ` +
     `${appendedLogEntries} signal log entr` +
     `${appendedLogEntries === 1 ? "y" : "ies"} added; ` +

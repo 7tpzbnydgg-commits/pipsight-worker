@@ -1277,27 +1277,28 @@ class PipSightLearner {
                 );
 
             if (signalId === false) {
-                pendingSignal =
-                    this.findPendingLegacySignal({
-                        pair,
-                        strategy,
-                        timeframe,
-                        direction,
-                        entry
-                    });
+                console.warn(
+                    "Legacy outcome recording failed: signal could not be created."
+               );
 
-                if (!pendingSignal) {
-                    console.warn(
-                        "Legacy outcome recording failed: signal could not be created."
-                    );
+                return false;
+            }
 
-                    return false;
-                }
-            } else {
-                pendingSignal =
-                    this.getSignalById(
-                        signalId
-                    );
+            pendingSignal =
+                this.findPendingLegacySignal({
+                    pair,
+                    strategy,
+                    timeframe,
+                    direction,
+                    entry
+                });
+
+            if (!pendingSignal) {
+                console.warn(
+                    "Legacy outcome recording failed: pending signal not found."
+                );
+
+                return false;
             }
         }
 

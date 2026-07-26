@@ -2353,11 +2353,22 @@ function analyze(
   };
 
   if (!hasEnoughRows(rows, 35)) {
-    result.reasons.push("Not enough candles");
+    result.reasons.push(
+      "Not enough candles"
+    );
+
+    result.steps.push({
+      name: "Data Availability",
+      pass: false,
+      detail:
+        `Only ${Array.isArray(rows) ? rows.length : 0} closed candles are available; at least 35 are required`
+    });
+
     return result;
   }
 
-  const closes = closeSeries(rows);
+  const closes =
+    closeSeries(rows);
 
   const emaState =
     getEMAState(rows);
@@ -2388,7 +2399,11 @@ function analyze(
 
     result.steps.push({
       name: "EMA Trend",
-      pass: false
+      pass: false,
+      detail:
+        !emaState.available
+          ? "EMA trend values are unavailable because there are not enough valid candles"
+          : `Full EMA alignment failed; bullish checks ${emaState.bullishCount ?? 0}/4, bearish checks ${emaState.bearishCount ?? 0}/4`
     });
 
     result.reasons.push(
@@ -2396,16 +2411,21 @@ function analyze(
     );
 
     return result;
-
   }
+
+  const direction =
+    emaState.direction;
 
   result.steps.push({
     name: "EMA Trend",
-    pass: true
+    pass: true,
+    detail:
+      `${direction} EMA alignment confirmed: price ${round(emaState.lastClose, 6)}, ` +
+      `EMA20 ${round(emaState.values.ema20, 6)}, ` +
+      `EMA50 ${round(emaState.values.ema50, 6)}, ` +
+      `EMA100 ${round(emaState.values.ema100, 6)}, ` +
+      `EMA200 ${round(emaState.values.ema200, 6)}`
   });
-
-  let direction =
-    emaState.direction;
 
   /* =============================
      STEP 2 : MACD
@@ -2431,13 +2451,28 @@ function analyze(
 
   result.steps.push({
     name: "MACD",
-    pass: macdPass
+    pass: macdPass,
+    detail:
+      !macd.available
+        ? "MACD is unavailable because there are not enough valid candles"
+        : macdPass
+          ? `${direction} confirmed: MACD ${round(macd.macd, 6)} is ${
+              direction === "BUY"
+                ? "above"
+                : "below"
+            } signal ${round(macd.signal, 6)}; histogram ${round(macd.histogram, 6)}`
+          : `${direction} not confirmed: MACD ${round(macd.macd, 6)} is not ${
+              direction === "BUY"
+                ? "above"
+                : "below"
+            } signal ${round(macd.signal, 6)}; histogram ${round(macd.histogram, 6)}`
   });
 
   if (!macdPass) {
     result.reasons.push(
       "MACD confirmation failed"
     );
+
     return result;
   }
 
@@ -2449,6 +2484,7 @@ function analyze(
 
   if (
     direction === "BUY" &&
+    isFiniteNumber(lastRSI) &&
     lastRSI >= 45 &&
     lastRSI <= 65
   ) {
@@ -2457,15 +2493,27 @@ function analyze(
 
   if (
     direction === "SELL" &&
+    isFiniteNumber(lastRSI) &&
     lastRSI >= 35 &&
     lastRSI <= 55
   ) {
     rsiPass = true;
   }
 
+  const expectedRsiRange =
+    direction === "BUY"
+      ? "45–65"
+      : "35–55";
+
   result.steps.push({
     name: "RSI",
-    pass: rsiPass
+    pass: rsiPass,
+    detail:
+      !isFiniteNumber(lastRSI)
+        ? "RSI is unavailable because there are not enough valid candles"
+        : rsiPass
+          ? `${direction} RSI confirmation passed at ${round(lastRSI, 2)}; required range ${expectedRsiRange}`
+          : `${direction} RSI confirmation failed at ${round(lastRSI, 2)}; required range ${expectedRsiRange}`
   });
 
   if (!rsiPass) {
@@ -2475,26 +2523,36 @@ function analyze(
     );
 
     return result;
-
   }
 
   /* =============================
      STEP 4 : Higher TF
      ============================= */
 
-  if (htfRows) {
+  if (
+    Array.isArray(htfRows) &&
+    htfRows.length > 0
+  ) {
 
     const htfTrend =
       trendDirectionOf(htfRows);
 
-    if (
-      htfTrend &&
+    if (!htfTrend) {
+      result.steps.push({
+        name: "Higher TF",
+        pass: true,
+        detail:
+          "Higher timeframe has no full EMA direction, so no conflicting trend was found"
+      });
+    } else if (
       htfTrend !== direction
     ) {
 
       result.steps.push({
         name: "Higher TF",
-        pass: false
+        pass: false,
+        detail:
+          `Higher timeframe mismatch: lower timeframe is ${direction}, higher timeframe is ${htfTrend}`
       });
 
       result.reasons.push(
@@ -2503,11 +2561,24 @@ function analyze(
 
       return result;
 
+    } else {
+
+      result.steps.push({
+        name: "Higher TF",
+        pass: true,
+        detail:
+          `Higher timeframe confirms the same ${direction} direction`
+      });
+
     }
+
+  } else {
 
     result.steps.push({
       name: "Higher TF",
-      pass: true
+      pass: true,
+      detail:
+        "Higher timeframe data is unavailable; no conflicting confirmation was detected"
     });
 
   }
@@ -2526,7 +2597,12 @@ function analyze(
 
     result.steps.push({
       name: "News",
-      pass: false
+      pass: false,
+      detail:
+        `Conflicting high-impact news detected: ${
+          conflict.title ||
+          "Untitled news item"
+        } with sentiment ${round(conflict.sentiment, 2)}`
     });
 
     result.reasons.push(
@@ -2539,7 +2615,12 @@ function analyze(
 
   result.steps.push({
     name: "News",
-    pass: true
+    pass: true,
+    detail:
+      Array.isArray(newsItems) &&
+      newsItems.length > 0
+        ? `No conflicting high-impact news found across ${newsItems.length} pair-specific item(s); net news score ${round(newsScoreRaw, 2)}`
+        : `No pair-specific conflicting news found; net news score ${round(newsScoreRaw, 2)}`
   });
 
   /* =============================
@@ -2561,17 +2642,24 @@ function analyze(
       sr.resistances[0];
 
     if (
-      !support ||
-      !resistance
+      !isFiniteNumber(support) ||
+      !isFiniteNumber(resistance)
     ) {
+      result.steps.push({
+        name: "Risk Reward",
+        pass: false,
+        detail:
+          `Trade plan unavailable because support or resistance could not be determined; support ${support ?? "missing"}, resistance ${resistance ?? "missing"}`
+      });
+
       result.reasons.push(
         "Support/Resistance unavailable"
       );
+
       return result;
     }
 
     stop = support;
-
     target = resistance;
 
   } else {
@@ -2583,17 +2671,24 @@ function analyze(
       sr.supports[0];
 
     if (
-      !support ||
-      !resistance
+      !isFiniteNumber(support) ||
+      !isFiniteNumber(resistance)
     ) {
+      result.steps.push({
+        name: "Risk Reward",
+        pass: false,
+        detail:
+          `Trade plan unavailable because support or resistance could not be determined; support ${support ?? "missing"}, resistance ${resistance ?? "missing"}`
+      });
+
       result.reasons.push(
         "Support/Resistance unavailable"
       );
+
       return result;
     }
 
     stop = resistance;
-
     target = support;
 
   }
@@ -2609,7 +2704,9 @@ function analyze(
 
     result.steps.push({
       name: "Risk Reward",
-      pass: false
+      pass: false,
+      detail:
+        `Calculated R:R is 1:${round(rr, 2)} using entry ${round(entry, 6)}, stop ${round(stop, 6)} and target ${round(target, 6)}; minimum required is 1:2`
     });
 
     result.reasons.push(
@@ -2622,7 +2719,9 @@ function analyze(
 
   result.steps.push({
     name: "Risk Reward",
-    pass: true
+    pass: true,
+    detail:
+      `Risk:Reward passed at 1:${round(rr, 2)} using entry ${round(entry, 6)}, stop ${round(stop, 6)} and target ${round(target, 6)}`
   });
 
   /* =============================
@@ -2635,14 +2734,21 @@ function analyze(
   result.confidence =
     80;
 
-  if (market.direction === direction)
+  if (
+    market.direction === direction
+  ) {
     result.confidence += 10;
+  }
 
-  if (candlePattern)
+  if (candlePattern) {
     result.confidence += 5;
+  }
 
-  if (Math.abs(newsScoreRaw) < 10)
+  if (
+    Math.abs(newsScoreRaw) < 10
+  ) {
     result.confidence += 5;
+  }
 
   result.confidence =
     clamp(

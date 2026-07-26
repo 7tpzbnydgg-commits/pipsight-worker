@@ -3363,6 +3363,16 @@ function run() {
       continue;
     }
 
+    const derivedM15Rows =
+      buildM15Rows(
+        scalp.rows
+      );
+
+    const derivedM30Rows =
+      buildM30Rows(
+        scalp.rows
+      );
+
     for (const mode of MODES) {
 
       const rows =
@@ -3399,7 +3409,7 @@ function run() {
           pairNews
         );
 
-            analysis.mode =
+      analysis.mode =
         mode;
 
       analysis.generatedAt =
@@ -3408,6 +3418,61 @@ function run() {
       analysis.analyzedCandleAt =
         latestRow(rows)?.date ??
         null;
+
+      analysis.prepared = {
+
+        counts: {
+
+          rawM5:
+            scalp.rows.length,
+
+          closedM5:
+            scalp.rows.length,
+
+          derivedM15:
+            derivedM15Rows.length,
+
+          derivedM30:
+            derivedM30Rows.length,
+
+          derivedH1:
+            h1.rows.length
+
+        },
+
+        quality: {
+
+          m5:
+            candleDataQuality(
+              scalp,
+              5
+            ),
+
+          h1:
+            candleDataQuality(
+              h1,
+              60
+            )
+
+        },
+
+        source: {
+
+          m5:
+            scalp.source,
+
+          h1:
+            h1.source,
+
+          m5UpdatedAt:
+            scalp.sourceUpdatedAt,
+
+          h1UpdatedAt:
+            h1.sourceUpdatedAt
+
+        }
+
+      };
 
       signals.push(
         analysis
@@ -3437,12 +3502,13 @@ function run() {
     log = [];
   }
 
-    let appendedLogEntries = 0;
+  let appendedLogEntries = 0;
   let suppressedLogEntries = 0;
 
   for (
     const signal of signals
   ) {
+
     const decision =
       shouldAppendSignalLogEntry({
         signal,
@@ -3451,10 +3517,12 @@ function run() {
       });
 
     if (!decision.append) {
+
       if (
         decision.reason ===
         "unchanged-active-signal"
       ) {
+
         suppressedLogEntries++;
 
         console.log(
@@ -3462,9 +3530,11 @@ function run() {
           `${signal.pair} ${signal.mode} ` +
           `${signal.signal}`
         );
+
       }
 
       continue;
+
     }
 
     log.push(
@@ -3483,14 +3553,17 @@ function run() {
       `${signal.signal} ` +
       `(${decision.reason})`
     );
+
   }
 
   if (log.length > MAX_SIGNAL_LOG) {
+
     log =
       log.slice(
         log.length -
         MAX_SIGNAL_LOG
       );
+
   }
 
   atomicWriteJson(
@@ -3498,7 +3571,7 @@ function run() {
     log
   );
 
-    console.log(
+  console.log(
     `[Scalp Engine] ${signals.length} analyses completed; ` +
     `${appendedLogEntries} signal log entr` +
     `${appendedLogEntries === 1 ? "y" : "ies"} added; ` +

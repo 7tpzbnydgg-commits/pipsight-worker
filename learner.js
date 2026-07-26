@@ -1359,6 +1359,58 @@ class PipSightLearner {
     }
 
     /* -----------------------------------------------------------------
+       Legacy addResult() Compatibility Adapter
+       ----------------------------------------------------------------- */
+
+    addResult(...args) {
+
+        if (args.length === 0) {
+            return false;
+        }
+
+        /*
+         * Modern object style
+         *
+         * addResult({
+         *     pair,
+         *     strategy,
+         *     timeframe,
+         *     direction,
+         *     result,
+         *     ...
+         * })
+         */
+        if (isPlainObject(args[0])) {
+            return this.recordOutcome(args[0]);
+        }
+
+        /*
+         * Legacy positional style
+         *
+         * addResult(
+         *     strategy,
+         *     pair,
+         *     won,
+         *     confidence
+         * )
+         */
+
+        const [
+            strategy,
+            pair,
+            won,
+            confidence
+        ] = args;
+
+        return this.recordOutcome({
+            strategy,
+            pair,
+            result: won ? "WIN" : "LOSS",
+            confidence
+        });
+    }
+
+    /* -----------------------------------------------------------------
        Statistics
        ----------------------------------------------------------------- */
 

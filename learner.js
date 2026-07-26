@@ -1067,6 +1067,298 @@ class PipSightLearner {
     }
 
     /* -----------------------------------------------------------------
+       Legacy Frontend Outcome Adapter
+       ----------------------------------------------------------------- */
+
+    recordOutcome(outcomeData = {}) {
+        if (!isPlainObject(outcomeData)) {
+            console.warn(
+                "Legacy outcome recording failed: invalid outcome data."
+            );
+
+            return false;
+        }
+
+        const strategy =
+            this.normalizeLegacyStrategy(
+                outcomeData.strategy
+            );
+
+        const pair =
+            this.normalizeLegacyPair(
+                outcomeData.pair
+            );
+
+        const timeframe =
+            this.normalizeLegacyTimeframe(
+                outcomeData.timeframe,
+                strategy
+            );
+
+        const direction =
+            this.normalizeLegacyDirection(
+                outcomeData.signal ||
+                outcomeData.direction
+            );
+
+        const outcome =
+            this.normalizeLegacyOutcome(
+                outcomeData.result ||
+                outcomeData.outcome
+            );
+
+        const entry =
+            Number(outcomeData.entry);
+
+        const stopLoss =
+            Number(
+                outcomeData.stopLoss ??
+                outcomeData.stop
+            );
+
+        const takeProfit =
+            Number(
+                outcomeData.takeProfit ??
+                outcomeData.target
+            );
+
+        const closePrice =
+            Number(
+                outcomeData.closePrice ??
+                outcomeData.close
+            );
+
+        if (
+            !LearningConfig.SUPPORTED_PAIRS.includes(
+                pair
+            )
+        ) {
+            console.warn(
+                "Legacy outcome recording failed: unsupported pair.",
+                pair
+            );
+
+            return false;
+        }
+
+        if (
+            !LearningConfig.SUPPORTED_STRATEGIES.includes(
+                strategy
+            )
+        ) {
+            console.warn(
+                "Legacy outcome recording failed: unsupported strategy.",
+                strategy
+            );
+
+            return false;
+        }
+
+        if (
+            !LearningConfig.SUPPORTED_TIMEFRAMES.includes(
+                timeframe
+            )
+        ) {
+            console.warn(
+                "Legacy outcome recording failed: unsupported timeframe.",
+                timeframe
+            );
+
+            return false;
+        }
+
+        if (
+            direction !== "BUY" &&
+            direction !== "SELL"
+        ) {
+            console.warn(
+                "Legacy outcome recording failed: invalid trade direction.",
+                direction
+            );
+
+            return false;
+        }
+
+        if (!outcome) {
+            console.warn(
+                "Legacy outcome recording failed: invalid result.",
+                outcomeData.result ||
+                outcomeData.outcome
+            );
+
+            return false;
+        }
+
+        if (
+            !Number.isFinite(entry) ||
+            entry <= 0
+        ) {
+            console.warn(
+                "Legacy outcome recording failed: invalid entry price."
+            );
+
+            return false;
+        }
+
+        const profitPoints =
+            this.calculateLegacyProfitPoints({
+                outcome,
+                direction,
+                entry,
+                closePrice,
+                stopLoss,
+                takeProfit
+            });
+
+        let pendingSignal =
+            this.findPendingLegacySignal({
+                pair,
+                strategy,
+                timeframe,
+                direction,
+                entry
+            });
+
+        if (!pendingSignal) {
+            const signalPayload = {
+                pair,
+                strategy,
+                timeframe,
+                direction,
+                entry,
+
+                indicators:
+                    Array.isArray(
+                        outcomeData.indicators
+                    )
+                        ? outcomeData.indicators
+                        : [],
+
+                timestamp:
+                    outcomeData.openedAt ||
+                    outcomeData.timestamp ||
+                    new Date().toISOString()
+            };
+
+            if (
+                Number.isFinite(stopLoss) &&
+                stopLoss > 0
+            ) {
+                signalPayload.stopLoss =
+                    stopLoss;
+            }
+
+            if (
+                Number.isFinite(takeProfit) &&
+                takeProfit > 0
+            ) {
+                signalPayload.takeProfit =
+                    takeProfit;
+            }
+
+            if (
+                Number.isFinite(
+                    Number(outcomeData.confidence)
+                )
+            ) {
+                signalPayload.confidence =
+                    clamp(
+                        Number(
+                            outcomeData.confidence
+                        ),
+                        0,
+                        100
+                    );
+            }
+
+            const signalId =
+                this.recordSignal(
+                    signalPayload
+                );
+
+            if (signalId === false) {
+                pendingSignal =
+                    this.findPendingLegacySignal({
+                        pair,
+                        strategy,
+                        timeframe,
+                        direction,
+                        entry
+                    });
+
+                if (!pendingSignal) {
+                    console.warn(
+                        "Legacy outcome recording failed: signal could not be created."
+                    );
+
+                    return false;
+                }
+            } else {
+                pendingSignal =
+                    this.getSignalById(
+                        signalId
+                    );
+            }
+        }
+
+        if (!pendingSignal) {
+            return false;
+        }
+
+        const resolved =
+            this.resolveSignal(
+                pendingSignal.id,
+                outcome,
+                profitPoints
+            );
+
+        if (!resolved) {
+            return false;
+        }
+
+        pendingSignal.openedAt =
+            outcomeData.openedAt ||
+            pendingSignal.timestamp ||
+            null;
+
+        pendingSignal.closedAt =
+            outcomeData.closedAt ||
+            pendingSignal.resolvedAt ||
+            null;
+
+        pendingSignal.closePrice =
+            Number.isFinite(closePrice) &&
+            closePrice > 0
+                ? closePrice
+                : outcome === "WIN" &&
+                  Number.isFinite(takeProfit) &&
+                  takeProfit > 0
+                    ? takeProfit
+                    : outcome === "LOSS" &&
+                      Number.isFinite(stopLoss) &&
+                      stopLoss > 0
+                        ? stopLoss
+                        : entry;
+
+        pendingSignal.legacyConfidence =
+            Number.isFinite(
+                Number(outcomeData.confidence)
+            )
+                ? clamp(
+                    Number(
+                        outcomeData.confidence
+                    ),
+                    0,
+                    100
+                )
+                : null;
+
+        MemoryManager.updateTimestamp(this);
+
+        return pendingSignal.id;
+    }
+
+    /* -----------------------------------------------------------------
        Statistics
        ----------------------------------------------------------------- */
 

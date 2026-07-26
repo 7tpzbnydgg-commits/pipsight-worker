@@ -10758,34 +10758,69 @@ function normalizePipelineStatus(value){
 
 function normalizeScalpPipeline(value){
   return safeArray(value)
-    .map(
-      step=>{
-        if(
-          !step ||
-          typeof step !== "object"
-        ){
-          return null;
-        }
-
-        return {
-          name:
-            typeof step.name === "string" &&
-            step.name.trim()
-              ? step.name.trim()
-              : "Analysis Step",
-
-          status:
-            normalizePipelineStatus(
-              step.status
-            ),
-
-          detail:
-            typeof step.detail === "string"
-              ? step.detail.trim()
-              : ""
-        };
+    .map(step=>{
+      if(
+        !step ||
+        typeof step !== "object"
+      ){
+        return null;
       }
-    )
+
+      const rawName =
+        step.name ??
+        step.label ??
+        step.title ??
+        step.check ??
+        "Analysis Step";
+
+      const rawDetail =
+        step.detail ??
+        step.message ??
+        step.description ??
+        step.reason ??
+        step.note ??
+        step.explanation ??
+        step.summary ??
+        "";
+
+      let rawStatus =
+        step.status ??
+        step.state ??
+        step.result;
+
+      if(
+        rawStatus == null &&
+        typeof step.passed === "boolean"
+      ){
+        rawStatus =
+          step.passed
+            ? "pass"
+            : "fail";
+      }
+
+      if(
+        rawStatus == null &&
+        step.passed === null
+      ){
+        rawStatus = "skip";
+      }
+
+      return {
+        ...step,
+
+        name:
+          String(rawName).trim() ||
+          "Analysis Step",
+
+        status:
+          normalizePipelineStatus(
+            rawStatus
+          ),
+
+        detail:
+          String(rawDetail).trim()
+      };
+    })
     .filter(Boolean);
 }
 

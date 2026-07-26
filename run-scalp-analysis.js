@@ -3401,6 +3401,89 @@ function createSignalLogEntry(
 }
 
 /* =====================================================================
+   Prepared Market Data Diagnostics
+   ===================================================================== */
+
+function buildPreparedMarketData(
+  scalp,
+  h1
+) {
+  const m5Rows =
+    Array.isArray(scalp?.rows)
+      ? scalp.rows
+      : [];
+
+  const h1Rows =
+    Array.isArray(h1?.rows)
+      ? h1.rows
+      : [];
+
+  /*
+   * Build these once from the exact normalized, fully closed M5 rows
+   * used by the backend analysis pipeline.
+   */
+  const m15Rows =
+    buildM15Rows(
+      m5Rows
+    );
+
+  const m30Rows =
+    buildM30Rows(
+      m5Rows
+    );
+
+  return {
+    counts: {
+      m5:
+        m5Rows.length,
+
+      m15:
+        m15Rows.length,
+
+      m30:
+        m30Rows.length,
+
+      h1:
+        h1Rows.length
+    },
+
+    source: {
+      m5:
+        scalp?.source ??
+        "scalp-candles.json",
+
+      h1:
+        h1?.source ??
+        "intraday-h1.json"
+    },
+
+    updatedAt: {
+      m5:
+        scalp?.sourceUpdatedAt ??
+        null,
+
+      h1:
+        h1?.sourceUpdatedAt ??
+        null
+    },
+
+    quality: {
+      m5:
+        candleDataQuality(
+          scalp,
+          5
+        ),
+
+      h1:
+        candleDataQuality(
+          h1,
+          60
+        )
+    }
+  };
+}
+
+/* =====================================================================
    Main Worker
    ===================================================================== */
 

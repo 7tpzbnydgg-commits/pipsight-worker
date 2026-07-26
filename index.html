@@ -11340,16 +11340,18 @@ function normalizeBackendScalpSignal(
         rawEntry.indicators
       ),
 
-    workerMetadata:
-  safeObject(
-    rawEntry.metadata
-  ),
+        workerMetadata:
+      safeObject(
+        rawEntry.metadata
+      ),
 
-prepared:
-  rawEntry.prepared &&
-  typeof rawEntry.prepared === "object"
-    ? rawEntry.prepared
-    : null
+    prepared:
+      rawEntry.prepared &&
+      typeof rawEntry.prepared === "object"
+        ? rawEntry.prepared
+        : null
+  };
+}
 
 function validateScalpSignalsPayload(payload){
   if(

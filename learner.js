@@ -600,6 +600,280 @@ class PipSightLearner {
     }
 
     /* -----------------------------------------------------------------
+       Legacy Frontend Compatibility Helpers
+       ----------------------------------------------------------------- */
+
+    normalizeLegacyPair(pair) {
+        const normalized =
+            String(pair || "")
+                .trim()
+                .toUpperCase()
+                .replace(/[^A-Z]/g, "");
+
+        if (
+            normalized === "XAUUSD" ||
+            normalized === "GOLD"
+        ) {
+            return "XAUUSD";
+        }
+
+        if (normalized === "GBPJPY") {
+            return "GBPJPY";
+        }
+
+        return normalized;
+    }
+
+    normalizeLegacyStrategy(strategy) {
+        const normalized =
+            String(strategy || "")
+                .trim()
+                .toLowerCase();
+
+        if (
+            normalized === "intraday" ||
+            normalized === "day"
+        ) {
+            return "daily";
+        }
+
+        if (
+            normalized === "swing" ||
+            normalized === "position"
+        ) {
+            return "weekly";
+        }
+
+        if (
+            LearningConfig.SUPPORTED_STRATEGIES.includes(
+                normalized
+            )
+        ) {
+            return normalized;
+        }
+
+        return "scalp";
+    }
+
+    normalizeLegacyTimeframe(
+        timeframe,
+        strategy = "scalp"
+    ) {
+        const raw =
+            String(timeframe || "")
+                .trim();
+
+        const aliases = {
+            "5M": "5m",
+            "M5": "5m",
+            "5MIN": "5m",
+            "15M": "15m",
+            "M15": "15m",
+            "15MIN": "15m",
+            "30M": "30m",
+            "M30": "30m",
+            "30MIN": "30m",
+            "H1": "1H",
+            "1H": "1H",
+            "H4": "4H",
+            "4H": "4H",
+            "D1": "D1",
+            "1D": "D1",
+            "DAILY": "D1"
+        };
+
+        const normalized =
+            aliases[raw.toUpperCase()] ||
+            raw;
+
+        if (
+            LearningConfig.SUPPORTED_TIMEFRAMES.includes(
+                normalized
+            )
+        ) {
+            return normalized;
+        }
+
+        if (strategy === "weekly") {
+            return "D1";
+        }
+
+        if (strategy === "daily") {
+            return "1H";
+        }
+
+        return "5m";
+    }
+
+    normalizeLegacyDirection(direction) {
+        const normalized =
+            String(direction || "")
+                .trim()
+                .toUpperCase();
+
+        if (
+            normalized === "BUY" ||
+            normalized === "LONG"
+        ) {
+            return "BUY";
+        }
+
+        if (
+            normalized === "SELL" ||
+            normalized === "SHORT"
+        ) {
+            return "SELL";
+        }
+
+        return "HOLD";
+    }
+
+    normalizeLegacyOutcome(result) {
+        const normalized =
+            String(result || "")
+                .trim()
+                .toUpperCase();
+
+        if (
+            normalized === "WIN" ||
+            normalized === "WON" ||
+            normalized === "PROFIT" ||
+            normalized === "TP" ||
+            normalized === "TP1"
+        ) {
+            return "WIN";
+        }
+
+        if (
+            normalized === "LOSS" ||
+            normalized === "LOST" ||
+            normalized === "SL" ||
+            normalized === "STOP" ||
+            normalized === "STOPPED"
+        ) {
+            return "LOSS";
+        }
+
+        if (
+            normalized === "BREAKEVEN" ||
+            normalized === "BREAK-EVEN" ||
+            normalized === "BE" ||
+            normalized === "DRAW"
+        ) {
+            return "BREAKEVEN";
+        }
+
+        return null;
+    }
+
+    calculateLegacyProfitPoints({
+        outcome,
+        direction,
+        entry,
+        closePrice,
+        stopLoss,
+        takeProfit
+    } = {}) {
+        const safeEntry =
+            Number(entry);
+
+        let safeClose =
+            Number(closePrice);
+
+        const safeStop =
+            Number(stopLoss);
+
+        const safeTarget =
+            Number(takeProfit);
+
+        if (
+            !Number.isFinite(safeEntry) ||
+            safeEntry <= 0
+        ) {
+            return 0;
+        }
+
+        if (
+            !Number.isFinite(safeClose) ||
+            safeClose <= 0
+        ) {
+            if (
+                outcome === "WIN" &&
+                Number.isFinite(safeTarget) &&
+                safeTarget > 0
+            ) {
+                safeClose = safeTarget;
+            } else if (
+                outcome === "LOSS" &&
+                Number.isFinite(safeStop) &&
+                safeStop > 0
+            ) {
+                safeClose = safeStop;
+            } else {
+                safeClose = safeEntry;
+            }
+        }
+
+        let profitPoints =
+            direction === "SELL"
+                ? safeEntry - safeClose
+                : safeClose - safeEntry;
+
+        if (outcome === "WIN") {
+            profitPoints =
+                Math.abs(profitPoints);
+        } else if (outcome === "LOSS") {
+            profitPoints =
+                -Math.abs(profitPoints);
+        } else {
+            profitPoints = 0;
+        }
+
+        return round(
+            profitPoints,
+            6
+        );
+    }
+
+    findPendingLegacySignal({
+        pair,
+        strategy,
+        timeframe,
+        direction,
+        entry
+    } = {}) {
+        const safeEntry =
+            Number(entry);
+
+        const exactMatch =
+            this.data.signals.find(signal => {
+                return (
+                    signal &&
+                    signal.outcome === null &&
+                    signal.pair === pair &&
+                    signal.strategy === strategy &&
+                    signal.timeframe === timeframe &&
+                    signal.direction === direction &&
+                    Number(signal.entry) === safeEntry
+                );
+            });
+
+        if (exactMatch) {
+            return exactMatch;
+        }
+
+        return this.data.signals.find(signal => {
+            return (
+                signal &&
+                signal.outcome === null &&
+                signal.pair === pair &&
+                signal.strategy === strategy &&
+                signal.direction === direction
+            );
+        }) || null;
+    }
+
+    /* -----------------------------------------------------------------
        Signal Recording
        ----------------------------------------------------------------- */
 

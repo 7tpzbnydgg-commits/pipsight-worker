@@ -11341,11 +11341,15 @@ function normalizeBackendScalpSignal(
       ),
 
     workerMetadata:
-      safeObject(
-        rawEntry.metadata
-      )
-  };
-}
+  safeObject(
+    rawEntry.metadata
+  ),
+
+prepared:
+  rawEntry.prepared &&
+  typeof rawEntry.prepared === "object"
+    ? rawEntry.prepared
+    : null
 
 function validateScalpSignalsPayload(payload){
   if(

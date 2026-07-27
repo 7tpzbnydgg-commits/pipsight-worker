@@ -16124,6 +16124,118 @@ if(
 // ════════════════════════════════════════════════════════════════
 </script>
 
+<script>
+(function restoreTradingViewChart(){
+  "use strict";
+
+  const SYMBOLS = {
+    XAUUSD: "OANDA:XAUUSD",
+    GBPJPY: "OANDA:GBPJPY"
+  };
+
+  function getTradingViewSymbol(){
+    const pairKey =
+      currentPair &&
+      typeof currentPair.key === "string"
+        ? currentPair.key
+            .replace(/[^A-Z]/gi, "")
+            .toUpperCase()
+        : "XAUUSD";
+
+    return (
+      SYMBOLS[pairKey] ||
+      "OANDA:XAUUSD"
+    );
+  }
+
+  function renderTradingViewChart(){
+    const container =
+      document.getElementById(
+        "tradingViewWidget"
+      );
+
+    if(!container){
+      return;
+    }
+
+    if(
+      !window.TradingView ||
+      typeof window.TradingView.widget !== "function"
+    ){
+      container.innerHTML = `
+        <div class="loading">
+          TradingView chart could not load.
+        </div>
+      `;
+
+      return;
+    }
+
+    container.innerHTML = "";
+
+    new window.TradingView.widget({
+      autosize:true,
+      symbol:getTradingViewSymbol(),
+      interval:"15",
+      timezone:"Etc/UTC",
+      theme:"dark",
+      style:"1",
+      locale:"en",
+      toolbar_bg:"#15171C",
+      enable_publishing:false,
+      allow_symbol_change:true,
+      hide_top_toolbar:false,
+      hide_side_toolbar:false,
+      withdateranges:true,
+      save_image:false,
+      container_id:"tradingViewWidget"
+    });
+  }
+
+  function initializeTradingView(){
+    renderTradingViewChart();
+
+    if(
+      typeof window.selectPair === "function" &&
+      !window.selectPair.__tradingViewWrapped
+    ){
+      const originalSelectPair =
+        window.selectPair;
+
+      const wrappedSelectPair =
+        async function(index){
+          const result =
+            await originalSelectPair(index);
+
+          renderTradingViewChart();
+
+          return result;
+        };
+
+      wrappedSelectPair.__tradingViewWrapped =
+        true;
+
+      window.selectPair =
+        wrappedSelectPair;
+    }
+  }
+
+  if(
+    document.readyState === "loading"
+  ){
+    document.addEventListener(
+      "DOMContentLoaded",
+      initializeTradingView,
+      {
+        once:true
+      }
+    );
+  }else{
+    initializeTradingView();
+  }
+})();
+</script>  
+  
 </body>
 </html>
 

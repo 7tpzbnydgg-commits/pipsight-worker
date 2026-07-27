@@ -1,22 +1,30 @@
 "use strict";
 
 /**
- * PipSight Telegram Alerts
+ * PipSight Pro — Unified Telegram Alerts
  *
- * Existing behavior retained:
- * - Fetches AI pattern signals from the Pattern Detector repository.
- * - Sends previously unsent pattern signals to Telegram.
- * - Stores sent-alert state in telegram-pattern-log.json.
+ * One-file notification engine for:
+ * - Existing remote Pattern Detector signals
+ * - Backend Scalp signals
+ * - Intraday signals
+ * - Swing signals
+ * - Master signals
  *
- * Additive scalp integration:
- * - Reads data/scalp-signals.json from the current repository.
- * - Sends valid BUY/SELL scalp signals to Telegram.
- * - HOLD signals are ignored.
- * - Existing pattern alerts remain unchanged.
- * - The same duplicate-protection log is used safely.
+ * Compatibility guarantees:
+ * - Existing Pattern Detector alerts remain supported.
+ * - Existing Telegram secrets remain unchanged.
+ * - Existing telegram-pattern-log.json remains supported.
+ * - Existing Pattern Detector alert IDs remain unchanged.
+ * - HOLD / WAIT / NEUTRAL decisions never create trade alerts.
+ * - No other project file or workflow requires modification.
  *
- * The GitHub Actions workflow must commit telegram-pattern-log.json
- * so duplicate protection remains available across workflow runs.
+ * Reads:
+ * - Remote Pattern Detector data/pattern-signals.json
+ * - Local data/scalp-signals.json
+ * - Local data/live-analysis.json
+ *
+ * Writes:
+ * - telegram-pattern-log.json
  */
 
 const fs = require("fs");
@@ -43,6 +51,12 @@ const CONFIG = Object.freeze({
     "scalp-signals.json"
   ),
 
+  liveAnalysisPath: path.join(
+    __dirname,
+    "data",
+    "live-analysis.json"
+  ),
+
   sentAlertsLogPath: path.join(
     __dirname,
     "telegram-pattern-log.json"
@@ -53,27 +67,58 @@ const CONFIG = Object.freeze({
   maxStoredAlerts: 5_000
 });
 
+const TRADE_DIRECTIONS = new Set([
+  "BUY",
+  "SELL"
+]);
+
+const NON_TRADE_DIRECTIONS = new Set([
+  "",
+  "HOLD",
+  "WAIT",
+  "NEUTRAL",
+  "NONE",
+  "NO_TRADE",
+  "NO TRADE",
+  "N/A"
+]);
+
+const LIVE_ENGINES = Object.freeze([
+  "swing",
+  "intraday",
+  "scalp",
+  "master"
+]);
+
 function validateConfiguration() {
   const missing = [];
 
   if (!CONFIG.telegramBotToken) {
-    missing.push("TELEGRAM_BOT_TOKEN");
+    missing.push(
+      "TELEGRAM_BOT_TOKEN"
+    );
   }
 
   if (!CONFIG.telegramChatId) {
-    missing.push("TELEGRAM_CHAT_ID");
+    missing.push(
+      "TELEGRAM_CHAT_ID"
+    );
   }
 
   if (missing.length > 0) {
     throw new Error(
-      `Missing required environment variable(s): ${missing.join(", ")}`
+      "Missing required environment variable(s): " +
+      missing.join(", ")
     );
   }
 }
 
 function delay(milliseconds) {
   return new Promise((resolve) => {
-    setTimeout(resolve, milliseconds);
+    setTimeout(
+      resolve,
+      milliseconds
+    );
   });
 }
 
@@ -85,22 +130,39 @@ function isPlainObject(value) {
   );
 }
 
-function safeObject(value) {
+function asObject(value) {
   return isPlainObject(value)
     ? value
     : {};
+}
+
+function firstDefined(...values) {
+  for (const value of values) {
+    if (
+      value !== undefined &&
+      value !== null
+    ) {
+      return value;
+    }
+  }
+
+  return null;
 }
 
 function toFiniteNumber(value) {
   if (
     value === null ||
     value === undefined ||
-    value === ""
+    (
+      typeof value === "string" &&
+      value.trim() === ""
+    )
   ) {
     return null;
   }
 
-  const number = Number(value);
+  const number =
+    Number(value);
 
   return Number.isFinite(number)
     ? number
@@ -113,26 +175,59 @@ function normalizeText(value) {
     .replace(/\s+/g, " ");
 }
 
+function normalizeKey(value) {
+  return normalizeText(value)
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
+}
+
 function normalizeDirection(value) {
   const direction =
     normalizeText(value)
       .toUpperCase();
 
   if (
-    direction === "BUY" ||
-    direction === "SELL"
+    TRADE_DIRECTIONS.has(
+      direction
+    )
   ) {
     return direction;
   }
 
+  if (
+    NON_TRADE_DIRECTIONS.has(
+      direction
+    )
+  ) {
+    return "";
+  }
+
   return "";
+}
+
+function extractDirection(signal) {
+  const source =
+    asObject(signal);
+
+  return normalizeDirection(
+    firstDefined(
+      source.decision,
+      source.signal,
+      source.action,
+      source.direction,
+      source.bias,
+      source.trend
+    )
+  );
 }
 
 function normalizePair(value) {
   return normalizeText(value)
     .toUpperCase()
     .replace(/\s+/g, "")
-    .replace("/", "");
+    .replace(/\//g, "")
+    .replace(/-/g, "")
+    .replace(/_/g, "");
 }
 
 function displayPair(value) {
@@ -147,7 +242,11 @@ function displayPair(value) {
     return "GBP/JPY";
   }
 
-  return normalizeText(value) || normalized;
+  return (
+    normalizeText(value) ||
+    normalized ||
+    "UNKNOWN"
+  );
 }
 
 function decimalsForPair(pair) {
@@ -180,7 +279,9 @@ function formatNumber(
     return "N/A";
   }
 
-  return number.toFixed(decimals);
+  return number.toFixed(
+    decimals
+  );
 }
 
 function escapeHtml(value) {
@@ -190,239 +291,331 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;");
 }
 
-/*
- * Existing Pattern Detector ID format is intentionally unchanged.
- * This prevents previously sent pattern alerts from being resent.
- */
-function buildSignalId(signal) {
-  const pair =
-    normalizePair(signal.pair) ||
-    "UNKNOWN";
+function normalizeTimeframe(value) {
+  const raw =
+    normalizeText(value);
 
-  const pattern =
-    normalizeText(signal.pattern) ||
-    "UNKNOWN";
-
-  const timeframe =
-    normalizeText(signal.timeframe) ||
-    "UNKNOWN";
-
-  const direction =
-    normalizeDirection(signal.direction) ||
-    "UNKNOWN";
-
-  const createdAt =
-    normalizeText(signal.createdAt) ||
-    normalizeText(signal.timestamp) ||
-    normalizeText(signal.time) ||
-    "UNKNOWN";
-
-  return [
-    pair,
-    pattern,
-    timeframe,
-    direction,
-    createdAt
-  ].join("-");
-}
-
-/*
- * Scalp IDs use a prefix so they cannot conflict
- * with existing Pattern Detector alert IDs.
- */
-function buildScalpSignalId(signal) {
-  const pair =
-    normalizePair(signal.pair) ||
-    "UNKNOWN";
-
-  const timeframe =
-    normalizeText(signal.timeframe) ||
-    "SCALP";
-
-  const direction =
-    normalizeDirection(signal.direction) ||
-    "UNKNOWN";
-
-  const createdAt =
-    normalizeText(signal.createdAt) ||
-    normalizeText(signal.generatedAt) ||
-    normalizeText(signal.updatedAt) ||
-    normalizeText(signal.timestamp) ||
-    "UNKNOWN";
-
-  const entry =
-    toFiniteNumber(signal.entry);
-
-  return [
-    "SCALP",
-    pair,
-    timeframe,
-    direction,
-    createdAt,
-    entry === null
-      ? "NO-ENTRY"
-      : String(entry)
-  ].join("-");
-}
-
-function normalizeSentAlertEntry(entry) {
-  if (!isPlainObject(entry)) {
-    return null;
+  if (!raw) {
+    return "";
   }
 
-  const id =
-    normalizeText(entry.id);
+  const compact =
+    raw
+      .toUpperCase()
+      .replace(/\s+/g, "");
 
-  if (!id) {
-    return null;
-  }
+  const aliases = {
+    M1: "1M",
+    "1MIN": "1M",
+    "1MINUTE": "1M",
 
-  return {
-    id,
+    M5: "5M",
+    "5MIN": "5M",
+    "5MINUTE": "5M",
 
-    sentAt:
-      normalizeText(entry.sentAt) ||
-      new Date(0).toISOString()
+    M15: "15M",
+    "15MIN": "15M",
+    "15MINUTE": "15M",
+
+    M30: "30M",
+    "30MIN": "30M",
+    "30MINUTE": "30M",
+
+    H1: "1H",
+    "1HR": "1H",
+    "1HOUR": "1H",
+
+    H4: "4H",
+    "4HR": "4H",
+    "4HOUR": "4H",
+
+    D1: "1D",
+    DAILY: "1D",
+
+    W1: "1W",
+    WEEKLY: "1W"
   };
+
+  return aliases[compact] || raw;
 }
 
-function loadSentAlerts() {
-  try {
-    if (
-      !fs.existsSync(
-        CONFIG.sentAlertsLogPath
+function normalizeEngine(value) {
+  const key =
+    normalizeKey(value);
+
+  if (key === "swing") {
+    return "swing";
+  }
+
+  if (
+    key === "intraday" ||
+    key === "daytrade"
+  ) {
+    return "intraday";
+  }
+
+  if (
+    key === "scalp" ||
+    key === "scalping"
+  ) {
+    return "scalp";
+  }
+
+  if (
+    key === "master" ||
+    key === "final" ||
+    key === "combined"
+  ) {
+    return "master";
+  }
+
+  if (
+    key === "pattern" ||
+    key === "patterndetector"
+  ) {
+    return "pattern";
+  }
+
+  return key || "unknown";
+}
+
+function displayEngine(value) {
+  const engine =
+    normalizeEngine(value);
+
+  const labels = {
+    pattern: "Pattern",
+    scalp: "Scalp",
+    intraday: "Intraday",
+    swing: "Swing",
+    master: "Master"
+  };
+
+  return (
+    labels[engine] ||
+    normalizeText(value) ||
+    "Signal"
+  );
+}
+
+function normalizeTimestamp(value) {
+  if (
+    value === null ||
+    value === undefined ||
+    value === ""
+  ) {
+    return "";
+  }
+
+  if (
+    typeof value === "number" &&
+    Number.isFinite(value)
+  ) {
+    const milliseconds =
+      value < 10_000_000_000
+        ? value * 1000
+        : value;
+
+    const date =
+      new Date(milliseconds);
+
+    return Number.isNaN(
+      date.getTime()
+    )
+      ? ""
+      : date.toISOString();
+  }
+
+  const text =
+    normalizeText(value);
+
+  if (!text) {
+    return "";
+  }
+
+  const numeric =
+    Number(text);
+
+  if (
+    Number.isFinite(numeric) &&
+    /^\d+$/.test(text)
+  ) {
+    return normalizeTimestamp(
+      numeric
+    );
+  }
+
+  const date =
+    new Date(text);
+
+  return Number.isNaN(
+    date.getTime()
+  )
+    ? text
+    : date.toISOString();
+}
+
+function extractTimestamp(
+  signal,
+  fallback = ""
+) {
+  const source =
+    asObject(signal);
+
+  return normalizeTimestamp(
+    firstDefined(
+      source.generatedAt,
+      source.createdAt,
+      source.updatedAt,
+      source.time,
+      source.timestamp,
+      source.signalTime,
+      fallback
+    )
+  );
+}
+
+function extractConfidence(signal) {
+  const source =
+    asObject(signal);
+
+  const confidence =
+    toFiniteNumber(
+      firstDefined(
+        source.confidence,
+        source.confidencePct,
+        source.confidencePercent,
+        source.probability,
+        source.scorePct
       )
-    ) {
-      return [];
+    );
+
+  if (confidence === null) {
+    return null;
+  }
+
+  if (
+    confidence >= 0 &&
+    confidence <= 1
+  ) {
+    return confidence * 100;
+  }
+
+  return confidence;
+}
+
+function extractTradePlan(signal) {
+  const source =
+    asObject(signal);
+
+  return asObject(
+    firstDefined(
+      source.tradePlan,
+      source.plan,
+      source.trade,
+      source.levels
+    )
+  );
+}
+
+function calculateRiskReward({
+  direction,
+  entry,
+  stopLoss,
+  takeProfit1
+}) {
+  const normalizedDirection =
+    normalizeDirection(direction);
+
+  const normalizedEntry =
+    toFiniteNumber(entry);
+
+  const normalizedStop =
+    toFiniteNumber(stopLoss);
+
+  const normalizedTarget =
+    toFiniteNumber(takeProfit1);
+
+  if (
+    !normalizedDirection ||
+    normalizedEntry === null ||
+    normalizedStop === null ||
+    normalizedTarget === null
+  ) {
+    return null;
+  }
+
+  const risk =
+    Math.abs(
+      normalizedEntry -
+      normalizedStop
+    );
+
+  const reward =
+    Math.abs(
+      normalizedTarget -
+      normalizedEntry
+    );
+
+  if (
+    risk <= 0 ||
+    !Number.isFinite(risk) ||
+    !Number.isFinite(reward)
+  ) {
+    return null;
+  }
+
+  return reward / risk;
+}
+
+function readJsonFile(
+  filePath,
+  {
+    required = false,
+    label = "JSON file"
+  } = {}
+) {
+  if (!fs.existsSync(filePath)) {
+    if (required) {
+      throw new Error(
+        `${label} was not found: ${filePath}`
+      );
     }
 
+    console.log(
+      `${label} was not found. Skipping.`
+    );
+
+    return null;
+  }
+
+  try {
     const raw =
       fs
         .readFileSync(
-          CONFIG.sentAlertsLogPath,
+          filePath,
           "utf8"
         )
         .trim();
 
     if (!raw) {
-      return [];
-    }
-
-    const parsed =
-      JSON.parse(raw);
-
-    if (!Array.isArray(parsed)) {
-      console.warn(
-        "Sent-alert log is not an array. " +
-        "Starting with an empty log."
-      );
-
-      return [];
-    }
-
-    const uniqueAlerts =
-      new Map();
-
-    for (const entry of parsed) {
-      const normalized =
-        normalizeSentAlertEntry(entry);
-
-      if (!normalized) {
-        continue;
-      }
-
-      uniqueAlerts.set(
-        normalized.id,
-        normalized
-      );
-    }
-
-    return Array.from(
-      uniqueAlerts.values()
-    );
-  } catch (error) {
-    console.warn(
-      `Unable to read sent-alert log: ${error.message}. ` +
-      "Starting with an empty log."
-    );
-
-    return [];
-  }
-}
-
-function trimSentAlerts(alerts) {
-  if (
-    alerts.length <=
-    CONFIG.maxStoredAlerts
-  ) {
-    return alerts;
-  }
-
-  return alerts.slice(
-    -CONFIG.maxStoredAlerts
-  );
-}
-
-function saveSentAlerts(alerts) {
-  const normalizedAlerts = [];
-  const seenIds = new Set();
-
-  for (const entry of alerts) {
-    const normalized =
-      normalizeSentAlertEntry(entry);
-
-    if (
-      !normalized ||
-      seenIds.has(normalized.id)
-    ) {
-      continue;
-    }
-
-    seenIds.add(normalized.id);
-    normalizedAlerts.push(normalized);
-  }
-
-  const trimmedAlerts =
-    trimSentAlerts(
-      normalizedAlerts
-    );
-
-  const temporaryPath =
-    `${CONFIG.sentAlertsLogPath}` +
-    `.tmp-${process.pid}-${Date.now()}`;
-
-  try {
-    fs.writeFileSync(
-      temporaryPath,
-      `${JSON.stringify(
-        trimmedAlerts,
-        null,
-        2
-      )}\n`,
-      "utf8"
-    );
-
-    fs.renameSync(
-      temporaryPath,
-      CONFIG.sentAlertsLogPath
-    );
-  } catch (error) {
-    try {
-      if (
-        fs.existsSync(
-          temporaryPath
-        )
-      ) {
-        fs.unlinkSync(
-          temporaryPath
+      if (required) {
+        throw new Error(
+          `${label} is empty.`
         );
       }
-    } catch {
-      // Ignore cleanup errors.
+
+      console.log(
+        `${label} is empty. Skipping.`
+      );
+
+      return null;
     }
 
+    return JSON.parse(raw);
+  } catch (error) {
     throw new Error(
-      `Unable to save sent-alert log: ${error.message}`
+      `Unable to read ${label}: ${error.message}`
     );
   }
 }
@@ -504,7 +697,7 @@ function requestJson({
                     finishReject(
                       new Error(
                         `Invalid JSON response from ${hostname}: ` +
-                        `${error.message}`
+                        error.message
                       )
                     );
 
@@ -519,10 +712,11 @@ function requestJson({
                   const description =
                     isPlainObject(
                       parsedBody
-                    ) &&
-                    normalizeText(
-                      parsedBody.description
-                    );
+                    )
+                      ? normalizeText(
+                          parsedBody.description
+                        )
+                      : "";
 
                   finishReject(
                     new Error(
@@ -572,522 +766,523 @@ function requestJson({
   );
 }
 
-async function sendTelegramMessage(
-  message
-) {
-  const payload =
-    JSON.stringify({
-      chat_id:
-        CONFIG.telegramChatId,
-
-      text:
-        message,
-
-      parse_mode:
-        "HTML",
-
-      disable_web_page_preview:
-        true
-    });
-
-  const response =
-    await requestJson({
-      hostname:
-        "api.telegram.org",
-
-      path:
-        `/bot${CONFIG.telegramBotToken}` +
-        "/sendMessage",
-
-      method:
-        "POST",
-
-      headers: {
-        "Content-Type":
-          "application/json",
-
-        "Content-Length":
-          Buffer.byteLength(
-            payload
-          )
-      },
-
-      body:
-        payload
-    });
-
-  if (
-    !isPlainObject(response) ||
-    response.ok !== true
-  ) {
-    throw new Error(
-      "Telegram returned an unsuccessful response."
-    );
-  }
-
-  return response;
-}
-
-async function fetchPatternSignals() {
-  const url =
-    new URL(
-      CONFIG.patternSignalsUrl
-    );
-
-  const response =
-    await requestJson({
-      hostname:
-        url.hostname,
-
-      path:
-        `${url.pathname}${url.search}`,
-
-      method:
-        "GET",
-
-      headers: {
-        Accept:
-          "application/json",
-
-        "User-Agent":
-          "PipSight-Pattern-Alerts/1.1"
-      }
-    });
-
-  if (!isPlainObject(response)) {
-    throw new Error(
-      "Pattern signal response must be a JSON object."
-    );
-  }
-
-  if (
-    response.signals !== undefined &&
-    !Array.isArray(
-      response.signals
-    )
-  ) {
-    throw new Error(
-      'Pattern signal response field "signals" ' +
-      "must be an array."
-    );
-  }
-
-  return response;
-}
-
-function readScalpSignals() {
-  if (
-    !fs.existsSync(
-      CONFIG.scalpSignalsPath
-    )
-  ) {
-    console.log(
-      "No data/scalp-signals.json file found. " +
-      "Skipping scalp alerts."
-    );
-
-    return null;
-  }
-
-  try {
-    const raw =
-      fs.readFileSync(
-        CONFIG.scalpSignalsPath,
-        "utf8"
-      );
-
-    const parsed =
-      JSON.parse(raw);
-
-    if (
-      !isPlainObject(parsed) &&
-      !Array.isArray(parsed)
-    ) {
-      throw new Error(
-        "Scalp signal JSON must contain an object or array."
-      );
-    }
-
-    return parsed;
-  } catch (error) {
-    throw new Error(
-      `Unable to read scalp signals: ${error.message}`
-    );
-  }
-}
-
-function validateSignal(
-  signal,
-  index
-) {
-  if (!isPlainObject(signal)) {
-    throw new Error(
-      `Pattern signal at index ${index} must be an object.`
-    );
-  }
+/*
+ * Existing Pattern Detector ID structure is retained exactly.
+ * Previously sent Pattern alerts will therefore not be resent.
+ */
+function buildPatternSignalId(signal) {
+  const source =
+    asObject(signal);
 
   const pair =
-    normalizeText(signal.pair);
+    normalizePair(
+      source.pair
+    ) ||
+    "UNKNOWN";
 
   const pattern =
-    normalizeText(signal.pattern);
+    normalizeText(
+      source.pattern
+    ) ||
+    "UNKNOWN";
 
   const timeframe =
-    normalizeText(signal.timeframe);
+    normalizeText(
+      source.timeframe
+    ) ||
+    "UNKNOWN";
 
   const direction =
     normalizeDirection(
-      signal.direction
-    );
+      source.direction
+    ) ||
+    "UNKNOWN";
 
-  if (!pair) {
-    throw new Error(
-      `Pattern signal at index ${index} is missing pair.`
-    );
-  }
+  const createdAt =
+    normalizeText(
+      source.createdAt
+    ) ||
+    normalizeText(
+      source.timestamp
+    ) ||
+    normalizeText(
+      source.time
+    ) ||
+    "UNKNOWN";
 
-  if (!pattern) {
-    throw new Error(
-      `Pattern signal at index ${index} is missing pattern.`
-    );
-  }
-
-  if (!timeframe) {
-    throw new Error(
-      `Pattern signal at index ${index} is missing timeframe.`
-    );
-  }
-
-  if (!direction) {
-    throw new Error(
-      `Pattern signal at index ${index} has an invalid direction.`
-    );
-  }
-
-  return {
-    ...signal,
+  return [
     pair,
     pattern,
     timeframe,
-    direction
-  };
+    direction,
+    createdAt
+  ].join("-");
 }
 
-function normalizeScalpEntry(
-  entry,
-  pairFallback = ""
-) {
+/*
+ * Local PipSight alert IDs are source-prefixed.
+ * This prevents Pattern, Scalp, Intraday, Swing and Master
+ * alerts from colliding with one another.
+ */
+function buildLocalSignalId(signal) {
+  const source =
+    asObject(signal);
+
+  const engine =
+    normalizeEngine(
+      source.engine ||
+      source.mode ||
+      source.source
+    );
+
+  const pair =
+    normalizePair(
+      source.pair ||
+      source.symbol ||
+      source.pairLabel
+    ) ||
+    "UNKNOWN";
+
+  const direction =
+    extractDirection(source) ||
+    "UNKNOWN";
+
+  const timeframe =
+    normalizeTimeframe(
+      source.timeframe ||
+      source.interval ||
+      source.period ||
+      source.mode
+    ) ||
+    engine.toUpperCase();
+
+  const timestamp =
+    extractTimestamp(source) ||
+    "UNKNOWN";
+
+  const plan =
+    extractTradePlan(source);
+
+  const entry =
+    toFiniteNumber(
+      firstDefined(
+        plan.entry,
+        plan.entryPrice,
+        source.entry,
+        source.entryPrice,
+        source.price
+      )
+    );
+
+  return [
+    "PIPSIGHT",
+    engine.toUpperCase(),
+    pair,
+    timeframe,
+    direction,
+    timestamp,
+    entry === null
+      ? "NO-ENTRY"
+      : String(entry)
+  ].join("-");
+}
+
+function normalizeSentAlertEntry(entry) {
   if (!isPlainObject(entry)) {
     return null;
   }
 
-  const direction =
-    normalizeDirection(
-      entry.decision ||
-      entry.signal ||
-      entry.direction
-    );
+  const id =
+    normalizeText(entry.id);
 
-  /*
-   * HOLD and invalid decisions do not generate
-   * Telegram trade notifications.
-   */
-  if (!direction) {
+  if (!id) {
     return null;
   }
 
-  const tradePlan =
-    safeObject(
-      entry.tradePlan ||
-      entry.plan
+  return {
+    id,
+
+    sentAt:
+      normalizeTimestamp(
+        entry.sentAt
+      ) ||
+      new Date(0).toISOString()
+  };
+}
+
+function loadSentAlerts() {
+  try {
+    if (
+      !fs.existsSync(
+        CONFIG.sentAlertsLogPath
+      )
+    ) {
+      return [];
+    }
+
+    const raw =
+      fs
+        .readFileSync(
+          CONFIG.sentAlertsLogPath,
+          "utf8"
+        )
+        .trim();
+
+    if (!raw) {
+      return [];
+    }
+
+    const parsed =
+      JSON.parse(raw);
+
+    if (!Array.isArray(parsed)) {
+      console.warn(
+        "Sent-alert log is not an array. " +
+        "Starting with an empty log."
+      );
+
+      return [];
+    }
+
+    const unique =
+      new Map();
+
+    for (const entry of parsed) {
+      const normalized =
+        normalizeSentAlertEntry(
+          entry
+        );
+
+      if (!normalized) {
+        continue;
+      }
+
+      unique.set(
+        normalized.id,
+        normalized
+      );
+    }
+
+    return Array.from(
+      unique.values()
+    );
+  } catch (error) {
+    console.warn(
+      `Unable to read sent-alert log: ${error.message}. ` +
+      "Starting with an empty log."
     );
 
-  const pair =
-    normalizeText(
-      entry.pair ||
-      entry.symbol ||
-      pairFallback
+    return [];
+  }
+}
+
+function trimSentAlerts(alerts) {
+  if (
+    alerts.length <=
+    CONFIG.maxStoredAlerts
+  ) {
+    return alerts;
+  }
+
+  return alerts.slice(
+    -CONFIG.maxStoredAlerts
+  );
+}
+
+function saveSentAlerts(alerts) {
+  const normalizedAlerts = [];
+  const seenIds = new Set();
+
+  for (const entry of alerts) {
+    const normalized =
+      normalizeSentAlertEntry(
+        entry
+      );
+
+    if (
+      !normalized ||
+      seenIds.has(
+        normalized.id
+      )
+    ) {
+      continue;
+    }
+
+    seenIds.add(
+      normalized.id
     );
 
-  if (!pair) {
+    normalizedAlerts.push(
+      normalized
+    );
+  }
+
+  const trimmed =
+    trimSentAlerts(
+      normalizedAlerts
+    );
+
+  const temporaryPath =
+    `${CONFIG.sentAlertsLogPath}` +
+    `.tmp-${process.pid}-${Date.now()}`;
+
+  try {
+    fs.writeFileSync(
+      temporaryPath,
+      `${JSON.stringify(
+        trimmed,
+        null,
+        2
+      )}\n`,
+      "utf8"
+    );
+
+    fs.renameSync(
+      temporaryPath,
+      CONFIG.sentAlertsLogPath
+    );
+  } catch (error) {
+    try {
+      if (
+        fs.existsSync(
+          temporaryPath
+        )
+      ) {
+        fs.unlinkSync(
+          temporaryPath
+        );
+      }
+    } catch {
+      // Ignore temporary-file cleanup errors.
+    }
+
+    throw new Error(
+      `Unable to save sent-alert log: ${error.message}`
+    );
+  }
+}
+
+/*
+ * END OF PART 1
+ *
+ * Part 2 starts directly below this line.
+ * Do not add module.exports or main execution yet.
+ */
+function normalizeTradeSignal({
+  source,
+  engine,
+  pair,
+  timeframe,
+  direction,
+  confidence,
+  reason,
+  pattern,
+  timestamp,
+  tradePlan,
+  rawSignal
+}) {
+  const normalizedDirection =
+    normalizeDirection(direction);
+
+  if (!normalizedDirection) {
     return null;
   }
 
-  const rawEntry =
+  const raw =
+    asObject(rawSignal);
+
+  const plan =
+    asObject(tradePlan);
+
+  const normalizedPair =
+    displayPair(
+      firstDefined(
+        pair,
+        raw.pair,
+        raw.symbol,
+        raw.pairLabel
+      )
+    );
+
+  const entry =
     toFiniteNumber(
-      tradePlan.entry ??
-      entry.rawEntry ??
-      entry.entry ??
-      entry.price
+      firstDefined(
+        plan.entry,
+        plan.entryPrice,
+        raw.entry,
+        raw.entryPrice,
+        raw.price,
+        raw.currentPrice,
+        raw.lastPrice
+      )
     );
 
   const stopLoss =
     toFiniteNumber(
-      tradePlan.stopLoss ??
-      tradePlan.stop ??
-      tradePlan.sl ??
-      entry.rawSl ??
-      entry.stopLoss ??
-      entry.sl
+      firstDefined(
+        plan.stopLoss,
+        plan.stop,
+        plan.sl,
+        raw.stopLoss,
+        raw.stop,
+        raw.sl
+      )
     );
 
   const takeProfit1 =
     toFiniteNumber(
-      tradePlan.target1 ??
-      tradePlan.takeProfit1 ??
-      tradePlan.takeProfit ??
-      tradePlan.tp1 ??
-      tradePlan.tp ??
-      entry.rawTp1 ??
-      entry.rawTp ??
-      entry.target1 ??
-      entry.takeProfit1 ??
-      entry.takeProfit ??
-      entry.tp1 ??
-      entry.tp
+      firstDefined(
+        plan.target1,
+        plan.takeProfit1,
+        plan.tp1,
+        plan.takeProfit,
+        plan.tp,
+        raw.target1,
+        raw.takeProfit1,
+        raw.tp1,
+        raw.takeProfit,
+        raw.tp
+      )
     );
 
   const takeProfit2 =
     toFiniteNumber(
-      tradePlan.target2 ??
-      tradePlan.takeProfit2 ??
-      tradePlan.tp2 ??
-      entry.rawTp2 ??
-      entry.target2 ??
-      entry.takeProfit2 ??
-      entry.tp2
+      firstDefined(
+        plan.target2,
+        plan.takeProfit2,
+        plan.tp2,
+        raw.target2,
+        raw.takeProfit2,
+        raw.tp2
+      )
     );
 
   const takeProfit3 =
     toFiniteNumber(
-      tradePlan.target3 ??
-      tradePlan.takeProfit3 ??
-      tradePlan.tp3 ??
-      entry.rawTp3 ??
-      entry.target3 ??
-      entry.takeProfit3 ??
-      entry.tp3
+      firstDefined(
+        plan.target3,
+        plan.takeProfit3,
+        plan.tp3,
+        raw.target3,
+        raw.takeProfit3,
+        raw.tp3
+      )
     );
 
   if (
-    rawEntry === null ||
+    entry === null ||
     stopLoss === null ||
     takeProfit1 === null
   ) {
-    console.warn(
-      `Skipping incomplete scalp ${direction} signal for ${pair}.`
-    );
-
     return null;
   }
 
-  const risk =
-    Math.abs(
-      rawEntry -
-      stopLoss
-    );
-
-  const reward =
-    Math.abs(
-      takeProfit1 -
-      rawEntry
-    );
-
-  if (
-    risk <= 0 ||
-    !Number.isFinite(risk)
-  ) {
-    console.warn(
-      `Skipping scalp signal with invalid risk for ${pair}.`
-    );
-
-    return null;
-  }
-
-  const calculatedRiskReward =
-    reward /
-    risk;
-
-  const riskReward =
+  const normalizedRiskReward =
     toFiniteNumber(
-      tradePlan.riskReward ??
-      tradePlan.rr ??
-      entry.riskReward ??
-      entry.rr
+      firstDefined(
+        plan.riskReward,
+        plan.rr,
+        raw.riskReward,
+        raw.rr
+      )
     ) ??
-    calculatedRiskReward;
+    calculateRiskReward({
+      direction:
+        normalizedDirection,
 
-  const createdAt =
-    normalizeText(
-      entry.generatedAt ||
-      entry.updatedAt ||
-      entry.timestamp ||
-      entry.createdAt
-    );
+      entry,
+      stopLoss,
+      takeProfit1
+    });
 
   return {
     source:
-      "scalp",
+      normalizeEngine(
+        source ||
+        engine
+      ),
+
+    engine:
+      normalizeEngine(
+        engine ||
+        source
+      ),
 
     pair:
-      displayPair(pair),
-
-    pattern:
-      normalizeText(
-        entry.pattern
-      ) ||
-      "Backend Scalp Setup",
+      normalizedPair,
 
     timeframe:
-      normalizeText(
-        entry.timeframe ||
-        entry.mode
+      normalizeTimeframe(
+        firstDefined(
+          timeframe,
+          raw.timeframe,
+          raw.interval,
+          raw.period,
+          raw.mode
+        )
       ) ||
-      "Scalp",
+      displayEngine(
+        engine ||
+        source
+      ),
 
-    direction,
+    direction:
+      normalizedDirection,
 
     confidence:
       toFiniteNumber(
-        entry.confidence
-      ),
-
-    entry:
-      rawEntry,
-
-    stopLoss,
-
-    takeProfit1,
-
-    takeProfit2,
-
-    takeProfit3,
-
-    riskReward,
+        confidence
+      ) ??
+      extractConfidence(raw),
 
     reason:
       normalizeText(
-        entry.reason
+        firstDefined(
+          reason,
+          raw.reason,
+          raw.message,
+          raw.summary
+        )
       ),
 
-    createdAt,
+    pattern:
+      normalizeText(
+        firstDefined(
+          pattern,
+          raw.pattern,
+          raw.setup,
+          raw.strategy
+        )
+      ),
 
-    generatedAt:
-      createdAt
+    timestamp:
+      extractTimestamp(
+        raw,
+        timestamp
+      ),
+
+    entry,
+    stopLoss,
+    takeProfit1,
+    takeProfit2,
+    takeProfit3,
+
+    riskReward:
+      normalizedRiskReward
   };
 }
 
-function extractScalpSignals(payload) {
-  if (!payload) {
-    return [];
-  }
-
-  const extracted = [];
-
-  const addEntry =
-    (
-      entry,
-      pairFallback = ""
-    ) => {
-      const normalized =
-        normalizeScalpEntry(
-          entry,
-          pairFallback
-        );
-
-      if (normalized) {
-        extracted.push(
-          normalized
-        );
-      }
-    };
-
-  if (Array.isArray(payload)) {
-    for (const entry of payload) {
-      addEntry(entry);
-    }
-
-    return extracted;
-  }
-
-  if (!isPlainObject(payload)) {
-    return extracted;
-  }
-
-  /*
-   * Supports an array-based schema.
-   */
-  if (Array.isArray(payload.signals)) {
-    for (
-      const entry of
-      payload.signals
-    ) {
-      addEntry(entry);
-    }
-  }
-
-  if (Array.isArray(payload.results)) {
-    for (
-      const entry of
-      payload.results
-    ) {
-      addEntry(entry);
-    }
-  }
-
-  /*
-   * Supports pair-key schemas such as:
-   * XAUUSD, GBPJPY, XAU/USD and GBP/JPY.
-   */
-  const ignoredKeys =
-    new Set([
-      "signals",
-      "results",
-      "metadata",
-      "updatedAt",
-      "generatedAt",
-      "timestamp",
-      "stale",
-      "version",
-      "engineVersion"
-    ]);
-
-  for (
-    const [
-      key,
-      value
-    ] of Object.entries(payload)
-  ) {
-    if (ignoredKeys.has(key)) {
-      continue;
-    }
-
-    if (!isPlainObject(value)) {
-      continue;
-    }
-
-    const normalizedKey =
-      normalizePair(key);
-
-    if (
-      normalizedKey === "XAUUSD" ||
-      normalizedKey === "GBPJPY"
-    ) {
-      addEntry(
-        value,
-        key
-      );
-    }
-  }
-
-  return extracted;
-}
-
 function buildTelegramMessage(signal) {
-  const emoji =
+  const directionEmoji =
     signal.direction === "BUY"
       ? "🟢"
       : "🔴";
+
+  const engineLabel =
+    displayEngine(
+      signal.engine ||
+      signal.source
+    );
 
   const confidence =
     toFiniteNumber(
@@ -1097,71 +1292,17 @@ function buildTelegramMessage(signal) {
   const confidenceText =
     confidence === null
       ? "N/A"
-      : `${confidence.toFixed(0)}%`;
+      : `${Math.round(confidence)}%`;
 
-  return [
-    `${emoji} <b>${escapeHtml(signal.pair)} ` +
-      `${escapeHtml(signal.pattern)}</b>`,
-
-    "",
-
-    `<b>Signal:</b> ${escapeHtml(signal.direction)}`,
-    `<b>Timeframe:</b> ${escapeHtml(signal.timeframe)}`,
-    `<b>Confidence:</b> ${confidenceText}`,
-
-    "",
-
-    "📍 <b>Levels:</b>",
-
-    `Entry: ${formatPrice(
-      signal.entry,
-      signal.pair
-    )}`,
-
-    `Stop: ${formatPrice(
-      signal.stopLoss,
-      signal.pair
-    )}`,
-
-    `TP1: ${formatPrice(
-      signal.takeProfit1,
-      signal.pair
-    )}`,
-
-    "",
-
-    `R:R = 1:${formatNumber(
-      signal.riskReward,
-      1
-    )}`,
-
-    "",
-
-    "⚠️ Not financial advice"
-  ].join("\n");
-}
-
-function buildScalpTelegramMessage(
-  signal
-) {
-  const emoji =
-    signal.direction === "BUY"
-      ? "🟢"
-      : "🔴";
-
-  const confidence =
-    toFiniteNumber(
-      signal.confidence
-    );
-
-  const confidenceText =
-    confidence === null
-      ? "N/A"
-      : `${confidence.toFixed(0)}%`;
+  const titleSuffix =
+    signal.pattern
+      ? ` — ${escapeHtml(signal.pattern)}`
+      : "";
 
   const lines = [
-    `${emoji} <b>${escapeHtml(signal.pair)} ` +
-      `SCALP ${escapeHtml(signal.direction)}</b>`,
+    `${directionEmoji} <b>${escapeHtml(signal.pair)} ` +
+      `${escapeHtml(engineLabel)} ${escapeHtml(signal.direction)}` +
+      `${titleSuffix}</b>`,
 
     "",
 
@@ -1215,20 +1356,21 @@ function buildScalpTelegramMessage(
     );
   }
 
-  lines.push(
-    "",
-    `R:R = 1:${formatNumber(
-      signal.riskReward,
-      2
-    )}`
-  );
-
   if (
-    signal.reason &&
-    !/no qualified setup/i.test(
-      signal.reason
-    )
+    toFiniteNumber(
+      signal.riskReward
+    ) !== null
   ) {
+    lines.push(
+      "",
+      `R:R = 1:${formatNumber(
+        signal.riskReward,
+        2
+      )}`
+    );
+  }
+
+  if (signal.reason) {
     lines.push(
       "",
       `<b>Reason:</b> ${escapeHtml(
@@ -1245,10 +1387,63 @@ function buildScalpTelegramMessage(
   return lines.join("\n");
 }
 
-async function sendNewAlert({
+async function sendTelegramMessage(message) {
+  const payload =
+    JSON.stringify({
+      chat_id:
+        CONFIG.telegramChatId,
+
+      text:
+        message,
+
+      parse_mode:
+        "HTML",
+
+      disable_web_page_preview:
+        true
+    });
+
+  const response =
+    await requestJson({
+      hostname:
+        "api.telegram.org",
+
+      path:
+        `/bot${CONFIG.telegramBotToken}` +
+        "/sendMessage",
+
+      method:
+        "POST",
+
+      headers: {
+        "Content-Type":
+          "application/json",
+
+        "Content-Length":
+          Buffer.byteLength(
+            payload
+          )
+      },
+
+      body:
+        payload
+    });
+
+  if (
+    !isPlainObject(response) ||
+    response.ok !== true
+  ) {
+    throw new Error(
+      "Telegram returned an unsuccessful response."
+    );
+  }
+
+  return response;
+}
+
+async function sendUnsentSignal({
   signal,
   signalId,
-  message,
   sentAlerts,
   sentIds
 }) {
@@ -1262,25 +1457,21 @@ async function sendNewAlert({
 
   try {
     await sendTelegramMessage(
-      message
+      buildTelegramMessage(signal)
     );
 
-    const logEntry = {
+    sentAlerts.push({
       id:
         signalId,
 
       sentAt:
         new Date().toISOString()
-    };
+    });
 
-    sentAlerts.push(logEntry);
-    sentIds.add(signalId);
+    sentIds.add(
+      signalId
+    );
 
-    /*
-     * Save immediately after each successful message.
-     * Already-sent alerts remain protected even if
-     * another alert fails later.
-     */
     saveSentAlerts(
       sentAlerts
     );
@@ -1304,6 +1495,1125 @@ async function sendNewAlert({
   }
 }
 
+async function fetchPatternSignals() {
+  const url =
+    new URL(
+      CONFIG.patternSignalsUrl
+    );
+
+  const response =
+    await requestJson({
+      hostname:
+        url.hostname,
+
+      path:
+        `${url.pathname}${url.search}`,
+
+      method:
+        "GET",
+
+      headers: {
+        Accept:
+          "application/json",
+
+        "User-Agent":
+          "PipSight-Telegram-Alerts/2.0"
+      }
+    });
+
+  if (!isPlainObject(response)) {
+    throw new Error(
+      "Pattern signal response must be a JSON object."
+    );
+  }
+
+  if (
+    response.signals !== undefined &&
+    !Array.isArray(
+      response.signals
+    )
+  ) {
+    throw new Error(
+      'Pattern response field "signals" must be an array.'
+    );
+  }
+
+  return Array.isArray(
+    response.signals
+  )
+    ? response.signals
+    : [];
+}
+
+function normalizePatternSignal(
+  signal,
+  index
+) {
+  if (!isPlainObject(signal)) {
+    throw new Error(
+      `Pattern signal at index ${index} must be an object.`
+    );
+  }
+
+  const pair =
+    normalizeText(
+      signal.pair
+    );
+
+  const pattern =
+    normalizeText(
+      signal.pattern
+    );
+
+  const timeframe =
+    normalizeText(
+      signal.timeframe
+    );
+
+  const direction =
+    normalizeDirection(
+      signal.direction
+    );
+
+  if (!pair) {
+    throw new Error(
+      `Pattern signal at index ${index} is missing pair.`
+    );
+  }
+
+  if (!pattern) {
+    throw new Error(
+      `Pattern signal at index ${index} is missing pattern.`
+    );
+  }
+
+  if (!timeframe) {
+    throw new Error(
+      `Pattern signal at index ${index} is missing timeframe.`
+    );
+  }
+
+  if (!direction) {
+    throw new Error(
+      `Pattern signal at index ${index} has no BUY/SELL direction.`
+    );
+  }
+
+  const normalized =
+    normalizeTradeSignal({
+      source:
+        "pattern",
+
+      engine:
+        "pattern",
+
+      pair,
+
+      timeframe,
+
+      direction,
+
+      confidence:
+        signal.confidence,
+
+      pattern,
+
+      reason:
+        signal.reason,
+
+      timestamp:
+        firstDefined(
+          signal.createdAt,
+          signal.timestamp,
+          signal.time
+        ),
+
+      tradePlan: {
+        entry:
+          signal.entry,
+
+        stopLoss:
+          firstDefined(
+            signal.stopLoss,
+            signal.stop,
+            signal.sl
+          ),
+
+        takeProfit1:
+          firstDefined(
+            signal.takeProfit1,
+            signal.target1,
+            signal.tp1
+          ),
+
+        takeProfit2:
+          firstDefined(
+            signal.takeProfit2,
+            signal.target2,
+            signal.tp2
+          ),
+
+        takeProfit3:
+          firstDefined(
+            signal.takeProfit3,
+            signal.target3,
+            signal.tp3
+          ),
+
+        riskReward:
+          firstDefined(
+            signal.riskReward,
+            signal.rr
+          )
+      },
+
+      rawSignal:
+        signal
+    });
+
+  if (!normalized) {
+    throw new Error(
+      `Pattern signal at index ${index} has an incomplete trade plan.`
+    );
+  }
+
+  return normalized;
+}
+
+async function collectPatternAlerts() {
+  console.log(
+    "Fetching Pattern Detector signals..."
+  );
+
+  const rawSignals =
+    await fetchPatternSignals();
+
+  const alerts = [];
+  let invalidCount = 0;
+
+  for (
+    let index = 0;
+    index < rawSignals.length;
+    index += 1
+  ) {
+    try {
+      const signal =
+        normalizePatternSignal(
+          rawSignals[index],
+          index
+        );
+
+      alerts.push({
+        signal,
+
+        /*
+         * Existing ID function uses original raw fields,
+         * preserving the old duplicate-protection contract.
+         */
+        signalId:
+          buildPatternSignalId(
+            rawSignals[index]
+          )
+      });
+    } catch (error) {
+      invalidCount += 1;
+
+      console.error(
+        `Skipping invalid Pattern signal at index ${index}: ` +
+        error.message
+      );
+    }
+  }
+
+  console.log(
+    `Pattern source: fetched=${rawSignals.length}, ` +
+    `qualified=${alerts.length}, invalid=${invalidCount}`
+  );
+
+  return {
+    alerts,
+    fetched:
+      rawSignals.length,
+
+    invalid:
+      invalidCount
+  };
+}
+
+/*
+ * END OF PART 2
+ *
+ * Part 3 adds data/live-analysis.json support for:
+ * - Swing
+ * - Intraday
+ * - Master
+ * - Live-analysis Scalp
+ *
+ * Do not add module.exports or main execution yet.
+ */
+function normalizeLiveSignal({
+  rawSignal,
+  engine,
+  pairFallback,
+  timestampFallback
+}) {
+  if (!isPlainObject(rawSignal)) {
+    return null;
+  }
+
+  const normalizedEngine =
+    normalizeEngine(
+      firstDefined(
+        rawSignal.engine,
+        rawSignal.engineName,
+        rawSignal.mode,
+        engine
+      )
+    );
+
+  const direction =
+    extractDirection(
+      rawSignal
+    );
+
+  /*
+   * HOLD, WAIT and NEUTRAL are valid analysis results,
+   * but they are not Telegram trade alerts.
+   */
+  if (!direction) {
+    return null;
+  }
+
+  const pair =
+    firstDefined(
+      rawSignal.pair,
+      rawSignal.pairLabel,
+      rawSignal.symbol,
+      pairFallback
+    );
+
+  const tradePlan =
+    extractTradePlan(
+      rawSignal
+    );
+
+  return normalizeTradeSignal({
+    source:
+      normalizedEngine,
+
+    engine:
+      normalizedEngine,
+
+    pair,
+
+    timeframe:
+      firstDefined(
+        rawSignal.timeframe,
+        rawSignal.interval,
+        rawSignal.period,
+        rawSignal.mode,
+        normalizedEngine
+      ),
+
+    direction,
+
+    confidence:
+      firstDefined(
+        rawSignal.confidence,
+        rawSignal.confidencePct,
+        rawSignal.confidencePercent
+      ),
+
+    reason:
+      firstDefined(
+        rawSignal.reason,
+        rawSignal.summary,
+        rawSignal.message
+      ),
+
+    pattern:
+      firstDefined(
+        rawSignal.pattern,
+        rawSignal.setup,
+        rawSignal.strategy
+      ),
+
+    timestamp:
+      firstDefined(
+        rawSignal.generatedAt,
+        rawSignal.createdAt,
+        rawSignal.updatedAt,
+        rawSignal.time,
+        rawSignal.timestamp,
+        timestampFallback
+      ),
+
+    tradePlan,
+
+    rawSignal
+  });
+}
+
+function readLiveAnalysis() {
+  const payload =
+    readJsonFile(
+      CONFIG.liveAnalysisPath,
+      {
+        required:
+          false,
+
+        label:
+          "data/live-analysis.json"
+      }
+    );
+
+  if (payload === null) {
+    return null;
+  }
+
+  if (!isPlainObject(payload)) {
+    throw new Error(
+      "data/live-analysis.json must contain a JSON object."
+    );
+  }
+
+  if (
+    payload.pairs !== undefined &&
+    !isPlainObject(
+      payload.pairs
+    )
+  ) {
+    throw new Error(
+      'data/live-analysis.json field "pairs" must be an object.'
+    );
+  }
+
+  return payload;
+}
+
+function resolveLivePairs(payload) {
+  if (!isPlainObject(payload)) {
+    return {};
+  }
+
+  if (
+    isPlainObject(
+      payload.pairs
+    )
+  ) {
+    return payload.pairs;
+  }
+
+  /*
+   * Legacy fallback for files where pair objects
+   * are stored directly at the root.
+   */
+  const pairs = {};
+
+  for (
+    const [
+      key,
+      value
+    ] of Object.entries(payload)
+  ) {
+    const normalizedPair =
+      normalizePair(key);
+
+    if (
+      (
+        normalizedPair === "XAUUSD" ||
+        normalizedPair === "GBPJPY"
+      ) &&
+      isPlainObject(value)
+    ) {
+      pairs[key] = value;
+    }
+  }
+
+  return pairs;
+}
+
+function resolvePairEngine(
+  pairData,
+  engine
+) {
+  if (!isPlainObject(pairData)) {
+    return null;
+  }
+
+  const normalizedEngine =
+    normalizeEngine(engine);
+
+  /*
+   * Current schema:
+   * pairData.swing
+   * pairData.intraday
+   * pairData.master
+   *
+   * Aliases remain supported for legacy compatibility.
+   */
+  const aliases = {
+    swing: [
+      "swing",
+      "swingAnalysis",
+      "swingSignal"
+    ],
+
+    intraday: [
+      "intraday",
+      "intradayAnalysis",
+      "intradaySignal",
+      "dayTrade"
+    ],
+
+    master: [
+      "master",
+      "masterAnalysis",
+      "masterSignal",
+      "final",
+      "combined"
+    ],
+
+    scalp: [
+      "scalp",
+      "scalpAnalysis",
+      "scalpSignal"
+    ]
+  };
+
+  for (
+    const key of
+    aliases[normalizedEngine] || [
+      normalizedEngine
+    ]
+  ) {
+    if (
+      isPlainObject(
+        pairData[key]
+      )
+    ) {
+      return pairData[key];
+    }
+  }
+
+  return null;
+}
+
+function collectLiveAnalysisAlerts({
+  includeScalp = false
+} = {}) {
+  console.log(
+    "Reading live-analysis signals..."
+  );
+
+  const payload =
+    readLiveAnalysis();
+
+  if (!payload) {
+    return {
+      alerts: [],
+      fetched: 0,
+      invalid: 0
+    };
+  }
+
+  const pairs =
+    resolveLivePairs(
+      payload
+    );
+
+  const engines =
+    includeScalp
+      ? LIVE_ENGINES
+      : [
+          "swing",
+          "intraday",
+          "master"
+        ];
+
+  const rootTimestamp =
+    firstDefined(
+      payload.generatedAt,
+      payload.updatedAt,
+      payload.timestamp
+    );
+
+  const alerts = [];
+  let fetchedCount = 0;
+  let invalidCount = 0;
+
+  for (
+    const [
+      pairKey,
+      pairData
+    ] of Object.entries(pairs)
+  ) {
+    if (!isPlainObject(pairData)) {
+      invalidCount += 1;
+
+      console.error(
+        `Skipping invalid live-analysis pair object: ${pairKey}`
+      );
+
+      continue;
+    }
+
+    const pairFallback =
+      firstDefined(
+        pairData.pair,
+        pairData.pairLabel,
+        pairData.symbol,
+        pairKey
+      );
+
+    const pairTimestamp =
+      firstDefined(
+        pairData.generatedAt,
+        pairData.updatedAt,
+        pairData.timestamp,
+        rootTimestamp
+      );
+
+    for (const engine of engines) {
+      const rawSignal =
+        resolvePairEngine(
+          pairData,
+          engine
+        );
+
+      if (!rawSignal) {
+        continue;
+      }
+
+      fetchedCount += 1;
+
+      const direction =
+        extractDirection(
+          rawSignal
+        );
+
+      /*
+       * HOLD/WAIT/NEUTRAL are expected states.
+       * They are skipped without being counted as errors.
+       */
+      if (!direction) {
+        console.log(
+          `Skipping ${displayPair(pairFallback)} ` +
+          `${displayEngine(engine)} HOLD signal.`
+        );
+
+        continue;
+      }
+
+      const signal =
+        normalizeLiveSignal({
+          rawSignal,
+          engine,
+          pairFallback,
+          timestampFallback:
+            pairTimestamp
+        });
+
+      if (!signal) {
+        invalidCount += 1;
+
+        console.error(
+          `Skipping incomplete ${displayPair(pairFallback)} ` +
+          `${displayEngine(engine)} trade signal.`
+        );
+
+        continue;
+      }
+
+      alerts.push({
+        signal,
+
+        signalId:
+          buildLocalSignalId(
+            signal
+          )
+      });
+    }
+  }
+
+  console.log(
+    `Live-analysis source: checked=${fetchedCount}, ` +
+    `qualified=${alerts.length}, invalid=${invalidCount}`
+  );
+
+  return {
+    alerts,
+    fetched:
+      fetchedCount,
+
+    invalid:
+      invalidCount
+  };
+}
+
+/*
+ * END OF PART 3
+ *
+ * Completed in this section:
+ * - Swing alerts
+ * - Intraday alerts
+ * - Master alerts
+ * - Current and legacy live-analysis pair schemas
+ * - HOLD / WAIT / NEUTRAL filtering
+ *
+ * Part 4 adds:
+ * - data/scalp-signals.json as primary Scalp source
+ * - live-analysis Scalp fallback
+ * - duplicate-safe combined processing
+ * - main execution and module exports
+ */
+function readScalpSignals() {
+  const payload =
+    readJsonFile(
+      CONFIG.scalpSignalsPath,
+      {
+        required:
+          false,
+
+        label:
+          "data/scalp-signals.json"
+      }
+    );
+
+  if (payload === null) {
+    return null;
+  }
+
+  if (
+    !isPlainObject(payload) &&
+    !Array.isArray(payload)
+  ) {
+    throw new Error(
+      "data/scalp-signals.json must contain an object or array."
+    );
+  }
+
+  return payload;
+}
+
+function extractScalpCandidates(payload) {
+  const candidates = [];
+
+  const addCandidate = (
+    value,
+    pairFallback = ""
+  ) => {
+    if (!isPlainObject(value)) {
+      return;
+    }
+
+    candidates.push({
+      rawSignal:
+        value,
+
+      pairFallback
+    });
+  };
+
+  if (Array.isArray(payload)) {
+    for (const value of payload) {
+      addCandidate(value);
+    }
+
+    return candidates;
+  }
+
+  if (!isPlainObject(payload)) {
+    return candidates;
+  }
+
+  const arrayKeys = [
+    "signals",
+    "results",
+    "alerts"
+  ];
+
+  for (const key of arrayKeys) {
+    if (!Array.isArray(payload[key])) {
+      continue;
+    }
+
+    for (const value of payload[key]) {
+      addCandidate(value);
+    }
+  }
+
+  if (isPlainObject(payload.pairs)) {
+    for (
+      const [
+        pairKey,
+        pairValue
+      ] of Object.entries(
+        payload.pairs
+      )
+    ) {
+      if (!isPlainObject(pairValue)) {
+        continue;
+      }
+
+      const nestedSignal =
+        firstDefined(
+          pairValue.scalp,
+          pairValue.signal,
+          pairValue.analysis,
+          pairValue.result
+        );
+
+      if (isPlainObject(nestedSignal)) {
+        addCandidate(
+          nestedSignal,
+          pairKey
+        );
+      } else {
+        addCandidate(
+          pairValue,
+          pairKey
+        );
+      }
+    }
+  }
+
+  for (
+    const [
+      key,
+      value
+    ] of Object.entries(payload)
+  ) {
+    const pair =
+      normalizePair(key);
+
+    if (
+      pair !== "XAUUSD" &&
+      pair !== "GBPJPY"
+    ) {
+      continue;
+    }
+
+    if (!isPlainObject(value)) {
+      continue;
+    }
+
+    const nestedSignal =
+      firstDefined(
+        value.scalp,
+        value.signal,
+        value.analysis,
+        value.result
+      );
+
+    if (isPlainObject(nestedSignal)) {
+      addCandidate(
+        nestedSignal,
+        key
+      );
+    } else {
+      addCandidate(
+        value,
+        key
+      );
+    }
+  }
+
+  /*
+   * Supports a single root-level signal object.
+   */
+  if (
+    candidates.length === 0 &&
+    (
+      extractDirection(payload) ||
+      payload.tradePlan ||
+      payload.plan
+    )
+  ) {
+    addCandidate(payload);
+  }
+
+  return candidates;
+}
+
+function normalizeScalpSignal({
+  rawSignal,
+  pairFallback,
+  timestampFallback
+}) {
+  if (!isPlainObject(rawSignal)) {
+    return null;
+  }
+
+  const direction =
+    extractDirection(
+      rawSignal
+    );
+
+  if (!direction) {
+    return null;
+  }
+
+  return normalizeTradeSignal({
+    source:
+      "scalp",
+
+    engine:
+      "scalp",
+
+    pair:
+      firstDefined(
+        rawSignal.pair,
+        rawSignal.pairLabel,
+        rawSignal.symbol,
+        pairFallback
+      ),
+
+    timeframe:
+      firstDefined(
+        rawSignal.timeframe,
+        rawSignal.interval,
+        rawSignal.period,
+        rawSignal.executionTimeframe,
+        rawSignal.mode,
+        "5M"
+      ),
+
+    direction,
+
+    confidence:
+      firstDefined(
+        rawSignal.confidence,
+        rawSignal.confidencePct,
+        rawSignal.confidencePercent
+      ),
+
+    reason:
+      firstDefined(
+        rawSignal.reason,
+        rawSignal.summary,
+        rawSignal.message
+      ),
+
+    pattern:
+      firstDefined(
+        rawSignal.pattern,
+        rawSignal.setup,
+        rawSignal.strategy,
+        "Backend Scalp Setup"
+      ),
+
+    timestamp:
+      firstDefined(
+        rawSignal.generatedAt,
+        rawSignal.createdAt,
+        rawSignal.updatedAt,
+        rawSignal.time,
+        rawSignal.timestamp,
+        timestampFallback
+      ),
+
+    tradePlan:
+      extractTradePlan(
+        rawSignal
+      ),
+
+    rawSignal
+  });
+}
+
+function collectScalpAlerts() {
+  console.log(
+    "Reading primary backend Scalp signals..."
+  );
+
+  const payload =
+    readScalpSignals();
+
+  if (!payload) {
+    return {
+      alerts: [],
+      fetched: 0,
+      invalid: 0
+    };
+  }
+
+  const rootTimestamp =
+    isPlainObject(payload)
+      ? firstDefined(
+          payload.generatedAt,
+          payload.updatedAt,
+          payload.timestamp
+        )
+      : "";
+
+  const candidates =
+    extractScalpCandidates(
+      payload
+    );
+
+  const alerts = [];
+  const seenIds = new Set();
+
+  let invalidCount = 0;
+
+  for (
+    const {
+      rawSignal,
+      pairFallback
+    } of candidates
+  ) {
+    const direction =
+      extractDirection(
+        rawSignal
+      );
+
+    /*
+     * HOLD, WAIT and NEUTRAL are normal results.
+     */
+    if (!direction) {
+      continue;
+    }
+
+    const signal =
+      normalizeScalpSignal({
+        rawSignal,
+        pairFallback,
+        timestampFallback:
+          rootTimestamp
+      });
+
+    if (!signal) {
+      invalidCount += 1;
+
+      console.error(
+        `Skipping incomplete ${displayPair(
+          pairFallback ||
+          rawSignal.pair ||
+          rawSignal.symbol
+        )} Scalp trade signal.`
+      );
+
+      continue;
+    }
+
+    const signalId =
+      buildLocalSignalId(
+        signal
+      );
+
+    /*
+     * Prevent duplicate extraction when the same signal
+     * appears in both an array and a pair-key object.
+     */
+    if (seenIds.has(signalId)) {
+      continue;
+    }
+
+    seenIds.add(signalId);
+
+    alerts.push({
+      signal,
+      signalId
+    });
+  }
+
+  console.log(
+    `Primary Scalp source: checked=${candidates.length}, ` +
+    `qualified=${alerts.length}, invalid=${invalidCount}`
+  );
+
+  return {
+    alerts,
+
+    fetched:
+      candidates.length,
+
+    invalid:
+      invalidCount
+  };
+}
+
+async function collectSourceSafely(
+  label,
+  collector
+) {
+  try {
+    return {
+      ...await collector(),
+      sourceFailed:
+        false
+    };
+  } catch (error) {
+    console.error(
+      `${label} source failed: ${error.message}`
+    );
+
+    return {
+      alerts: [],
+      fetched: 0,
+      invalid: 1,
+      sourceFailed: true
+    };
+  }
+}
+
+function mergeAlertCollections(
+  collections
+) {
+  const alerts = [];
+  const seenIds = new Set();
+
+  let fetched = 0;
+  let invalid = 0;
+  let sourceFailures = 0;
+
+  for (const collection of collections) {
+    fetched +=
+      Number(
+        collection.fetched || 0
+      );
+
+    invalid +=
+      Number(
+        collection.invalid || 0
+      );
+
+    if (collection.sourceFailed) {
+      sourceFailures += 1;
+    }
+
+    for (
+      const alert of
+      collection.alerts || []
+    ) {
+      if (
+        !alert ||
+        !alert.signal ||
+        !alert.signalId ||
+        seenIds.has(
+          alert.signalId
+        )
+      ) {
+        continue;
+      }
+
+      seenIds.add(
+        alert.signalId
+      );
+
+      alerts.push(alert);
+    }
+  }
+
+  return {
+    alerts,
+    fetched,
+    invalid,
+    sourceFailures
+  };
+}
+
 async function processPatternAlerts() {
   validateConfiguration();
 
@@ -1317,134 +2627,88 @@ async function processPatternAlerts() {
       )
     );
 
-  let fetchedCount = 0;
+  const patternCollection =
+    await collectSourceSafely(
+      "Pattern Detector",
+      collectPatternAlerts
+    );
+
+  const liveCollection =
+    await collectSourceSafely(
+      "Live Analysis",
+      () =>
+        collectLiveAnalysisAlerts({
+          includeScalp:
+            false
+        })
+    );
+
+  const primaryScalpCollection =
+    await collectSourceSafely(
+      "Primary Scalp",
+      collectScalpAlerts
+    );
+
+  /*
+   * data/scalp-signals.json is the primary Scalp source.
+   * live-analysis Scalp is used only when the primary source
+   * contains no qualified BUY/SELL trade.
+   */
+  let scalpCollection =
+    primaryScalpCollection;
+
+  if (
+    !primaryScalpCollection.sourceFailed &&
+    primaryScalpCollection.alerts.length === 0
+  ) {
+    console.log(
+      "No qualified primary Scalp trade found. " +
+      "Checking live-analysis Scalp fallback..."
+    );
+
+    scalpCollection =
+      await collectSourceSafely(
+        "Live Analysis Scalp Fallback",
+        () =>
+          collectLiveAnalysisAlerts({
+            includeScalp:
+              true
+          })
+      );
+
+    /*
+     * includeScalp=true also returns Swing, Intraday and Master.
+     * Keep only Scalp here because those engines were already
+     * collected by liveCollection.
+     */
+    scalpCollection.alerts =
+      scalpCollection.alerts.filter(
+        ({ signal }) =>
+          normalizeEngine(
+            signal.engine
+          ) === "scalp"
+      );
+  }
+
+  const combined =
+    mergeAlertCollections([
+      patternCollection,
+      liveCollection,
+      scalpCollection
+    ]);
+
   let sentCount = 0;
   let skippedCount = 0;
   let failedCount = 0;
 
-  /*
-   * Existing Pattern Detector processing.
-   */
-  console.log(
-    "Fetching pattern signals..."
-  );
-
-  const patternData =
-    await fetchPatternSignals();
-
-  const patternSignals =
-    Array.isArray(
-      patternData.signals
-    )
-      ? patternData.signals
-      : [];
-
-  fetchedCount +=
-    patternSignals.length;
-
-  if (
-    patternSignals.length === 0
-  ) {
-    console.log(
-      "No pattern signals found."
-    );
-  }
-
-  for (
-    let index = 0;
-    index < patternSignals.length;
-    index += 1
-  ) {
-    let signal;
-
-    try {
-      signal =
-        validateSignal(
-          patternSignals[index],
-          index
-        );
-    } catch (error) {
-      failedCount += 1;
-
-      console.error(
-        `Skipping invalid pattern signal at index ${index}: ` +
-        error.message
-      );
-
-      continue;
-    }
-
+  for (const alert of combined.alerts) {
     const result =
-      await sendNewAlert({
-        signal,
+      await sendUnsentSignal({
+        signal:
+          alert.signal,
 
         signalId:
-          buildSignalId(
-            signal
-          ),
-
-        message:
-          buildTelegramMessage(
-            signal
-          ),
-
-        sentAlerts,
-        sentIds
-      });
-
-    if (result === "sent") {
-      sentCount += 1;
-    } else if (
-      result === "skipped"
-    ) {
-      skippedCount += 1;
-    } else {
-      failedCount += 1;
-    }
-  }
-
-  /*
-   * Additive PipSight scalp processing.
-   */
-  console.log(
-    "Reading backend scalp signals..."
-  );
-
-  const scalpData =
-    readScalpSignals();
-
-  const scalpSignals =
-    extractScalpSignals(
-      scalpData
-    );
-
-  fetchedCount +=
-    scalpSignals.length;
-
-  if (
-    scalpSignals.length === 0
-  ) {
-    console.log(
-      "No qualified BUY/SELL scalp signals found."
-    );
-  }
-
-  for (
-    const signal of scalpSignals
-  ) {
-    const result =
-      await sendNewAlert({
-        signal,
-
-        signalId:
-          buildScalpSignalId(
-            signal
-          ),
-
-        message:
-          buildScalpTelegramMessage(
-            signal
-          ),
+          alert.signalId,
 
         sentAlerts,
         sentIds
@@ -1462,24 +2726,33 @@ async function processPatternAlerts() {
   }
 
   console.log(
-    `Telegram alert summary: fetched=${fetchedCount}, ` +
-    `sent=${sentCount}, skipped=${skippedCount}, ` +
-    `failed=${failedCount}`
+    "Telegram alert summary: " +
+    `fetched=${combined.fetched}, ` +
+    `qualified=${combined.alerts.length}, ` +
+    `sent=${sentCount}, ` +
+    `skipped=${skippedCount}, ` +
+    `invalid=${combined.invalid}, ` +
+    `failed=${failedCount}, ` +
+    `sourceFailures=${combined.sourceFailures}`
   );
 
-  /*
-   * Fail the workflow when at least one alert
-   * could not be processed.
-   */
-  if (failedCount > 0) {
+  if (
+    failedCount > 0 ||
+    combined.sourceFailures > 0
+  ) {
     throw new Error(
-      `${failedCount} Telegram alert(s) failed to process.`
+      "Telegram alert processing completed with " +
+      `${failedCount} send failure(s) and ` +
+      `${combined.sourceFailures} source failure(s).`
     );
   }
 
   return {
     fetched:
-      fetchedCount,
+      combined.fetched,
+
+    qualified:
+      combined.alerts.length,
 
     sent:
       sentCount,
@@ -1487,8 +2760,14 @@ async function processPatternAlerts() {
     skipped:
       skippedCount,
 
+    invalid:
+      combined.invalid,
+
     failed:
-      failedCount
+      failedCount,
+
+    sourceFailures:
+      combined.sourceFailures
   };
 }
 
@@ -1515,18 +2794,37 @@ if (require.main === module) {
 
 module.exports = {
   CONFIG,
-  buildScalpSignalId,
-  buildScalpTelegramMessage,
-  buildSignalId,
+
+  buildLocalSignalId,
+  buildPatternSignalId,
+  buildSignalId:
+    buildPatternSignalId,
+
   buildTelegramMessage,
-  extractScalpSignals,
+
+  collectLiveAnalysisAlerts,
+  collectPatternAlerts,
+  collectScalpAlerts,
+
+  extractScalpCandidates,
   fetchPatternSignals,
+
   loadSentAlerts,
-  normalizeScalpEntry,
+
+  normalizeLiveSignal,
+  normalizePatternSignal,
+  normalizeScalpSignal,
+  normalizeTradeSignal,
+
   processPatternAlerts,
+
+  readLiveAnalysis,
   readScalpSignals,
+
   saveSentAlerts,
   sendTelegramMessage,
+
   validateConfiguration,
-  validateSignal
+  validateSignal:
+    normalizePatternSignal
 };

@@ -2554,6 +2554,243 @@ function applyAtrDynamicTradePlan(
 
   }
 
+  const decimals =
+    decimalsFor(
+      pair
+    );
+
+  const stopDistance =
+    atr *
+    config.stopMultiplier;
+
+  const target1Distance =
+    atr *
+    config.target1Multiplier;
+
+  const target2Distance =
+    atr *
+    config.target2Multiplier;
+
+  const target3Distance =
+    atr *
+    config.target3Multiplier;
+
+  const stopLoss =
+    direction === "BUY"
+      ? entry - stopDistance
+      : entry + stopDistance;
+
+  const target1 =
+    direction === "BUY"
+      ? entry + target1Distance
+      : entry - target1Distance;
+
+  const target2 =
+    direction === "BUY"
+      ? entry + target2Distance
+      : entry - target2Distance;
+
+  const target3 =
+    direction === "BUY"
+      ? entry + target3Distance
+      : entry - target3Distance;
+
+  const roundedEntry =
+    round(
+      entry,
+      decimals
+    );
+
+  const roundedStopLoss =
+    round(
+      stopLoss,
+      decimals
+    );
+
+  const roundedTarget1 =
+    round(
+      target1,
+      decimals
+    );
+
+  const roundedTarget2 =
+    round(
+      target2,
+      decimals
+    );
+
+  const roundedTarget3 =
+    round(
+      target3,
+      decimals
+    );
+
+  if (
+    ![
+      roundedEntry,
+      roundedStopLoss,
+      roundedTarget1,
+      roundedTarget2,
+      roundedTarget3
+    ].every(
+      isFiniteNumber
+    )
+  ) {
+
+    return analysis;
+
+  }
+
+  /*
+   * Direction safety:
+   * Never publish inverted Stop Loss or Take Profit levels.
+   */
+
+  const validDirection =
+    direction === "BUY"
+      ? (
+          roundedStopLoss <
+            roundedEntry &&
+          roundedTarget1 >
+            roundedEntry &&
+          roundedTarget2 >
+            roundedTarget1 &&
+          roundedTarget3 >
+            roundedTarget2
+        )
+      : (
+          roundedStopLoss >
+            roundedEntry &&
+          roundedTarget1 <
+            roundedEntry &&
+          roundedTarget2 <
+            roundedTarget1 &&
+          roundedTarget3 <
+            roundedTarget2
+        );
+
+  if (
+    !validDirection
+  ) {
+
+    return analysis;
+
+  }
+
+  const dynamicRiskReward =
+    calculateRiskReward(
+      roundedEntry,
+      roundedStopLoss,
+      roundedTarget1
+    );
+
+  if (
+    !isFiniteNumber(
+      dynamicRiskReward
+    ) ||
+    dynamicRiskReward < 2
+  ) {
+
+    return analysis;
+
+  }
+
+  /*
+   * Preserve the existing tradePlan schema.
+   * Only calculated price levels are updated.
+   */
+
+  analysis.tradePlan = {
+
+    ...analysis.tradePlan,
+
+    entry:
+      roundedEntry,
+
+    stopLoss:
+      roundedStopLoss,
+
+    target1:
+      roundedTarget1,
+
+    target2:
+      roundedTarget2,
+
+    target3:
+      roundedTarget3,
+
+    riskReward:
+      round(
+        dynamicRiskReward,
+        2
+      )
+
+  };
+
+  /*
+   * Optional diagnostics.
+   * Existing pipeline steps remain untouched.
+   */
+
+  if (
+    Array.isArray(
+      analysis.steps
+    )
+  ) {
+
+    analysis.steps.push({
+
+      name:
+        "ATR Dynamic TP/SL",
+
+      pass:
+        true,
+
+      detail:
+        `${pair.label} ${direction} ` +
+        `ATR(${config.atrPeriod})=${round(atr, decimals)} ` +
+        `SL ${config.stopMultiplier}x ATR, ` +
+        `TP1 ${config.target1Multiplier}x ATR, ` +
+        `TP2 ${config.target2Multiplier}x ATR, ` +
+        `TP3 ${config.target3Multiplier}x ATR`
+
+    });
+
+  }
+
+  /*
+   * Optional metadata for future AI learning.
+   * Existing JSON consumers will ignore these fields safely.
+   */
+
+  analysis.tradePlan.atr = round(
+    atr,
+    decimals
+  );
+
+  analysis.tradePlan.atrPeriod =
+    config.atrPeriod;
+
+  analysis.tradePlan.riskModel =
+    "ATR_DYNAMIC";
+
+  analysis.tradePlan.stopAtrMultiplier =
+    config.stopMultiplier;
+
+  analysis.tradePlan.targetAtrMultipliers = [
+
+    config.target1Multiplier,
+
+    config.target2Multiplier,
+
+    config.target3Multiplier
+
+  ];
+
+  return analysis;
+
+}
+
 /* =====================================================================
    Main Analysis Engine
    ===================================================================== */

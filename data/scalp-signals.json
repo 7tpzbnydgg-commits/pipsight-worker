@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-07-27T13:20:33.421Z",
+  "generatedAt": "2026-07-27T13:30:47.646Z",
   "engineVersion": "1.0.0",
   "strategyVersion": "scalp-lockstep-1.0",
   "signals": [
@@ -49,13 +49,13 @@
       ],
       "tradePlan": null,
       "mode": "M5",
-      "generatedAt": "2026-07-27T13:20:33.421Z",
-      "analyzedCandleAt": "2026-07-27T23:15:00.000Z",
+      "generatedAt": "2026-07-27T13:30:47.646Z",
+      "analyzedCandleAt": "2026-07-27T23:25:00.000Z",
       "prepared": {
         "counts": {
           "m5": 360,
-          "m15": 121,
-          "m30": 61,
+          "m15": 120,
+          "m30": 60,
           "h1": 862
         },
         "source": {
@@ -63,7 +63,7 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-07-27T13:20:33.331Z",
+          "m5": "2026-07-27T13:30:47.557Z",
           "h1": "2026-07-27T13:15:31.617Z"
         },
         "quality": {
@@ -72,8 +72,8 @@
             "rejectedRows": 0,
             "duplicateTimestamps": 0,
             "openCandlesRemoved": 0,
-            "firstDate": "2026-07-26T17:20:00.000Z",
-            "lastDate": "2026-07-27T23:15:00.000Z",
+            "firstDate": "2026-07-26T17:30:00.000Z",
+            "lastDate": "2026-07-27T23:25:00.000Z",
             "ageMinutes": 0,
             "expectedIntervalMinutes": 5,
             "hasOHLC": true,
@@ -140,13 +140,13 @@
       ],
       "tradePlan": null,
       "mode": "M15",
-      "generatedAt": "2026-07-27T13:20:33.421Z",
+      "generatedAt": "2026-07-27T13:30:47.646Z",
       "analyzedCandleAt": "2026-07-27T23:15:00.000Z",
       "prepared": {
         "counts": {
           "m5": 360,
-          "m15": 121,
-          "m30": 61,
+          "m15": 120,
+          "m30": 60,
           "h1": 862
         },
         "source": {
@@ -154,7 +154,7 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-07-27T13:20:33.331Z",
+          "m5": "2026-07-27T13:30:47.557Z",
           "h1": "2026-07-27T13:15:31.617Z"
         },
         "quality": {
@@ -163,8 +163,8 @@
             "rejectedRows": 0,
             "duplicateTimestamps": 0,
             "openCandlesRemoved": 0,
-            "firstDate": "2026-07-26T17:20:00.000Z",
-            "lastDate": "2026-07-27T23:15:00.000Z",
+            "firstDate": "2026-07-26T17:30:00.000Z",
+            "lastDate": "2026-07-27T23:25:00.000Z",
             "ageMinutes": 0,
             "expectedIntervalMinutes": 5,
             "hasOHLC": true,
@@ -231,13 +231,13 @@
       ],
       "tradePlan": null,
       "mode": "M30",
-      "generatedAt": "2026-07-27T13:20:33.421Z",
+      "generatedAt": "2026-07-27T13:30:47.646Z",
       "analyzedCandleAt": "2026-07-27T23:00:00.000Z",
       "prepared": {
         "counts": {
           "m5": 360,
-          "m15": 121,
-          "m30": 61,
+          "m15": 120,
+          "m30": 60,
           "h1": 862
         },
         "source": {
@@ -245,7 +245,7 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-07-27T13:20:33.331Z",
+          "m5": "2026-07-27T13:30:47.557Z",
           "h1": "2026-07-27T13:15:31.617Z"
         },
         "quality": {
@@ -254,8 +254,8 @@
             "rejectedRows": 0,
             "duplicateTimestamps": 0,
             "openCandlesRemoved": 0,
-            "firstDate": "2026-07-26T17:20:00.000Z",
-            "lastDate": "2026-07-27T23:15:00.000Z",
+            "firstDate": "2026-07-26T17:30:00.000Z",
+            "lastDate": "2026-07-27T23:25:00.000Z",
             "ageMinutes": 0,
             "expectedIntervalMinutes": 5,
             "hasOHLC": true,
@@ -281,53 +281,54 @@
       "signal": "WAIT",
       "confidence": 0,
       "reasons": [
-        "MACD confirmation failed"
+        "EMA alignment failed"
       ],
       "steps": [
         {
           "name": "EMA Trend",
-          "pass": true,
-          "detail": "SELL EMA alignment confirmed: price 217.92038, EMA20 217.923217, EMA50 217.988712, EMA100 218.069475, EMA200 218.16531"
+          "pass": false,
+          "detail": "Full EMA alignment failed; bullish checks 1/4, bearish checks 3/4"
         },
         {
           "name": "MACD",
-          "pass": false,
-          "detail": "SELL not confirmed: MACD -0.004917 is not below signal -0.01599; histogram 0.011073"
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because EMA Trend did not pass"
         },
         {
           "name": "RSI",
           "pass": null,
           "status": "skip",
-          "detail": "Skipped because MACD did not pass"
+          "detail": "Skipped because EMA Trend did not pass"
         },
         {
           "name": "Higher TF",
           "pass": null,
           "status": "skip",
-          "detail": "Skipped because MACD did not pass"
+          "detail": "Skipped because EMA Trend did not pass"
         },
         {
           "name": "News",
           "pass": null,
           "status": "skip",
-          "detail": "Skipped because MACD did not pass"
+          "detail": "Skipped because EMA Trend did not pass"
         },
         {
           "name": "Risk Reward",
           "pass": null,
           "status": "skip",
-          "detail": "Skipped because MACD did not pass"
+          "detail": "Skipped because EMA Trend did not pass"
         }
       ],
       "tradePlan": null,
       "mode": "M5",
-      "generatedAt": "2026-07-27T13:20:33.421Z",
-      "analyzedCandleAt": "2026-07-27T23:15:00.000Z",
+      "generatedAt": "2026-07-27T13:30:47.646Z",
+      "analyzedCandleAt": "2026-07-27T23:25:00.000Z",
       "prepared": {
         "counts": {
           "m5": 360,
-          "m15": 121,
-          "m30": 61,
+          "m15": 120,
+          "m30": 60,
           "h1": 862
         },
         "source": {
@@ -335,7 +336,7 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-07-27T13:20:33.331Z",
+          "m5": "2026-07-27T13:30:47.557Z",
           "h1": "2026-07-27T13:15:31.617Z"
         },
         "quality": {
@@ -344,8 +345,8 @@
             "rejectedRows": 0,
             "duplicateTimestamps": 0,
             "openCandlesRemoved": 0,
-            "firstDate": "2026-07-26T17:20:00.000Z",
-            "lastDate": "2026-07-27T23:15:00.000Z",
+            "firstDate": "2026-07-26T17:30:00.000Z",
+            "lastDate": "2026-07-27T23:25:00.000Z",
             "ageMinutes": 0,
             "expectedIntervalMinutes": 5,
             "hasOHLC": true,
@@ -377,12 +378,12 @@
         {
           "name": "EMA Trend",
           "pass": true,
-          "detail": "SELL EMA alignment confirmed: price 217.92038, EMA20 217.973078, EMA50 218.075064, EMA100 218.149043, EMA200 218.243236"
+          "detail": "SELL EMA alignment confirmed: price 217.94289, EMA20 217.975447, EMA50 218.076236, EMA100 218.149078, EMA200 218.243095"
         },
         {
           "name": "MACD",
           "pass": false,
-          "detail": "SELL not confirmed: MACD -0.084358 is not below signal -0.099011; histogram 0.014654"
+          "detail": "SELL not confirmed: MACD -0.082564 is not below signal -0.098656; histogram 0.016091"
         },
         {
           "name": "RSI",
@@ -411,13 +412,13 @@
       ],
       "tradePlan": null,
       "mode": "M15",
-      "generatedAt": "2026-07-27T13:20:33.421Z",
+      "generatedAt": "2026-07-27T13:30:47.646Z",
       "analyzedCandleAt": "2026-07-27T23:15:00.000Z",
       "prepared": {
         "counts": {
           "m5": 360,
-          "m15": 121,
-          "m30": 61,
+          "m15": 120,
+          "m30": 60,
           "h1": 862
         },
         "source": {
@@ -425,7 +426,7 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-07-27T13:20:33.331Z",
+          "m5": "2026-07-27T13:30:47.557Z",
           "h1": "2026-07-27T13:15:31.617Z"
         },
         "quality": {
@@ -434,8 +435,8 @@
             "rejectedRows": 0,
             "duplicateTimestamps": 0,
             "openCandlesRemoved": 0,
-            "firstDate": "2026-07-26T17:20:00.000Z",
-            "lastDate": "2026-07-27T23:15:00.000Z",
+            "firstDate": "2026-07-26T17:30:00.000Z",
+            "lastDate": "2026-07-27T23:25:00.000Z",
             "ageMinutes": 0,
             "expectedIntervalMinutes": 5,
             "hasOHLC": true,
@@ -467,17 +468,17 @@
         {
           "name": "EMA Trend",
           "pass": true,
-          "detail": "SELL EMA alignment confirmed: price 217.92038, EMA20 217.979545, EMA50 218.0755, EMA100 218.147991, EMA200 218.238244"
+          "detail": "SELL EMA alignment confirmed: price 217.94289, EMA20 217.984047, EMA50 218.077781, EMA100 218.148028, EMA200 218.237885"
         },
         {
           "name": "MACD",
           "pass": true,
-          "detail": "SELL confirmed: MACD -0.114707 is below signal -0.092042; histogram -0.022665"
+          "detail": "SELL confirmed: MACD -0.112863 is below signal -0.091616; histogram -0.021247"
         },
         {
           "name": "RSI",
           "pass": false,
-          "detail": "SELL RSI confirmation failed at 33.49; required range 35–55"
+          "detail": "SELL RSI confirmation failed at 34.66; required range 35–55"
         },
         {
           "name": "Higher TF",
@@ -500,13 +501,13 @@
       ],
       "tradePlan": null,
       "mode": "M30",
-      "generatedAt": "2026-07-27T13:20:33.421Z",
+      "generatedAt": "2026-07-27T13:30:47.646Z",
       "analyzedCandleAt": "2026-07-27T23:00:00.000Z",
       "prepared": {
         "counts": {
           "m5": 360,
-          "m15": 121,
-          "m30": 61,
+          "m15": 120,
+          "m30": 60,
           "h1": 862
         },
         "source": {
@@ -514,7 +515,7 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-07-27T13:20:33.331Z",
+          "m5": "2026-07-27T13:30:47.557Z",
           "h1": "2026-07-27T13:15:31.617Z"
         },
         "quality": {
@@ -523,8 +524,8 @@
             "rejectedRows": 0,
             "duplicateTimestamps": 0,
             "openCandlesRemoved": 0,
-            "firstDate": "2026-07-26T17:20:00.000Z",
-            "lastDate": "2026-07-27T23:15:00.000Z",
+            "firstDate": "2026-07-26T17:30:00.000Z",
+            "lastDate": "2026-07-27T23:25:00.000Z",
             "ageMinutes": 0,
             "expectedIntervalMinutes": 5,
             "hasOHLC": true,

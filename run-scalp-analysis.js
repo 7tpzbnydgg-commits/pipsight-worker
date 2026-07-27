@@ -4105,7 +4105,21 @@ function run() {
           higherRows,
           pairNews
         );
+       
+      /*
+       * Apply additive ATR Dynamic TP/SL extension.
+       *
+       * Existing WAIT signals, failed analysis gates and missing
+       * trade plans remain unchanged because the extension safely
+       * falls back to the original analysis result.
+       */
 
+      applyAtrDynamicTradePlan(
+        analysis,
+        rows,
+        pair.label
+      );
+       
       analysis.mode =
         mode;
 

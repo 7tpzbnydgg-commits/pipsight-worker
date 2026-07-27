@@ -2198,6 +2198,22 @@ function readScalpSignals() {
 
 function extractScalpCandidates(payload) {
   const candidates = [];
+  const visited = new Set();
+
+  const metadataKeys =
+    new Set([
+      "generatedAt",
+      "updatedAt",
+      "createdAt",
+      "timestamp",
+      "version",
+      "engineVersion",
+      "strategyVersion",
+      "metadata",
+      "prepared",
+      "stale",
+      "status"
+    ]);
 
   const addCandidate = (
     value,
@@ -2215,123 +2231,211 @@ function extractScalpCandidates(payload) {
     });
   };
 
-  if (Array.isArray(payload)) {
-    for (const value of payload) {
-      addCandidate(value);
-    }
-
-    return candidates;
-  }
-
-  if (!isPlainObject(payload)) {
-    return candidates;
-  }
-
-  const arrayKeys = [
-    "signals",
-    "results",
-    "alerts"
-  ];
-
-  for (const key of arrayKeys) {
-    if (!Array.isArray(payload[key])) {
-      continue;
-    }
-
-    for (const value of payload[key]) {
-      addCandidate(value);
-    }
-  }
-
-  if (isPlainObject(payload.pairs)) {
-    for (
-      const [
-        pairKey,
-        pairValue
-      ] of Object.entries(
-        payload.pairs
-      )
-    ) {
-      if (!isPlainObject(pairValue)) {
-        continue;
+  const hasSignalContent =
+    (value) => {
+      if (!isPlainObject(value)) {
+        return false;
       }
 
-      const nestedSignal =
-        firstDefined(
-          pairValue.scalp,
-          pairValue.signal,
-          pairValue.analysis,
-          pairValue.result
-        );
+      return Boolean(
+        extractDirection(value) ||
+        value.tradePlan ||
+        value.plan ||
+        value.entry !== undefined ||
+        value.rawEntry !== undefined ||
+        value.stopLoss !== undefined ||
+        value.stop !== undefined ||
+        value.sl !== undefined ||
+        value.target1 !== undefined ||
+        value.tp1 !== undefined
+      );
+    };
 
-      if (isPlainObject(nestedSignal)) {
-        addCandidate(
-          nestedSignal,
-          pairKey
-        );
-      } else {
-        addCandidate(
-          pairValue,
-          pairKey
-        );
-      }
-    }
-  }
-
-  for (
-    const [
-      key,
-      value
-    ] of Object.entries(payload)
-  ) {
-    const pair =
-      normalizePair(key);
-
+  const visit = (
+    value,
+    pairFallback = "",
+    depth = 0
+  ) => {
     if (
-      pair !== "XAUUSD" &&
-      pair !== "GBPJPY"
+      value === null ||
+      value === undefined ||
+      depth > 8
     ) {
-      continue;
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        visit(
+          item,
+          pairFallback,
+          depth + 1
+        );
+      }
+
+      return;
     }
 
     if (!isPlainObject(value)) {
-      continue;
+      return;
     }
 
-    const nestedSignal =
+    if (visited.has(value)) {
+      return;
+    }
+
+    visited.add(value);
+
+    const directPair =
       firstDefined(
-        value.scalp,
-        value.signal,
-        value.analysis,
-        value.result
+        value.pair,
+        value.pairLabel,
+        value.symbol,
+        pairFallback
       );
 
-    if (isPlainObject(nestedSignal)) {
-      addCandidate(
-        nestedSignal,
-        key
-      );
-    } else {
+    /*
+     * A complete BUY/SELL or trade-plan signal object
+     * can be collected directly.
+     */
+    if (hasSignalContent(value)) {
       addCandidate(
         value,
-        key
+        directPair
+      );
+
+      return;
+    }
+
+    /*
+     * Common nested signal wrappers.
+     */
+    const nestedKeys = [
+      "scalp",
+      "scalpSignal",
+      "scalpAnalysis",
+      "signal",
+      "analysis",
+      "result",
+      "latest"
+    ];
+
+    for (const key of nestedKeys) {
+      const nestedValue =
+        value[key];
+
+      if (
+        isPlainObject(nestedValue) ||
+        Array.isArray(nestedValue)
+      ) {
+        visit(
+          nestedValue,
+          directPair,
+          depth + 1
+        );
+      }
+    }
+
+    /*
+     * Supports both array and object-map containers:
+     *
+     * signals: []
+     * signals: { XAUUSD: {...} }
+     * pairs: { XAUUSD: {...} }
+     * results: {...}
+     */
+    const containerKeys = [
+      "signals",
+      "results",
+      "alerts",
+      "pairs",
+      "data",
+      "items"
+    ];
+
+    for (const key of containerKeys) {
+      const container =
+        value[key];
+
+      if (
+        !isPlainObject(container) &&
+        !Array.isArray(container)
+      ) {
+        continue;
+      }
+
+      if (Array.isArray(container)) {
+        visit(
+          container,
+          directPair,
+          depth + 1
+        );
+
+        continue;
+      }
+
+      for (
+        const [
+          childKey,
+          childValue
+        ] of Object.entries(container)
+      ) {
+        const normalizedChildPair =
+          normalizePair(childKey);
+
+        const childPairFallback =
+          (
+            normalizedChildPair === "XAUUSD" ||
+            normalizedChildPair === "GBPJPY"
+          )
+            ? childKey
+            : directPair;
+
+        visit(
+          childValue,
+          childPairFallback,
+          depth + 1
+        );
+      }
+    }
+
+    /*
+     * Supports pair keys placed directly at any level:
+     *
+     * XAUUSD: {...}
+     * XAU/USD: {...}
+     * GBPJPY: {...}
+     * GBP/JPY: {...}
+     */
+    for (
+      const [
+        key,
+        childValue
+      ] of Object.entries(value)
+    ) {
+      if (metadataKeys.has(key)) {
+        continue;
+      }
+
+      const normalizedPair =
+        normalizePair(key);
+
+      if (
+        normalizedPair !== "XAUUSD" &&
+        normalizedPair !== "GBPJPY"
+      ) {
+        continue;
+      }
+
+      visit(
+        childValue,
+        key,
+        depth + 1
       );
     }
-  }
+  };
 
-  /*
-   * Supports a single root-level signal object.
-   */
-  if (
-    candidates.length === 0 &&
-    (
-      extractDirection(payload) ||
-      payload.tradePlan ||
-      payload.plan
-    )
-  ) {
-    addCandidate(payload);
-  }
+  visit(payload);
 
   return candidates;
 }

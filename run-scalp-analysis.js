@@ -2332,6 +2332,229 @@ function calculateRiskReward(
 }
 
 /* =====================================================================
+   ATR Dynamic TP/SL Extension
+   Additive only — existing analysis gates, pair names, JSON fields,
+   logging, frontend and evaluator contracts remain unchanged.
+
+   Supported canonical pairs:
+   - XAUUSD / XAU/USD
+   - GBPJPY / GBP/JPY
+   ===================================================================== */
+
+const ATR_DYNAMIC_TRADE_PLAN_CONFIG = Object.freeze({
+
+  XAUUSD: Object.freeze({
+
+    atrPeriod:
+      14,
+
+    stopMultiplier:
+      1.0,
+
+    target1Multiplier:
+      2.0,
+
+    target2Multiplier:
+      3.0,
+
+    target3Multiplier:
+      4.0
+
+  }),
+
+  GBPJPY: Object.freeze({
+
+    atrPeriod:
+      14,
+
+    stopMultiplier:
+      1.0,
+
+    target1Multiplier:
+      2.0,
+
+    target2Multiplier:
+      3.0,
+
+    target3Multiplier:
+      4.0
+
+  })
+
+});
+
+
+function atrDynamicConfigFor(
+  pairLabel
+) {
+
+  const normalized =
+    normalizePairKey(
+      pairLabel
+    );
+
+  return (
+    ATR_DYNAMIC_TRADE_PLAN_CONFIG[
+      normalized
+    ] ||
+    null
+  );
+
+}
+
+
+function latestFiniteValue(
+  values
+) {
+
+  if (
+    !Array.isArray(
+      values
+    )
+  ) {
+
+    return null;
+
+  }
+
+  for (
+    let index =
+      values.length - 1;
+
+    index >= 0;
+
+    index--
+  ) {
+
+    if (
+      isFiniteNumber(
+        values[index]
+      )
+    ) {
+
+      return values[index];
+
+    }
+
+  }
+
+  return null;
+
+}
+
+
+function applyAtrDynamicTradePlan(
+  analysis,
+  rows,
+  pairLabel
+) {
+
+  /*
+   * Safe fallback:
+   * If the existing engine did not produce an actionable trade plan,
+   * nothing is changed.
+   */
+
+  if (
+    !analysis ||
+    typeof analysis !== "object" ||
+    !analysis.tradePlan ||
+    typeof analysis.tradePlan !== "object"
+  ) {
+
+    return analysis;
+
+  }
+
+  const direction =
+    normalizeSignalDirection(
+      analysis.signal
+    );
+
+  if (
+    direction !== "BUY" &&
+    direction !== "SELL"
+  ) {
+
+    return analysis;
+
+  }
+
+  const config =
+    atrDynamicConfigFor(
+      pairLabel
+    );
+
+  if (
+    !config
+  ) {
+
+    return analysis;
+
+  }
+
+  if (
+    !Array.isArray(
+      rows
+    ) ||
+    rows.length <=
+      config.atrPeriod
+  ) {
+
+    return analysis;
+
+  }
+
+  const pair =
+    findPairConfiguration(
+      pairLabel
+    );
+
+  if (
+    !pair
+  ) {
+
+    return analysis;
+
+  }
+
+  const entry =
+    numericValue(
+      analysis.tradePlan.entry
+    );
+
+  if (
+    entry === null ||
+    entry <= 0
+  ) {
+
+    return analysis;
+
+  }
+
+  const atrValues =
+    atrSeries(
+      rows,
+      config.atrPeriod
+    );
+
+  const atr =
+    latestFiniteValue(
+      atrValues
+    );
+
+  if (
+    !isFiniteNumber(
+      atr
+    ) ||
+    atr <= 0
+  ) {
+
+    return analysis;
+
+  }
+
+/* =====================================================================
    Main Analysis Engine
    ===================================================================== */
 

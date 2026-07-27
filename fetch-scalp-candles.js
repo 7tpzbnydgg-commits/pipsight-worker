@@ -1030,6 +1030,9 @@ async function fetchCandles(symbol) {
       outputsize:
         String(OUTPUT_SIZE),
 
+      timezone:
+        "UTC",
+
       apikey:
         API_KEY
     });

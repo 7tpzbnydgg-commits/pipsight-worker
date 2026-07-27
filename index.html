@@ -10947,15 +10947,29 @@ function normalizeBackendTradePlan(
     safeNumber(
       source.entry ??
       entry.rawEntry ??
-      entry.entry,
+      entry.entry ??
+      entry.price,
       null
     );
+
+  /*
+   * Legacy and upgraded backend compatibility:
+   *
+   * Legacy names:
+   * - stop
+   * - sl
+   *
+   * Upgraded backend name:
+   * - stopLoss
+   */
 
   const stop =
     safeNumber(
       source.stop ??
+      source.stopLoss ??
       source.sl ??
       entry.rawSl ??
+      entry.stopLoss ??
       entry.sl,
       null
     );
@@ -10963,10 +10977,15 @@ function normalizeBackendTradePlan(
   const target1 =
     safeNumber(
       source.target1 ??
+      source.takeProfit1 ??
+      source.takeProfit ??
       source.tp1 ??
       source.tp ??
       entry.rawTp1 ??
       entry.rawTp ??
+      entry.target1 ??
+      entry.takeProfit1 ??
+      entry.takeProfit ??
       entry.tp1 ??
       entry.tp,
       null
@@ -10975,8 +10994,11 @@ function normalizeBackendTradePlan(
   const target2 =
     safeNumber(
       source.target2 ??
+      source.takeProfit2 ??
       source.tp2 ??
       entry.rawTp2 ??
+      entry.target2 ??
+      entry.takeProfit2 ??
       entry.tp2,
       null
     );
@@ -10984,8 +11006,11 @@ function normalizeBackendTradePlan(
   const target3 =
     safeNumber(
       source.target3 ??
+      source.takeProfit3 ??
       source.tp3 ??
       entry.rawTp3 ??
+      entry.target3 ??
+      entry.takeProfit3 ??
       entry.tp3,
       null
     );
@@ -11012,7 +11037,8 @@ function normalizeBackendTradePlan(
 
   if(
     risk <= 0 ||
-    !Number.isFinite(risk)
+    !Number.isFinite(risk) ||
+    !Number.isFinite(reward)
   ){
     return null;
   }
@@ -11021,12 +11047,45 @@ function normalizeBackendTradePlan(
     reward /
     risk;
 
+  /*
+   * Supports both frontend/legacy `rr`
+   * and backend `riskReward`.
+   */
+
   const rr =
     safeNumber(
       source.rr ??
-      entry.rr,
+      source.riskReward ??
+      entry.rr ??
+      entry.riskReward,
       calculatedRR
     );
+
+  const normalizedTarget2 =
+    target2 != null
+      ? target2
+      : (
+          direction === "BUY"
+            ? rawEntry +
+              risk *
+              3
+            : rawEntry -
+              risk *
+              3
+        );
+
+  const normalizedTarget3 =
+    target3 != null
+      ? target3
+      : (
+          direction === "BUY"
+            ? rawEntry +
+              risk *
+              4
+            : rawEntry -
+              risk *
+              4
+        );
 
   return {
     direction,
@@ -11039,30 +11098,10 @@ function normalizeBackendTradePlan(
     target1,
 
     target2:
-      target2 != null
-        ? target2
-        : (
-            direction === "BUY"
-              ? rawEntry +
-                risk *
-                3
-              : rawEntry -
-                risk *
-                3
-          ),
+      normalizedTarget2,
 
     target3:
-      target3 != null
-        ? target3
-        : (
-            direction === "BUY"
-              ? rawEntry +
-                risk *
-                4
-              : rawEntry -
-                risk *
-                4
-          ),
+      normalizedTarget3,
 
     risk,
 
@@ -11076,9 +11115,15 @@ function normalizeBackendTradePlan(
       ),
 
     stopMethod:
-      typeof source.stopMethod === "string"
-        ? source.stopMethod
-        : "Backend scalp engine",
+      typeof source.stopMethod === "string" &&
+      source.stopMethod.trim()
+        ? source.stopMethod.trim()
+        : (
+            typeof entry.stopMethod === "string" &&
+            entry.stopMethod.trim()
+              ? entry.stopMethod.trim()
+              : "Backend scalp engine"
+          ),
 
     entryFormatted:
       safeFixed(
@@ -11100,33 +11145,13 @@ function normalizeBackendTradePlan(
 
     target2Formatted:
       safeFixed(
-        target2 != null
-          ? target2
-          : (
-              direction === "BUY"
-                ? rawEntry +
-                  risk *
-                  3
-                : rawEntry -
-                  risk *
-                  3
-            ),
+        normalizedTarget2,
         decimals
       ),
 
     target3Formatted:
       safeFixed(
-        target3 != null
-          ? target3
-          : (
-              direction === "BUY"
-                ? rawEntry +
-                  risk *
-                  4
-                : rawEntry -
-                  risk *
-                  4
-            ),
+        normalizedTarget3,
         decimals
       )
   };

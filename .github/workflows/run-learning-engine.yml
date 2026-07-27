@@ -1,0 +1,199 @@
+name: Sync Learning Engine State
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pipsight-learning-state-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sync-learning:
+    name: Run and save learning engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Verify required source files
+        run: |
+          set -euo pipefail
+
+          test -f run-learning-engine.js
+          test -f learner.js
+          test -f data/analysis-history.json
+
+          echo "Required learning-engine files are available."
+
+      - name: Validate JavaScript syntax
+        run: |
+          set -euo pipefail
+
+          node --check run-learning-engine.js
+          node --check learner.js
+
+          echo "Learning-engine JavaScript syntax is valid."
+
+      - name: Validate analysis history
+        run: |
+          set -euo pipefail
+
+          node - <<'NODE'
+          const fs = require("fs");
+
+          const filePath = "data/analysis-history.json";
+
+          const history = JSON.parse(
+            fs.readFileSync(
+              filePath,
+              "utf8"
+            )
+          );
+
+          if (
+            history === null ||
+            typeof history !== "object" ||
+            Array.isArray(history)
+          ) {
+            throw new Error(
+              "data/analysis-history.json must contain a JSON object."
+            );
+          }
+
+          if (
+            history.closed !== undefined &&
+            !Array.isArray(history.closed)
+          ) {
+            throw new Error(
+              "analysis-history.json closed field must be an array."
+            );
+          }
+
+          const closedCount =
+            Array.isArray(history.closed)
+              ? history.closed.length
+              : 0;
+
+          console.log(
+            `Validated analysis history with ${closedCount} closed records.`
+          );
+          NODE
+
+      - name: Run learning engine
+        run: |
+          set -euo pipefail
+
+          node run-learning-engine.js
+
+      - name: Verify generated learning files
+        run: |
+          set -euo pipefail
+
+          test -s data/learning-data.json
+          test -s data/confidence-data.json
+          test -s data/learning-engine-state.json
+
+          node - <<'NODE'
+          const fs = require("fs");
+
+          const files = [
+            "data/learning-data.json",
+            "data/confidence-data.json",
+            "data/learning-engine-state.json"
+          ];
+
+          for (
+            const file of files
+          ) {
+            const parsed = JSON.parse(
+              fs.readFileSync(
+                file,
+                "utf8"
+              )
+            );
+
+            if (
+              parsed === null ||
+              typeof parsed !== "object"
+            ) {
+              throw new Error(
+                `${file} must contain valid JSON data.`
+              );
+            }
+
+            console.log(
+              `Validated: ${file}`
+            );
+          }
+          NODE
+
+      - name: Show learning-engine output
+        run: |
+          set -euo pipefail
+
+          echo "Generated learning files:"
+          ls -lh \
+            data/learning-data.json \
+            data/confidence-data.json \
+            data/learning-engine-state.json
+
+      - name: Commit updated learning files
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "pipsight-learning-robot"
+          git config user.email "actions@users.noreply.github.com"
+
+          git add \
+            data/learning-data.json \
+            data/confidence-data.json \
+            data/learning-engine-state.json
+
+          if git diff --cached --quiet; then
+            echo "No learning-engine changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Update PipSight learning engine state"
+
+          git pull \
+            --rebase \
+            origin \
+            "${GITHUB_REF_NAME}"
+
+          git push \
+            origin \
+            "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Log execution
+        if: always()
+        run: |
+          echo "PipSight learning-engine workflow finished."
+          echo "Status: ${{ job.status }}"
+          echo "Repository: ${{ github.repository }}"
+          echo "Branch: ${GITHUB_REF_NAME}"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "Completed at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"

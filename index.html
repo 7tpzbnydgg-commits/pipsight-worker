@@ -1009,9 +1009,34 @@
   class="container"
   id="tradingViewSection"
 >
-  <div class="card">
-    <div class="label">
-      Live TradingView Chart
+  <div
+    class="card"
+    id="tradingViewCard"
+  >
+    <div
+      style="
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+        gap:12px;
+        margin-bottom:12px;
+      "
+    >
+      <div
+        class="label"
+        style="margin:0;"
+      >
+        Live TradingView Chart
+      </div>
+
+      <button
+        class="iconbtn"
+        id="tradingViewFullscreenButton"
+        type="button"
+        aria-label="Open chart fullscreen"
+      >
+        ⛶ Full Screen
+      </button>
     </div>
 
     <div
@@ -16129,16 +16154,43 @@ if(
   "use strict";
 
   const SYMBOLS = {
-    XAUUSD: "OANDA:XAUUSD",
-    GBPJPY: "OANDA:GBPJPY"
+    XAUUSD:"OANDA:XAUUSD",
+    GBPJPY:"OANDA:GBPJPY"
   };
+
+  function getElements(){
+    return {
+      section:
+        document.getElementById(
+          "tradingViewSection"
+        ),
+
+      card:
+        document.getElementById(
+          "tradingViewCard"
+        ),
+
+      container:
+        document.getElementById(
+          "tradingViewWidget"
+        ),
+
+      fullscreenButton:
+        document.getElementById(
+          "tradingViewFullscreenButton"
+        )
+    };
+  }
 
   function getTradingViewSymbol(){
     const pairKey =
       currentPair &&
       typeof currentPair.key === "string"
         ? currentPair.key
-            .replace(/[^A-Z]/gi, "")
+            .replace(
+              /[^A-Z]/gi,
+              ""
+            )
             .toUpperCase()
         : "XAUUSD";
 
@@ -16148,11 +16200,53 @@ if(
     );
   }
 
-  function renderTradingViewChart(){
-    const container =
-      document.getElementById(
-        "tradingViewWidget"
+  function shouldShowTradingView(){
+    return (
+      currentMode === "daily" ||
+      currentMode === "weekly"
+    );
+  }
+
+  function syncTradingViewVisibility(){
+    const {
+      section,
+      card
+    } = getElements();
+
+    if(!section){
+      return;
+    }
+
+    const visible =
+      shouldShowTradingView();
+
+    section.style.display =
+      visible
+        ? "block"
+        : "none";
+
+    if(
+      !visible &&
+      card &&
+      card.classList.contains(
+        "chart-fullscreen"
+      )
+    ){
+      card.classList.remove(
+        "chart-fullscreen"
       );
+
+      document.body.style.overflow =
+        "";
+
+      updateFullscreenButton();
+    }
+  }
+
+  function renderTradingViewChart(){
+    const {
+      container
+    } = getElements();
 
     if(!container){
       return;
@@ -16160,7 +16254,8 @@ if(
 
     if(
       !window.TradingView ||
-      typeof window.TradingView.widget !== "function"
+      typeof window.TradingView.widget !==
+        "function"
     ){
       container.innerHTML = `
         <div class="loading">
@@ -16192,32 +16287,193 @@ if(
     });
   }
 
-  function initializeTradingView(){
-    renderTradingViewChart();
+  function updateFullscreenButton(){
+    const {
+      card,
+      fullscreenButton
+    } = getElements();
 
     if(
-      typeof window.selectPair === "function" &&
-      !window.selectPair.__tradingViewWrapped
+      !card ||
+      !fullscreenButton
     ){
-      const originalSelectPair =
-        window.selectPair;
+      return;
+    }
 
-      const wrappedSelectPair =
-        async function(index){
-          const result =
-            await originalSelectPair(index);
+    const fullscreen =
+      card.classList.contains(
+        "chart-fullscreen"
+      );
 
-          renderTradingViewChart();
+    fullscreenButton.textContent =
+      fullscreen
+        ? "✕ Exit Full Screen"
+        : "⛶ Full Screen";
 
-          return result;
-        };
+    fullscreenButton.setAttribute(
+      "aria-label",
+      fullscreen
+        ? "Exit chart fullscreen"
+        : "Open chart fullscreen"
+    );
+  }
 
-      wrappedSelectPair.__tradingViewWrapped =
+  function toggleTradingViewFullscreen(){
+    const {
+      card
+    } = getElements();
+
+    if(!card){
+      return;
+    }
+
+    const fullscreen =
+      card.classList.toggle(
+        "chart-fullscreen"
+      );
+
+    document.body.style.overflow =
+      fullscreen
+        ? "hidden"
+        : "";
+
+    updateFullscreenButton();
+
+    window.dispatchEvent(
+      new Event(
+        "resize"
+      )
+    );
+  }
+
+  function exitTradingViewFullscreen(){
+    const {
+      card
+    } = getElements();
+
+    if(
+      !card ||
+      !card.classList.contains(
+        "chart-fullscreen"
+      )
+    ){
+      return;
+    }
+
+    card.classList.remove(
+      "chart-fullscreen"
+    );
+
+    document.body.style.overflow =
+      "";
+
+    updateFullscreenButton();
+
+    window.dispatchEvent(
+      new Event(
+        "resize"
+      )
+    );
+  }
+
+  function wrapPairSelector(){
+    if(
+      typeof window.selectPair !==
+        "function" ||
+      window.selectPair
+        .__tradingViewWrapped
+    ){
+      return;
+    }
+
+    const originalSelectPair =
+      window.selectPair;
+
+    const wrappedSelectPair =
+      async function(index){
+        const result =
+          await originalSelectPair(
+            index
+          );
+
+        renderTradingViewChart();
+
+        return result;
+      };
+
+    wrappedSelectPair
+      .__tradingViewWrapped =
         true;
 
-      window.selectPair =
-        wrappedSelectPair;
+    window.selectPair =
+      wrappedSelectPair;
+  }
+
+  function wrapModeSelector(){
+    if(
+      typeof window.setMode !==
+        "function" ||
+      window.setMode
+        .__tradingViewWrapped
+    ){
+      return;
     }
+
+    const originalSetMode =
+      window.setMode;
+
+    const wrappedSetMode =
+      async function(mode){
+        const result =
+          await originalSetMode(
+            mode
+          );
+
+        syncTradingViewVisibility();
+
+        if(
+          shouldShowTradingView()
+        ){
+          renderTradingViewChart();
+        }
+
+        return result;
+      };
+
+    wrappedSetMode
+      .__tradingViewWrapped =
+        true;
+
+    window.setMode =
+      wrappedSetMode;
+  }
+
+  function initializeTradingView(){
+    const {
+      fullscreenButton
+    } = getElements();
+
+    syncTradingViewVisibility();
+    renderTradingViewChart();
+    wrapPairSelector();
+    wrapModeSelector();
+    updateFullscreenButton();
+
+    if(fullscreenButton){
+      fullscreenButton.addEventListener(
+        "click",
+        toggleTradingViewFullscreen
+      );
+    }
+
+    document.addEventListener(
+      "keydown",
+      event=>{
+        if(event.key === "Escape"){
+          exitTradingViewFullscreen();
+        }
+      }
+    );
   }
 
   if(

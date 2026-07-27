@@ -1141,22 +1141,63 @@ function mergeCandleRows(
   previousRows,
   freshRows
 ) {
-  /*
-   * Previous candles are inserted first and fresh candles second.
-   * A fresh candle replaces the cached candle for the same timestamp.
-   */
-  return normalizeCandles([
-    ...(
-      Array.isArray(previousRows)
-        ? previousRows
-        : []
-    ),
-
-    ...(
+  const normalizedFresh =
+    normalizeCandles(
       Array.isArray(freshRows)
         ? freshRows
         : []
-    )
+    );
+
+  /*
+   * Defensive fallback:
+   * if no usable fresh candles are available, preserve the
+   * existing cached rows through the normal validation pipeline.
+   */
+  if (normalizedFresh.rows.length === 0) {
+    return normalizeCandles(
+      Array.isArray(previousRows)
+        ? previousRows
+        : []
+    );
+  }
+
+  const firstFreshTime =
+    timestampToMs(
+      normalizedFresh.rows[0].time
+    );
+
+  /*
+   * A successful fresh fetch is authoritative for its complete
+   * time window.
+   *
+   * Keep only cached candles that are strictly older than the
+   * first fresh candle. Cached candles overlapping the fresh
+   * window—or incorrectly appearing after it—are discarded.
+   */
+  const safePreviousRows =
+    Array.isArray(previousRows) &&
+    Number.isFinite(firstFreshTime)
+      ? previousRows.filter(row => {
+          const previousTime =
+            timestampToMs(
+              row?.time
+            );
+
+          return (
+            Number.isFinite(previousTime) &&
+            previousTime < firstFreshTime
+          );
+        })
+      : [];
+
+  /*
+   * normalizeCandles() retains the existing validation,
+   * chronological sorting, duplicate handling, quality metadata
+   * and MAX_STORED_CANDLES limit.
+   */
+  return normalizeCandles([
+    ...safePreviousRows,
+    ...normalizedFresh.rows
   ]);
 }
 

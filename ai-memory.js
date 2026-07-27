@@ -5523,3 +5523,964 @@ function buildMemoryDocument({
   };
 
 }
+
+// -----------------------------------------------------------------------------
+// Source-change detection
+// -----------------------------------------------------------------------------
+
+function haveSourceHashesChanged(
+  state,
+  learningHash,
+  confidenceHash
+) {
+
+  const previousLearningHash =
+    getNestedValue(
+      state,
+      [
+        "sourceHashes",
+        "learningData"
+      ]
+    ) || null;
+
+  const previousConfidenceHash =
+    getNestedValue(
+      state,
+      [
+        "sourceHashes",
+        "confidenceData"
+      ]
+    ) || null;
+
+  return (
+    previousLearningHash !==
+      learningHash ||
+    previousConfidenceHash !==
+      confidenceHash
+  );
+
+}
+
+function haveSourceModifiedTimesChanged(
+  state,
+  learningModifiedAt,
+  confidenceModifiedAt
+) {
+
+  const previousLearningModifiedAt =
+    getNestedValue(
+      state,
+      [
+        "sourceModifiedAt",
+        "learningData"
+      ]
+    ) || null;
+
+  const previousConfidenceModifiedAt =
+    getNestedValue(
+      state,
+      [
+        "sourceModifiedAt",
+        "confidenceData"
+      ]
+    ) || null;
+
+  return (
+    previousLearningModifiedAt !==
+      learningModifiedAt ||
+    previousConfidenceModifiedAt !==
+      confidenceModifiedAt
+  );
+
+}
+
+// -----------------------------------------------------------------------------
+// Processed trade-key reconciliation
+// -----------------------------------------------------------------------------
+
+function reconcileProcessedTradeKeys(
+  previousKeys,
+  canonicalTrades
+) {
+
+  const previousKeySet =
+    new Set(
+      uniqueSortedStrings(
+        previousKeys
+      )
+    );
+
+  const currentKeys =
+    canonicalTrades
+      .map(
+        trade =>
+          trade.tradeKey
+      )
+      .filter(
+        Boolean
+      );
+
+  let newTradeKeys =
+    0;
+
+  let duplicateTradeKeys =
+    0;
+
+  for (
+    const tradeKey of currentKeys
+  ) {
+
+    if (
+      previousKeySet.has(
+        tradeKey
+      )
+    ) {
+
+      duplicateTradeKeys +=
+        1;
+
+    } else {
+
+      newTradeKeys +=
+        1;
+
+    }
+
+  }
+
+  const processedTradeKeys =
+    uniqueSortedStrings([
+      ...previousKeySet,
+      ...currentKeys
+    ]).slice(
+      -MAX_PROCESSED_KEYS
+    );
+
+  return {
+    processedTradeKeys,
+    newTradeKeys,
+    duplicateTradeKeys
+  };
+
+}
+
+// -----------------------------------------------------------------------------
+// State mutation helpers
+// -----------------------------------------------------------------------------
+
+function beginMemoryRun(
+  previousState,
+  runAt
+) {
+
+  const state =
+    normalizeExistingMemoryState(
+      previousState
+    );
+
+  state.updatedAt =
+    runAt;
+
+  state.lastRunAt =
+    runAt;
+
+  state.counters.runs +=
+    1;
+
+  state.lastRun = {
+    status:
+      "RUNNING",
+
+    sourceSignals:
+      0,
+
+    acceptedTrades:
+      0,
+
+    rejectedTrades:
+      0,
+
+    newTradeKeys:
+      0,
+
+    duplicateTradeKeys:
+      0,
+
+    memoryWritten:
+      false,
+
+    stateWritten:
+      false,
+
+    error:
+      null
+  };
+
+  return state;
+
+}
+
+function completeMemoryRun({
+  state,
+  runAt,
+  status,
+  learningHash,
+  confidenceHash,
+  learningModifiedAt,
+  confidenceModifiedAt,
+  normalizedTrades,
+  canonicalTrades,
+  keyReconciliation,
+  memoryWritten
+}) {
+
+  state.updatedAt =
+    runAt;
+
+  state.lastRunAt =
+    runAt;
+
+  state.lastSuccessfulRunAt =
+    runAt;
+
+  state.sourceHashes = {
+    learningData:
+      learningHash,
+
+    confidenceData:
+      confidenceHash
+  };
+
+  state.sourceModifiedAt = {
+    learningData:
+      learningModifiedAt,
+
+    confidenceData:
+      confidenceModifiedAt
+  };
+
+  state.processedTradeKeys =
+    keyReconciliation.processedTradeKeys;
+
+  state.counters.successfulRuns +=
+    1;
+
+  if (
+    status === "UNCHANGED"
+  ) {
+
+    state.counters.unchangedRuns +=
+      1;
+
+  }
+
+  state.counters.sourceSignals +=
+    normalizedTrades.sourceSignals;
+
+  state.counters.acceptedTrades +=
+    canonicalTrades.length;
+
+  state.counters.rejectedTrades +=
+    normalizedTrades.rejectedTrades.length;
+
+  state.counters.newTradeKeys +=
+    keyReconciliation.newTradeKeys;
+
+  state.counters.duplicateTradeKeys +=
+    (
+      normalizedTrades.duplicateTradeKeys +
+      keyReconciliation.duplicateTradeKeys
+    );
+
+  state.lastRun = {
+    status,
+
+    sourceSignals:
+      normalizedTrades.sourceSignals,
+
+    acceptedTrades:
+      canonicalTrades.length,
+
+    rejectedTrades:
+      normalizedTrades.rejectedTrades.length,
+
+    newTradeKeys:
+      keyReconciliation.newTradeKeys,
+
+    duplicateTradeKeys:
+      (
+        normalizedTrades.duplicateTradeKeys +
+        keyReconciliation.duplicateTradeKeys
+      ),
+
+    memoryWritten:
+      Boolean(
+        memoryWritten
+      ),
+
+    stateWritten:
+      true,
+
+    error:
+      null
+  };
+
+  return state;
+
+}
+
+function failMemoryRun(
+  state,
+  runAt,
+  error
+) {
+
+  const message =
+    error instanceof Error
+      ? error.message
+      : toTrimmedString(
+          error
+        ) || "Unknown AI Memory error.";
+
+  state.updatedAt =
+    runAt;
+
+  state.lastRunAt =
+    runAt;
+
+  state.lastRun = {
+    ...normalizeLastRunState(
+      state.lastRun
+    ),
+
+    status:
+      "FAILED",
+
+    stateWritten:
+      true,
+
+    error:
+      message
+  };
+
+  return state;
+
+}
+
+// -----------------------------------------------------------------------------
+// Existing memory validation
+// -----------------------------------------------------------------------------
+
+function readExistingMemoryDocument() {
+
+  const document =
+    readJSON(
+      AI_MEMORY_PATH,
+      null
+    );
+
+  if (
+    document === null
+  ) {
+
+    return {
+      exists: false,
+      valid: false,
+      document: null,
+      validation:
+        createValidationResult(
+          false,
+          [
+            "Existing ai-memory.json is unavailable."
+          ],
+          []
+        )
+    };
+
+  }
+
+  const validation =
+    validateMemoryDocument(
+      document
+    );
+
+  return {
+    exists: true,
+    valid:
+      validation.valid,
+    document,
+    validation
+  };
+
+}
+
+// -----------------------------------------------------------------------------
+// Run-result formatting
+// -----------------------------------------------------------------------------
+
+function createRunResult({
+  status,
+  runAt,
+  memoryWritten,
+  stateWritten,
+  sourceSignals,
+  normalizedTrades,
+  canonicalTrades,
+  rejectedTrades,
+  newTradeKeys,
+  duplicateTradeKeys,
+  warnings,
+  error = null
+}) {
+
+  return {
+    engineName:
+      ENGINE_NAME,
+
+    engineVersion:
+      ENGINE_VERSION,
+
+    status,
+
+    runAt,
+
+    memoryPath:
+      path.relative(
+        ROOT_DIR,
+        AI_MEMORY_PATH
+      ),
+
+    statePath:
+      path.relative(
+        ROOT_DIR,
+        AI_MEMORY_STATE_PATH
+      ),
+
+    memoryWritten:
+      Boolean(
+        memoryWritten
+      ),
+
+    stateWritten:
+      Boolean(
+        stateWritten
+      ),
+
+    counts: {
+      sourceSignals:
+        normalizeNonNegativeInteger(
+          sourceSignals
+        ),
+
+      normalizedTrades:
+        normalizeNonNegativeInteger(
+          normalizedTrades
+        ),
+
+      canonicalTrades:
+        normalizeNonNegativeInteger(
+          canonicalTrades
+        ),
+
+      rejectedTrades:
+        normalizeNonNegativeInteger(
+          rejectedTrades
+        ),
+
+      newTradeKeys:
+        normalizeNonNegativeInteger(
+          newTradeKeys
+        ),
+
+      duplicateTradeKeys:
+        normalizeNonNegativeInteger(
+          duplicateTradeKeys
+        )
+    },
+
+    warnings:
+      uniqueSortedStrings(
+        warnings
+      ),
+
+    error:
+      error
+        ? toTrimmedString(
+            error
+          )
+        : null
+  };
+
+}
+
+// -----------------------------------------------------------------------------
+// Main AI Memory runner
+// -----------------------------------------------------------------------------
+
+function runAIMemory() {
+
+  const runAt =
+    new Date().toISOString();
+
+  ensureDirectory(
+    DATA_DIR
+  );
+
+  const previousStateDocument =
+    readJSON(
+      AI_MEMORY_STATE_PATH,
+      null
+    );
+
+  let state =
+    beginMemoryRun(
+      previousStateDocument,
+      runAt
+    );
+
+  let stateWritten =
+    false;
+
+  try {
+
+    if (
+      !fileExists(
+        LEARNING_DATA_PATH
+      )
+    ) {
+
+      throw new Error(
+        `Required source file is missing: ${path.relative(
+          ROOT_DIR,
+          LEARNING_DATA_PATH
+        )}`
+      );
+
+    }
+
+    const learningDocument =
+      readJSON(
+        LEARNING_DATA_PATH,
+        null
+      );
+
+    const confidenceDocument =
+      readJSON(
+        CONFIDENCE_DATA_PATH,
+        null
+      );
+
+    const learningValidation =
+      validateLearningDocument(
+        learningDocument
+      );
+
+    const confidenceValidation =
+      validateConfidenceDocument(
+        confidenceDocument
+      );
+
+    const sourceValidation =
+      mergeValidationResults([
+        learningValidation,
+        confidenceValidation
+      ]);
+
+    if (
+      !learningValidation.valid
+    ) {
+
+      throw new Error(
+        learningValidation.errors.join(
+          " "
+        ) ||
+        "learning-data.json validation failed."
+      );
+
+    }
+
+    const learningHash =
+      createHash(
+        learningDocument
+      );
+
+    const confidenceHash =
+      confidenceDocument
+        ? createHash(
+            confidenceDocument
+          )
+        : null;
+
+    const learningModifiedAt =
+      getFileModifiedAt(
+        LEARNING_DATA_PATH
+      );
+
+    const confidenceModifiedAt =
+      getFileModifiedAt(
+        CONFIDENCE_DATA_PATH
+      );
+
+    const normalizedTrades =
+      normalizeLearningTrades(
+        learningDocument
+      );
+
+    const buildResult =
+      buildMemoryDocument({
+        learningDocument,
+        confidenceDocument,
+        normalizedTrades,
+        generatedAt: runAt
+      });
+
+    const {
+      memoryDocument,
+      canonicalTrades
+    } =
+      buildResult;
+
+    if (
+      !memoryDocument.validation.valid
+    ) {
+
+      throw new Error(
+        memoryDocument.validation.errors.join(
+          " "
+        ) ||
+        "Generated AI memory document validation failed."
+      );
+
+    }
+
+    const keyReconciliation =
+      reconcileProcessedTradeKeys(
+        state.processedTradeKeys,
+        canonicalTrades
+      );
+
+    const sourceHashesChanged =
+      haveSourceHashesChanged(
+        state,
+        learningHash,
+        confidenceHash
+      );
+
+    const sourceModifiedTimesChanged =
+      haveSourceModifiedTimesChanged(
+        state,
+        learningModifiedAt,
+        confidenceModifiedAt
+      );
+
+    const existingMemory =
+      readExistingMemoryDocument();
+
+    const mustWriteMemory =
+      (
+        sourceHashesChanged ||
+        sourceModifiedTimesChanged ||
+        !existingMemory.exists ||
+        !existingMemory.valid
+      );
+
+    let memoryWritten =
+      false;
+
+    let status =
+      "UNCHANGED";
+
+    if (
+      mustWriteMemory
+    ) {
+
+      atomicWriteJSON(
+        AI_MEMORY_PATH,
+        memoryDocument
+      );
+
+      memoryWritten =
+        true;
+
+      status =
+        "UPDATED";
+
+    }
+
+    state =
+      completeMemoryRun({
+        state,
+        runAt,
+        status,
+        learningHash,
+        confidenceHash,
+        learningModifiedAt,
+        confidenceModifiedAt,
+        normalizedTrades,
+        canonicalTrades,
+        keyReconciliation,
+        memoryWritten
+      });
+
+    atomicWriteJSON(
+      AI_MEMORY_STATE_PATH,
+      state
+    );
+
+    stateWritten =
+      true;
+
+    const warnings =
+      uniqueSortedStrings([
+        ...sourceValidation.warnings,
+        ...normalizedTrades.warnings,
+        ...memoryDocument.validation.warnings
+      ]);
+
+    const result =
+      createRunResult({
+        status,
+        runAt,
+        memoryWritten,
+        stateWritten,
+        sourceSignals:
+          normalizedTrades.sourceSignals,
+        normalizedTrades:
+          normalizedTrades.acceptedTrades.length,
+        canonicalTrades:
+          canonicalTrades.length,
+        rejectedTrades:
+          normalizedTrades.rejectedTrades.length,
+        newTradeKeys:
+          keyReconciliation.newTradeKeys,
+        duplicateTradeKeys:
+          (
+            normalizedTrades.duplicateTradeKeys +
+            keyReconciliation.duplicateTradeKeys
+          ),
+        warnings
+      });
+
+    console.log(
+      `[ai-memory] ${status}`
+    );
+
+    console.log(
+      `[ai-memory] Source signals: ${result.counts.sourceSignals}`
+    );
+
+    console.log(
+      `[ai-memory] Canonical trades: ${result.counts.canonicalTrades}`
+    );
+
+    console.log(
+      `[ai-memory] Rejected trades: ${result.counts.rejectedTrades}`
+    );
+
+    console.log(
+      `[ai-memory] New trade keys: ${result.counts.newTradeKeys}`
+    );
+
+    console.log(
+      `[ai-memory] Duplicate trade keys: ${result.counts.duplicateTradeKeys}`
+    );
+
+    console.log(
+      `[ai-memory] Memory written: ${result.memoryWritten}`
+    );
+
+    if (
+      result.warnings.length > 0
+    ) {
+
+      console.warn(
+        `[ai-memory] Completed with ${result.warnings.length} warning(s).`
+      );
+
+    }
+
+    return result;
+
+  } catch (
+    error
+  ) {
+
+    state =
+      failMemoryRun(
+        state,
+        runAt,
+        error
+      );
+
+    try {
+
+      atomicWriteJSON(
+        AI_MEMORY_STATE_PATH,
+        state
+      );
+
+      stateWritten =
+        true;
+
+    } catch (
+      stateWriteError
+    ) {
+
+      console.error(
+        `[ai-memory] Unable to write failure state: ${stateWriteError.message}`
+      );
+
+    }
+
+    const errorMessage =
+      error instanceof Error
+        ? error.message
+        : toTrimmedString(
+            error
+          ) ||
+          "Unknown AI Memory error.";
+
+    console.error(
+      `[ai-memory] FAILED: ${errorMessage}`
+    );
+
+    return createRunResult({
+      status:
+        "FAILED",
+
+      runAt,
+
+      memoryWritten:
+        false,
+
+      stateWritten,
+
+      sourceSignals:
+        getNestedValue(
+          state,
+          [
+            "lastRun",
+            "sourceSignals"
+          ]
+        ) || 0,
+
+      normalizedTrades:
+        0,
+
+      canonicalTrades:
+        getNestedValue(
+          state,
+          [
+            "lastRun",
+            "acceptedTrades"
+          ]
+        ) || 0,
+
+      rejectedTrades:
+        getNestedValue(
+          state,
+          [
+            "lastRun",
+            "rejectedTrades"
+          ]
+        ) || 0,
+
+      newTradeKeys:
+        getNestedValue(
+          state,
+          [
+            "lastRun",
+            "newTradeKeys"
+          ]
+        ) || 0,
+
+      duplicateTradeKeys:
+        getNestedValue(
+          state,
+          [
+            "lastRun",
+            "duplicateTradeKeys"
+          ]
+        ) || 0,
+
+      warnings:
+        [],
+
+      error:
+        errorMessage
+    });
+
+  }
+
+}
+
+// -----------------------------------------------------------------------------
+// Direct execution
+// -----------------------------------------------------------------------------
+
+if (
+  require.main ===
+  module
+) {
+
+  const result =
+    runAIMemory();
+
+  if (
+    result.status ===
+    "FAILED"
+  ) {
+
+    process.exitCode =
+      1;
+
+  }
+
+}
+
+// -----------------------------------------------------------------------------
+// Public API
+// -----------------------------------------------------------------------------
+
+module.exports = {
+  ENGINE_NAME,
+  ENGINE_VERSION,
+  MEMORY_SCHEMA_VERSION,
+  STATE_SCHEMA_VERSION,
+
+  paths: {
+    data:
+      DATA_DIR,
+
+    learningData:
+      LEARNING_DATA_PATH,
+
+    confidenceData:
+      CONFIDENCE_DATA_PATH,
+
+    aiMemory:
+      AI_MEMORY_PATH,
+
+    aiMemoryState:
+      AI_MEMORY_STATE_PATH
+  },
+
+  runAIMemory,
+
+  buildMemoryDocument,
+  normalizeLearningTrades,
+  normalizeLearnedTrade,
+  buildConfidenceOverlay,
+  validateMemoryDocument,
+  validateLearningDocument,
+  validateConfidenceDocument,
+
+  normalizePair,
+  normalizeEngine,
+  normalizeDirection,
+  normalizeOutcome,
+  normalizeTimeframe,
+
+  createTradeKey,
+  createHash
+};

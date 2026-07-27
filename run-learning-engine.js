@@ -4112,3 +4112,664 @@ function buildRunSummary(
   };
 
 }
+
+// -----------------------------------------------------------------------------
+// Console output helpers
+// -----------------------------------------------------------------------------
+
+function logRunHeader() {
+
+  console.log(
+    ""
+  );
+
+  console.log(
+    "============================================================"
+  );
+
+  console.log(
+    ENGINE_NAME
+  );
+
+  console.log(
+    `Version: ${ENGINE_VERSION}`
+  );
+
+  console.log(
+    `Started: ${new Date().toISOString()}`
+  );
+
+  console.log(
+    "============================================================"
+  );
+
+}
+
+function logRunSummary(
+  summary
+) {
+
+  console.log(
+    ""
+  );
+
+  console.log(
+    "[learning-engine] Run summary"
+  );
+
+  console.log(
+    `  Success: ${summary.success ? "YES" : "NO"}`
+  );
+
+  console.log(
+    `  History records: ${summary.historyRecordsSeen}`
+  );
+
+  console.log(
+    `  Accepted records: ${summary.acceptedRecords}`
+  );
+
+  console.log(
+    `  Learned records: ${summary.learnedRecords}`
+  );
+
+  console.log(
+    `  Duplicate records: ${summary.duplicateRecords}`
+  );
+
+  console.log(
+    `  Invalid records: ${summary.invalidRecords}`
+  );
+
+  console.log(
+    `  Failed records: ${summary.failedRecords}`
+  );
+
+  console.log(
+    `  Rich records available: ${summary.richRecordCount}`
+  );
+
+  console.log(
+    `  Rich records matched: ${summary.richRecordsMatched}`
+  );
+
+  console.log(
+    `  Total processed keys: ${summary.processedTradeKeyCount}`
+  );
+
+  if (
+    summary.output
+  ) {
+
+    console.log(
+      `  Learning data: ${summary.output.learningData}`
+    );
+
+    console.log(
+      `  Confidence data: ${summary.output.confidenceData}`
+    );
+
+    console.log(
+      `  Runner state: ${summary.output.state}`
+    );
+
+  }
+
+  if (
+    Array.isArray(
+      summary.invalid
+    ) &&
+    summary.invalid.length > 0
+  ) {
+
+    console.warn(
+      ""
+    );
+
+    console.warn(
+      "[learning-engine] Invalid history records:"
+    );
+
+    for (
+      const item of summary.invalid
+    ) {
+
+      console.warn(
+        `  - Index ${item.index}: ${item.errors.join(
+          "; "
+        )}`
+      );
+
+    }
+
+  }
+
+  if (
+    Array.isArray(
+      summary.failures
+    ) &&
+    summary.failures.length > 0
+  ) {
+
+    console.warn(
+      ""
+    );
+
+    console.warn(
+      "[learning-engine] Learner failures:"
+    );
+
+    for (
+      const failure of summary.failures
+    ) {
+
+      console.warn(
+        `  - Index ${failure.index}, ${failure.pair || "unknown pair"}: ${failure.error}`
+      );
+
+    }
+
+  }
+
+  console.log(
+    ""
+  );
+
+  console.log(
+    `Completed: ${summary.completedAt || new Date().toISOString()}`
+  );
+
+  console.log(
+    "============================================================"
+  );
+
+  console.log(
+    ""
+  );
+
+}
+
+// -----------------------------------------------------------------------------
+// Safe state persistence
+// -----------------------------------------------------------------------------
+
+function trySaveLearningState(
+  state
+) {
+
+  try {
+
+    return {
+      success:
+        true,
+
+      state:
+        saveLearningState(
+          state
+        ),
+
+      error:
+        null
+    };
+
+  } catch (
+    error
+  ) {
+
+    console.error(
+      "[learning-engine] Failed to save learning-engine state."
+    );
+
+    console.error(
+      `[learning-engine] ${
+        error instanceof Error
+          ? error.message
+          : String(
+              error
+            )
+      }`
+    );
+
+    return {
+      success:
+        false,
+
+      state,
+
+      error
+    };
+
+  }
+
+}
+
+// -----------------------------------------------------------------------------
+// Full learning engine orchestration
+// -----------------------------------------------------------------------------
+
+function runLearningEngine() {
+
+  logRunHeader();
+
+  ensureDirectory(
+    DATA_DIR
+  );
+
+  let state =
+    loadLearningState();
+
+  state =
+    beginLearningRun(
+      state
+    );
+
+  let history =
+    null;
+
+  let prepared = {
+    historyRecordsSeen:
+      0,
+
+    accepted:
+      [],
+
+    duplicates:
+      [],
+
+    invalid:
+      [],
+
+    richRecordCount:
+      0
+  };
+
+  let processing = {
+    attempted:
+      0,
+
+    successful:
+      [],
+
+    failed:
+      []
+  };
+
+  let persistenceResult =
+    null;
+
+  let learner =
+    null;
+
+  let fatalError =
+    null;
+
+  try {
+
+    history =
+      loadAnalysisHistory();
+
+    state.lastHistoryUpdatedAt =
+      history.updatedAt ||
+      state.lastHistoryUpdatedAt ||
+      null;
+
+    console.log(
+      `[learning-engine] Loaded ${history.closed.length} closed history records.`
+    );
+
+    const existingExport =
+      loadExistingLearningExport();
+
+    learner =
+      createLearner();
+
+    if (
+      existingExport
+    ) {
+
+      const importResult =
+        importExistingLearningData(
+          learner,
+          existingExport
+        );
+
+      state.lastRun.importedExistingData =
+        importResult.imported === true;
+
+      console.log(
+        "[learning-engine] Existing learner data imported."
+      );
+
+    } else {
+
+      state.lastRun.importedExistingData =
+        false;
+
+      console.log(
+        "[learning-engine] No existing learner export found; starting from current learner state."
+      );
+
+    }
+
+    prepared =
+      prepareClosedHistory(
+        history.raw,
+        state
+      );
+
+    applyPreparationStats(
+      state,
+      prepared
+    );
+
+    console.log(
+      `[learning-engine] Prepared ${prepared.accepted.length} new records.`
+    );
+
+    console.log(
+      `[learning-engine] Skipped ${prepared.duplicates.length} duplicate records.`
+    );
+
+    console.log(
+      `[learning-engine] Rejected ${prepared.invalid.length} invalid records.`
+    );
+
+    processing =
+      processPreparedTrades(
+        learner,
+        prepared
+      );
+
+    applyProcessingStats(
+      state,
+      processing
+    );
+
+    console.log(
+      `[learning-engine] Successfully learned ${processing.successful.length} records.`
+    );
+
+    if (
+      processing.failed.length > 0
+    ) {
+
+      console.warn(
+        `[learning-engine] ${processing.failed.length} records failed during learner processing.`
+      );
+
+    }
+
+    const committedKeys =
+      commitProcessedTradeKeys(
+        state,
+        processing.successful
+      );
+
+    console.log(
+      `[learning-engine] Committed ${committedKeys} processed trade keys.`
+    );
+
+    const learnerExport =
+      exportLearnerData(
+        learner
+      );
+
+    persistenceResult =
+      saveLearnerExport(
+        learnerExport
+      );
+
+    state.lastRun.persistedLearningData =
+      true;
+
+    const runErrors =
+      collectRunErrors(
+        prepared,
+        processing
+      );
+
+    const runSuccess =
+      processing.failed.length === 0;
+
+    completeLearningRun(
+      state,
+      {
+        success:
+          runSuccess,
+
+        historyUpdatedAt:
+          history.updatedAt,
+
+        errors:
+          runErrors
+      }
+    );
+
+    const stateSaveResult =
+      trySaveLearningState(
+        state
+      );
+
+    if (
+      !stateSaveResult.success
+    ) {
+
+      throw stateSaveResult.error;
+
+    }
+
+    state =
+      stateSaveResult.state;
+
+  } catch (
+    error
+  ) {
+
+    fatalError =
+      error;
+
+    state.lastRun.persistedLearningData =
+      Boolean(
+        persistenceResult
+      );
+
+    const fatalSerialized =
+      serializeError(
+        error,
+        "runLearningEngine"
+      );
+
+    const existingErrors =
+      Array.isArray(
+        state?.lastRun?.errors
+      )
+        ? state.lastRun.errors
+        : [];
+
+    completeLearningRun(
+      state,
+      {
+        success:
+          false,
+
+        historyUpdatedAt:
+          history?.updatedAt ??
+          state.lastHistoryUpdatedAt ??
+          null,
+
+        errors: [
+          ...existingErrors,
+          {
+            type:
+              "fatal",
+
+            ...fatalSerialized
+          }
+        ]
+      }
+    );
+
+    trySaveLearningState(
+      state
+    );
+
+  }
+
+  const summary =
+    buildRunSummary(
+      state,
+      prepared,
+      processing,
+      persistenceResult
+    );
+
+  if (
+    fatalError
+  ) {
+
+    summary.success =
+      false;
+
+    summary.fatalError =
+      serializeError(
+        fatalError
+      );
+
+    console.error(
+      ""
+    );
+
+    console.error(
+      "[learning-engine] Fatal error:"
+    );
+
+    console.error(
+      `[learning-engine] ${
+        fatalError instanceof Error
+          ? fatalError.message
+          : String(
+              fatalError
+            )
+      }`
+    );
+
+  }
+
+  logRunSummary(
+    summary
+  );
+
+  return summary;
+
+}
+
+// -----------------------------------------------------------------------------
+// Process execution
+// -----------------------------------------------------------------------------
+
+function executeMain() {
+
+  try {
+
+    const summary =
+      runLearningEngine();
+
+    if (
+      !summary.success
+    ) {
+
+      process.exitCode =
+        1;
+
+    }
+
+  } catch (
+    error
+  ) {
+
+    console.error(
+      "[learning-engine] Unhandled execution error."
+    );
+
+    console.error(
+      error instanceof Error
+        ? error.stack || error.message
+        : String(
+            error
+          )
+    );
+
+    process.exitCode =
+      1;
+
+  }
+
+}
+
+if (
+  require.main === module
+) {
+
+  executeMain();
+
+}
+
+// -----------------------------------------------------------------------------
+// CommonJS exports
+// -----------------------------------------------------------------------------
+
+module.exports = {
+  ENGINE_NAME,
+  ENGINE_VERSION,
+  STATE_VERSION,
+
+  paths: {
+    ROOT_DIR,
+    DATA_DIR,
+    ANALYSIS_HISTORY_PATH,
+    LEARNING_DATA_PATH,
+    CONFIDENCE_DATA_PATH,
+    LEARNING_STATE_PATH
+  },
+
+  runLearningEngine,
+  executeMain,
+
+  readJSON,
+  atomicWriteJSON,
+
+  normalizePair,
+  normalizeDirection,
+  normalizeOutcome,
+  normalizeEngineName,
+  normalizeTimeframe,
+  inferStrategyAndTimeframe,
+
+  validateClosedTrade,
+  buildLearnerOutcomePayload,
+  prepareClosedHistory,
+
+  buildTradeIdentitySource,
+  createTradeKey,
+
+  loadLearningState,
+  saveLearningState,
+  loadAnalysisHistory,
+  loadExistingLearningExport,
+
+  createLearner,
+  importExistingLearningData,
+  exportLearnerData,
+  saveLearnerExport,
+
+  processAcceptedTrade,
+  processPreparedTrades,
+  commitProcessedTradeKeys,
+
+  createEmptyState,
+  normalizeState,
+  beginLearningRun,
+  completeLearningRun,
+
+  buildRunSummary
+};

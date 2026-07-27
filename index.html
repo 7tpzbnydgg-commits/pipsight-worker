@@ -10824,7 +10824,9 @@ function normalizeScalpPipeline(value){
     .filter(Boolean);
 }
 
-function normalizeScalpPerTF(value){
+function normalizeScalpPerTF(
+  value
+){
   const validTimeframes =
     new Set([
       "5m",
@@ -10833,8 +10835,72 @@ function normalizeScalpPerTF(value){
       "1h"
     ]);
 
+  const normalizeTimeframe =
+    rawValue=>{
+      if(
+        typeof rawValue !== "string"
+      ){
+        return "";
+      }
+
+      const normalized =
+        rawValue
+          .trim()
+          .toLowerCase()
+          .replace(/\s+/g, "")
+          .replace(/^m5$/, "5m")
+          .replace(/^m15$/, "15m")
+          .replace(/^m30$/, "30m")
+          .replace(/^h1$/, "1h");
+
+      return validTimeframes.has(
+        normalized
+      )
+        ? normalized
+        : "";
+    };
+
+  const sourceItems =
+    Array.isArray(value)
+      ? value
+      : (
+          value &&
+          typeof value === "object"
+            ? Object.entries(
+                value
+              ).map(
+                ([
+                  timeframe,
+                  item
+                ])=>{
+                  if(
+                    item &&
+                    typeof item === "object"
+                  ){
+                    return {
+                      ...item,
+
+                      tf:
+                        item.tf ||
+                        item.timeframe ||
+                        timeframe
+                    };
+                  }
+
+                  return {
+                    tf:
+                      timeframe,
+
+                    signal:
+                      item
+                  };
+                }
+              )
+            : []
+        );
+
   const normalized =
-    safeArray(value)
+    sourceItems
       .map(
         item=>{
           if(
@@ -10845,32 +10911,37 @@ function normalizeScalpPerTF(value){
           }
 
           const timeframe =
-            typeof item.tf === "string"
-              ? item.tf
-                  .trim()
-                  .toLowerCase()
-              : "";
+            normalizeTimeframe(
+              item.tf ||
+              item.timeframe ||
+              item.interval ||
+              item.period
+            );
 
           if(
-            !validTimeframes.has(
-              timeframe
-            )
+            !timeframe
           ){
             return null;
           }
+
+          const signal =
+            normalizeSignalDecision(
+              item.signal ||
+              item.decision ||
+              item.direction ||
+              item.bias ||
+              item.trend
+            );
 
           return {
             tf:
               timeframe,
 
-            signal:
-              normalizeSignalDecision(
-                item.signal ||
-                item.decision
-              ),
+            signal,
 
             role:
-              typeof item.role === "string"
+              typeof item.role === "string" &&
+              item.role.trim()
                 ? item.role.trim()
                 : ""
           };
@@ -10890,31 +10961,62 @@ function normalizeScalpPerTF(value){
 
   return [
     {
-      tf:"5m",
-      role:"Entry"
+      tf:
+        "5m",
+
+      role:
+        "Entry"
     },
     {
-      tf:"15m",
-      role:"Confirmation"
+      tf:
+        "15m",
+
+      role:
+        "Confirmation"
     },
     {
-      tf:"30m",
-      role:"Context"
+      tf:
+        "30m",
+
+      role:
+        "Context"
     },
     {
-      tf:"1h",
-      role:"Trend"
+      tf:
+        "1h",
+
+      role:
+        "Trend"
     }
   ].map(
     fallback=>{
-      return (
+      const matched =
         byTimeframe.get(
           fallback.tf
-        ) || {
+        );
+
+      if(
+        !matched
+      ){
+        return {
           ...fallback,
-          signal:"HOLD"
-        }
-      );
+
+          signal:
+            "HOLD"
+        };
+      }
+
+      return {
+        tf:
+          fallback.tf,
+
+        role:
+          matched.role ||
+          fallback.role,
+
+        signal:
+          matched.signal
+      };
     }
   );
 }

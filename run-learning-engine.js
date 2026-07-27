@@ -2830,3 +2830,1285 @@ function callLearnerRecordOutcome(
   );
 
 }
+
+// -----------------------------------------------------------------------------
+// Learner import lifecycle
+// -----------------------------------------------------------------------------
+
+function importExistingLearningData(
+  learner,
+  existingExport
+) {
+
+  if (
+    !existingExport
+  ) {
+
+    return {
+      imported:
+        false,
+
+      reason:
+        "No existing learning export found."
+    };
+
+  }
+
+  if (
+    !learner ||
+    typeof learner.importData !== "function"
+  ) {
+
+    throw new Error(
+      "PipSightLearner.importData() is unavailable."
+    );
+
+  }
+
+  const result =
+    learner.importData(
+      existingExport
+    );
+
+  return {
+    imported:
+      true,
+
+    result:
+      result ?? null
+  };
+
+}
+
+// -----------------------------------------------------------------------------
+// Learner export lifecycle
+// -----------------------------------------------------------------------------
+
+function exportLearnerData(
+  learner
+) {
+
+  if (
+    !learner ||
+    typeof learner.exportData !== "function"
+  ) {
+
+    throw new Error(
+      "PipSightLearner.exportData() is unavailable."
+    );
+
+  }
+
+  const exported =
+    learner.exportData();
+
+  if (
+    !isPlainObject(
+      exported
+    )
+  ) {
+
+    throw new Error(
+      "PipSightLearner.exportData() did not return a valid object."
+    );
+
+  }
+
+  const learning =
+    isPlainObject(
+      exported.learning
+    )
+      ? exported.learning
+      : {};
+
+  const confidence =
+    isPlainObject(
+      exported.confidence
+    )
+      ? exported.confidence
+      : {};
+
+  const exportedAt =
+    toISOStringOrNull(
+      exported.exportedAt
+    ) ||
+    new Date().toISOString();
+
+  const metadata =
+    isPlainObject(
+      exported.metadata
+    )
+      ? exported.metadata
+      : {};
+
+  return {
+    learning,
+    confidence,
+    exportedAt,
+
+    metadata: {
+      ...metadata,
+
+      runner:
+        ENGINE_NAME,
+
+      runnerVersion:
+        ENGINE_VERSION
+    }
+  };
+
+}
+
+// -----------------------------------------------------------------------------
+// Learning data persistence
+// -----------------------------------------------------------------------------
+
+function saveLearnerExport(
+  learnerExport
+) {
+
+  if (
+    !isPlainObject(
+      learnerExport
+    )
+  ) {
+
+    throw new Error(
+      "Cannot persist an invalid learner export."
+    );
+
+  }
+
+  const exportedAt =
+    toISOStringOrNull(
+      learnerExport.exportedAt
+    ) ||
+    new Date().toISOString();
+
+  const learningFile = {
+    version:
+      STATE_VERSION,
+
+    learning:
+      isPlainObject(
+        learnerExport.learning
+      )
+        ? learnerExport.learning
+        : {},
+
+    confidence:
+      isPlainObject(
+        learnerExport.confidence
+      )
+        ? learnerExport.confidence
+        : {},
+
+    exportedAt,
+
+    metadata: {
+      ...(
+        isPlainObject(
+          learnerExport.metadata
+        )
+          ? learnerExport.metadata
+          : {}
+      ),
+
+      engineName:
+        ENGINE_NAME,
+
+      engineVersion:
+        ENGINE_VERSION,
+
+      savedAt:
+        new Date().toISOString()
+    }
+  };
+
+  const confidenceFile = {
+    version:
+      STATE_VERSION,
+
+    confidence:
+      isPlainObject(
+        learnerExport.confidence
+      )
+        ? learnerExport.confidence
+        : {},
+
+    exportedAt,
+
+    metadata: {
+      ...(
+        isPlainObject(
+          learnerExport.metadata
+        )
+          ? learnerExport.metadata
+          : {}
+      ),
+
+      engineName:
+        ENGINE_NAME,
+
+      engineVersion:
+        ENGINE_VERSION,
+
+      savedAt:
+        new Date().toISOString()
+    }
+  };
+
+  atomicWriteJSON(
+    LEARNING_DATA_PATH,
+    learningFile
+  );
+
+  atomicWriteJSON(
+    CONFIDENCE_DATA_PATH,
+    confidenceFile
+  );
+
+  return {
+    learningPath:
+      LEARNING_DATA_PATH,
+
+    confidencePath:
+      CONFIDENCE_DATA_PATH,
+
+    exportedAt
+  };
+
+}
+
+// -----------------------------------------------------------------------------
+// Learner result inspection
+// -----------------------------------------------------------------------------
+
+function resultIndicatesFailure(
+  result
+) {
+
+  if (
+    result === false ||
+    result === null
+  ) {
+
+    return true;
+
+  }
+
+  if (
+    isPlainObject(
+      result
+    )
+  ) {
+
+    if (
+      result.success === false ||
+      result.ok === false ||
+      result.valid === false
+    ) {
+
+      return true;
+
+    }
+
+    const status =
+      toTrimmedString(
+        result.status
+      ).toLowerCase();
+
+    if (
+      status === "error" ||
+      status === "failed" ||
+      status === "rejected"
+    ) {
+
+      return true;
+
+    }
+
+  }
+
+  return false;
+
+}
+
+function extractLearnerErrorMessage(
+  result
+) {
+
+  if (
+    !isPlainObject(
+      result
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const candidates = [
+    result.error,
+    result.message,
+    result.reason,
+    result.validationError
+  ];
+
+  for (
+    const candidate of candidates
+  ) {
+
+    const message =
+      toTrimmedString(
+        candidate
+      );
+
+    if (
+      message
+    ) {
+
+      return message;
+
+    }
+
+  }
+
+  if (
+    Array.isArray(
+      result.errors
+    ) &&
+    result.errors.length > 0
+  ) {
+
+    return result.errors
+      .map(
+        item =>
+          toTrimmedString(
+            item
+          )
+      )
+      .filter(
+        Boolean
+      )
+      .join(
+        "; "
+      ) || null;
+
+  }
+
+  return null;
+
+}
+
+// -----------------------------------------------------------------------------
+// Per-trade processing
+// -----------------------------------------------------------------------------
+
+function processAcceptedTrade(
+  learner,
+  preparedTrade
+) {
+
+  const startedAt =
+    new Date().toISOString();
+
+  try {
+
+    if (
+      !isPlainObject(
+        preparedTrade
+      )
+    ) {
+
+      throw new Error(
+        "Prepared trade is not a valid object."
+      );
+
+    }
+
+    if (
+      !isPlainObject(
+        preparedTrade.learnerPayload
+      )
+    ) {
+
+      throw new Error(
+        "Prepared trade learner payload is missing."
+      );
+
+    }
+
+    const result =
+      callLearnerRecordOutcome(
+        learner,
+        preparedTrade.learnerPayload
+      );
+
+    if (
+      resultIndicatesFailure(
+        result
+      )
+    ) {
+
+      throw new Error(
+        extractLearnerErrorMessage(
+          result
+        ) ||
+        "Learner rejected the resolved trade."
+      );
+
+    }
+
+    return {
+      success:
+        true,
+
+      index:
+        preparedTrade.index,
+
+      tradeKey:
+        preparedTrade.tradeKey,
+
+      pair:
+        preparedTrade.normalizedTrade.pair,
+
+      strategy:
+        preparedTrade.normalizedTrade.strategy,
+
+      timeframe:
+        preparedTrade.normalizedTrade.timeframe,
+
+      direction:
+        preparedTrade.normalizedTrade.direction,
+
+      outcome:
+        preparedTrade.normalizedTrade.outcome,
+
+      openedAt:
+        preparedTrade.normalizedTrade.openedAt,
+
+      closedAt:
+        preparedTrade.normalizedTrade.closedAt,
+
+      richRecordMatched:
+        preparedTrade.richRecordMatched,
+
+      richRecordId:
+        preparedTrade.richRecordId,
+
+      processedAt:
+        new Date().toISOString(),
+
+      result:
+        result ?? null,
+
+      startedAt
+    };
+
+  } catch (
+    error
+  ) {
+
+    return {
+      success:
+        false,
+
+      index:
+        preparedTrade?.index ?? null,
+
+      tradeKey:
+        preparedTrade?.tradeKey ?? null,
+
+      pair:
+        preparedTrade?.normalizedTrade?.pair ?? null,
+
+      strategy:
+        preparedTrade?.normalizedTrade?.strategy ?? null,
+
+      timeframe:
+        preparedTrade?.normalizedTrade?.timeframe ?? null,
+
+      direction:
+        preparedTrade?.normalizedTrade?.direction ?? null,
+
+      outcome:
+        preparedTrade?.normalizedTrade?.outcome ?? null,
+
+      openedAt:
+        preparedTrade?.normalizedTrade?.openedAt ?? null,
+
+      closedAt:
+        preparedTrade?.normalizedTrade?.closedAt ?? null,
+
+      richRecordMatched:
+        Boolean(
+          preparedTrade?.richRecordMatched
+        ),
+
+      richRecordId:
+        preparedTrade?.richRecordId ?? null,
+
+      processedAt:
+        new Date().toISOString(),
+
+      startedAt,
+
+      error:
+        error instanceof Error
+          ? error.message
+          : String(
+              error
+            )
+    };
+
+  }
+
+}
+
+// -----------------------------------------------------------------------------
+// Sequential learning execution
+// -----------------------------------------------------------------------------
+
+function processPreparedTrades(
+  learner,
+  prepared
+) {
+
+  const accepted =
+    Array.isArray(
+      prepared?.accepted
+    )
+      ? prepared.accepted
+      : [];
+
+  const successful =
+    [];
+
+  const failed =
+    [];
+
+  for (
+    const preparedTrade of accepted
+  ) {
+
+    const result =
+      processAcceptedTrade(
+        learner,
+        preparedTrade
+      );
+
+    if (
+      result.success
+    ) {
+
+      successful.push(
+        result
+      );
+
+    } else {
+
+      failed.push(
+        result
+      );
+
+    }
+
+  }
+
+  return {
+    attempted:
+      accepted.length,
+
+    successful,
+
+    failed
+  };
+
+}
+
+// -----------------------------------------------------------------------------
+// Processed-key commit
+// -----------------------------------------------------------------------------
+
+function commitProcessedTradeKeys(
+  state,
+  successfulResults
+) {
+
+  const existing =
+    new Set(
+      Array.isArray(
+        state?.processedTradeKeys
+      )
+        ? state.processedTradeKeys
+        : []
+    );
+
+  let added =
+    0;
+
+  for (
+    const result of successfulResults
+  ) {
+
+    const tradeKey =
+      toTrimmedString(
+        result?.tradeKey
+      );
+
+    if (
+      !tradeKey ||
+      existing.has(
+        tradeKey
+      )
+    ) {
+
+      continue;
+
+    }
+
+    existing.add(
+      tradeKey
+    );
+
+    added +=
+      1;
+
+  }
+
+  state.processedTradeKeys =
+    Array.from(
+      existing
+    );
+
+  return added;
+
+}
+
+// -----------------------------------------------------------------------------
+// Run state initialization
+// -----------------------------------------------------------------------------
+
+function beginLearningRun(
+  state
+) {
+
+  const startedAt =
+    new Date().toISOString();
+
+  state.lastRunAt =
+    startedAt;
+
+  state.totals.runs =
+    (
+      toFiniteNumber(
+        state.totals.runs
+      ) || 0
+    ) + 1;
+
+  state.lastRun = {
+    startedAt,
+
+    completedAt:
+      null,
+
+    success:
+      null,
+
+    historyRecordsSeen:
+      0,
+
+    acceptedRecords:
+      0,
+
+    learnedRecords:
+      0,
+
+    duplicateRecords:
+      0,
+
+    skippedRecords:
+      0,
+
+    invalidRecords:
+      0,
+
+    failedRecords:
+      0,
+
+    richRecordCount:
+      0,
+
+    richRecordsMatched:
+      0,
+
+    importedExistingData:
+      false,
+
+    persistedLearningData:
+      false,
+
+    errors:
+      []
+  };
+
+  return state;
+
+}
+
+// -----------------------------------------------------------------------------
+// State counters
+// -----------------------------------------------------------------------------
+
+function addNumericCounter(
+  object,
+  key,
+  amount
+) {
+
+  const current =
+    toFiniteNumber(
+      object?.[key]
+    ) || 0;
+
+  const increment =
+    toFiniteNumber(
+      amount
+    ) || 0;
+
+  object[key] =
+    current +
+    increment;
+
+}
+
+function applyPreparationStats(
+  state,
+  prepared
+) {
+
+  const historyRecordsSeen =
+    toFiniteNumber(
+      prepared?.historyRecordsSeen
+    ) || 0;
+
+  const acceptedRecords =
+    Array.isArray(
+      prepared?.accepted
+    )
+      ? prepared.accepted.length
+      : 0;
+
+  const duplicateRecords =
+    Array.isArray(
+      prepared?.duplicates
+    )
+      ? prepared.duplicates.length
+      : 0;
+
+  const invalidRecords =
+    Array.isArray(
+      prepared?.invalid
+    )
+      ? prepared.invalid.length
+      : 0;
+
+  const richRecordCount =
+    toFiniteNumber(
+      prepared?.richRecordCount
+    ) || 0;
+
+  const richRecordsMatched =
+    Array.isArray(
+      prepared?.accepted
+    )
+      ? prepared.accepted.filter(
+          item =>
+            item.richRecordMatched
+        ).length
+      : 0;
+
+  state.lastRun.historyRecordsSeen =
+    historyRecordsSeen;
+
+  state.lastRun.acceptedRecords =
+    acceptedRecords;
+
+  state.lastRun.duplicateRecords =
+    duplicateRecords;
+
+  state.lastRun.invalidRecords =
+    invalidRecords;
+
+  state.lastRun.skippedRecords =
+    duplicateRecords +
+    invalidRecords;
+
+  state.lastRun.richRecordCount =
+    richRecordCount;
+
+  state.lastRun.richRecordsMatched =
+    richRecordsMatched;
+
+  addNumericCounter(
+    state.totals,
+    "historyRecordsSeen",
+    historyRecordsSeen
+  );
+
+  addNumericCounter(
+    state.totals,
+    "acceptedRecords",
+    acceptedRecords
+  );
+
+  addNumericCounter(
+    state.totals,
+    "duplicateRecords",
+    duplicateRecords
+  );
+
+  addNumericCounter(
+    state.totals,
+    "invalidRecords",
+    invalidRecords
+  );
+
+  addNumericCounter(
+    state.totals,
+    "skippedRecords",
+    duplicateRecords +
+    invalidRecords
+  );
+
+  return state;
+
+}
+
+function applyProcessingStats(
+  state,
+  processing
+) {
+
+  const learnedRecords =
+    Array.isArray(
+      processing?.successful
+    )
+      ? processing.successful.length
+      : 0;
+
+  const failedRecords =
+    Array.isArray(
+      processing?.failed
+    )
+      ? processing.failed.length
+      : 0;
+
+  state.lastRun.learnedRecords =
+    learnedRecords;
+
+  state.lastRun.failedRecords =
+    failedRecords;
+
+  state.lastRun.skippedRecords =
+    (
+      toFiniteNumber(
+        state.lastRun.skippedRecords
+      ) || 0
+    ) +
+    failedRecords;
+
+  addNumericCounter(
+    state.totals,
+    "learnedRecords",
+    learnedRecords
+  );
+
+  addNumericCounter(
+    state.totals,
+    "failedRecords",
+    failedRecords
+  );
+
+  addNumericCounter(
+    state.totals,
+    "skippedRecords",
+    failedRecords
+  );
+
+  return state;
+
+}
+
+// -----------------------------------------------------------------------------
+// Error serialization
+// -----------------------------------------------------------------------------
+
+function serializeError(
+  error,
+  context = null
+) {
+
+  const serialized = {
+    message:
+      error instanceof Error
+        ? error.message
+        : String(
+            error
+          ),
+
+    recordedAt:
+      new Date().toISOString()
+  };
+
+  if (
+    error instanceof Error &&
+    error.name
+  ) {
+
+    serialized.name =
+      error.name;
+
+  }
+
+  if (
+    context
+  ) {
+
+    serialized.context =
+      context;
+
+  }
+
+  return serialized;
+
+}
+
+function collectRunErrors(
+  prepared,
+  processing
+) {
+
+  const errors =
+    [];
+
+  const invalidRecords =
+    Array.isArray(
+      prepared?.invalid
+    )
+      ? prepared.invalid
+      : [];
+
+  const failedRecords =
+    Array.isArray(
+      processing?.failed
+    )
+      ? processing.failed
+      : [];
+
+  for (
+    const invalid of invalidRecords
+  ) {
+
+    errors.push({
+      type:
+        "validation",
+
+      index:
+        invalid.index,
+
+      pair:
+        invalid.pair,
+
+      engine:
+        invalid.engine,
+
+      openedAt:
+        invalid.openedAt,
+
+      closedAt:
+        invalid.closedAt,
+
+      messages:
+        Array.isArray(
+          invalid.errors
+        )
+          ? invalid.errors
+          : []
+    });
+
+  }
+
+  for (
+    const failed of failedRecords
+  ) {
+
+    errors.push({
+      type:
+        "learner",
+
+      index:
+        failed.index,
+
+      tradeKey:
+        failed.tradeKey,
+
+      pair:
+        failed.pair,
+
+      strategy:
+        failed.strategy,
+
+      timeframe:
+        failed.timeframe,
+
+      direction:
+        failed.direction,
+
+      outcome:
+        failed.outcome,
+
+      openedAt:
+        failed.openedAt,
+
+      closedAt:
+        failed.closedAt,
+
+      message:
+        failed.error
+    });
+
+  }
+
+  return errors;
+
+}
+
+// -----------------------------------------------------------------------------
+// Run completion
+// -----------------------------------------------------------------------------
+
+function completeLearningRun(
+  state,
+  options
+) {
+
+  const completedAt =
+    new Date().toISOString();
+
+  const {
+    success,
+    historyUpdatedAt = null,
+    errors = []
+  } =
+    options;
+
+  state.lastRun.completedAt =
+    completedAt;
+
+  state.lastRun.success =
+    Boolean(
+      success
+    );
+
+  state.lastRun.errors =
+    Array.isArray(
+      errors
+    )
+      ? errors
+      : [];
+
+  state.lastHistoryUpdatedAt =
+    historyUpdatedAt ||
+    state.lastHistoryUpdatedAt ||
+    null;
+
+  if (
+    success
+  ) {
+
+    state.lastSuccessfulRunAt =
+      completedAt;
+
+    addNumericCounter(
+      state.totals,
+      "successfulRuns",
+      1
+    );
+
+  } else {
+
+    addNumericCounter(
+      state.totals,
+      "failedRuns",
+      1
+    );
+
+  }
+
+  return state;
+
+}
+
+// -----------------------------------------------------------------------------
+// Run summary
+// -----------------------------------------------------------------------------
+
+function buildRunSummary(
+  state,
+  prepared,
+  processing,
+  persistenceResult
+) {
+
+  const successful =
+    Array.isArray(
+      processing?.successful
+    )
+      ? processing.successful
+      : [];
+
+  const failed =
+    Array.isArray(
+      processing?.failed
+    )
+      ? processing.failed
+      : [];
+
+  const duplicates =
+    Array.isArray(
+      prepared?.duplicates
+    )
+      ? prepared.duplicates
+      : [];
+
+  const invalid =
+    Array.isArray(
+      prepared?.invalid
+    )
+      ? prepared.invalid
+      : [];
+
+  return {
+    engineName:
+      ENGINE_NAME,
+
+    engineVersion:
+      ENGINE_VERSION,
+
+    success:
+      state?.lastRun?.success === true,
+
+    startedAt:
+      state?.lastRun?.startedAt ?? null,
+
+    completedAt:
+      state?.lastRun?.completedAt ?? null,
+
+    historyRecordsSeen:
+      prepared?.historyRecordsSeen ?? 0,
+
+    acceptedRecords:
+      prepared?.accepted?.length ?? 0,
+
+    learnedRecords:
+      successful.length,
+
+    duplicateRecords:
+      duplicates.length,
+
+    invalidRecords:
+      invalid.length,
+
+    failedRecords:
+      failed.length,
+
+    richRecordCount:
+      prepared?.richRecordCount ?? 0,
+
+    richRecordsMatched:
+      prepared?.accepted?.filter(
+        item =>
+          item.richRecordMatched
+      ).length ?? 0,
+
+    processedTradeKeyCount:
+      Array.isArray(
+        state?.processedTradeKeys
+      )
+        ? state.processedTradeKeys.length
+        : 0,
+
+    persisted:
+      Boolean(
+        persistenceResult
+      ),
+
+    output: persistenceResult
+      ? {
+          learningData:
+            path.relative(
+              ROOT_DIR,
+              persistenceResult.learningPath
+            ),
+
+          confidenceData:
+            path.relative(
+              ROOT_DIR,
+              persistenceResult.confidencePath
+            ),
+
+          state:
+            path.relative(
+              ROOT_DIR,
+              LEARNING_STATE_PATH
+            ),
+
+          exportedAt:
+            persistenceResult.exportedAt
+        }
+      : null,
+
+    failures:
+      failed.map(
+        item => ({
+          index:
+            item.index,
+
+          tradeKey:
+            item.tradeKey,
+
+          pair:
+            item.pair,
+
+          strategy:
+            item.strategy,
+
+          timeframe:
+            item.timeframe,
+
+          error:
+            item.error
+        })
+      ),
+
+    invalid:
+      invalid.map(
+        item => ({
+          index:
+            item.index,
+
+          pair:
+            item.pair,
+
+          engine:
+            item.engine,
+
+          errors:
+            item.errors
+        })
+      )
+  };
+
+}

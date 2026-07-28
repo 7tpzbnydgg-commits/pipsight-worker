@@ -10818,6 +10818,14 @@ function p6LoadRuntimeInputs() {
       }
     );
 
+  const aiMemoryState =
+    typeof loadAIMemory ===
+      "function"
+      ? loadAIMemory()
+      : createUnavailableAIMemoryState(
+          "AI Memory loader is unavailable"
+        );
+
   return {
     scalpSignals,
     scalpCandles,
@@ -10825,6 +10833,7 @@ function p6LoadRuntimeInputs() {
     dailyOhlc,
     analysisHistory,
     notifyState,
+    aiMemoryState,
   };
 }
 

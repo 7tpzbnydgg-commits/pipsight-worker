@@ -351,6 +351,519 @@ function loadAIMemory() {
 }
 
 // ========================================================
+// AI Memory Metric Matching
+// ========================================================
+
+function normalizeAIMemoryEngine(
+  value
+) {
+  if (
+    typeof value !== "string" ||
+    !value.trim()
+  ) {
+    return null;
+  }
+
+  const normalized =
+    value
+      .trim()
+      .toLowerCase()
+      .replace(
+        /[^a-z0-9]/g,
+        ""
+      );
+
+  if (
+    normalized === "scalp" ||
+    normalized === "scalping"
+  ) {
+    return "scalp";
+  }
+
+  if (
+    normalized === "intraday" ||
+    normalized === "daily" ||
+    normalized === "day"
+  ) {
+    return "daily";
+  }
+
+  if (
+    normalized === "swing" ||
+    normalized === "weekly" ||
+    normalized === "week"
+  ) {
+    return "weekly";
+  }
+
+  if (
+    normalized === "master"
+  ) {
+    return "master";
+  }
+
+  return null;
+}
+
+function normalizeAIMemoryTimeframe(
+  value
+) {
+  if (
+    typeof value !== "string" ||
+    !value.trim()
+  ) {
+    return null;
+  }
+
+  const normalized =
+    value
+      .trim()
+      .toUpperCase()
+      .replace(
+        /\s+/g,
+        ""
+      );
+
+  const aliases = {
+    "5M": "5m",
+    "M5": "5m",
+    "5MIN": "5m",
+    "5MINUTE": "5m",
+
+    "15M": "15m",
+    "M15": "15m",
+    "15MIN": "15m",
+    "15MINUTE": "15m",
+
+    "30M": "30m",
+    "M30": "30m",
+    "30MIN": "30m",
+    "30MINUTE": "30m",
+
+    "1H": "1H",
+    "H1": "1H",
+    "60M": "1H",
+    "60MIN": "1H",
+
+    "4H": "4H",
+    "H4": "4H",
+
+    "1D": "D1",
+    "D1": "D1",
+    "DAILY": "D1",
+
+    "1W": "W1",
+    "W1": "W1",
+    "WEEKLY": "W1",
+  };
+
+  return aliases[normalized] || null;
+}
+
+function normalizeAIMemoryDirection(
+  value
+) {
+  const decision =
+    normalizeSignalDecision(
+      value
+    );
+
+  return (
+    decision === "BUY" ||
+    decision === "SELL"
+  )
+    ? decision
+    : null;
+}
+
+function normalizeAIMemoryMetric(
+  metric
+) {
+  if (!isPlainObject(metric)) {
+    return null;
+  }
+
+  const totalTrades =
+    firstFiniteNumber(
+      metric.totalTrades,
+      metric.total,
+      metric.resolved,
+      metric.samples
+    );
+
+  const wins =
+    firstFiniteNumber(
+      metric.wins,
+      metric.learningConfidence &&
+        metric.learningConfidence.wins
+    );
+
+  const losses =
+    firstFiniteNumber(
+      metric.losses,
+      metric.learningConfidence &&
+        metric.learningConfidence.losses
+    );
+
+  const winRate =
+    firstFiniteNumber(
+      metric.winRate,
+      metric.learningConfidence &&
+        metric.learningConfidence.winRate
+    );
+
+  const profitFactor =
+    firstFiniteNumber(
+      metric.profitFactor,
+      metric.learningConfidence &&
+        metric.learningConfidence.profitFactor
+    );
+
+  const averageProfitPoints =
+    firstFiniteNumber(
+      metric.averageProfitPoints,
+      metric.learningConfidence &&
+        metric.learningConfidence.averageProfitPoints
+    );
+
+  const averageResultPercentage =
+    firstFiniteNumber(
+      metric.averageResultPercentage
+    );
+
+  if (
+    totalTrades == null ||
+    totalTrades < 0
+  ) {
+    return null;
+  }
+
+  return {
+    totalTrades:
+      Math.max(
+        0,
+        Math.trunc(totalTrades)
+      ),
+
+    wins:
+      wins == null
+        ? null
+        : Math.max(
+            0,
+            Math.trunc(wins)
+          ),
+
+    losses:
+      losses == null
+        ? null
+        : Math.max(
+            0,
+            Math.trunc(losses)
+          ),
+
+    winRate:
+      winRate == null
+        ? null
+        : Number(
+            winRate.toFixed(2)
+          ),
+
+    profitFactor:
+      profitFactor == null
+        ? null
+        : Number(
+            profitFactor.toFixed(4)
+          ),
+
+    averageProfitPoints:
+      averageProfitPoints == null
+        ? null
+        : Number(
+            averageProfitPoints.toFixed(
+              8
+            )
+          ),
+
+    averageResultPercentage:
+      averageResultPercentage == null
+        ? null
+        : Number(
+            averageResultPercentage.toFixed(
+              8
+            )
+          ),
+  };
+}
+
+function getAIMemoryMetricByKey(
+  container,
+  key
+) {
+  if (
+    !isPlainObject(container) ||
+    typeof key !== "string" ||
+    !key
+  ) {
+    return null;
+  }
+
+  if (
+    !Object.prototype
+      .hasOwnProperty.call(
+        container,
+        key
+      )
+  ) {
+    return null;
+  }
+
+  return normalizeAIMemoryMetric(
+    container[key]
+  );
+}
+
+function resolveAIMemoryMetric(
+  aiMemoryState,
+  context = {}
+) {
+  if (
+    !aiMemoryState ||
+    !aiMemoryState.available ||
+    !aiMemoryState.valid ||
+    !isPlainObject(
+      aiMemoryState.data
+    )
+  ) {
+    return {
+      matched: false,
+      matchedBy: null,
+      matchedKey: null,
+      metric: null,
+      reason:
+        aiMemoryState &&
+        aiMemoryState.reason
+          ? aiMemoryState.reason
+          : "AI Memory is unavailable",
+    };
+  }
+
+  const memory =
+    aiMemoryState.data.memory;
+
+  const combinations =
+    aiMemoryState.data.combinations;
+
+  const pairKey =
+    normalizePairKey(
+      firstString(
+        context.pair,
+        context.pairKey,
+        context.symbol,
+        context.instrument
+      )
+    );
+
+  const engine =
+    normalizeAIMemoryEngine(
+      firstString(
+        context.engine,
+        context.engineName,
+        context.mode,
+        context.strategy
+      )
+    );
+
+  const direction =
+    normalizeAIMemoryDirection(
+      firstString(
+        context.direction,
+        context.decision,
+        context.signal,
+        context.action
+      )
+    );
+
+  const timeframe =
+    normalizeAIMemoryTimeframe(
+      firstString(
+        context.timeframe,
+        context.tf,
+        context.interval
+      )
+    );
+
+  const candidates = [];
+
+  if (
+    pairKey &&
+    engine &&
+    direction
+  ) {
+    candidates.push({
+      matchedBy:
+        "pairEngineDirection",
+
+      matchedKey:
+        `${pairKey}::${engine}::${direction}`,
+
+      container:
+        combinations
+          .pairEngineDirection,
+    });
+  }
+
+  if (
+    pairKey &&
+    engine
+  ) {
+    candidates.push({
+      matchedBy:
+        "pairEngine",
+
+      matchedKey:
+        `${pairKey}::${engine}`,
+
+      container:
+        combinations
+          .pairEngine,
+    });
+  }
+
+  if (
+    engine &&
+    direction
+  ) {
+    candidates.push({
+      matchedBy:
+        "engineDirection",
+
+      matchedKey:
+        `${engine}::${direction}`,
+
+      container:
+        combinations
+          .engineDirection,
+    });
+  }
+
+  if (
+    pairKey &&
+    direction
+  ) {
+    candidates.push({
+      matchedBy:
+        "pairDirection",
+
+      matchedKey:
+        `${pairKey}::${direction}`,
+
+      container:
+        combinations
+          .pairDirection,
+    });
+  }
+
+  if (
+    timeframe
+  ) {
+    candidates.push({
+      matchedBy:
+        "timeframe",
+
+      matchedKey:
+        timeframe,
+
+      container:
+        memory.timeframes,
+    });
+  }
+
+  if (
+    pairKey
+  ) {
+    candidates.push({
+      matchedBy:
+        "pair",
+
+      matchedKey:
+        pairKey,
+
+      container:
+        memory.pairs,
+    });
+  }
+
+  if (
+    engine &&
+    engine !== "master"
+  ) {
+    candidates.push({
+      matchedBy:
+        "engine",
+
+      matchedKey:
+        engine,
+
+      container:
+        memory.engines,
+    });
+  }
+
+  if (
+    direction
+  ) {
+    candidates.push({
+      matchedBy:
+        "direction",
+
+      matchedKey:
+        direction,
+
+      container:
+        memory.directions,
+    });
+  }
+
+  for (
+    const candidate of candidates
+  ) {
+    const metric =
+      getAIMemoryMetricByKey(
+        candidate.container,
+        candidate.matchedKey
+      );
+
+    if (
+      metric &&
+      metric.totalTrades > 0
+    ) {
+      return {
+        matched: true,
+
+        matchedBy:
+          candidate.matchedBy,
+
+        matchedKey:
+          candidate.matchedKey,
+
+        metric,
+
+        reason: null,
+      };
+    }
+  }
+
+  return {
+    matched: false,
+    matchedBy: null,
+    matchedKey: null,
+    metric: null,
+    reason:
+      "No usable AI Memory metric matched the signal context",
+  };
+}
+
+// ========================================================
 // Generic Helpers
 // ========================================================
 

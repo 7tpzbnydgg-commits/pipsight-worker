@@ -7126,25 +7126,26 @@ function buildCanonicalEngineResult(
 
   // Preserve useful fields from the source without overwriting canonical keys.
   const passthroughKeys = [
-    "indicators",
-    "trend",
-    "trendDirection",
-    "rawDirection",
-    "marketStructure",
-    "structure",
-    "supportResistance",
-    "supports",
-    "resistances",
-    "nearestSupport",
-    "nearestResistance",
-    "higherTimeframe",
-    "mtfConfirmed",
-    "candleCount",
-    "diagnostics",
-    "metadata",
-    "version",
-    "strategyVersion",
-  ];
+  "indicators",
+  "trend",
+  "trendDirection",
+  "rawDirection",
+  "marketStructure",
+  "structure",
+  "supportResistance",
+  "supports",
+  "resistances",
+  "nearestSupport",
+  "nearestResistance",
+  "higherTimeframe",
+  "mtfConfirmed",
+  "candleCount",
+  "diagnostics",
+  "metadata",
+  "version",
+  "strategyVersion",
+  "aiMemory",
+];
 
   for (const key of passthroughKeys) {
     if (

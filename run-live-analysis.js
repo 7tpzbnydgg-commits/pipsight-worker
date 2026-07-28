@@ -59,7 +59,9 @@ const AI_MEMORY_PATH = path.join(
 const AI_MEMORY_INTEGRATION = Object.freeze({
   enabled: true,
 
-  mode: "SHADOW",
+  mode: "CONTROLLED",
+
+  applyConfidenceAdjustment: true,
 
   minimumSamples: 10,
 
@@ -78,6 +80,12 @@ const AI_MEMORY_INTEGRATION = Object.freeze({
   cautionWinRate: 25,
 
   maximumSuggestedAdjustment: 8,
+
+  minimumSamplesToApply: 10,
+
+  minimumReliabilityToApply: 0.5,
+
+  maximumAppliedAdjustment: 5,
 });
 
 const PAIR_KEYS = [

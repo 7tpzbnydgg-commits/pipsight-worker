@@ -864,6 +864,615 @@ function resolveAIMemoryMetric(
 }
 
 // ========================================================
+// AI Memory Shadow Assessment
+// ========================================================
+
+function clampAIMemoryNumber(
+  value,
+  minimum,
+  maximum
+) {
+  if (!Number.isFinite(value)) {
+    return minimum;
+  }
+
+  return Math.min(
+    maximum,
+    Math.max(
+      minimum,
+      value
+    )
+  );
+}
+
+function calculateAIMemoryReliability(
+  sampleSize
+) {
+  if (
+    !Number.isFinite(sampleSize) ||
+    sampleSize <= 0
+  ) {
+    return 0;
+  }
+
+  if (
+    sampleSize >=
+    AI_MEMORY_INTEGRATION
+      .strongMinimumSamples
+  ) {
+    return 1;
+  }
+
+  if (
+    sampleSize <
+    AI_MEMORY_INTEGRATION
+      .minimumSamples
+  ) {
+    return Number(
+      (
+        sampleSize /
+        AI_MEMORY_INTEGRATION
+          .minimumSamples *
+        0.5
+      ).toFixed(4)
+    );
+  }
+
+  const range =
+    AI_MEMORY_INTEGRATION
+      .strongMinimumSamples -
+    AI_MEMORY_INTEGRATION
+      .minimumSamples;
+
+  const position =
+    sampleSize -
+    AI_MEMORY_INTEGRATION
+      .minimumSamples;
+
+  return Number(
+    (
+      0.5 +
+      (
+        range > 0
+          ? position / range
+          : 1
+      ) *
+        0.5
+    ).toFixed(4)
+  );
+}
+
+function classifyAIMemoryStatus(
+  metric
+) {
+  if (
+    !metric ||
+    !Number.isFinite(
+      metric.totalTrades
+    ) ||
+    metric.totalTrades <
+      AI_MEMORY_INTEGRATION
+        .minimumSamples
+  ) {
+    return "INSUFFICIENT_DATA";
+  }
+
+  const profitFactor =
+    Number.isFinite(
+      metric.profitFactor
+    )
+      ? metric.profitFactor
+      : null;
+
+  const winRate =
+    Number.isFinite(
+      metric.winRate
+    )
+      ? metric.winRate
+      : null;
+
+  const averageProfitPoints =
+    Number.isFinite(
+      metric.averageProfitPoints
+    )
+      ? metric.averageProfitPoints
+      : null;
+
+  const strongProfitFactor =
+    profitFactor !== null &&
+    profitFactor >=
+      AI_MEMORY_INTEGRATION
+        .strongProfitFactor;
+
+  const strongWinRate =
+    winRate !== null &&
+    winRate >=
+      AI_MEMORY_INTEGRATION
+        .strongWinRate;
+
+  const positiveAverage =
+    averageProfitPoints !== null &&
+    averageProfitPoints > 0;
+
+  if (
+    strongProfitFactor &&
+    strongWinRate &&
+    positiveAverage
+  ) {
+    return "STRONGLY_SUPPORTIVE";
+  }
+
+  const supportiveProfitFactor =
+    profitFactor !== null &&
+    profitFactor >=
+      AI_MEMORY_INTEGRATION
+        .supportiveProfitFactor;
+
+  const supportiveWinRate =
+    winRate !== null &&
+    winRate >=
+      AI_MEMORY_INTEGRATION
+        .supportiveWinRate;
+
+  if (
+    positiveAverage &&
+    (
+      supportiveProfitFactor ||
+      supportiveWinRate
+    )
+  ) {
+    return "SUPPORTIVE";
+  }
+
+  const cautionProfitFactor =
+    profitFactor !== null &&
+    profitFactor <
+      AI_MEMORY_INTEGRATION
+        .cautionProfitFactor;
+
+  const cautionWinRate =
+    winRate !== null &&
+    winRate <
+      AI_MEMORY_INTEGRATION
+        .cautionWinRate;
+
+  const negativeAverage =
+    averageProfitPoints !== null &&
+    averageProfitPoints < 0;
+
+  if (
+    negativeAverage &&
+    (
+      cautionProfitFactor ||
+      cautionWinRate
+    )
+  ) {
+    return "CAUTION";
+  }
+
+  return "NEUTRAL";
+}
+
+function calculateAIMemoryRawAdjustment(
+  metric,
+  status
+) {
+  if (
+    !metric ||
+    status === "INSUFFICIENT_DATA"
+  ) {
+    return 0;
+  }
+
+  let adjustment = 0;
+
+  if (
+    Number.isFinite(
+      metric.profitFactor
+    )
+  ) {
+    if (
+      metric.profitFactor >=
+      AI_MEMORY_INTEGRATION
+        .strongProfitFactor
+    ) {
+      adjustment += 4;
+    } else if (
+      metric.profitFactor >=
+      AI_MEMORY_INTEGRATION
+        .supportiveProfitFactor
+    ) {
+      adjustment += 2;
+    } else if (
+      metric.profitFactor <
+      AI_MEMORY_INTEGRATION
+        .cautionProfitFactor
+    ) {
+      adjustment -= 4;
+    } else if (
+      metric.profitFactor < 1
+    ) {
+      adjustment -= 2;
+    }
+  }
+
+  if (
+    Number.isFinite(
+      metric.winRate
+    )
+  ) {
+    if (
+      metric.winRate >=
+      AI_MEMORY_INTEGRATION
+        .strongWinRate
+    ) {
+      adjustment += 3;
+    } else if (
+      metric.winRate >=
+      AI_MEMORY_INTEGRATION
+        .supportiveWinRate
+    ) {
+      adjustment += 1;
+    } else if (
+      metric.winRate <
+      AI_MEMORY_INTEGRATION
+        .cautionWinRate
+    ) {
+      adjustment -= 3;
+    }
+  }
+
+  if (
+    Number.isFinite(
+      metric.averageProfitPoints
+    )
+  ) {
+    if (
+      metric.averageProfitPoints > 0
+    ) {
+      adjustment += 1;
+    } else if (
+      metric.averageProfitPoints < 0
+    ) {
+      adjustment -= 1;
+    }
+  }
+
+  if (
+    status ===
+    "STRONGLY_SUPPORTIVE"
+  ) {
+    adjustment =
+      Math.max(
+        adjustment,
+        5
+      );
+  }
+
+  if (
+    status === "SUPPORTIVE"
+  ) {
+    adjustment =
+      Math.max(
+        adjustment,
+        1
+      );
+  }
+
+  if (
+    status === "CAUTION"
+  ) {
+    adjustment =
+      Math.min(
+        adjustment,
+        -1
+      );
+  }
+
+  return clampAIMemoryNumber(
+    adjustment,
+    -AI_MEMORY_INTEGRATION
+      .maximumSuggestedAdjustment,
+    AI_MEMORY_INTEGRATION
+      .maximumSuggestedAdjustment
+  );
+}
+
+function buildAIMemoryReason(
+  status,
+  metric,
+  matchedBy
+) {
+  const sampleSize =
+    metric &&
+    Number.isFinite(
+      metric.totalTrades
+    )
+      ? metric.totalTrades
+      : 0;
+
+  const sourceLabel =
+    matchedBy ||
+    "no matching dimension";
+
+  if (
+    status === "INSUFFICIENT_DATA"
+  ) {
+    return (
+      `AI Memory matched ${sourceLabel}, ` +
+      `but only ${sampleSize} historical trade` +
+      `${sampleSize === 1 ? "" : "s"} are available`
+    );
+  }
+
+  if (
+    status ===
+    "STRONGLY_SUPPORTIVE"
+  ) {
+    return (
+      `Historical ${sourceLabel} performance ` +
+      `strongly supports this signal`
+    );
+  }
+
+  if (
+    status === "SUPPORTIVE"
+  ) {
+    return (
+      `Historical ${sourceLabel} performance ` +
+      `supports this signal`
+    );
+  }
+
+  if (
+    status === "CAUTION"
+  ) {
+    return (
+      `Historical ${sourceLabel} performance ` +
+      `suggests caution for this signal`
+    );
+  }
+
+  return (
+    `Historical ${sourceLabel} performance ` +
+    `is mixed or neutral`
+  );
+}
+
+function createUnavailableAIMemoryAssessment(
+  aiMemoryState,
+  reason
+) {
+  return {
+    enabled:
+      Boolean(
+        AI_MEMORY_INTEGRATION.enabled
+      ),
+
+    available:
+      Boolean(
+        aiMemoryState &&
+        aiMemoryState.available
+      ),
+
+    valid:
+      Boolean(
+        aiMemoryState &&
+        aiMemoryState.valid
+      ),
+
+    mode:
+      AI_MEMORY_INTEGRATION.mode,
+
+    applied: false,
+
+    status: "UNAVAILABLE",
+
+    reason:
+      reason ||
+      (
+        aiMemoryState &&
+        aiMemoryState.reason
+      ) ||
+      "AI Memory is unavailable",
+
+    matchedBy: null,
+    matchedKey: null,
+
+    sampleSize: 0,
+    wins: null,
+    losses: null,
+    winRate: null,
+    profitFactor: null,
+    averageProfitPoints: null,
+    averageResultPercentage: null,
+
+    reliability: 0,
+
+    confidenceAdjustment: 0,
+    suggestedConfidenceAdjustment: 0,
+
+    generatedAt:
+      aiMemoryState &&
+      aiMemoryState.generatedAt
+        ? aiMemoryState.generatedAt
+        : null,
+
+    engineName:
+      aiMemoryState &&
+      aiMemoryState.engineName
+        ? aiMemoryState.engineName
+        : null,
+
+    engineVersion:
+      aiMemoryState &&
+      aiMemoryState.engineVersion
+        ? aiMemoryState.engineVersion
+        : null,
+  };
+}
+
+function createAIMemoryAssessment(
+  aiMemoryState,
+  context = {}
+) {
+  if (
+    !AI_MEMORY_INTEGRATION.enabled
+  ) {
+    return createUnavailableAIMemoryAssessment(
+      aiMemoryState,
+      "AI Memory integration is disabled"
+    );
+  }
+
+  if (
+    !aiMemoryState ||
+    !aiMemoryState.available ||
+    !aiMemoryState.valid
+  ) {
+    return createUnavailableAIMemoryAssessment(
+      aiMemoryState
+    );
+  }
+
+  const direction =
+    normalizeAIMemoryDirection(
+      firstString(
+        context.direction,
+        context.decision,
+        context.signal,
+        context.action
+      )
+    );
+
+  if (!direction) {
+    return {
+      ...createUnavailableAIMemoryAssessment(
+        aiMemoryState,
+        "AI Memory assessment requires a BUY or SELL decision"
+      ),
+
+      available: true,
+      valid: true,
+      status: "NOT_APPLICABLE",
+    };
+  }
+
+  const match =
+    resolveAIMemoryMetric(
+      aiMemoryState,
+      {
+        ...context,
+        direction,
+      }
+    );
+
+  if (
+    !match.matched ||
+    !match.metric
+  ) {
+    return {
+      ...createUnavailableAIMemoryAssessment(
+        aiMemoryState,
+        match.reason
+      ),
+
+      available: true,
+      valid: true,
+      status: "NO_MATCH",
+    };
+  }
+
+  const metric =
+    match.metric;
+
+  const status =
+    classifyAIMemoryStatus(
+      metric
+    );
+
+  const reliability =
+    calculateAIMemoryReliability(
+      metric.totalTrades
+    );
+
+  const rawAdjustment =
+    calculateAIMemoryRawAdjustment(
+      metric,
+      status
+    );
+
+  const suggestedAdjustment =
+    Math.round(
+      rawAdjustment *
+      reliability
+    );
+
+  return {
+    enabled: true,
+    available: true,
+    valid: true,
+
+    mode:
+      AI_MEMORY_INTEGRATION.mode,
+
+    applied: false,
+
+    status,
+
+    reason:
+      buildAIMemoryReason(
+        status,
+        metric,
+        match.matchedBy
+      ),
+
+    matchedBy:
+      match.matchedBy,
+
+    matchedKey:
+      match.matchedKey,
+
+    sampleSize:
+      metric.totalTrades,
+
+    wins:
+      metric.wins,
+
+    losses:
+      metric.losses,
+
+    winRate:
+      metric.winRate,
+
+    profitFactor:
+      metric.profitFactor,
+
+    averageProfitPoints:
+      metric.averageProfitPoints,
+
+    averageResultPercentage:
+      metric.averageResultPercentage,
+
+    reliability,
+
+    confidenceAdjustment: 0,
+
+    suggestedConfidenceAdjustment:
+      suggestedAdjustment,
+
+    generatedAt:
+      aiMemoryState.generatedAt,
+
+    engineName:
+      aiMemoryState.engineName,
+
+    engineVersion:
+      aiMemoryState.engineVersion,
+  };
+}
+
+// ========================================================
 // Generic Helpers
 // ========================================================
 

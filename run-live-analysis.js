@@ -11641,30 +11641,67 @@ async function runLiveAnalysisRuntime(
       process.version,
 
     inputFiles: {
-      scalpSignals:
-        P6_SCALP_SIGNALS_PATH,
+  scalpSignals:
+    P6_SCALP_SIGNALS_PATH,
 
-      scalpCandles:
-        P6_SCALP_CANDLES_PATH,
+  scalpCandles:
+    P6_SCALP_CANDLES_PATH,
 
-      intradayH1:
-        P6_INTRADAY_H1_PATH,
+  intradayH1:
+    P6_INTRADAY_H1_PATH,
 
-      dailyOhlc:
-        P6_DAILY_OHLC_PATH,
-    },
+  dailyOhlc:
+    P6_DAILY_OHLC_PATH,
 
-    outputFiles: {
-      liveAnalysis:
-        P6_LIVE_ANALYSIS_PATH,
+  aiMemory:
+    AI_MEMORY_PATH,
+},
 
-      analysisHistory:
-        P6_ANALYSIS_HISTORY_PATH,
+aiMemory: {
+  enabled:
+    AI_MEMORY_INTEGRATION.enabled,
 
-      notifyState:
-        P6_NOTIFY_STATE_PATH,
-    },
-  };
+  mode:
+    AI_MEMORY_INTEGRATION.mode,
+
+  available:
+    Boolean(
+      inputs.aiMemoryState &&
+      inputs.aiMemoryState.available
+    ),
+
+  valid:
+    Boolean(
+      inputs.aiMemoryState &&
+      inputs.aiMemoryState.valid
+    ),
+
+  applied: false,
+
+  generatedAt:
+    inputs.aiMemoryState &&
+    inputs.aiMemoryState.generatedAt
+      ? inputs.aiMemoryState.generatedAt
+      : null,
+
+  engineName:
+    inputs.aiMemoryState &&
+    inputs.aiMemoryState.engineName
+      ? inputs.aiMemoryState.engineName
+      : null,
+
+  engineVersion:
+    inputs.aiMemoryState &&
+    inputs.aiMemoryState.engineVersion
+      ? inputs.aiMemoryState.engineVersion
+      : null,
+
+  reason:
+    inputs.aiMemoryState &&
+    inputs.aiMemoryState.reason
+      ? inputs.aiMemoryState.reason
+      : null,
+},
 
   const historyCandidates =
     collectHistoryRecordsFromOutput(

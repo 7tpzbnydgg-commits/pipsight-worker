@@ -17944,17 +17944,22 @@ function startRefreshScheduler(){
   );
 
   APP_INTERVALS.push(
-    setInterval(
-      ()=>{
-        if(isPageVisible()){
-          renderMasterSignal();
-        }
-      },
-      APP_CONFIG
-        .refreshMs
-        .masterSignal
-    )
-  );
+  setInterval(
+    async()=>{
+      if(!isPageVisible()){
+        return;
+      }
+
+      await Promise.allSettled([
+        renderMasterSignal(),
+        renderObservabilityPanel()
+      ]);
+    },
+    APP_CONFIG
+      .refreshMs
+      .masterSignal
+  )
+);
 
   APP_INTERVALS.push(
     setInterval(

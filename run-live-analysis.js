@@ -8421,7 +8421,8 @@ function attachAIMemoryAssessment(
 ) {
   if (
     !engineResult ||
-    typeof engineResult !== "object"
+    typeof engineResult !== "object" ||
+    Array.isArray(engineResult)
   ) {
     return engineResult;
   }
@@ -8459,12 +8460,10 @@ function attachAIMemoryAssessment(
       }
     );
 
-  return {
-    ...engineResult,
-
-    aiMemory:
-      assessment,
-  };
+  return applyAIMemoryConfidenceAdjustment(
+    engineResult,
+    assessment
+  );
 }
 
 function buildPairEngineBundle(

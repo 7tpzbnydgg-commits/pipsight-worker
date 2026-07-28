@@ -12305,7 +12305,11 @@ generatedAt:
           {
             modes:
               runtimeOptions.telegramModes ||
-              ["master"],
+              "master",
+              "swing",
+              "intraday",
+              "scalp",
+            ],
 
             minimumConfidence:
               runtimeOptions.telegramMinimumConfidence,

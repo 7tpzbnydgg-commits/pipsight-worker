@@ -11,19 +11,30 @@
 // • History persistence
 // • Backward-compatible outputs
 // • Existing JSON schema preserved
+// • AI Memory shadow advisory integration
+//
+// Phase 3 compatibility:
+// • Existing BUY / SELL / HOLD decisions remain unchanged
+// • Existing confidence values remain unchanged
+// • AI Memory is advisory-only in SHADOW mode
+// • AI Memory failure never blocks live analysis
+// • Missing session, pattern or market-regime data is never invented
 
 "use strict";
 
 const fs = require("fs");
 const path = require("path");
 
-const ENGINE_VERSION = "1.3.0-pro";
+const ENGINE_VERSION = "1.4.0-pro";
 const STRATEGY_VERSION = "legacy-compatible-1.1";
 
 const TELEGRAM_TIMEOUT_MS = 15000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-const DATA_DIR = path.join(__dirname, "data");
+const DATA_DIR = path.join(
+  __dirname,
+  "data"
+);
 
 const HISTORY_PATH = path.join(
   DATA_DIR,
@@ -39,6 +50,35 @@ const LIVE_ANALYSIS_PATH = path.join(
   DATA_DIR,
   "live-analysis.json"
 );
+
+const AI_MEMORY_PATH = path.join(
+  DATA_DIR,
+  "ai-memory.json"
+);
+
+const AI_MEMORY_INTEGRATION = Object.freeze({
+  enabled: true,
+
+  mode: "SHADOW",
+
+  minimumSamples: 10,
+
+  strongMinimumSamples: 20,
+
+  supportiveProfitFactor: 1.2,
+
+  strongProfitFactor: 1.5,
+
+  cautionProfitFactor: 0.8,
+
+  supportiveWinRate: 35,
+
+  strongWinRate: 45,
+
+  cautionWinRate: 25,
+
+  maximumSuggestedAdjustment: 8,
+});
 
 const PAIR_KEYS = [
   "XAUUSD",
@@ -112,6 +152,202 @@ function atomicWriteJSON(filePath, value) {
     tempFile,
     filePath
   );
+}
+
+// ========================================================
+// AI Memory Safe Loading
+// ========================================================
+
+function isPlainObject(
+  value
+) {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value)
+  );
+}
+
+function createUnavailableAIMemoryState(
+  reason
+) {
+  return {
+    available: false,
+    valid: false,
+    enabled:
+      AI_MEMORY_INTEGRATION.enabled,
+    mode:
+      AI_MEMORY_INTEGRATION.mode,
+    reason:
+      reason ||
+      "AI Memory is unavailable",
+    generatedAt: null,
+    engineName: null,
+    engineVersion: null,
+    data: null,
+  };
+}
+
+function validateAIMemoryDocument(
+  document
+) {
+  if (!isPlainObject(document)) {
+    return {
+      valid: false,
+      reason:
+        "AI Memory root must be an object",
+    };
+  }
+
+  if (
+    document.engineName !==
+    "PipSight Pro Adaptive AI Memory Engine"
+  ) {
+    return {
+      valid: false,
+      reason:
+        "AI Memory engine name is missing or unsupported",
+    };
+  }
+
+  if (
+    typeof document.engineVersion !==
+      "string" ||
+    !document.engineVersion.trim()
+  ) {
+    return {
+      valid: false,
+      reason:
+        "AI Memory engine version is missing",
+    };
+  }
+
+  if (
+    typeof document.generatedAt !==
+      "string" ||
+    Number.isNaN(
+      Date.parse(document.generatedAt)
+    )
+  ) {
+    return {
+      valid: false,
+      reason:
+        "AI Memory generatedAt timestamp is invalid",
+    };
+  }
+
+  if (!isPlainObject(document.memory)) {
+    return {
+      valid: false,
+      reason:
+        "AI Memory memory section is missing",
+    };
+  }
+
+  if (
+    !isPlainObject(
+      document.memory.pairs
+    ) ||
+    !isPlainObject(
+      document.memory.engines
+    ) ||
+    !isPlainObject(
+      document.memory.directions
+    ) ||
+    !isPlainObject(
+      document.memory.timeframes
+    )
+  ) {
+    return {
+      valid: false,
+      reason:
+        "AI Memory core metric sections are incomplete",
+    };
+  }
+
+  if (
+    !isPlainObject(
+      document.combinations
+    )
+  ) {
+    return {
+      valid: false,
+      reason:
+        "AI Memory combinations section is missing",
+    };
+  }
+
+  return {
+    valid: true,
+    reason: null,
+  };
+}
+
+function loadAIMemory() {
+  if (!AI_MEMORY_INTEGRATION.enabled) {
+    return createUnavailableAIMemoryState(
+      "AI Memory integration is disabled"
+    );
+  }
+
+  if (!fs.existsSync(AI_MEMORY_PATH)) {
+    return createUnavailableAIMemoryState(
+      "data/ai-memory.json is missing"
+    );
+  }
+
+  let document;
+
+  try {
+    document = JSON.parse(
+      fs.readFileSync(
+        AI_MEMORY_PATH,
+        "utf8"
+      )
+    );
+  } catch (err) {
+    console.error(
+      "Failed to read AI Memory:",
+      err.message
+    );
+
+    return createUnavailableAIMemoryState(
+      "data/ai-memory.json is unreadable or contains invalid JSON"
+    );
+  }
+
+  const validation =
+    validateAIMemoryDocument(
+      document
+    );
+
+  if (!validation.valid) {
+    console.warn(
+      "AI Memory validation failed:",
+      validation.reason
+    );
+
+    return createUnavailableAIMemoryState(
+      validation.reason
+    );
+  }
+
+  return {
+    available: true,
+    valid: true,
+    enabled: true,
+    mode:
+      AI_MEMORY_INTEGRATION.mode,
+    reason: null,
+    generatedAt:
+      document.generatedAt,
+    engineName:
+      document.engineName,
+    engineVersion:
+      document.engineVersion,
+    data:
+      document,
+  };
 }
 
 // ========================================================

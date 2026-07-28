@@ -18004,16 +18004,19 @@ document.addEventListener(
     }
 
     if(currentMode === "scalp"){
-      renderScalpPanel();
-    }else if(currentMode === "patterns"){
-      loadPatternDetector();
-    }else{
-      renderCurrentPair();
-    }
+  renderScalpPanel();
+}else if(currentMode === "patterns"){
+  loadPatternDetector();
+}else{
+  renderCurrentPair();
+}
 
-    renderMasterSignal();
-  }
-);
+Promise.allSettled([
+  renderMasterSignal(),
+  renderObservabilityPanel({
+    forceRefresh:true
+  })
+]);
 
 // ════════════════════════════════════════════════════════════════
 // GLOBAL ERROR HANDLING

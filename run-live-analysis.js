@@ -9677,35 +9677,91 @@ function updateNotifyStateAfterSend(
       }
     );
 
-  const state = eligibility.state;
-  const canonical = eligibility.canonical;
+  const state =
+    eligibility.state;
+
+  const canonical =
+    eligibility.canonical;
 
   const key =
     eligibility.key ||
-    liveNotifyStateKey(canonical);
+    liveNotifyStateKey(
+      canonical
+    );
 
   const signature =
     eligibility.signature ||
-    liveNotifySignature(canonical);
+    liveNotifySignature(
+      canonical
+    );
 
-  const sentAt = liveNowIso();
+  const sentAt =
+    liveNowIso();
+
+  const finalConfidence =
+    liveNormalizeConfidence(
+      canonical.confidence,
+      0
+    );
+
+  const originalConfidence =
+    liveNormalizeConfidence(
+      canonical.originalConfidence ??
+        canonical.aiMemory
+          ?.originalConfidence ??
+        finalConfidence,
+      finalConfidence
+    );
+
+  const appliedConfidenceAdjustment =
+    liveFiniteNumber(
+      canonical.aiMemory
+        ?.appliedConfidenceAdjustment ??
+        canonical.aiMemory
+          ?.confidenceAdjustment,
+      0
+    );
 
   const signals = {
     ...state.signals,
 
     [key]: {
-      pair: canonical.pair,
-      mode: canonical.mode,
+      pair:
+        canonical.pair,
 
-      decision: canonical.decision,
-      confidence: canonical.confidence,
+      mode:
+        canonical.mode,
+
+      decision:
+        canonical.decision,
+
+      // Final adjusted confidence used in
+      // the Telegram eligibility check.
+      confidence:
+        finalConfidence,
+
+      // Additive Phase 4 audit fields.
+      originalConfidence,
+
+      aiMemoryAdjustedConfidence:
+        finalConfidence,
+
+      appliedConfidenceAdjustment,
+
+      aiMemoryApplied:
+        canonical.aiMemory
+          ?.applied === true,
 
       signature,
-      fingerprint: signature,
+      fingerprint:
+        signature,
 
       sentAt,
-      updatedAt: sentAt,
-      timestamp: Date.now(),
+      updatedAt:
+        sentAt,
+
+      timestamp:
+        Date.now(),
 
       messageId:
         options.messageId ||
@@ -9716,11 +9772,16 @@ function updateNotifyStateAfterSend(
   return {
     ...state,
 
-    updatedAt: sentAt,
+    updatedAt:
+      sentAt,
+
     signals,
 
-    notifications: signals,
-    state: signals,
+    notifications:
+      signals,
+
+    state:
+      signals,
   };
 }
 

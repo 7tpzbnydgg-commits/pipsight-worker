@@ -1934,6 +1934,1207 @@ async function loadObservabilityData({
     }
   };
 }
+
+// ════════════════════════════════════════════════════════════════
+// DASHBOARD OBSERVABILITY — DOM HELPERS
+// ════════════════════════════════════════════════════════════════
+
+function setObservabilityText(
+  elementId,
+  value,
+  fallback = "—"
+){
+  const element =
+    document.getElementById(
+      elementId
+    );
+
+  if(!element){
+    return false;
+  }
+
+  const normalizedValue =
+    value == null ||
+    value === ""
+      ? fallback
+      : String(value);
+
+  element.textContent =
+    normalizedValue;
+
+  return true;
+}
+
+
+function setObservabilityValueClass(
+  elementId,
+  state = "muted"
+){
+  const element =
+    document.getElementById(
+      elementId
+    );
+
+  if(!element){
+    return false;
+  }
+
+  element.classList.remove(
+    "observability-value-ok",
+    "observability-value-warn",
+    "observability-value-error",
+    "observability-value-muted"
+  );
+
+  const allowedStates =
+    new Set([
+      "ok",
+      "warn",
+      "error",
+      "muted"
+    ]);
+
+  const safeState =
+    allowedStates.has(state)
+      ? state
+      : "muted";
+
+  element.classList.add(
+    `observability-value-${safeState}`
+  );
+
+  return true;
+}
+
+
+function setObservabilityBadge(
+  elementId,
+  label,
+  state = "neutral"
+){
+  const element =
+    document.getElementById(
+      elementId
+    );
+
+  if(!element){
+    return false;
+  }
+
+  element.classList.remove(
+    "observability-badge-neutral",
+    "observability-badge-ok",
+    "observability-badge-warn",
+    "observability-badge-error",
+    "observability-badge-buy",
+    "observability-badge-sell",
+    "observability-badge-hold"
+  );
+
+  const allowedStates =
+    new Set([
+      "neutral",
+      "ok",
+      "warn",
+      "error",
+      "buy",
+      "sell",
+      "hold"
+    ]);
+
+  const safeState =
+    allowedStates.has(state)
+      ? state
+      : "neutral";
+
+  element.classList.add(
+    `observability-badge-${safeState}`
+  );
+
+  element.textContent =
+    label == null ||
+    label === ""
+      ? "Unknown"
+      : String(label);
+
+  return true;
+}
+
+
+function setObservabilityOverallStatus(
+  label,
+  state = "warn"
+){
+  const container =
+    document.getElementById(
+      "observabilityOverallStatus"
+    );
+
+  if(!container){
+    return false;
+  }
+
+  container.classList.remove(
+    "status-ok",
+    "status-warn",
+    "status-error"
+  );
+
+  const safeState =
+    state === "ok" ||
+    state === "error"
+      ? state
+      : "warn";
+
+  container.classList.add(
+    `status-${safeState}`
+  );
+
+  setObservabilityText(
+    "observabilityOverallStatusText",
+    label,
+    "Unknown"
+  );
+
+  return true;
+}
+
+
+// ════════════════════════════════════════════════════════════════
+// DASHBOARD OBSERVABILITY — FORMATTERS
+// ════════════════════════════════════════════════════════════════
+
+function formatObservabilityBoolean(
+  value,
+  {
+    trueLabel = "Yes",
+    falseLabel = "No",
+    unknownLabel = "Unknown"
+  } = {}
+){
+  if(value === true){
+    return trueLabel;
+  }
+
+  if(value === false){
+    return falseLabel;
+  }
+
+  return unknownLabel;
+}
+
+
+function getObservabilityBooleanState(value){
+  if(value === true){
+    return "ok";
+  }
+
+  if(value === false){
+    return "warn";
+  }
+
+  return "muted";
+}
+
+
+function formatObservabilityAge(value){
+  const timestamp =
+    safeDateMs(value);
+
+  if(timestamp == null){
+    return "Unknown";
+  }
+
+  const differenceMs =
+    Math.max(
+      0,
+      Date.now() - timestamp
+    );
+
+  const seconds =
+    Math.floor(
+      differenceMs / 1_000
+    );
+
+  if(seconds < 60){
+    return `${seconds}s ago`;
+  }
+
+  const minutes =
+    Math.floor(
+      seconds / 60
+    );
+
+  if(minutes < 60){
+    return `${minutes}m ago`;
+  }
+
+  const hours =
+    Math.floor(
+      minutes / 60
+    );
+
+  if(hours < 24){
+    const remainingMinutes =
+      minutes % 60;
+
+    return remainingMinutes > 0
+      ? `${hours}h ${remainingMinutes}m ago`
+      : `${hours}h ago`;
+  }
+
+  const days =
+    Math.floor(
+      hours / 24
+    );
+
+  const remainingHours =
+    hours % 24;
+
+  return remainingHours > 0
+    ? `${days}d ${remainingHours}h ago`
+    : `${days}d ago`;
+}
+
+
+function normalizeObservabilityDecision(value){
+  const normalized =
+    String(
+      value == null
+        ? ""
+        : value
+    )
+      .trim()
+      .toUpperCase();
+
+  if(normalized === "BUY"){
+    return "BUY";
+  }
+
+  if(normalized === "SELL"){
+    return "SELL";
+  }
+
+  return "HOLD";
+}
+
+
+function getObservabilityDecisionTime(engine){
+  const candidate =
+    engine.timestamp ??
+    engine.generatedAt ??
+    engine.time ??
+    null;
+
+  if(
+    typeof candidate === "number" &&
+    Number.isFinite(candidate)
+  ){
+    return candidate;
+  }
+
+  return safeDateMs(candidate);
+}
+
+
+// ════════════════════════════════════════════════════════════════
+// DASHBOARD OBSERVABILITY — DATA RESOLUTION
+// ════════════════════════════════════════════════════════════════
+
+function resolveObservabilityPairEntries(
+  liveAnalysis
+){
+  const pairs =
+    safeObject(
+      safeObject(liveAnalysis).pairs
+    );
+
+  return Object.entries(pairs);
+}
+
+
+function resolveLatestDirectionalSignal(
+  liveAnalysis
+){
+  const engineKeys = [
+    "swing",
+    "intraday",
+    "scalp",
+    "master"
+  ];
+
+  const candidates =
+    [];
+
+  for(
+    const [
+      pairKey,
+      pairValue
+    ] of resolveObservabilityPairEntries(
+      liveAnalysis
+    )
+  ){
+    const pair =
+      safeObject(pairValue);
+
+    for(const engineKey of engineKeys){
+      const engine =
+        safeObject(
+          pair[engineKey]
+        );
+
+      if(
+        Object.keys(engine).length === 0
+      ){
+        continue;
+      }
+
+      const decision =
+        normalizeObservabilityDecision(
+          engine.decision ??
+          engine.signal ??
+          engine.action ??
+          engine.direction
+        );
+
+      if(
+        decision !== "BUY" &&
+        decision !== "SELL"
+      ){
+        continue;
+      }
+
+      candidates.push({
+        pair:
+          engine.pairLabel ??
+          engine.pair ??
+          engine.symbol ??
+          pairKey,
+
+        direction:
+          decision,
+
+        engine:
+          engine.engineName ??
+          engine.engine ??
+          engine.mode ??
+          engineKey,
+
+        source:
+          engine.source ??
+          engine.sourceMode ??
+          "Not reported",
+
+        confidence:
+          safeNumber(
+            engine.confidencePct ??
+            engine.confidence,
+            null
+          ),
+
+        timestamp:
+          getObservabilityDecisionTime(
+            engine
+          ),
+
+        generatedAt:
+          engine.generatedAt ??
+          engine.time ??
+          engine.timestamp ??
+          null
+      });
+    }
+  }
+
+  candidates.sort(
+    (first, second)=>{
+      const firstTime =
+        safeNumber(
+          first.timestamp,
+          0
+        );
+
+      const secondTime =
+        safeNumber(
+          second.timestamp,
+          0
+        );
+
+      return secondTime -
+        firstTime;
+    }
+  );
+
+  return candidates[0] ??
+    null;
+}
+
+
+function resolveObservabilityAIMemory(
+  liveAnalysis
+){
+  const document =
+    safeObject(liveAnalysis);
+
+  const runtimeMemory =
+    safeObject(
+      safeObject(
+        document.runtime
+      ).aiMemory
+    );
+
+  if(
+    Object.keys(runtimeMemory).length > 0
+  ){
+    return runtimeMemory;
+  }
+
+  for(
+    const [
+      ,
+      pairValue
+    ] of resolveObservabilityPairEntries(
+      document
+    )
+  ){
+    const pair =
+      safeObject(pairValue);
+
+    for(
+      const engineKey of [
+        "master",
+        "scalp",
+        "intraday",
+        "swing"
+      ]
+    ){
+      const aiMemory =
+        safeObject(
+          safeObject(
+            pair[engineKey]
+          ).aiMemory
+        );
+
+      if(
+        Object.keys(aiMemory).length > 0
+      ){
+        return aiMemory;
+      }
+    }
+  }
+
+  return {};
+}
+
+
+function resolveObservabilityTelegram(
+  liveAnalysis
+){
+  return safeObject(
+    safeObject(
+      safeObject(liveAnalysis).runtime
+    ).telegram
+  );
+}
+
+
+function resolveObservabilityStaleValue(
+  liveAnalysis
+){
+  const document =
+    safeObject(liveAnalysis);
+
+  const metadata =
+    safeObject(
+      document.metadata
+    );
+
+  if(typeof document.stale === "boolean"){
+    return document.stale;
+  }
+
+  if(
+    typeof document.isStale ===
+    "boolean"
+  ){
+    return document.isStale;
+  }
+
+  if(typeof metadata.stale === "boolean"){
+    return metadata.stale;
+  }
+
+  if(
+    typeof metadata.isStale ===
+    "boolean"
+  ){
+    return metadata.isStale;
+  }
+
+  return null;
+}
+
+
+// ════════════════════════════════════════════════════════════════
+// DASHBOARD OBSERVABILITY — SECTION RENDERERS
+// ════════════════════════════════════════════════════════════════
+
+function renderLiveAnalysisObservability(
+  liveAnalysis,
+  available
+){
+  const document =
+    safeObject(liveAnalysis);
+
+  const metadata =
+    safeObject(
+      document.metadata
+    );
+
+  const runtime =
+    safeObject(
+      document.runtime
+    );
+
+  const lastRun =
+    runtime.completedAt ??
+    document.updatedAt ??
+    document.generatedAt ??
+    metadata.generatedAt ??
+    null;
+
+  const status =
+    String(
+      document.status ??
+      "unknown"
+    )
+      .trim()
+      .toLowerCase();
+
+  const stale =
+    resolveObservabilityStaleValue(
+      document
+    );
+
+  let statusLabel =
+    "Unknown";
+
+  let statusState =
+    "neutral";
+
+  if(!available){
+    statusLabel =
+      "Unavailable";
+
+    statusState =
+      "error";
+  }else if(stale === true){
+    statusLabel =
+      "Stale";
+
+    statusState =
+      "warn";
+  }else if(
+    status === "ok" ||
+    status === "success"
+  ){
+    statusLabel =
+      "Operational";
+
+    statusState =
+      "ok";
+  }else if(
+    status === "error" ||
+    status === "failed"
+  ){
+    statusLabel =
+      "Error";
+
+    statusState =
+      "error";
+  }else{
+    statusLabel =
+      status === "unknown"
+        ? "Unknown"
+        : status.toUpperCase();
+
+    statusState =
+      "warn";
+  }
+
+  setObservabilityBadge(
+    "observabilityLiveStatus",
+    statusLabel,
+    statusState
+  );
+
+  setObservabilityText(
+    "observabilityLastRun",
+    safeDateLabel(
+      lastRun,
+      "Unknown"
+    )
+  );
+
+  setObservabilityText(
+    "observabilityFreshness",
+    formatObservabilityAge(
+      lastRun
+    )
+  );
+
+  setObservabilityText(
+    "observabilityStaleStatus",
+    stale == null
+      ? "Not reported"
+      : formatObservabilityBoolean(
+          stale,
+          {
+            trueLabel:
+              "Yes",
+
+            falseLabel:
+              "No"
+          }
+        )
+  );
+
+  setObservabilityValueClass(
+    "observabilityStaleStatus",
+    stale === true
+      ? "warn"
+      : stale === false
+        ? "ok"
+        : "muted"
+  );
+
+  setObservabilityText(
+    "observabilityEngineVersion",
+    document.engineVersion ??
+    metadata.engineVersion ??
+    "Unknown"
+  );
+
+  setObservabilityText(
+    "observabilityStrategyVersion",
+    document.strategyVersion ??
+    metadata.strategyVersion ??
+    "Unknown"
+  );
+
+  return {
+    state:
+      statusState,
+
+    label:
+      statusLabel,
+
+    stale
+  };
+}
+
+
+function renderLatestDirectionalObservability(
+  liveAnalysis
+){
+  const latest =
+    resolveLatestDirectionalSignal(
+      liveAnalysis
+    );
+
+  if(!latest){
+    setObservabilityBadge(
+      "observabilityLatestDirection",
+      "HOLD",
+      "hold"
+    );
+
+    setObservabilityText(
+      "observabilityLatestPair",
+      "No active directional signal"
+    );
+
+    setObservabilityText(
+      "observabilityLatestSourceEngine",
+      "—"
+    );
+
+    setObservabilityText(
+      "observabilityLatestSource",
+      "—"
+    );
+
+    setObservabilityText(
+      "observabilityLatestConfidence",
+      "—"
+    );
+
+    setObservabilityText(
+      "observabilityLatestSignalTime",
+      "—"
+    );
+
+    return null;
+  }
+
+  setObservabilityBadge(
+    "observabilityLatestDirection",
+    latest.direction,
+    latest.direction === "BUY"
+      ? "buy"
+      : "sell"
+  );
+
+  setObservabilityText(
+    "observabilityLatestPair",
+    latest.pair
+  );
+
+  setObservabilityText(
+    "observabilityLatestSourceEngine",
+    latest.engine
+  );
+
+  setObservabilityText(
+    "observabilityLatestSource",
+    latest.source
+  );
+
+  setObservabilityText(
+    "observabilityLatestConfidence",
+    latest.confidence == null
+      ? "Not reported"
+      : safePercentage(
+          latest.confidence,
+          1
+        )
+  );
+
+  setObservabilityText(
+    "observabilityLatestSignalTime",
+    safeDateLabel(
+      latest.generatedAt,
+      "Unknown"
+    )
+  );
+
+  return latest;
+}
+
+
+function renderAIMemoryObservability(
+  liveAnalysis
+){
+  const aiMemory =
+    resolveObservabilityAIMemory(
+      liveAnalysis
+    );
+
+  const hasMetadata =
+    Object.keys(aiMemory).length > 0;
+
+  const enabled =
+    typeof aiMemory.enabled === "boolean"
+      ? aiMemory.enabled
+      : null;
+
+  const available =
+    typeof aiMemory.available === "boolean"
+      ? aiMemory.available
+      : null;
+
+  const valid =
+    typeof aiMemory.valid === "boolean"
+      ? aiMemory.valid
+      : null;
+
+  const applied =
+    typeof aiMemory.applied === "boolean"
+      ? aiMemory.applied
+      : null;
+
+  let statusLabel =
+    "Unknown";
+
+  let statusState =
+    "neutral";
+
+  if(!hasMetadata){
+    statusLabel =
+      "Unavailable";
+
+    statusState =
+      "error";
+  }else if(enabled === false){
+    statusLabel =
+      "Disabled";
+
+    statusState =
+      "warn";
+  }else if(
+    available === true &&
+    valid === true
+  ){
+    statusLabel =
+      applied === true
+        ? "Applied"
+        : "Ready";
+
+    statusState =
+      "ok";
+  }else if(
+    available === false ||
+    valid === false
+  ){
+    statusLabel =
+      "Unavailable";
+
+    statusState =
+      "warn";
+  }
+
+  setObservabilityBadge(
+    "observabilityAIMemoryStatus",
+    statusLabel,
+    statusState
+  );
+
+  setObservabilityText(
+    "observabilityAIMemoryMode",
+    aiMemory.mode ??
+    "Unknown"
+  );
+
+  setObservabilityText(
+    "observabilityAIMemoryAvailable",
+    formatObservabilityBoolean(
+      available
+    )
+  );
+
+  setObservabilityValueClass(
+    "observabilityAIMemoryAvailable",
+    getObservabilityBooleanState(
+      available
+    )
+  );
+
+  setObservabilityText(
+    "observabilityAIMemoryValid",
+    formatObservabilityBoolean(
+      valid
+    )
+  );
+
+  setObservabilityValueClass(
+    "observabilityAIMemoryValid",
+    getObservabilityBooleanState(
+      valid
+    )
+  );
+
+  setObservabilityText(
+    "observabilityAIMemoryApplied",
+    formatObservabilityBoolean(
+      applied
+    )
+  );
+
+  setObservabilityValueClass(
+    "observabilityAIMemoryApplied",
+    applied === true
+      ? "ok"
+      : applied === false
+        ? "muted"
+        : "muted"
+  );
+
+  setObservabilityText(
+    "observabilityAIMemoryGeneratedAt",
+    safeDateLabel(
+      aiMemory.generatedAt,
+      "Unknown"
+    )
+  );
+
+  return {
+    hasMetadata,
+    enabled,
+    available,
+    valid,
+    applied
+  };
+}
+
+
+function renderTelegramObservability(
+  liveAnalysis,
+  notifyState
+){
+  const telegram =
+    resolveObservabilityTelegram(
+      liveAnalysis
+    );
+
+  const stateDocument =
+    safeObject(notifyState);
+
+  const hasRuntimeMetadata =
+    Object.keys(telegram).length > 0;
+
+  const enabled =
+    typeof telegram.enabled === "boolean"
+      ? telegram.enabled
+      : null;
+
+  const sentCount =
+    safeNumber(
+      telegram.sentCount,
+      null
+    );
+
+  const skippedCount =
+    safeNumber(
+      telegram.skippedCount,
+      null
+    );
+
+  const failedCount =
+    safeNumber(
+      telegram.failedCount,
+      null
+    );
+
+  let statusLabel =
+    "Metadata unavailable";
+
+  let statusState =
+    "neutral";
+
+  if(hasRuntimeMetadata){
+    if(enabled === false){
+      statusLabel =
+        "Disabled";
+
+      statusState =
+        "warn";
+    }else if(
+      failedCount != null &&
+      failedCount > 0
+    ){
+      statusLabel =
+        "Failures detected";
+
+      statusState =
+        "error";
+    }else{
+      statusLabel =
+        "Operational";
+
+      statusState =
+        "ok";
+    }
+  }
+
+  setObservabilityBadge(
+    "observabilityTelegramStatus",
+    statusLabel,
+    statusState
+  );
+
+  setObservabilityText(
+    "observabilityTelegramUpdatedAt",
+    safeDateLabel(
+      stateDocument.updatedAt,
+      "Unknown"
+    )
+  );
+
+  setObservabilityText(
+    "observabilityTelegramSent",
+    sentCount
+  );
+
+  setObservabilityValueClass(
+    "observabilityTelegramSent",
+    sentCount == null
+      ? "muted"
+      : "ok"
+  );
+
+  setObservabilityText(
+    "observabilityTelegramSkipped",
+    skippedCount
+  );
+
+  setObservabilityValueClass(
+    "observabilityTelegramSkipped",
+    skippedCount == null
+      ? "muted"
+      : "warn"
+  );
+
+  setObservabilityText(
+    "observabilityTelegramFailed",
+    failedCount
+  );
+
+  setObservabilityValueClass(
+    "observabilityTelegramFailed",
+    failedCount == null
+      ? "muted"
+      : failedCount > 0
+        ? "error"
+        : "ok"
+  );
+
+  setObservabilityText(
+    "observabilityTelegramLastResult",
+    "Not exposed by backend"
+  );
+
+  return {
+    hasRuntimeMetadata,
+    enabled,
+    sentCount,
+    skippedCount,
+    failedCount
+  };
+}
+
+
+// ════════════════════════════════════════════════════════════════
+// DASHBOARD OBSERVABILITY — MAIN RENDERER
+// ════════════════════════════════════════════════════════════════
+
+async function renderObservabilityPanel({
+  forceRefresh = false
+} = {}){
+  const container =
+    document.getElementById(
+      "observabilityContainer"
+    );
+
+  if(!container){
+    return null;
+  }
+
+  return withRenderLock(
+    "observability-panel",
+
+    async()=>{
+      setObservabilityOverallStatus(
+        "Loading",
+        "warn"
+      );
+
+      try{
+        const data =
+          await loadObservabilityData({
+            forceRefresh
+          });
+
+        const liveAnalysis =
+          safeObject(
+            data.liveAnalysis
+          );
+
+        const notifyState =
+          safeObject(
+            data.notifyState
+          );
+
+        const liveStatus =
+          renderLiveAnalysisObservability(
+            liveAnalysis,
+            data.availability.liveAnalysis
+          );
+
+        renderLatestDirectionalObservability(
+          liveAnalysis
+        );
+
+        const aiMemoryStatus =
+          renderAIMemoryObservability(
+            liveAnalysis
+          );
+
+        const telegramStatus =
+          renderTelegramObservability(
+            liveAnalysis,
+            notifyState
+          );
+
+        let overallLabel =
+          "Operational";
+
+        let overallState =
+          "ok";
+
+        if(
+          !data.availability.liveAnalysis ||
+          liveStatus.state === "error"
+        ){
+          overallLabel =
+            "Live analysis unavailable";
+
+          overallState =
+            "error";
+        }else if(
+          liveStatus.stale === true
+        ){
+          overallLabel =
+            "Stale data";
+
+          overallState =
+            "warn";
+        }else if(
+          aiMemoryStatus.available === false ||
+          aiMemoryStatus.valid === false ||
+          (
+            telegramStatus.failedCount != null &&
+            telegramStatus.failedCount > 0
+          )
+        ){
+          overallLabel =
+            "Attention required";
+
+          overallState =
+            "warn";
+        }
+
+        setObservabilityOverallStatus(
+          overallLabel,
+          overallState
+        );
+
+        return data;
+      }catch(error){
+        console.error(
+          "Observability rendering failed:",
+          error
+        );
+
+        setObservabilityOverallStatus(
+          "Unavailable",
+          "error"
+        );
+
+        setObservabilityBadge(
+          "observabilityLiveStatus",
+          "Unavailable",
+          "error"
+        );
+
+        return null;
+      }
+    },
+    {
+      shareActive:
+        !forceRefresh
+    }
+  );
+}
   
 // ════════════════════════════════════════════════════════════════
 // APPLICATION CONFIGURATION

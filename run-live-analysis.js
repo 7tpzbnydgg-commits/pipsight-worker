@@ -12181,18 +12181,39 @@ async function runLiveAnalysisRuntime(
         ),
 
       valid:
-        Boolean(
-          inputs.aiMemoryState &&
-          inputs.aiMemoryState.valid
-        ),
+  Boolean(
+    inputs.aiMemoryState &&
+    inputs.aiMemoryState.valid
+  ),
 
-      applied: false,
+applied:
+  pairBundles.some(
+    (bundle) =>
+      [
+        bundle &&
+          bundle.swing,
+        bundle &&
+          bundle.intraday,
+        bundle &&
+          bundle.scalp,
+        bundle &&
+          bundle.master,
+      ].some(
+        (engineResult) =>
+          Boolean(
+            engineResult &&
+            engineResult.aiMemory &&
+            engineResult.aiMemory.applied ===
+              true
+          )
+      )
+  ),
 
-      generatedAt:
-        inputs.aiMemoryState &&
-        inputs.aiMemoryState.generatedAt
-          ? inputs.aiMemoryState.generatedAt
-          : null,
+generatedAt:
+  inputs.aiMemoryState &&
+  inputs.aiMemoryState.generatedAt
+    ? inputs.aiMemoryState.generatedAt
+    : null,
 
       engineName:
         inputs.aiMemoryState &&

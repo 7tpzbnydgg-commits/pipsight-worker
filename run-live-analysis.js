@@ -11080,34 +11080,37 @@ function p6RunPairAnalysis(
       : inputs.scalpSignals;
 
   const bundle =
-    buildPairEngineBundle({
-      pair,
+  buildPairEngineBundle({
+    pair,
 
-      analysisPipeline:
-        pipeline,
+    aiMemoryState:
+      inputs.aiMemoryState,
 
-      scalpSignalsData:
-        isolatedPrimaryScalpData,
+    analysisPipeline:
+      pipeline,
 
-      fallbackScalpAnalysis:
-        pipeline.scalp,
+    scalpSignalsData:
+      isolatedPrimaryScalpData,
 
-      allowPrimaryScalpHold:
-        runtimeOptions.allowPrimaryScalpHold ===
-        true,
+    fallbackScalpAnalysis:
+      pipeline.scalp,
 
-      maximumPrimaryScalpAgeMs:
-        runtimeOptions.maximumPrimaryScalpAgeMs,
+    allowPrimaryScalpHold:
+      runtimeOptions.allowPrimaryScalpHold ===
+      true,
 
-      masterWeights:
-        runtimeOptions.masterWeights,
+    maximumPrimaryScalpAgeMs:
+      runtimeOptions.maximumPrimaryScalpAgeMs,
 
-      minimumNetContribution:
-        runtimeOptions.minimumNetContribution,
+    masterWeights:
+      runtimeOptions.masterWeights,
 
-      minimumDirectionalEngines:
-        runtimeOptions.minimumDirectionalEngines,
-    });
+    minimumNetContribution:
+      runtimeOptions.minimumNetContribution,
+
+    minimumDirectionalEngines:
+      runtimeOptions.minimumDirectionalEngines,
+  });
 
   return {
     ...bundle,

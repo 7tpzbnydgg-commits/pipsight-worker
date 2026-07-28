@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-07-28T15:50:34.541Z",
+  "generatedAt": "2026-07-28T16:00:47.344Z",
   "engineVersion": "1.0.0",
   "strategyVersion": "scalp-lockstep-1.0",
   "signals": [
@@ -49,13 +49,13 @@
       ],
       "tradePlan": null,
       "mode": "M5",
-      "generatedAt": "2026-07-28T15:50:34.541Z",
-      "analyzedCandleAt": "2026-07-28T15:45:00.000Z",
+      "generatedAt": "2026-07-28T16:00:47.344Z",
+      "analyzedCandleAt": "2026-07-28T15:55:00.000Z",
       "prepared": {
         "counts": {
           "m5": 360,
-          "m15": 121,
-          "m30": 61,
+          "m15": 120,
+          "m30": 60,
           "h1": 888
         },
         "source": {
@@ -63,7 +63,7 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-07-28T15:50:34.477Z",
+          "m5": "2026-07-28T16:00:47.268Z",
           "h1": "2026-07-28T15:45:31.880Z"
         },
         "quality": {
@@ -72,8 +72,8 @@
             "rejectedRows": 0,
             "duplicateTimestamps": 0,
             "openCandlesRemoved": 0,
-            "firstDate": "2026-07-27T09:50:00.000Z",
-            "lastDate": "2026-07-28T15:45:00.000Z",
+            "firstDate": "2026-07-27T10:00:00.000Z",
+            "lastDate": "2026-07-28T15:55:00.000Z",
             "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "hasOHLC": true,
@@ -140,13 +140,13 @@
       ],
       "tradePlan": null,
       "mode": "M15",
-      "generatedAt": "2026-07-28T15:50:34.541Z",
+      "generatedAt": "2026-07-28T16:00:47.344Z",
       "analyzedCandleAt": "2026-07-28T15:45:00.000Z",
       "prepared": {
         "counts": {
           "m5": 360,
-          "m15": 121,
-          "m30": 61,
+          "m15": 120,
+          "m30": 60,
           "h1": 888
         },
         "source": {
@@ -154,7 +154,7 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-07-28T15:50:34.477Z",
+          "m5": "2026-07-28T16:00:47.268Z",
           "h1": "2026-07-28T15:45:31.880Z"
         },
         "quality": {
@@ -163,8 +163,8 @@
             "rejectedRows": 0,
             "duplicateTimestamps": 0,
             "openCandlesRemoved": 0,
-            "firstDate": "2026-07-27T09:50:00.000Z",
-            "lastDate": "2026-07-28T15:45:00.000Z",
+            "firstDate": "2026-07-27T10:00:00.000Z",
+            "lastDate": "2026-07-28T15:55:00.000Z",
             "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "hasOHLC": true,
@@ -231,13 +231,13 @@
       ],
       "tradePlan": null,
       "mode": "M30",
-      "generatedAt": "2026-07-28T15:50:34.541Z",
+      "generatedAt": "2026-07-28T16:00:47.344Z",
       "analyzedCandleAt": "2026-07-28T15:30:00.000Z",
       "prepared": {
         "counts": {
           "m5": 360,
-          "m15": 121,
-          "m30": 61,
+          "m15": 120,
+          "m30": 60,
           "h1": 888
         },
         "source": {
@@ -245,7 +245,7 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-07-28T15:50:34.477Z",
+          "m5": "2026-07-28T16:00:47.268Z",
           "h1": "2026-07-28T15:45:31.880Z"
         },
         "quality": {
@@ -254,8 +254,8 @@
             "rejectedRows": 0,
             "duplicateTimestamps": 0,
             "openCandlesRemoved": 0,
-            "firstDate": "2026-07-27T09:50:00.000Z",
-            "lastDate": "2026-07-28T15:45:00.000Z",
+            "firstDate": "2026-07-27T10:00:00.000Z",
+            "lastDate": "2026-07-28T15:55:00.000Z",
             "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "hasOHLC": true,
@@ -281,49 +281,54 @@
       "signal": "WAIT",
       "confidence": 0,
       "reasons": [
-        "Risk Reward below 1:2"
+        "EMA alignment failed"
       ],
       "steps": [
         {
           "name": "EMA Trend",
-          "pass": true,
-          "detail": "BUY EMA alignment confirmed: price 217.86309, EMA20 217.836222, EMA50 217.81918, EMA100 217.79732, EMA200 217.775718"
+          "pass": false,
+          "detail": "Full EMA alignment failed; bullish checks 3/4, bearish checks 1/4"
         },
         {
           "name": "MACD",
-          "pass": true,
-          "detail": "BUY confirmed: MACD -0.002321 is above signal -0.003703; histogram 0.001382"
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because EMA Trend did not pass"
         },
         {
           "name": "RSI",
-          "pass": true,
-          "detail": "BUY RSI confirmation passed at 53.8; required range 45–65"
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because EMA Trend did not pass"
         },
         {
           "name": "Higher TF",
-          "pass": true,
-          "detail": "Higher timeframe confirms the same BUY direction"
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because EMA Trend did not pass"
         },
         {
           "name": "News",
-          "pass": true,
-          "detail": "No conflicting high-impact news found across 6 pair-specific item(s); net news score 45"
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because EMA Trend did not pass"
         },
         {
           "name": "Risk Reward",
-          "pass": false,
-          "detail": "Calculated R:R is 1:0.18 using entry 217.86309, stop 217.85564 and target 217.86442; minimum required is 1:2"
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because EMA Trend did not pass"
         }
       ],
       "tradePlan": null,
       "mode": "M5",
-      "generatedAt": "2026-07-28T15:50:34.541Z",
-      "analyzedCandleAt": "2026-07-28T15:45:00.000Z",
+      "generatedAt": "2026-07-28T16:00:47.344Z",
+      "analyzedCandleAt": "2026-07-28T15:55:00.000Z",
       "prepared": {
         "counts": {
           "m5": 360,
-          "m15": 121,
-          "m30": 61,
+          "m15": 120,
+          "m30": 60,
           "h1": 888
         },
         "source": {
@@ -331,7 +336,7 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-07-28T15:50:34.477Z",
+          "m5": "2026-07-28T16:00:47.268Z",
           "h1": "2026-07-28T15:45:31.880Z"
         },
         "quality": {
@@ -340,8 +345,8 @@
             "rejectedRows": 0,
             "duplicateTimestamps": 0,
             "openCandlesRemoved": 0,
-            "firstDate": "2026-07-27T09:50:00.000Z",
-            "lastDate": "2026-07-28T15:45:00.000Z",
+            "firstDate": "2026-07-27T10:00:00.000Z",
+            "lastDate": "2026-07-28T15:55:00.000Z",
             "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "hasOHLC": true,
@@ -367,53 +372,54 @@
       "signal": "WAIT",
       "confidence": 0,
       "reasons": [
-        "MACD confirmation failed"
+        "EMA alignment failed"
       ],
       "steps": [
         {
           "name": "EMA Trend",
-          "pass": true,
-          "detail": "BUY EMA alignment confirmed: price 217.86309, EMA20 217.831265, EMA50 217.800632, EMA100 217.78266, EMA200 217.756937"
+          "pass": false,
+          "detail": "Full EMA alignment failed; bullish checks 3/4, bearish checks 1/4"
         },
         {
           "name": "MACD",
-          "pass": false,
-          "detail": "BUY not confirmed: MACD 0.0265 is not above signal 0.030358; histogram -0.003858"
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because EMA Trend did not pass"
         },
         {
           "name": "RSI",
           "pass": null,
           "status": "skip",
-          "detail": "Skipped because MACD did not pass"
+          "detail": "Skipped because EMA Trend did not pass"
         },
         {
           "name": "Higher TF",
           "pass": null,
           "status": "skip",
-          "detail": "Skipped because MACD did not pass"
+          "detail": "Skipped because EMA Trend did not pass"
         },
         {
           "name": "News",
           "pass": null,
           "status": "skip",
-          "detail": "Skipped because MACD did not pass"
+          "detail": "Skipped because EMA Trend did not pass"
         },
         {
           "name": "Risk Reward",
           "pass": null,
           "status": "skip",
-          "detail": "Skipped because MACD did not pass"
+          "detail": "Skipped because EMA Trend did not pass"
         }
       ],
       "tradePlan": null,
       "mode": "M15",
-      "generatedAt": "2026-07-28T15:50:34.541Z",
+      "generatedAt": "2026-07-28T16:00:47.344Z",
       "analyzedCandleAt": "2026-07-28T15:45:00.000Z",
       "prepared": {
         "counts": {
           "m5": 360,
-          "m15": 121,
-          "m30": 61,
+          "m15": 120,
+          "m30": 60,
           "h1": 888
         },
         "source": {
@@ -421,7 +427,7 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-07-28T15:50:34.477Z",
+          "m5": "2026-07-28T16:00:47.268Z",
           "h1": "2026-07-28T15:45:31.880Z"
         },
         "quality": {
@@ -430,8 +436,8 @@
             "rejectedRows": 0,
             "duplicateTimestamps": 0,
             "openCandlesRemoved": 0,
-            "firstDate": "2026-07-27T09:50:00.000Z",
-            "lastDate": "2026-07-28T15:45:00.000Z",
+            "firstDate": "2026-07-27T10:00:00.000Z",
+            "lastDate": "2026-07-28T15:55:00.000Z",
             "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "hasOHLC": true,
@@ -457,51 +463,54 @@
       "signal": "WAIT",
       "confidence": 0,
       "reasons": [
-        "Higher timeframe mismatch"
+        "EMA alignment failed"
       ],
       "steps": [
         {
           "name": "EMA Trend",
-          "pass": true,
-          "detail": "BUY EMA alignment confirmed: price 217.86309, EMA20 217.830335, EMA50 217.802134, EMA100 217.785205, EMA200 217.761255"
+          "pass": false,
+          "detail": "Full EMA alignment failed; bullish checks 3/4, bearish checks 1/4"
         },
         {
           "name": "MACD",
-          "pass": true,
-          "detail": "BUY confirmed: MACD 0.031364 is above signal 0.023032; histogram 0.008331"
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because EMA Trend did not pass"
         },
         {
           "name": "RSI",
-          "pass": true,
-          "detail": "BUY RSI confirmation passed at 55.22; required range 45–65"
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because EMA Trend did not pass"
         },
         {
           "name": "Higher TF",
-          "pass": false,
-          "detail": "Higher timeframe mismatch: lower timeframe is BUY, higher timeframe is SELL"
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because EMA Trend did not pass"
         },
         {
           "name": "News",
           "pass": null,
           "status": "skip",
-          "detail": "Skipped because Higher TF did not pass"
+          "detail": "Skipped because EMA Trend did not pass"
         },
         {
           "name": "Risk Reward",
           "pass": null,
           "status": "skip",
-          "detail": "Skipped because Higher TF did not pass"
+          "detail": "Skipped because EMA Trend did not pass"
         }
       ],
       "tradePlan": null,
       "mode": "M30",
-      "generatedAt": "2026-07-28T15:50:34.541Z",
+      "generatedAt": "2026-07-28T16:00:47.344Z",
       "analyzedCandleAt": "2026-07-28T15:30:00.000Z",
       "prepared": {
         "counts": {
           "m5": 360,
-          "m15": 121,
-          "m30": 61,
+          "m15": 120,
+          "m30": 60,
           "h1": 888
         },
         "source": {
@@ -509,7 +518,7 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-07-28T15:50:34.477Z",
+          "m5": "2026-07-28T16:00:47.268Z",
           "h1": "2026-07-28T15:45:31.880Z"
         },
         "quality": {
@@ -518,8 +527,8 @@
             "rejectedRows": 0,
             "duplicateTimestamps": 0,
             "openCandlesRemoved": 0,
-            "firstDate": "2026-07-27T09:50:00.000Z",
-            "lastDate": "2026-07-28T15:45:00.000Z",
+            "firstDate": "2026-07-27T10:00:00.000Z",
+            "lastDate": "2026-07-28T15:55:00.000Z",
             "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "hasOHLC": true,

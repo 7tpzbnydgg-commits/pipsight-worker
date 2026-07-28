@@ -8117,84 +8117,230 @@ function buildMasterConsensus(input = {}) {
 // Per-pair engine bundle
 // ---------------------------------------------------------------------------
 
-function buildPairEngineBundle(input = {}) {
-  const pair = liveNormalizePairLabel(
-    input.pair ||
+function attachAIMemoryAssessment(
+  engineResult,
+  aiMemoryState,
+  context = {}
+) {
+  if (
+    !engineResult ||
+    typeof engineResult !== "object"
+  ) {
+    return engineResult;
+  }
+
+  const assessment =
+    createAIMemoryAssessment(
+      aiMemoryState,
+      {
+        ...context,
+
+        pair:
+          context.pair ||
+          engineResult.pair ||
+          engineResult.symbol ||
+          engineResult.pairLabel,
+
+        engine:
+          context.engine ||
+          context.mode ||
+          engineResult.engineName ||
+          engineResult.engine ||
+          engineResult.mode,
+
+        direction:
+          engineResult.decision ||
+          engineResult.signal ||
+          engineResult.action ||
+          engineResult.direction,
+
+        timeframe:
+          context.timeframe ||
+          engineResult.timeframe ||
+          engineResult.tf ||
+          engineResult.interval,
+      }
+    );
+
+  return {
+    ...engineResult,
+
+    aiMemory:
+      assessment,
+  };
+}
+
+function buildPairEngineBundle(
+  input = {}
+) {
+  const pair =
+    liveNormalizePairLabel(
+      input.pair ||
       input.symbol ||
       input.pairLabel
-  );
+    );
+
+  const aiMemoryState =
+    input.aiMemoryState ||
+    input.aiMemory ||
+    createUnavailableAIMemoryState(
+      "AI Memory was not supplied to the pair analysis pipeline"
+    );
 
   const pipeline =
-    liveIsPlainObject(input.analysisPipeline)
+    liveIsPlainObject(
+      input.analysisPipeline
+    )
       ? input.analysisPipeline
-      : liveIsPlainObject(input.pipeline)
+      : liveIsPlainObject(
+          input.pipeline
+        )
         ? input.pipeline
-        : typeof runLegacyCompatibleAnalysisPipeline === "function"
+        : typeof runLegacyCompatibleAnalysisPipeline ===
+            "function"
           ? runLegacyCompatibleAnalysisPipeline({
               ...input,
               pair,
             })
           : {};
 
-  const swing = selectSwingEngineResult({
-    pair,
-    swingAnalysis:
-      input.swingAnalysis ||
-      pipeline.daily,
-    analysisPipeline: pipeline,
-  });
+  const baseSwing =
+    selectSwingEngineResult({
+      pair,
 
-  const intraday = selectIntradayEngineResult({
-    pair,
-    intradayAnalysis:
-      input.intradayAnalysis ||
-      pipeline.intraday,
-    analysisPipeline: pipeline,
-  });
+      swingAnalysis:
+        input.swingAnalysis ||
+        pipeline.daily,
 
-  const scalp = selectScalpEngineResult({
-    pair,
+      analysisPipeline:
+        pipeline,
+    });
 
-    scalpSignalsData:
-      input.scalpSignalsData ||
-      input.scalpSignals,
+  const swing =
+    attachAIMemoryAssessment(
+      baseSwing,
+      aiMemoryState,
+      {
+        pair,
+        engine: "weekly",
+        mode: "swing",
+        timeframe: "D1",
+      }
+    );
 
-    fallbackScalpAnalysis:
-      input.fallbackScalpAnalysis ||
-      input.legacyScalpAnalysis ||
-      pipeline.scalp,
+  const baseIntraday =
+    selectIntradayEngineResult({
+      pair,
 
-    allowPrimaryHold:
-      input.allowPrimaryScalpHold,
+      intradayAnalysis:
+        input.intradayAnalysis ||
+        pipeline.intraday,
 
-    maximumPrimaryScalpAgeMs:
-      input.maximumPrimaryScalpAgeMs,
-  });
+      analysisPipeline:
+        pipeline,
+    });
 
-  const master = buildMasterConsensus({
-    pair,
-    swing,
-    intraday,
-    scalp,
+  const intraday =
+    attachAIMemoryAssessment(
+      baseIntraday,
+      aiMemoryState,
+      {
+        pair,
+        engine: "daily",
+        mode: "intraday",
+        timeframe: "1H",
+      }
+    );
 
-    weights:
-      input.masterWeights ||
-      input.engineWeights,
+  const baseScalp =
+    selectScalpEngineResult({
+      pair,
 
-    minimumNetContribution:
-      input.minimumNetContribution,
+      scalpSignalsData:
+        input.scalpSignalsData ||
+        input.scalpSignals,
 
-    minimumDirectionalEngines:
-      input.minimumDirectionalEngines,
-  });
+      fallbackScalpAnalysis:
+        input.fallbackScalpAnalysis ||
+        input.legacyScalpAnalysis ||
+        pipeline.scalp,
+
+      allowPrimaryHold:
+        input.allowPrimaryScalpHold,
+
+      maximumPrimaryScalpAgeMs:
+        input.maximumPrimaryScalpAgeMs,
+    });
+
+  const scalpTimeframe =
+    normalizeAIMemoryTimeframe(
+      firstString(
+        baseScalp.timeframe,
+        baseScalp.tf,
+        baseScalp.interval,
+
+        baseScalp.sourceData &&
+          baseScalp.sourceData.timeframe,
+
+        baseScalp.raw &&
+          baseScalp.raw.timeframe
+      )
+    ) ||
+    "15m";
+
+  const scalp =
+    attachAIMemoryAssessment(
+      baseScalp,
+      aiMemoryState,
+      {
+        pair,
+        engine: "scalp",
+        mode: "scalp",
+        timeframe:
+          scalpTimeframe,
+      }
+    );
+
+  const baseMaster =
+    buildMasterConsensus({
+      pair,
+      swing,
+      intraday,
+      scalp,
+
+      weights:
+        input.masterWeights ||
+        input.engineWeights,
+
+      minimumNetContribution:
+        input.minimumNetContribution,
+
+      minimumDirectionalEngines:
+        input.minimumDirectionalEngines,
+    });
+
+  const master =
+    attachAIMemoryAssessment(
+      baseMaster,
+      aiMemoryState,
+      {
+        pair,
+        engine: "master",
+        mode: "master",
+        timeframe: null,
+      }
+    );
 
   return {
     pair,
     symbol: pair,
     pairLabel: pair,
 
-    generatedAt: liveNowIso(),
-    timestamp: Date.now(),
+    generatedAt:
+      liveNowIso(),
+
+    timestamp:
+      Date.now(),
 
     swing,
     intraday,
@@ -8206,6 +8352,42 @@ function buildPairEngineBundle(input = {}) {
       intraday,
       scalp,
       master,
+    },
+
+    aiMemory: {
+      enabled:
+        AI_MEMORY_INTEGRATION.enabled,
+
+      available:
+        Boolean(
+          aiMemoryState.available
+        ),
+
+      valid:
+        Boolean(
+          aiMemoryState.valid
+        ),
+
+      mode:
+        AI_MEMORY_INTEGRATION.mode,
+
+      applied: false,
+
+      generatedAt:
+        aiMemoryState.generatedAt ||
+        null,
+
+      engineName:
+        aiMemoryState.engineName ||
+        null,
+
+      engineVersion:
+        aiMemoryState.engineVersion ||
+        null,
+
+      reason:
+        aiMemoryState.reason ||
+        null,
     },
 
     pipelineMetadata:

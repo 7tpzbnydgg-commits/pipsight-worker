@@ -11937,7 +11937,7 @@ function p6BuildRuntimeOptions() {
     telegramModes:
       (
         process.env.PIPSIGHT_TELEGRAM_MODES ||
-        "master"
+        "master,swing,intraday,scalp"
       )
         .split(",")
         .map((value) => value.trim())

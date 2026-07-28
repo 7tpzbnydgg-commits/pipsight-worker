@@ -1481,6 +1481,294 @@ function createAIMemoryAssessment(
 }
 
 // ========================================================
+// AI Memory Controlled Confidence Application
+// ========================================================
+
+function applyAIMemoryConfidenceAdjustment(
+  engineResult,
+  assessment
+) {
+  if (
+    !engineResult ||
+    typeof engineResult !== "object" ||
+    Array.isArray(engineResult)
+  ) {
+    return engineResult;
+  }
+
+  const memoryAssessment =
+    assessment &&
+    typeof assessment === "object" &&
+    !Array.isArray(assessment)
+      ? assessment
+      : createUnavailableAIMemoryAssessment(
+          null,
+          "AI Memory assessment is unavailable"
+        );
+
+  const rawConfidence =
+    Number(
+      engineResult.confidence
+    );
+
+  const originalConfidence =
+    Number.isFinite(rawConfidence)
+      ? clampAIMemoryNumber(
+          rawConfidence,
+          0,
+          100
+        )
+      : 0;
+
+  const decision =
+    normalizeSignalDecision(
+      firstString(
+        engineResult.decision,
+        engineResult.signal,
+        engineResult.action,
+        engineResult.direction
+      )
+    ) ||
+    "HOLD";
+
+  function buildUnappliedResult(
+    applicationReason
+  ) {
+    return {
+      ...engineResult,
+
+      confidence:
+        originalConfidence,
+
+      confidencePct:
+        originalConfidence,
+
+      originalConfidence,
+
+      aiMemoryAdjustedConfidence:
+        originalConfidence,
+
+      aiMemory: {
+        ...memoryAssessment,
+
+        applied: false,
+
+        confidenceAdjustment: 0,
+
+        appliedConfidenceAdjustment: 0,
+
+        originalConfidence,
+
+        adjustedConfidence:
+          originalConfidence,
+
+        applicationReason:
+          applicationReason ||
+          "AI Memory confidence adjustment was not applied",
+      },
+    };
+  }
+
+  if (
+    !AI_MEMORY_INTEGRATION.enabled
+  ) {
+    return buildUnappliedResult(
+      "AI Memory integration is disabled"
+    );
+  }
+
+  if (
+    AI_MEMORY_INTEGRATION.mode !==
+    "CONTROLLED"
+  ) {
+    return buildUnappliedResult(
+      "AI Memory is not running in CONTROLLED mode"
+    );
+  }
+
+  if (
+    AI_MEMORY_INTEGRATION
+      .applyConfidenceAdjustment !==
+    true
+  ) {
+    return buildUnappliedResult(
+      "AI Memory confidence adjustment is disabled"
+    );
+  }
+
+  if (
+    decision !== "BUY" &&
+    decision !== "SELL"
+  ) {
+    return buildUnappliedResult(
+      "Confidence adjustment requires a BUY or SELL decision"
+    );
+  }
+
+  if (
+    memoryAssessment.available !==
+      true ||
+    memoryAssessment.valid !==
+      true
+  ) {
+    return buildUnappliedResult(
+      memoryAssessment.reason ||
+      "AI Memory is unavailable or invalid"
+    );
+  }
+
+  if (
+    memoryAssessment.status ===
+      "INSUFFICIENT_DATA" ||
+    memoryAssessment.status ===
+      "UNAVAILABLE" ||
+    memoryAssessment.status ===
+      "NO_MATCH" ||
+    memoryAssessment.status ===
+      "NOT_APPLICABLE"
+  ) {
+    return buildUnappliedResult(
+      memoryAssessment.reason ||
+      "AI Memory assessment is not eligible for confidence adjustment"
+    );
+  }
+
+  const sampleSize =
+    Number(
+      memoryAssessment.sampleSize
+    );
+
+  if (
+    !Number.isFinite(sampleSize) ||
+    sampleSize <
+      AI_MEMORY_INTEGRATION
+        .minimumSamplesToApply
+  ) {
+    return buildUnappliedResult(
+      `AI Memory requires at least ${
+        AI_MEMORY_INTEGRATION
+          .minimumSamplesToApply
+      } historical trades before applying confidence`
+    );
+  }
+
+  const reliability =
+    Number(
+      memoryAssessment.reliability
+    );
+
+  if (
+    !Number.isFinite(reliability) ||
+    reliability <
+      AI_MEMORY_INTEGRATION
+        .minimumReliabilityToApply
+  ) {
+    return buildUnappliedResult(
+      `AI Memory reliability must be at least ${
+        AI_MEMORY_INTEGRATION
+          .minimumReliabilityToApply
+      } before applying confidence`
+    );
+  }
+
+  const suggestedAdjustment =
+    Number(
+      memoryAssessment
+        .suggestedConfidenceAdjustment
+    );
+
+  if (
+    !Number.isFinite(
+      suggestedAdjustment
+    ) ||
+    suggestedAdjustment === 0
+  ) {
+    return buildUnappliedResult(
+      "AI Memory suggested no confidence adjustment"
+    );
+  }
+
+  const maximumAdjustment =
+    Math.abs(
+      Number(
+        AI_MEMORY_INTEGRATION
+          .maximumAppliedAdjustment
+      )
+    );
+
+  const safeMaximumAdjustment =
+    Number.isFinite(
+      maximumAdjustment
+    )
+      ? maximumAdjustment
+      : 0;
+
+  const appliedAdjustment =
+    Math.round(
+      clampAIMemoryNumber(
+        suggestedAdjustment,
+        -safeMaximumAdjustment,
+        safeMaximumAdjustment
+      )
+    );
+
+  if (appliedAdjustment === 0) {
+    return buildUnappliedResult(
+      "AI Memory adjustment was reduced to zero by safety limits"
+    );
+  }
+
+  const adjustedConfidence =
+    clampAIMemoryNumber(
+      originalConfidence +
+        appliedAdjustment,
+      0,
+      100
+    );
+
+  return {
+    ...engineResult,
+
+    confidence:
+      adjustedConfidence,
+
+    confidencePct:
+      adjustedConfidence,
+
+    originalConfidence,
+
+    aiMemoryAdjustedConfidence:
+      adjustedConfidence,
+
+    aiMemory: {
+      ...memoryAssessment,
+
+      mode:
+        AI_MEMORY_INTEGRATION.mode,
+
+      applied: true,
+
+      confidenceAdjustment:
+        appliedAdjustment,
+
+      appliedConfidenceAdjustment:
+        appliedAdjustment,
+
+      originalConfidence,
+
+      adjustedConfidence,
+
+      applicationReason:
+        `AI Memory applied a bounded confidence adjustment of ${
+          appliedAdjustment > 0
+            ? "+"
+            : ""
+        }${appliedAdjustment}`,
+    },
+  };
+}
+
+// ========================================================
 // Generic Helpers
 // ========================================================
 

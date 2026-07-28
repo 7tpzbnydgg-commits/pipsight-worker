@@ -11935,13 +11935,13 @@ function p6BuildRuntimeOptions() {
       ),
 
     telegramModes:
-      (
-        process.env.PIPSIGHT_TELEGRAM_MODES ||
-        "master,swing,intraday,scalp"
-      )
-        .split(",")
-        .map((value) => value.trim())
-        .filter(Boolean),
+  (
+    process.env.PIPSIGHT_TELEGRAM_MODES ||
+    "master,swing,intraday,scalp"
+  )
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean),
 
     telegramMinimumConfidence:
       p6EnvironmentNumber(
@@ -12247,23 +12247,23 @@ generatedAt:
   };
 
   const historyCandidates =
-    collectHistoryRecordsFromOutput(
-      output,
-      {
-        modes:
-          runtimeOptions.historyModes ||
-          [
-            "master",
-            "swing",
-            "intraday",
-            "scalp",
-          ],
+  collectHistoryRecordsFromOutput(
+    output,
+    {
+      modes:
+        runtimeOptions.historyModes ||
+        [
+          "master",
+          "swing",
+          "intraday",
+          "scalp",
+        ],
 
-        includeHold:
-          runtimeOptions.includeHoldHistory ===
-          true,
-      }
-    );
+      includeHold:
+        runtimeOptions.includeHoldHistory ===
+        true,
+    }
+  );
 
   const historyResult =
     appendAnalysisHistoryRecords(

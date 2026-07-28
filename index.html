@@ -807,6 +807,318 @@
     font-size:12px;
     line-height:1.6;
   }
+  
+/* ======================================================
+   PipSight Pro — Dashboard Observability
+======================================================= */
+
+.observability-container{
+  padding-top:10px;
+}
+
+.observability-container[hidden]{
+  display:none !important;
+}
+
+.observability-header{
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-start;
+  gap:18px;
+  margin-bottom:16px;
+  padding:18px 20px;
+  border:1px solid var(--border);
+  border-top:2px solid rgba(201,162,76,.5);
+  border-radius:var(--radius);
+  background:var(--panel);
+  box-shadow:var(--shadow);
+}
+
+.observability-eyebrow{
+  margin:0 0 6px;
+  color:var(--accent);
+  font-family:"JetBrains Mono",monospace;
+  font-size:10px;
+  font-weight:600;
+  letter-spacing:.16em;
+  text-transform:uppercase;
+}
+
+.observability-title{
+  margin:0;
+  color:var(--text);
+  font-family:"Fraunces",serif;
+  font-size:22px;
+  font-weight:600;
+  line-height:1.2;
+}
+
+.observability-overall-status{
+  display:inline-flex;
+  flex-shrink:0;
+  align-items:center;
+  gap:7px;
+  min-height:29px;
+  padding:6px 10px;
+  border:1px solid var(--border);
+  border-radius:3px;
+  background:var(--panel-soft);
+  color:var(--muted);
+  font-family:"JetBrains Mono",monospace;
+  font-size:10px;
+  font-weight:600;
+  letter-spacing:.04em;
+  text-transform:uppercase;
+}
+
+.observability-status-dot{
+  width:7px;
+  height:7px;
+  flex-shrink:0;
+  border-radius:50%;
+  background:var(--muted);
+}
+
+.observability-overall-status.status-ok{
+  border-color:rgba(62,156,116,.45);
+  color:var(--buy);
+  background:var(--buy-bg);
+}
+
+.observability-overall-status.status-ok
+.observability-status-dot{
+  background:var(--buy);
+  box-shadow:0 0 6px var(--buy);
+}
+
+.observability-overall-status.status-warn{
+  border-color:rgba(208,140,59,.45);
+  color:var(--hold);
+  background:var(--hold-bg);
+}
+
+.observability-overall-status.status-warn
+.observability-status-dot{
+  background:var(--hold);
+  box-shadow:0 0 6px var(--hold);
+}
+
+.observability-overall-status.status-error{
+  border-color:rgba(181,84,74,.45);
+  color:var(--sell);
+  background:var(--sell-bg);
+}
+
+.observability-overall-status.status-error
+.observability-status-dot{
+  background:var(--sell);
+  box-shadow:0 0 6px var(--sell);
+}
+
+.observability-grid{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:14px;
+}
+
+.observability-card{
+  min-width:0;
+  padding:18px;
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  background:var(--panel);
+  box-shadow:var(--shadow);
+}
+
+.observability-card-header{
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-start;
+  gap:12px;
+  margin-bottom:14px;
+  padding-bottom:12px;
+  border-bottom:1px solid var(--border);
+}
+
+.observability-card-title{
+  min-width:0;
+  margin:0;
+  color:var(--text);
+  font-family:"Fraunces",serif;
+  font-size:17px;
+  font-weight:600;
+  line-height:1.3;
+}
+
+.observability-badge{
+  display:inline-flex;
+  flex-shrink:0;
+  align-items:center;
+  justify-content:center;
+  max-width:58%;
+  min-height:25px;
+  padding:4px 8px;
+  overflow-wrap:anywhere;
+  border:1px solid var(--border);
+  border-radius:3px;
+  background:var(--panel-soft);
+  color:var(--muted);
+  text-align:center;
+  font-family:"JetBrains Mono",monospace;
+  font-size:9px;
+  font-weight:600;
+  line-height:1.35;
+  letter-spacing:.03em;
+  text-transform:uppercase;
+}
+
+.observability-badge-neutral{
+  border-color:var(--border);
+  color:var(--muted);
+  background:var(--panel-soft);
+}
+
+.observability-badge-ok{
+  border-color:rgba(62,156,116,.45);
+  color:var(--buy);
+  background:var(--buy-bg);
+}
+
+.observability-badge-warn{
+  border-color:rgba(208,140,59,.45);
+  color:var(--hold);
+  background:var(--hold-bg);
+}
+
+.observability-badge-error{
+  border-color:rgba(181,84,74,.45);
+  color:var(--sell);
+  background:var(--sell-bg);
+}
+
+.observability-badge-buy{
+  border-color:rgba(62,156,116,.45);
+  color:var(--buy);
+  background:var(--buy-bg);
+}
+
+.observability-badge-sell{
+  border-color:rgba(181,84,74,.45);
+  color:var(--sell);
+  background:var(--sell-bg);
+}
+
+.observability-badge-hold{
+  border-color:rgba(208,140,59,.45);
+  color:var(--hold);
+  background:var(--hold-bg);
+}
+
+.observability-details{
+  margin:0;
+}
+
+.observability-detail-row{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) minmax(0,1.35fr);
+  gap:12px;
+  align-items:start;
+  padding:8px 0;
+  border-bottom:1px dashed var(--border);
+}
+
+.observability-detail-row:last-child{
+  border-bottom:none;
+}
+
+.observability-detail-row dt{
+  min-width:0;
+  color:var(--muted);
+  font-family:"JetBrains Mono",monospace;
+  font-size:10px;
+  line-height:1.5;
+}
+
+.observability-detail-row dd{
+  min-width:0;
+  margin:0;
+  overflow-wrap:anywhere;
+  color:var(--text);
+  text-align:right;
+  font-family:"JetBrains Mono",monospace;
+  font-size:10px;
+  font-weight:500;
+  line-height:1.5;
+}
+
+.observability-value-ok{
+  color:var(--buy) !important;
+}
+
+.observability-value-warn{
+  color:var(--hold) !important;
+}
+
+.observability-value-error{
+  color:var(--sell) !important;
+}
+
+.observability-value-muted{
+  color:var(--muted) !important;
+}
+
+/* Tablet and mobile */
+
+@media (max-width:700px){
+  .observability-grid{
+    grid-template-columns:1fr;
+  }
+
+  .observability-header{
+    padding:16px;
+  }
+
+  .observability-card{
+    padding:16px;
+  }
+}
+
+@media (max-width:480px){
+  .observability-container{
+    padding-top:6px;
+  }
+
+  .observability-header{
+    flex-direction:column;
+    gap:12px;
+  }
+
+  .observability-title{
+    font-size:20px;
+  }
+
+  .observability-overall-status{
+    width:100%;
+    justify-content:center;
+  }
+
+  .observability-card-header{
+    align-items:center;
+  }
+
+  .observability-card-title{
+    font-size:16px;
+  }
+
+  .observability-badge{
+    max-width:55%;
+  }
+
+  .observability-detail-row{
+    grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr);
+    gap:10px;
+  }
+}
 
   @media (max-width:700px){
     .header-inner{

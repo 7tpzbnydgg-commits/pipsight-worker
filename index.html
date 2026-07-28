@@ -1758,6 +1758,184 @@ const PATTERN_DATA_URL =
   DATA_URLS.patternSignals;
 
 // ════════════════════════════════════════════════════════════════
+// DASHBOARD OBSERVABILITY — DATA SOURCES
+// ════════════════════════════════════════════════════════════════
+
+const LIVE_ANALYSIS_URL =
+  `${PIPSIGHT_REPOSITORY_RAW_BASE}/data/live-analysis.json`;
+
+const NOTIFY_STATE_URL =
+  `${PIPSIGHT_REPOSITORY_RAW_BASE}/data/notify-state.json`;
+
+const OBSERVABILITY_CACHE_TTL_MS =
+  60_000;
+
+
+// ════════════════════════════════════════════════════════════════
+// DASHBOARD OBSERVABILITY — VALIDATION
+// ════════════════════════════════════════════════════════════════
+
+function validateLiveAnalysisPayload(payload){
+  if(!isPlainObject(payload)){
+    return "Live analysis response must be an object";
+  }
+
+  const generatedAt =
+    payload.generatedAt ??
+    payload.updatedAt ??
+    null;
+
+  if(
+    generatedAt != null &&
+    safeDateMs(generatedAt) == null
+  ){
+    return "Live analysis contains an invalid timestamp";
+  }
+
+  if(
+    payload.pairs != null &&
+    !isPlainObject(payload.pairs)
+  ){
+    return "Live analysis pairs must be an object";
+  }
+
+  return true;
+}
+
+
+function validateNotifyStatePayload(payload){
+  if(!isPlainObject(payload)){
+    return "Notify state response must be an object";
+  }
+
+  if(
+    payload.updatedAt != null &&
+    safeDateMs(payload.updatedAt) == null
+  ){
+    return "Notify state contains an invalid updatedAt value";
+  }
+
+  return true;
+}
+
+// ════════════════════════════════════════════════════════════════
+// DASHBOARD OBSERVABILITY — SAFE OPTIONAL FETCH
+// ════════════════════════════════════════════════════════════════
+
+async function fetchOptionalObservabilityJSON(
+  url,
+  {
+    forceRefresh = false,
+    validate = null
+  } = {}
+){
+  try{
+    const payload =
+      await fetchJSONCached(
+        url,
+        {
+          ttlMs:
+            OBSERVABILITY_CACHE_TTL_MS,
+
+          forceRefresh,
+
+          allowLastKnownGood:
+            true,
+
+          validate
+        }
+      );
+
+    return {
+      available:
+        true,
+
+      payload:
+        safeObject(payload),
+
+      error:
+        null
+    };
+  }catch(error){
+    return {
+      available:
+        false,
+
+      payload:
+        null,
+
+      error:
+        normalizeErrorMessage(
+          error,
+          "Observability data unavailable"
+        )
+    };
+  }
+}
+
+
+// ════════════════════════════════════════════════════════════════
+// DASHBOARD OBSERVABILITY — COMBINED LOADER
+// ════════════════════════════════════════════════════════════════
+
+async function loadObservabilityData({
+  forceRefresh = false
+} = {}){
+  const [
+    liveAnalysisResult,
+    notifyStateResult
+  ] =
+    await Promise.all([
+      fetchOptionalObservabilityJSON(
+        LIVE_ANALYSIS_URL,
+        {
+          forceRefresh,
+
+          validate:
+            validateLiveAnalysisPayload
+        }
+      ),
+
+      fetchOptionalObservabilityJSON(
+        NOTIFY_STATE_URL,
+        {
+          forceRefresh,
+
+          validate:
+            validateNotifyStatePayload
+        }
+      )
+    ]);
+
+  return {
+    loadedAt:
+      new Date().toISOString(),
+
+    liveAnalysis:
+      liveAnalysisResult.payload,
+
+    notifyState:
+      notifyStateResult.payload,
+
+    availability: {
+      liveAnalysis:
+        liveAnalysisResult.available,
+
+      notifyState:
+        notifyStateResult.available
+    },
+
+    errors: {
+      liveAnalysis:
+        liveAnalysisResult.error,
+
+      notifyState:
+        notifyStateResult.error
+    }
+  };
+}
+  
+// ════════════════════════════════════════════════════════════════
 // APPLICATION CONFIGURATION
 // ════════════════════════════════════════════════════════════════
 

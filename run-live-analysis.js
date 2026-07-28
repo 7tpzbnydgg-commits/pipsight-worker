@@ -9008,31 +9008,72 @@ function liveHistoryRecordFromEngine(
   engineResult,
   options = {}
 ) {
-  const canonical = buildCanonicalEngineResult(
-    engineResult,
-    {
-      pair:
-        options.pair ||
-        engineResult?.pair,
+  const canonical =
+    buildCanonicalEngineResult(
+      engineResult,
+      {
+        pair:
+          options.pair ||
+          engineResult?.pair,
 
-      mode:
-        options.mode ||
-        engineResult?.mode ||
-        "master",
+        mode:
+          options.mode ||
+          engineResult?.mode ||
+          "master",
 
-      engineName:
-        options.engineName ||
-        engineResult?.engine ||
-        engineResult?.engineName,
-    }
-  );
+        engineName:
+          options.engineName ||
+          engineResult?.engine ||
+          engineResult?.engineName,
+      }
+    );
 
-  const recordedAt = liveNowIso();
+  const recordedAt =
+    liveNowIso();
+
+  const finalConfidence =
+    liveNormalizeConfidence(
+      canonical.confidence,
+      0
+    );
+
+  const originalConfidence =
+    liveNormalizeConfidence(
+      canonical.originalConfidence ??
+        canonical.aiMemory
+          ?.originalConfidence ??
+        finalConfidence,
+      finalConfidence
+    );
+
+  const aiMemoryAdjustedConfidence =
+    liveNormalizeConfidence(
+      canonical.aiMemoryAdjustedConfidence ??
+        canonical.aiMemory
+          ?.adjustedConfidence ??
+        finalConfidence,
+      finalConfidence
+    );
+
+  const appliedConfidenceAdjustment =
+    liveFiniteNumber(
+      canonical.aiMemory
+        ?.appliedConfidenceAdjustment ??
+        canonical.aiMemory
+          ?.confidenceAdjustment,
+      0
+    );
+
+  const aiMemoryApplied =
+    canonical.aiMemory?.applied ===
+    true;
 
   return {
     id:
       options.id ||
-      `${Date.now()}-${liveCompactPair(canonical.pair)}-${canonical.mode}`,
+      `${Date.now()}-${liveCompactPair(
+        canonical.pair
+      )}-${canonical.mode}`,
 
     recordedAt,
     createdAt: recordedAt,
@@ -9044,49 +9085,110 @@ function liveHistoryRecordFromEngine(
 
     mode: canonical.mode,
     engine: canonical.engine,
-    engineName: canonical.engineName,
+    engineName:
+      canonical.engineName,
 
-    decision: canonical.decision,
-    signal: canonical.signal,
-    action: canonical.action,
-    direction: canonical.direction,
+    decision:
+      canonical.decision,
 
-    confidence: canonical.confidence,
-    score: canonical.score,
+    signal:
+      canonical.signal,
 
-    price: canonical.price,
-    currentPrice: canonical.currentPrice,
+    action:
+      canonical.action,
 
-    entry: canonical.entry,
-    entryPrice: canonical.entryPrice,
+    direction:
+      canonical.direction,
 
-    stop: canonical.stop,
-    stopLoss: canonical.stopLoss,
-    sl: canonical.sl,
+    // Final confidence used by the live engine,
+    // Telegram and all existing consumers.
+    confidence:
+      finalConfidence,
 
-    target1: canonical.target1,
-    target2: canonical.target2,
-    target3: canonical.target3,
+    confidencePct:
+      finalConfidence,
 
-    takeProfit1: canonical.takeProfit1,
-    takeProfit2: canonical.takeProfit2,
-    takeProfit3: canonical.takeProfit3,
+    // Phase 4 audit fields.
+    originalConfidence,
 
-    tp1: canonical.tp1,
-    tp2: canonical.tp2,
-    tp3: canonical.tp3,
+    aiMemoryAdjustedConfidence,
 
-    riskReward: canonical.riskReward,
-    rr: canonical.rr,
+    appliedConfidenceAdjustment,
 
-    reason: canonical.reason,
-    source: canonical.source,
+    aiMemoryApplied,
 
-    signalTimestamp: canonical.timestamp,
-    signalTime: canonical.time,
+    score:
+      canonical.score,
+
+    price:
+      canonical.price,
+
+    currentPrice:
+      canonical.currentPrice,
+
+    entry:
+      canonical.entry,
+
+    entryPrice:
+      canonical.entryPrice,
+
+    stop:
+      canonical.stop,
+
+    stopLoss:
+      canonical.stopLoss,
+
+    sl:
+      canonical.sl,
+
+    target1:
+      canonical.target1,
+
+    target2:
+      canonical.target2,
+
+    target3:
+      canonical.target3,
+
+    takeProfit1:
+      canonical.takeProfit1,
+
+    takeProfit2:
+      canonical.takeProfit2,
+
+    takeProfit3:
+      canonical.takeProfit3,
+
+    tp1:
+      canonical.tp1,
+
+    tp2:
+      canonical.tp2,
+
+    tp3:
+      canonical.tp3,
+
+    riskReward:
+      canonical.riskReward,
+
+    rr:
+      canonical.rr,
+
+    reason:
+      canonical.reason,
+
+    source:
+      canonical.source,
+
+    signalTimestamp:
+      canonical.timestamp,
+
+    signalTime:
+      canonical.time,
 
     status:
-      canonical.decision === "HOLD"
+      canonical.decision ===
+      "HOLD"
         ? "hold"
         : "open",
 
@@ -9094,9 +9196,20 @@ function liveHistoryRecordFromEngine(
     resolvedAt: null,
 
     fingerprint:
-      liveHistoryFingerprint(canonical),
+      liveHistoryFingerprint(
+        canonical
+      ),
 
-    snapshot: liveCloneValue(canonical),
+    aiMemory:
+      liveCloneValue(
+        canonical.aiMemory ||
+        null
+      ),
+
+    snapshot:
+      liveCloneValue(
+        canonical
+      ),
   };
 }
 

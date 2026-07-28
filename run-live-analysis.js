@@ -8500,6 +8500,13 @@ function buildPairEngineBundle(
             })
           : {};
 
+  // --------------------------------------------------------
+  // Build original engine results first.
+  //
+  // These unadjusted results are used by Master consensus so
+  // Phase 4 does not change the established engine weighting.
+  // --------------------------------------------------------
+
   const baseSwing =
     selectSwingEngineResult({
       pair,
@@ -8512,18 +8519,6 @@ function buildPairEngineBundle(
         pipeline,
     });
 
-  const swing =
-    attachAIMemoryAssessment(
-      baseSwing,
-      aiMemoryState,
-      {
-        pair,
-        engine: "weekly",
-        mode: "swing",
-        timeframe: "D1",
-      }
-    );
-
   const baseIntraday =
     selectIntradayEngineResult({
       pair,
@@ -8535,18 +8530,6 @@ function buildPairEngineBundle(
       analysisPipeline:
         pipeline,
     });
-
-  const intraday =
-    attachAIMemoryAssessment(
-      baseIntraday,
-      aiMemoryState,
-      {
-        pair,
-        engine: "daily",
-        mode: "intraday",
-        timeframe: "1H",
-      }
-    );
 
   const baseScalp =
     selectScalpEngineResult({
@@ -8567,6 +8550,63 @@ function buildPairEngineBundle(
       maximumPrimaryScalpAgeMs:
         input.maximumPrimaryScalpAgeMs,
     });
+
+  // --------------------------------------------------------
+  // Master consensus intentionally uses original confidence.
+  // --------------------------------------------------------
+
+  const baseMaster =
+    buildMasterConsensus({
+      pair,
+
+      swing:
+        baseSwing,
+
+      intraday:
+        baseIntraday,
+
+      scalp:
+        baseScalp,
+
+      weights:
+        input.masterWeights ||
+        input.engineWeights,
+
+      minimumNetContribution:
+        input.minimumNetContribution,
+
+      minimumDirectionalEngines:
+        input.minimumDirectionalEngines,
+    });
+
+  // --------------------------------------------------------
+  // Apply controlled AI Memory adjustment only after the
+  // original Master consensus has already been calculated.
+  // --------------------------------------------------------
+
+  const swing =
+    attachAIMemoryAssessment(
+      baseSwing,
+      aiMemoryState,
+      {
+        pair,
+        engine: "weekly",
+        mode: "swing",
+        timeframe: "D1",
+      }
+    );
+
+  const intraday =
+    attachAIMemoryAssessment(
+      baseIntraday,
+      aiMemoryState,
+      {
+        pair,
+        engine: "daily",
+        mode: "intraday",
+        timeframe: "1H",
+      }
+    );
 
   const scalpTimeframe =
     normalizeAIMemoryTimeframe(
@@ -8596,24 +8636,6 @@ function buildPairEngineBundle(
           scalpTimeframe,
       }
     );
-
-  const baseMaster =
-    buildMasterConsensus({
-      pair,
-      swing,
-      intraday,
-      scalp,
-
-      weights:
-        input.masterWeights ||
-        input.engineWeights,
-
-      minimumNetContribution:
-        input.minimumNetContribution,
-
-      minimumDirectionalEngines:
-        input.minimumDirectionalEngines,
-    });
 
   const master =
     attachAIMemoryAssessment(
@@ -8667,7 +8689,22 @@ function buildPairEngineBundle(
       mode:
         AI_MEMORY_INTEGRATION.mode,
 
-      applied: false,
+      applyConfidenceAdjustment:
+        AI_MEMORY_INTEGRATION
+          .applyConfidenceAdjustment ===
+        true,
+
+      maximumAppliedAdjustment:
+        AI_MEMORY_INTEGRATION
+          .maximumAppliedAdjustment,
+
+      minimumSamplesToApply:
+        AI_MEMORY_INTEGRATION
+          .minimumSamplesToApply,
+
+      minimumReliabilityToApply:
+        AI_MEMORY_INTEGRATION
+          .minimumReliabilityToApply,
 
       generatedAt:
         aiMemoryState.generatedAt ||

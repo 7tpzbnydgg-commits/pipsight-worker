@@ -18066,7 +18066,10 @@ async function initializeApp(){
     await renderCurrentPair();
   }
 
-  await renderMasterSignal();
+  await Promise.allSettled([
+    renderMasterSignal(),
+    renderObservabilityPanel()
+  ]);
 
   startRefreshScheduler();
 }

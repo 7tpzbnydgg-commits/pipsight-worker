@@ -17400,22 +17400,43 @@ async function getBackendDecisionForEngine(
 async function getDecisionForEngine(
   pair
 ){
+  if(currentMode === "patterns"){
+    return {
+      signal:
+        "HOLD",
+
+      decision:
+        "HOLD",
+
+      confidence:
+        null,
+
+      reason:
+        "Pattern mode uses its independent signal feed",
+
+      source:
+        "pattern-feed"
+    };
+  }
+
+  const backendResult =
+    await getBackendDecisionForEngine(
+      pair,
+      currentMode
+    );
+
+  if(backendResult){
+    return backendResult;
+  }
+
   if(currentMode === "scalp"){
     return getScalpSignalForPair(
       pair,
       {
-        allowBrowserFallback:true
+        allowBrowserFallback:
+          true
       }
     );
-  }
-
-  if(currentMode === "patterns"){
-    return {
-      signal:"HOLD",
-      decision:"HOLD",
-      confidence:null,
-      reason:"Pattern mode uses its independent signal feed"
-    };
   }
 
   const dataInfo =
@@ -17424,12 +17445,24 @@ async function getDecisionForEngine(
       currentMode
     );
 
-  return analyze(
-    dataInfo.rows,
-    pair.label,
-    dataInfo.higherRows,
-    dataInfo.ohlcRows
-  );
+  const browserFallback =
+    analyze(
+      dataInfo.rows,
+      pair.label,
+      dataInfo.higherRows,
+      dataInfo.ohlcRows
+    );
+
+  return {
+    ...browserFallback,
+
+    source:
+      browserFallback.source ||
+      "browser-fallback",
+
+    backendAuthoritative:
+      false
+  };
 }
 
 async function renderMasterSignal(){

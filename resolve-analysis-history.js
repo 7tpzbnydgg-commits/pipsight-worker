@@ -4359,3 +4359,3077 @@ function evaluateHistoryRecord(
   };
 
 }
+
+// ============================================================================
+// Stable identity helpers
+// ============================================================================
+
+function normalizeIdentityNumber(
+  value
+) {
+
+  const number =
+    toFiniteNumber(
+      value
+    );
+
+  if (
+    number === null
+  ) {
+
+    return "";
+
+  }
+
+  return Number(
+    number.toFixed(
+      10
+    )
+  ).toString();
+
+}
+
+function getRecordFingerprint(
+  record
+) {
+
+  if (
+    !isPlainObject(
+      record
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const existingFingerprint =
+    toTrimmedString(
+      record.fingerprint
+    );
+
+  if (
+    existingFingerprint
+  ) {
+
+    return existingFingerprint;
+
+  }
+
+  const pairKey =
+    getRecordPairKey(
+      record
+    ) ||
+    "";
+
+  const engine =
+    getRecordEngine(
+      record
+    ) ||
+    "";
+
+  const direction =
+    getRecordDirection(
+      record
+    ) ||
+    "";
+
+  const entry =
+    normalizeIdentityNumber(
+      getRecordEntry(
+        record
+      )
+    );
+
+  const stop =
+    normalizeIdentityNumber(
+      getRecordStop(
+        record
+      )
+    );
+
+  const targets =
+    getRecordTargets(
+      record
+    );
+
+  const firstTarget =
+    normalizeIdentityNumber(
+      targets[0]
+    );
+
+  if (
+    !pairKey ||
+    !engine ||
+    !direction ||
+    !entry
+  ) {
+
+    return null;
+
+  }
+
+  return [
+    pairKey,
+    engine,
+    direction,
+    entry,
+    stop,
+    firstTarget
+  ].join(
+    "|"
+  );
+
+}
+
+function buildRecordMatchKey(
+  record
+) {
+
+  if (
+    !isPlainObject(
+      record
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const pairKey =
+    getRecordPairKey(
+      record
+    );
+
+  const engine =
+    getRecordEngine(
+      record
+    );
+
+  const direction =
+    getRecordDirection(
+      record
+    );
+
+  const entry =
+    getRecordEntry(
+      record
+    );
+
+  const openedTimestamp =
+    getRecordOpenedTimestamp(
+      record
+    );
+
+  if (
+    !pairKey ||
+    !engine ||
+    !direction ||
+    entry === null ||
+    openedTimestamp === null
+  ) {
+
+    return null;
+
+  }
+
+  return [
+    pairKey,
+    engine,
+    direction,
+    normalizeIdentityNumber(
+      entry
+    ),
+    new Date(
+      openedTimestamp
+    ).toISOString()
+  ].join(
+    "|"
+  );
+
+}
+
+function recordsReferToSameTrade(
+  left,
+  right
+) {
+
+  if (
+    !isPlainObject(
+      left
+    ) ||
+    !isPlainObject(
+      right
+    )
+  ) {
+
+    return false;
+
+  }
+
+  const leftId =
+    toTrimmedString(
+      left.id
+    );
+
+  const rightId =
+    toTrimmedString(
+      right.id
+    );
+
+  if (
+    leftId &&
+    rightId &&
+    leftId ===
+      rightId
+  ) {
+
+    return true;
+
+  }
+
+  const leftFingerprint =
+    getRecordFingerprint(
+      left
+    );
+
+  const rightFingerprint =
+    getRecordFingerprint(
+      right
+    );
+
+  if (
+    leftFingerprint &&
+    rightFingerprint &&
+    leftFingerprint ===
+      rightFingerprint
+  ) {
+
+    return true;
+
+  }
+
+  const leftMatchKey =
+    buildRecordMatchKey(
+      left
+    );
+
+  const rightMatchKey =
+    buildRecordMatchKey(
+      right
+    );
+
+  return Boolean(
+    leftMatchKey &&
+    rightMatchKey &&
+    leftMatchKey ===
+      rightMatchKey
+  );
+
+}
+
+// ============================================================================
+// Resolution value normalization
+// ============================================================================
+
+function roundMetric(
+  value,
+  decimals = 10
+) {
+
+  const number =
+    toFiniteNumber(
+      value
+    );
+
+  if (
+    number === null
+  ) {
+
+    return null;
+
+  }
+
+  return Number(
+    number.toFixed(
+      decimals
+    )
+  );
+
+}
+
+function getResolutionExitPrice(
+  resolution
+) {
+
+  return toFiniteNumber(
+    resolution?.exitPrice
+  );
+
+}
+
+function getResolutionClosedAt(
+  resolution
+) {
+
+  return (
+    toISOStringOrNull(
+      resolution?.closedAt
+    ) ||
+    toISOStringOrNull(
+      resolution?.resolvedAt
+    )
+  );
+
+}
+
+// ============================================================================
+// Rich history record update
+// ============================================================================
+
+function applyResolutionToRichRecord(
+  record,
+  resolution
+) {
+
+  if (
+    !isPlainObject(
+      record
+    )
+  ) {
+
+    throw new Error(
+      "Cannot resolve an invalid history record"
+    );
+
+  }
+
+  if (
+    !isPlainObject(
+      resolution
+    ) ||
+    resolution.resolved !==
+      true
+  ) {
+
+    throw new Error(
+      "Cannot apply an unresolved result"
+    );
+
+  }
+
+  const outcome =
+    normalizeOutcome(
+      resolution.outcome
+    );
+
+  const closedAt =
+    getResolutionClosedAt(
+      resolution
+    );
+
+  const exitPrice =
+    getResolutionExitPrice(
+      resolution
+    );
+
+  if (
+    !outcome ||
+    !closedAt ||
+    exitPrice === null
+  ) {
+
+    throw new Error(
+      "Resolution is missing outcome, closed time or exit price"
+    );
+
+  }
+
+  const existingResolvedAt =
+    toISOStringOrNull(
+      record.resolvedAt ??
+      record.closedAt
+    );
+
+  /*
+   * Idempotency:
+   * An already resolved record is returned unchanged.
+   */
+  if (
+    getRecordOutcome(
+      record
+    ) &&
+    existingResolvedAt
+  ) {
+
+    return record;
+
+  }
+
+  const updatedRecord = {
+    ...record,
+
+    status:
+      "closed",
+
+    outcome,
+
+    result:
+      outcome,
+
+    resolvedAt:
+      closedAt,
+
+    closedAt,
+
+    updatedAt:
+      closedAt,
+
+    exitPrice,
+
+    exit:
+      exitPrice,
+
+    exitReason:
+      toTrimmedString(
+        resolution.exitReason
+      ) ||
+      null,
+
+    profitPoints:
+      roundMetric(
+        resolution.profitPoints
+      ),
+
+    resultPercentage:
+      roundMetric(
+        resolution.resultPercentage
+      ),
+
+    realizedR:
+      roundMetric(
+        resolution.realizedR
+      ),
+
+    durationMinutes:
+      roundMetric(
+        resolution.durationMinutes,
+        2
+      ),
+
+    highestTargetReached:
+      toFiniteNumber(
+        resolution
+          .highestTargetReached
+      ) ??
+      0
+  };
+
+  /*
+   * Preserve established optional evaluation fields only when values exist.
+   * No missing metadata is invented.
+   */
+  if (
+    toFiniteNumber(
+      resolution.initialRisk
+    ) !==
+      null
+  ) {
+
+    updatedRecord.initialRisk =
+      roundMetric(
+        resolution.initialRisk
+      );
+
+  }
+
+  if (
+    resolution.pathMetrics &&
+    toFiniteNumber(
+      resolution.pathMetrics
+        .maximumFavorableExcursion
+    ) !==
+      null
+  ) {
+
+    updatedRecord.mfe =
+      roundMetric(
+        resolution.pathMetrics
+          .maximumFavorableExcursion
+      );
+
+  }
+
+  if (
+    resolution.pathMetrics &&
+    toFiniteNumber(
+      resolution.pathMetrics
+        .maximumAdverseExcursion
+    ) !==
+      null
+  ) {
+
+    updatedRecord.mae =
+      roundMetric(
+        resolution.pathMetrics
+          .maximumAdverseExcursion
+      );
+
+  }
+
+  if (
+    resolution.pathMetrics &&
+    toFiniteNumber(
+      resolution.pathMetrics
+        .maximumFavorableR
+    ) !==
+      null
+  ) {
+
+    updatedRecord.mfeR =
+      roundMetric(
+        resolution.pathMetrics
+          .maximumFavorableR
+      );
+
+  }
+
+  if (
+    resolution.pathMetrics &&
+    toFiniteNumber(
+      resolution.pathMetrics
+        .maximumAdverseR
+    ) !==
+      null
+  ) {
+
+    updatedRecord.maeR =
+      roundMetric(
+        resolution.pathMetrics
+          .maximumAdverseR
+      );
+
+  }
+
+  return updatedRecord;
+
+}
+
+// ============================================================================
+// Legacy closed-trade construction
+// ============================================================================
+
+function mapEngineToLegacyStrategy(
+  engine
+) {
+
+  const normalizedEngine =
+    normalizeEngine(
+      engine
+    );
+
+  if (
+    normalizedEngine ===
+      "scalp"
+  ) {
+
+    return "scalp";
+
+  }
+
+  if (
+    normalizedEngine ===
+      "intraday"
+  ) {
+
+    return "daily";
+
+  }
+
+  if (
+    normalizedEngine ===
+      "swing"
+  ) {
+
+    return "weekly";
+
+  }
+
+  /*
+   * The existing learner has no independent Master strategy.
+   * Preserve the engine name but do not invent a false strategy mapping.
+   */
+  return null;
+
+}
+
+function mapEngineToLegacyTimeframe(
+  engine
+) {
+
+  const normalizedEngine =
+    normalizeEngine(
+      engine
+    );
+
+  if (
+    normalizedEngine ===
+      "scalp"
+  ) {
+
+    return "5m";
+
+  }
+
+  if (
+    normalizedEngine ===
+      "intraday"
+  ) {
+
+    return "1H";
+
+  }
+
+  if (
+    normalizedEngine ===
+      "swing"
+  ) {
+
+    return "D1";
+
+  }
+
+  return null;
+
+}
+
+function createLegacyClosedTrade(
+  richRecord,
+  resolution
+) {
+
+  if (
+    !isPlainObject(
+      richRecord
+    ) ||
+    !isPlainObject(
+      resolution
+    ) ||
+    resolution.resolved !==
+      true
+  ) {
+
+    return null;
+
+  }
+
+  const pairKey =
+    getRecordPairKey(
+      richRecord
+    );
+
+  const pairLabel =
+    pairLabelFromKey(
+      pairKey
+    );
+
+  const engine =
+    getRecordEngine(
+      richRecord
+    );
+
+  const direction =
+    getRecordDirection(
+      richRecord
+    );
+
+  const entry =
+    getRecordEntry(
+      richRecord
+    );
+
+  const stop =
+    getRecordStop(
+      richRecord
+    );
+
+  const targets =
+    getRecordTargets(
+      richRecord
+    );
+
+  const openedTimestamp =
+    getRecordOpenedTimestamp(
+      richRecord
+    );
+
+  const closedAt =
+    getResolutionClosedAt(
+      resolution
+    );
+
+  const exitPrice =
+    getResolutionExitPrice(
+      resolution
+    );
+
+  const outcome =
+    normalizeOutcome(
+      resolution.outcome
+    );
+
+  if (
+    !pairKey ||
+    !pairLabel ||
+    !engine ||
+    !direction ||
+    entry === null ||
+    stop === null ||
+    targets.length ===
+      0 ||
+    openedTimestamp ===
+      null ||
+    !closedAt ||
+    exitPrice ===
+      null ||
+    !outcome
+  ) {
+
+    return null;
+
+  }
+
+  const openedAt =
+    new Date(
+      openedTimestamp
+    ).toISOString();
+
+  const strategy =
+    mapEngineToLegacyStrategy(
+      engine
+    );
+
+  const timeframe =
+    mapEngineToLegacyTimeframe(
+      engine
+    );
+
+  const legacyTrade = {
+    id:
+      richRecord.id ||
+      null,
+
+    fingerprint:
+      getRecordFingerprint(
+        richRecord
+      ),
+
+    pair:
+      pairLabel,
+
+    symbol:
+      pairLabel,
+
+    engine,
+
+    engineName:
+      engine,
+
+    mode:
+      engine,
+
+    direction,
+
+    decision:
+      direction,
+
+    signal:
+      direction,
+
+    entry,
+
+    entryPrice:
+      entry,
+
+    stop,
+
+    stopLoss:
+      stop,
+
+    sl:
+      stop,
+
+    target:
+      targets[0],
+
+    target1:
+      targets[0],
+
+    takeProfit:
+      targets[0],
+
+    takeProfit1:
+      targets[0],
+
+    tp1:
+      targets[0],
+
+    outcome,
+
+    result:
+      outcome,
+
+    status:
+      "closed",
+
+    openedAt,
+
+    signalTime:
+      openedAt,
+
+    createdAt:
+      toISOStringOrNull(
+        richRecord.createdAt
+      ) ||
+      openedAt,
+
+    closedAt,
+
+    resolvedAt:
+      closedAt,
+
+    updatedAt:
+      closedAt,
+
+    exitPrice,
+
+    exit:
+      exitPrice,
+
+    exitReason:
+      toTrimmedString(
+        resolution.exitReason
+      ) ||
+      null,
+
+    profitPoints:
+      roundMetric(
+        resolution.profitPoints
+      ),
+
+    resultPercentage:
+      roundMetric(
+        resolution.resultPercentage
+      ),
+
+    realizedR:
+      roundMetric(
+        resolution.realizedR
+      ),
+
+    durationMinutes:
+      roundMetric(
+        resolution.durationMinutes,
+        2
+      ),
+
+    highestTargetReached:
+      toFiniteNumber(
+        resolution
+          .highestTargetReached
+      ) ??
+      0,
+
+    confidence:
+      toFiniteNumber(
+        richRecord.confidence
+      ),
+
+    originalConfidence:
+      toFiniteNumber(
+        richRecord
+          .originalConfidence
+      ),
+
+    aiMemoryAdjustedConfidence:
+      toFiniteNumber(
+        richRecord
+          .aiMemoryAdjustedConfidence
+      ),
+
+    appliedConfidenceAdjustment:
+      toFiniteNumber(
+        richRecord
+          .appliedConfidenceAdjustment
+      ),
+
+    aiMemoryApplied:
+      richRecord
+        .aiMemoryApplied ===
+      true
+  };
+
+  if (
+    targets[1] !==
+      undefined
+  ) {
+
+    legacyTrade.target2 =
+      targets[1];
+
+    legacyTrade.takeProfit2 =
+      targets[1];
+
+    legacyTrade.tp2 =
+      targets[1];
+
+  }
+
+  if (
+    targets[2] !==
+      undefined
+  ) {
+
+    legacyTrade.target3 =
+      targets[2];
+
+    legacyTrade.takeProfit3 =
+      targets[2];
+
+    legacyTrade.tp3 =
+      targets[2];
+
+  }
+
+  if (strategy) {
+
+    legacyTrade.strategy =
+      strategy;
+
+  }
+
+  if (timeframe) {
+
+    legacyTrade.timeframe =
+      timeframe;
+
+  }
+
+  const optionalStringFields = [
+    "pattern",
+    "session",
+    "marketRegime",
+    "marketState",
+    "qualityGrade",
+    "source",
+    "reason"
+  ];
+
+  for (
+    const field of
+      optionalStringFields
+  ) {
+
+    const value =
+      toTrimmedString(
+        richRecord[
+          field
+        ] ??
+        richRecord.snapshot?.[
+          field
+        ]
+      );
+
+    if (value) {
+
+      legacyTrade[
+        field
+      ] = value;
+
+    }
+
+  }
+
+  const optionalNumberFields = [
+    "score",
+    "aiScore",
+    "adaptiveConfidence",
+    "patternWeight",
+    "riskReward",
+    "rr"
+  ];
+
+  for (
+    const field of
+      optionalNumberFields
+  ) {
+
+    const value =
+      toFiniteNumber(
+        richRecord[
+          field
+        ] ??
+        richRecord.snapshot?.[
+          field
+        ]
+      );
+
+    if (
+      value !==
+        null
+    ) {
+
+      legacyTrade[
+        field
+      ] = value;
+
+    }
+
+  }
+
+  if (
+    richRecord.aiMemory !==
+      undefined
+  ) {
+
+    legacyTrade.aiMemory =
+      cloneJSONValue(
+        richRecord.aiMemory
+      );
+
+  }
+
+  return legacyTrade;
+
+}
+
+// ============================================================================
+// Legacy closed collection duplicate protection
+// ============================================================================
+
+function closedCollectionContainsTrade(
+  closedTrades,
+  candidate
+) {
+
+  if (
+    !isPlainObject(
+      candidate
+    )
+  ) {
+
+    return false;
+
+  }
+
+  return asArray(
+    closedTrades
+  ).some(
+    (
+      existing
+    ) =>
+      recordsReferToSameTrade(
+        existing,
+        candidate
+      )
+  );
+
+}
+
+function appendLegacyClosedTrade(
+  closedTrades,
+  candidate
+) {
+
+  const normalizedClosed =
+    asArray(
+      closedTrades
+    );
+
+  if (
+    !isPlainObject(
+      candidate
+    ) ||
+    closedCollectionContainsTrade(
+      normalizedClosed,
+      candidate
+    )
+  ) {
+
+    return {
+      closed:
+        normalizedClosed,
+
+      appended:
+        false
+    };
+
+  }
+
+  return {
+    closed: [
+      ...normalizedClosed,
+      candidate
+    ],
+
+    appended:
+      true
+  };
+
+}
+
+// ============================================================================
+// Legacy open collection traversal
+// ============================================================================
+
+function valueContainsMatchingTrade(
+  value,
+  targetRecord
+) {
+
+  if (
+    isPlainObject(
+      value
+    ) &&
+    recordsReferToSameTrade(
+      value,
+      targetRecord
+    )
+  ) {
+
+    return true;
+
+  }
+
+  if (
+    Array.isArray(
+      value
+    )
+  ) {
+
+    return value.some(
+      (
+        item
+      ) =>
+        valueContainsMatchingTrade(
+          item,
+          targetRecord
+        )
+    );
+
+  }
+
+  if (
+    isPlainObject(
+      value
+    )
+  ) {
+
+    return Object.values(
+      value
+    ).some(
+      (
+        item
+      ) =>
+        valueContainsMatchingTrade(
+          item,
+          targetRecord
+        )
+    );
+
+  }
+
+  return false;
+
+}
+
+function removeTradeFromOpenValue(
+  value,
+  targetRecord
+) {
+
+  if (
+    Array.isArray(
+      value
+    )
+  ) {
+
+    const updatedArray =
+      [];
+
+    let removedCount =
+      0;
+
+    for (
+      const item of
+        value
+    ) {
+
+      if (
+        isPlainObject(
+          item
+        ) &&
+        recordsReferToSameTrade(
+          item,
+          targetRecord
+        )
+      ) {
+
+        removedCount +=
+          1;
+
+        continue;
+
+      }
+
+      const nested =
+        removeTradeFromOpenValue(
+          item,
+          targetRecord
+        );
+
+      removedCount +=
+        nested.removedCount;
+
+      if (
+        nested.removeValue !==
+          true
+      ) {
+
+        updatedArray.push(
+          nested.value
+        );
+
+      }
+
+    }
+
+    return {
+      value:
+        updatedArray,
+
+      removedCount,
+
+      removeValue:
+        false
+    };
+
+  }
+
+  if (
+    !isPlainObject(
+      value
+    )
+  ) {
+
+    return {
+      value,
+
+      removedCount:
+        0,
+
+      removeValue:
+        false
+    };
+
+  }
+
+  if (
+    recordsReferToSameTrade(
+      value,
+      targetRecord
+    )
+  ) {
+
+    return {
+      value:
+        null,
+
+      removedCount:
+        1,
+
+      removeValue:
+        true
+    };
+
+  }
+
+  const updatedObject =
+    {};
+
+  let removedCount =
+    0;
+
+  for (
+    const [
+      key,
+      childValue
+    ] of Object.entries(
+      value
+    )
+  ) {
+
+    const nested =
+      removeTradeFromOpenValue(
+        childValue,
+        targetRecord
+      );
+
+    removedCount +=
+      nested.removedCount;
+
+    if (
+      nested.removeValue ===
+        true
+    ) {
+
+      continue;
+
+    }
+
+    updatedObject[
+      key
+    ] = nested.value;
+
+  }
+
+  return {
+    value:
+      updatedObject,
+
+    removedCount,
+
+    removeValue:
+      false
+  };
+
+}
+
+function removeLegacyOpenTrade(
+  openCollection,
+  targetRecord
+) {
+
+  const normalizedOpen =
+    isPlainObject(
+      openCollection
+    )
+      ? openCollection
+      : {};
+
+  if (
+    !valueContainsMatchingTrade(
+      normalizedOpen,
+      targetRecord
+    )
+  ) {
+
+    return {
+      open:
+        normalizedOpen,
+
+      removedCount:
+        0
+    };
+
+  }
+
+  const removal =
+    removeTradeFromOpenValue(
+      normalizedOpen,
+      targetRecord
+    );
+
+  return {
+    open:
+      isPlainObject(
+        removal.value
+      )
+        ? removal.value
+        : {},
+
+    removedCount:
+      removal.removedCount
+  };
+
+}
+
+// ============================================================================
+// Rich records collection update
+// ============================================================================
+
+function replaceRichHistoryRecord(
+  records,
+  originalRecord,
+  resolvedRecord
+) {
+
+  const sourceRecords =
+    asArray(
+      records
+    );
+
+  let replaced =
+    false;
+
+  const updatedRecords =
+    sourceRecords.map(
+      (
+        record
+      ) => {
+
+        if (
+          !replaced &&
+          (
+            record ===
+              originalRecord ||
+            recordsReferToSameTrade(
+              record,
+              originalRecord
+            )
+          )
+        ) {
+
+          replaced =
+            true;
+
+          return resolvedRecord;
+
+        }
+
+        return record;
+
+      }
+    );
+
+  return {
+    records:
+      updatedRecords,
+
+    replaced
+  };
+
+}
+
+// ============================================================================
+// Legacy statistics
+// ============================================================================
+
+function countOpenTradesInValue(
+  value
+) {
+
+  if (
+    Array.isArray(
+      value
+    )
+  ) {
+
+    return value.reduce(
+      (
+        total,
+        item
+      ) =>
+        total +
+        countOpenTradesInValue(
+          item
+        ),
+      0
+    );
+
+  }
+
+  if (
+    !isPlainObject(
+      value
+    )
+  ) {
+
+    return 0;
+
+  }
+
+  if (
+    isRecordOpenCandidate(
+      value
+    )
+  ) {
+
+    return 1;
+
+  }
+
+  return Object.values(
+    value
+  ).reduce(
+    (
+      total,
+      item
+    ) =>
+      total +
+      countOpenTradesInValue(
+        item
+      ),
+    0
+  );
+
+}
+
+function buildEngineStatistics(
+  history,
+  engine
+) {
+
+  const normalizedEngine =
+    normalizeEngine(
+      engine
+    );
+
+  const closedTrades =
+    asArray(
+      history.closed
+    ).filter(
+      (
+        trade
+      ) =>
+        getRecordEngine(
+          trade
+        ) ===
+          normalizedEngine &&
+        getRecordOutcome(
+          trade
+        )
+    );
+
+  const wins =
+    closedTrades.filter(
+      (
+        trade
+      ) =>
+        getRecordOutcome(
+          trade
+        ) ===
+          "WIN"
+    ).length;
+
+  const losses =
+    closedTrades.filter(
+      (
+        trade
+      ) =>
+        getRecordOutcome(
+          trade
+        ) ===
+          "LOSS"
+    ).length;
+
+  const breakevens =
+    closedTrades.filter(
+      (
+        trade
+      ) =>
+        getRecordOutcome(
+          trade
+        ) ===
+          "BREAKEVEN"
+    ).length;
+
+  const openCount =
+    asArray(
+      history.records
+    ).filter(
+      (
+        record
+      ) =>
+        getRecordEngine(
+          record
+        ) ===
+          normalizedEngine &&
+        isRecordOpenCandidate(
+          record
+        )
+    ).length;
+
+  const decisiveTrades =
+    wins +
+    losses;
+
+  return {
+    totalClosed:
+      closedTrades.length,
+
+    wins,
+
+    losses,
+
+    breakevens,
+
+    winRate:
+      decisiveTrades >
+        0
+        ? Number(
+            (
+              wins /
+              decisiveTrades *
+              100
+            ).toFixed(
+              2
+            )
+          )
+        : 0,
+
+    openCount
+  };
+
+}
+
+function rebuildExistingStatistics(
+  history
+) {
+
+  if (
+    !isPlainObject(
+      history.statistics
+    )
+  ) {
+
+    return history;
+
+  }
+
+  const statistics = {
+    ...history.statistics
+  };
+
+  const engines = [
+    "scalp",
+    "intraday",
+    "swing",
+    "master"
+  ];
+
+  for (
+    const engine of
+      engines
+  ) {
+
+    /*
+     * Only update a statistics section that already exists.
+     * This avoids creating a new top-level schema.
+     */
+    if (
+      !isPlainObject(
+        statistics[
+          engine
+        ]
+      )
+    ) {
+
+      continue;
+
+    }
+
+    statistics[
+      engine
+    ] = {
+      ...statistics[
+        engine
+      ],
+      ...buildEngineStatistics(
+        history,
+        engine
+      )
+    };
+
+  }
+
+  return {
+    ...history,
+    statistics
+  };
+
+}
+
+// ============================================================================
+// Single-resolution history mutation
+// ============================================================================
+
+function applyResolvedTradeToHistory(
+  rawHistory,
+  originalRecord,
+  resolution
+) {
+
+  const history =
+    normalizeAnalysisHistory(
+      rawHistory
+    );
+
+  if (
+    !isPlainObject(
+      originalRecord
+    ) ||
+    !isPlainObject(
+      resolution
+    ) ||
+    resolution.resolved !==
+      true
+  ) {
+
+    return {
+      history,
+
+      changed:
+        false,
+
+      richRecordUpdated:
+        false,
+
+      legacyOpenRemoved:
+        0,
+
+      legacyClosedAppended:
+        false,
+
+      resolvedRecord:
+        null,
+
+      closedTrade:
+        null
+    };
+
+  }
+
+  if (
+    isRecordAlreadyResolved(
+      originalRecord
+    )
+  ) {
+
+    return {
+      history,
+
+      changed:
+        false,
+
+      richRecordUpdated:
+        false,
+
+      legacyOpenRemoved:
+        0,
+
+      legacyClosedAppended:
+        false,
+
+      resolvedRecord:
+        originalRecord,
+
+      closedTrade:
+        null
+    };
+
+  }
+
+  const resolvedRecord =
+    applyResolutionToRichRecord(
+      originalRecord,
+      resolution
+    );
+
+  const richReplacement =
+    replaceRichHistoryRecord(
+      history.records,
+      originalRecord,
+      resolvedRecord
+    );
+
+  if (
+    !richReplacement.replaced
+  ) {
+
+    return {
+      history,
+
+      changed:
+        false,
+
+      richRecordUpdated:
+        false,
+
+      legacyOpenRemoved:
+        0,
+
+      legacyClosedAppended:
+        false,
+
+      resolvedRecord:
+        null,
+
+      closedTrade:
+        null
+    };
+
+  }
+
+  const openRemoval =
+    removeLegacyOpenTrade(
+      history.open,
+      originalRecord
+    );
+
+  const closedTrade =
+    createLegacyClosedTrade(
+      resolvedRecord,
+      resolution
+    );
+
+  const closedAppend =
+    appendLegacyClosedTrade(
+      history.closed,
+      closedTrade
+    );
+
+  const now =
+    new Date().toISOString();
+
+  let updatedHistory = {
+    ...history,
+
+    updatedAt:
+      now,
+
+    open:
+      openRemoval.open,
+
+    closed:
+      closedAppend.closed,
+
+    records:
+      richReplacement.records,
+
+    history:
+      richReplacement.records,
+
+    items:
+      richReplacement.records
+  };
+
+  updatedHistory =
+    rebuildExistingStatistics(
+      updatedHistory
+    );
+
+  return {
+    history:
+      updatedHistory,
+
+    changed:
+      true,
+
+    richRecordUpdated:
+      true,
+
+    legacyOpenRemoved:
+      openRemoval.removedCount,
+
+    legacyClosedAppended:
+      closedAppend.appended,
+
+    resolvedRecord,
+
+    closedTrade
+  };
+
+}
+
+// ============================================================================
+// Full history resolution pass
+// ============================================================================
+
+function resolveAnalysisHistory(
+  rawHistory,
+  marketDataIndex
+) {
+
+  let workingHistory =
+    normalizeAnalysisHistory(
+      rawHistory
+    );
+
+  const originalRecords = [
+    ...workingHistory.records
+  ];
+
+  const results =
+    [];
+
+  let candidateCount =
+    0;
+
+  let resolvedCount =
+    0;
+
+  let unresolvedCount =
+    0;
+
+  let ineligibleCount =
+    0;
+
+  let legacyOpenRemovedCount =
+    0;
+
+  let legacyClosedAppendedCount =
+    0;
+
+  for (
+    let index =
+      0;
+    index <
+      originalRecords.length;
+    index +=
+      1
+  ) {
+
+    const originalRecord =
+      originalRecords[
+        index
+      ];
+
+    if (
+      !isRecordOpenCandidate(
+        originalRecord
+      )
+    ) {
+
+      continue;
+
+    }
+
+    candidateCount +=
+      1;
+
+    const evaluation =
+      evaluateHistoryRecord(
+        originalRecord,
+        marketDataIndex
+      );
+
+    if (
+      evaluation.eligible !==
+        true
+    ) {
+
+      ineligibleCount +=
+        1;
+
+      results.push({
+        index,
+
+        id:
+          originalRecord.id ||
+          null,
+
+        fingerprint:
+          getRecordFingerprint(
+            originalRecord
+          ),
+
+        pair:
+          getRecordPairKey(
+            originalRecord
+          ),
+
+        engine:
+          getRecordEngine(
+            originalRecord
+          ),
+
+        resolved:
+          false,
+
+        eligible:
+          false,
+
+        reason:
+          evaluation.reason ||
+          "Record is not eligible"
+      });
+
+      continue;
+
+    }
+
+    if (
+      evaluation.resolved !==
+        true
+    ) {
+
+      unresolvedCount +=
+        1;
+
+      results.push({
+        index,
+
+        id:
+          originalRecord.id ||
+          null,
+
+        fingerprint:
+          getRecordFingerprint(
+            originalRecord
+          ),
+
+        pair:
+          getRecordPairKey(
+            originalRecord
+          ),
+
+        engine:
+          getRecordEngine(
+            originalRecord
+          ),
+
+        resolved:
+          false,
+
+        eligible:
+          true,
+
+        reason:
+          evaluation.reason ||
+          "Trade remains open",
+
+        latestEvaluatedCandle:
+          evaluation
+            .latestEvaluatedCandle ||
+          null
+      });
+
+      continue;
+
+    }
+
+    const mutation =
+      applyResolvedTradeToHistory(
+        workingHistory,
+        originalRecord,
+        evaluation
+      );
+
+    if (
+      mutation.changed !==
+        true
+    ) {
+
+      results.push({
+        index,
+
+        id:
+          originalRecord.id ||
+          null,
+
+        fingerprint:
+          getRecordFingerprint(
+            originalRecord
+          ),
+
+        pair:
+          getRecordPairKey(
+            originalRecord
+          ),
+
+        engine:
+          getRecordEngine(
+            originalRecord
+          ),
+
+        resolved:
+          false,
+
+        eligible:
+          true,
+
+        reason:
+          "Resolution was detected but history mutation was not applied"
+      });
+
+      continue;
+
+    }
+
+    workingHistory =
+      mutation.history;
+
+    resolvedCount +=
+      1;
+
+    legacyOpenRemovedCount +=
+      mutation
+        .legacyOpenRemoved;
+
+    if (
+      mutation
+        .legacyClosedAppended
+    ) {
+
+      legacyClosedAppendedCount +=
+        1;
+
+    }
+
+    results.push({
+      index,
+
+      id:
+        originalRecord.id ||
+        null,
+
+      fingerprint:
+        getRecordFingerprint(
+          originalRecord
+        ),
+
+      pair:
+        getRecordPairKey(
+          originalRecord
+        ),
+
+      engine:
+        getRecordEngine(
+          originalRecord
+        ),
+
+      direction:
+        getRecordDirection(
+          originalRecord
+        ),
+
+      resolved:
+        true,
+
+      eligible:
+        true,
+
+      outcome:
+        evaluation.outcome,
+
+      exitPrice:
+        evaluation.exitPrice,
+
+      exitReason:
+        evaluation.exitReason,
+
+      resolvedAt:
+        evaluation.resolvedAt,
+
+      marketSource:
+        evaluation.marketSource,
+
+      sameCandleConflict:
+        evaluation
+          .sameCandleConflict ===
+        true,
+
+      legacyOpenRemoved:
+        mutation
+          .legacyOpenRemoved,
+
+      legacyClosedAppended:
+        mutation
+          .legacyClosedAppended
+    });
+
+  }
+
+  /*
+   * Ensure aliases remain synchronized even when no trades resolve.
+   */
+  workingHistory = {
+    ...workingHistory,
+
+    records:
+      asArray(
+        workingHistory.records
+      ),
+
+    history:
+      asArray(
+        workingHistory.records
+      ),
+
+    items:
+      asArray(
+        workingHistory.records
+      )
+  };
+
+  return {
+    history:
+      workingHistory,
+
+    changed:
+      resolvedCount >
+      0,
+
+    summary: {
+      totalRichRecords:
+        workingHistory.records
+          .length,
+
+      candidateCount,
+
+      resolvedCount,
+
+      unresolvedCount,
+
+      ineligibleCount,
+
+      legacyOpenRemovedCount,
+
+      legacyClosedAppendedCount,
+
+      finalLegacyOpenCount:
+        countOpenTradesInValue(
+          workingHistory.open
+        ),
+
+      finalLegacyClosedCount:
+        workingHistory.closed
+          .length
+    },
+
+    results
+  };
+
+}
+
+// ============================================================================
+// Run logging
+// ============================================================================
+
+function logResolverHeader() {
+
+  console.log(
+    ""
+  );
+
+  console.log(
+    "============================================================"
+  );
+
+  console.log(
+    ENGINE_NAME
+  );
+
+  console.log(
+    `Version: ${ENGINE_VERSION}`
+  );
+
+  console.log(
+    `Started: ${new Date().toISOString()}`
+  );
+
+  console.log(
+    "============================================================"
+  );
+
+  console.log(
+    ""
+  );
+
+}
+
+function logMarketDataSummary(
+  marketDocuments,
+  marketDataIndex
+) {
+
+  console.log(
+    "[trade-resolver] Market data sources"
+  );
+
+  const documents =
+    isPlainObject(
+      marketDocuments
+    )
+      ? marketDocuments
+      : {};
+
+  for (
+    const [
+      sourceName,
+      document
+    ] of Object.entries(
+      documents
+    )
+  ) {
+
+    const available =
+      document?.available ===
+      true;
+
+    const sourcePath =
+      document?.path ||
+      document?.source ||
+      "unknown";
+
+    console.log(
+      `  ${sourceName}: ${
+        available
+          ? "available"
+          : "unavailable"
+      } (${sourcePath})`
+    );
+
+    if (
+      document?.error
+    ) {
+
+      console.warn(
+        `    Reason: ${document.error}`
+      );
+
+    }
+
+  }
+
+  const pairKeys = [
+    "XAUUSD",
+    "GBPJPY"
+  ];
+
+  for (
+    const pairKey of
+      pairKeys
+  ) {
+
+    console.log(
+      `  ${pairKey}:`
+    );
+
+    for (
+      const sourceName of [
+        "scalp",
+        "intraday",
+        "swing"
+      ]
+    ) {
+
+      const source =
+        getPairMarketData(
+          marketDataIndex,
+          pairKey,
+          sourceName
+        );
+
+      const candleCount =
+        Array.isArray(
+          source?.candles
+        )
+          ? source.candles.length
+          : 0;
+
+      console.log(
+        `    ${sourceName}: ${candleCount} valid candles`
+      );
+
+    }
+
+  }
+
+  console.log(
+    ""
+  );
+
+}
+
+function logResolutionResult(
+  result
+) {
+
+  if (
+    !isPlainObject(
+      result
+    )
+  ) {
+
+    return;
+
+  }
+
+  const identity = [
+    result.pair ||
+      "unknown-pair",
+    result.engine ||
+      "unknown-engine",
+    result.direction ||
+      ""
+  ]
+    .filter(
+      Boolean
+    )
+    .join(
+      " / "
+    );
+
+  if (
+    result.resolved ===
+      true
+  ) {
+
+    console.log(
+      `[trade-resolver] RESOLVED ${identity}: ${result.outcome}`
+    );
+
+    console.log(
+      `  Exit: ${result.exitPrice}`
+    );
+
+    console.log(
+      `  Reason: ${result.exitReason}`
+    );
+
+    console.log(
+      `  Resolved at: ${result.resolvedAt}`
+    );
+
+    console.log(
+      `  Market source: ${result.marketSource || "unknown"}`
+    );
+
+    if (
+      result.sameCandleConflict ===
+        true
+    ) {
+
+      console.warn(
+        "  Same-candle TP/SL conflict resolved using STOP_FIRST policy."
+      );
+
+    }
+
+    return;
+
+  }
+
+  if (
+    result.eligible ===
+      false
+  ) {
+
+    console.warn(
+      `[trade-resolver] INELIGIBLE ${identity}: ${result.reason}`
+    );
+
+    return;
+
+  }
+
+  console.log(
+    `[trade-resolver] OPEN ${identity}: ${result.reason}`
+  );
+
+}
+
+function logRunSummary(
+  summary,
+  options = {}
+) {
+
+  const changed =
+    options.changed ===
+    true;
+
+  const written =
+    options.written ===
+    true;
+
+  console.log(
+    ""
+  );
+
+  console.log(
+    "[trade-resolver] Run summary"
+  );
+
+  console.log(
+    `  History records: ${summary.totalRichRecords}`
+  );
+
+  console.log(
+    `  Open candidates: ${summary.candidateCount}`
+  );
+
+  console.log(
+    `  Resolved now: ${summary.resolvedCount}`
+  );
+
+  console.log(
+    `  Still open: ${summary.unresolvedCount}`
+  );
+
+  console.log(
+    `  Ineligible: ${summary.ineligibleCount}`
+  );
+
+  console.log(
+    `  Legacy open removed: ${summary.legacyOpenRemovedCount}`
+  );
+
+  console.log(
+    `  Legacy closed appended: ${summary.legacyClosedAppendedCount}`
+  );
+
+  console.log(
+    `  Final legacy open: ${summary.finalLegacyOpenCount}`
+  );
+
+  console.log(
+    `  Final legacy closed: ${summary.finalLegacyClosedCount}`
+  );
+
+  console.log(
+    `  History changed: ${changed ? "YES" : "NO"}`
+  );
+
+  console.log(
+    `  History written: ${written ? "YES" : "NO"}`
+  );
+
+  console.log(
+    ""
+  );
+
+  console.log(
+    `Completed: ${new Date().toISOString()}`
+  );
+
+  console.log(
+    "============================================================"
+  );
+
+  console.log(
+    ""
+  );
+
+}
+
+// ============================================================================
+// Final history validation
+// ============================================================================
+
+function validateResolvedHistory(
+  history
+) {
+
+  const errors =
+    [];
+
+  if (
+    !isPlainObject(
+      history
+    )
+  ) {
+
+    return {
+      valid:
+        false,
+
+      errors: [
+        "Resolved history must be an object"
+      ]
+    };
+
+  }
+
+  if (
+    !Array.isArray(
+      history.records
+    )
+  ) {
+
+    errors.push(
+      "history.records must be an array"
+    );
+
+  }
+
+  if (
+    !Array.isArray(
+      history.history
+    )
+  ) {
+
+    errors.push(
+      "history.history must be an array"
+    );
+
+  }
+
+  if (
+    !Array.isArray(
+      history.items
+    )
+  ) {
+
+    errors.push(
+      "history.items must be an array"
+    );
+
+  }
+
+  if (
+    !Array.isArray(
+      history.closed
+    )
+  ) {
+
+    errors.push(
+      "history.closed must be an array"
+    );
+
+  }
+
+  if (
+    !isPlainObject(
+      history.open
+    )
+  ) {
+
+    errors.push(
+      "history.open must be an object"
+    );
+
+  }
+
+  if (
+    Array.isArray(
+      history.records
+    ) &&
+    Array.isArray(
+      history.history
+    ) &&
+    history.records.length !==
+      history.history.length
+  ) {
+
+    errors.push(
+      "records and history aliases are not synchronized"
+    );
+
+  }
+
+  if (
+    Array.isArray(
+      history.records
+    ) &&
+    Array.isArray(
+      history.items
+    ) &&
+    history.records.length !==
+      history.items.length
+  ) {
+
+    errors.push(
+      "records and items aliases are not synchronized"
+    );
+
+  }
+
+  const records =
+    Array.isArray(
+      history.records
+    )
+      ? history.records
+      : [];
+
+  for (
+    let index =
+      0;
+    index <
+      records.length;
+    index +=
+      1
+  ) {
+
+    const record =
+      records[
+        index
+      ];
+
+    if (
+      !isPlainObject(
+        record
+      )
+    ) {
+
+      errors.push(
+        `records[${index}] is not an object`
+      );
+
+      continue;
+
+    }
+
+    const outcome =
+      getRecordOutcome(
+        record
+      );
+
+    if (!outcome) {
+
+      continue;
+
+    }
+
+    const status =
+      normalizeStatus(
+        record.status,
+        outcome
+      );
+
+    const resolvedAt =
+      toISOStringOrNull(
+        record.resolvedAt ??
+        record.closedAt
+      );
+
+    if (
+      status !==
+        "closed"
+    ) {
+
+      errors.push(
+        `records[${index}] has an outcome but is not closed`
+      );
+
+    }
+
+    if (!resolvedAt) {
+
+      errors.push(
+        `records[${index}] has an outcome but no resolvedAt/closedAt`
+      );
+
+    }
+
+  }
+
+  return {
+    valid:
+      errors.length ===
+      0,
+
+    errors
+  };
+
+}
+
+// ============================================================================
+// Safe persistence
+// ============================================================================
+
+function saveResolvedHistory(
+  history
+) {
+
+  const validation =
+    validateResolvedHistory(
+      history
+    );
+
+  if (
+    validation.valid !==
+      true
+  ) {
+
+    throw new Error(
+      [
+        "Resolved history validation failed",
+        ...validation.errors
+      ].join(
+        "; "
+      )
+    );
+
+  }
+
+  atomicWriteJSON(
+    ANALYSIS_HISTORY_PATH,
+    history
+  );
+
+  return {
+    path:
+      ANALYSIS_HISTORY_PATH,
+
+    recordCount:
+      history.records.length,
+
+    closedCount:
+      history.closed.length,
+
+    updatedAt:
+      history.updatedAt ||
+      null
+  };
+
+}
+
+// ============================================================================
+// Resolver orchestration
+// ============================================================================
+
+function runTradeResolution() {
+
+  logResolverHeader();
+
+  const loadedHistory =
+    loadAnalysisHistory();
+
+  console.log(
+    `[trade-resolver] Loaded ${loadedHistory.records.length} rich history records.`
+  );
+
+  console.log(
+    `[trade-resolver] Loaded ${loadedHistory.closed.length} legacy closed trades.`
+  );
+
+  console.log(
+    `[trade-resolver] Current legacy open count: ${
+      countOpenTradesInValue(
+        loadedHistory.open
+      )
+    }`
+  );
+
+  console.log(
+    ""
+  );
+
+  const marketDocuments =
+    loadMarketDocuments();
+
+  const marketDataIndex =
+    buildMarketDataIndex(
+      marketDocuments
+    );
+
+  logMarketDataSummary(
+    marketDocuments,
+    marketDataIndex
+  );
+
+  const resolutionRun =
+    resolveAnalysisHistory(
+      loadedHistory.raw,
+      marketDataIndex
+    );
+
+  for (
+    const result of
+      resolutionRun.results
+  ) {
+
+    logResolutionResult(
+      result
+    );
+
+  }
+
+  let persistence =
+    null;
+
+  if (
+    resolutionRun.changed ===
+      true
+  ) {
+
+    persistence =
+      saveResolvedHistory(
+        resolutionRun.history
+      );
+
+    console.log(
+      ""
+    );
+
+    console.log(
+      `[trade-resolver] Updated history written atomically to ${persistence.path}.`
+    );
+
+  } else {
+
+    console.log(
+      ""
+    );
+
+    console.log(
+      "[trade-resolver] No trades resolved; analysis-history.json was not rewritten."
+    );
+
+  }
+
+  logRunSummary(
+    resolutionRun.summary,
+    {
+      changed:
+        resolutionRun.changed,
+
+      written:
+        Boolean(
+          persistence
+        )
+    }
+  );
+
+  return {
+    success:
+      true,
+
+    changed:
+      resolutionRun.changed,
+
+    written:
+      Boolean(
+        persistence
+      ),
+
+    output:
+      persistence,
+
+    summary:
+      resolutionRun.summary,
+
+    results:
+      resolutionRun.results
+  };
+
+}
+
+// ============================================================================
+// Command-line execution
+// ============================================================================
+
+function main() {
+
+  try {
+
+    const result =
+      runTradeResolution();
+
+    if (
+      result.success !==
+        true
+    ) {
+
+      process.exitCode =
+        1;
+
+    }
+
+    return result;
+
+  } catch (
+    error
+  ) {
+
+    console.error(
+      ""
+    );
+
+    console.error(
+      "============================================================"
+    );
+
+    console.error(
+      "[trade-resolver] FATAL ERROR"
+    );
+
+    console.error(
+      error instanceof Error
+        ? error.stack ||
+          error.message
+        : String(
+            error
+          )
+    );
+
+    console.error(
+      "============================================================"
+    );
+
+    console.error(
+      ""
+    );
+
+    process.exitCode =
+      1;
+
+    return {
+      success:
+        false,
+
+      changed:
+        false,
+
+      written:
+        false,
+
+      error:
+        error instanceof Error
+          ? error.message
+          : String(
+              error
+            )
+    };
+
+  }
+
+}
+
+if (
+  require.main ===
+    module
+) {
+
+  main();
+
+}
+
+// ============================================================================
+// Public exports
+// ============================================================================
+
+module.exports = {
+  ENGINE_NAME,
+  ENGINE_VERSION,
+  RESOLUTION_POLICY,
+
+  loadAnalysisHistory,
+  loadMarketDocuments,
+  buildMarketDataIndex,
+
+  normalizeCandle,
+  normalizeCandles,
+
+  validateTradeGeometry,
+  candleTouchesStop,
+  candleTouchesTarget,
+  getHighestTargetReached,
+  evaluateCandleAgainstTrade,
+
+  prepareRecordForResolution,
+  evaluatePreparedTrade,
+  evaluateHistoryRecord,
+
+  applyResolutionToRichRecord,
+  createLegacyClosedTrade,
+  applyResolvedTradeToHistory,
+  resolveAnalysisHistory,
+
+  validateResolvedHistory,
+  saveResolvedHistory,
+  runTradeResolution,
+  main
+};

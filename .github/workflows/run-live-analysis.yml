@@ -1,16 +1,13 @@
-name: PipSight Robot — live analysis (background)
+name: PipSight Pro — live analysis manual recovery
 
 on:
-  schedule:
-    - cron: "2,12,22,32,42,52 * * * *"
-
   workflow_dispatch: {}
 
 permissions:
   contents: write
 
 concurrency:
-  group: pipsight-live-analysis-${{ github.ref }}
+  group: pipsight-unified-analysis-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -19,7 +16,7 @@ env:
 
 jobs:
   analyze:
-    name: Run and publish live analysis
+    name: Run and publish live analysis manually
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -91,7 +88,7 @@ jobs:
           git config user.name "pipsight-robot"
           git config user.email "actions@users.noreply.github.com"
 
-          # Strictly stage only files owned by this workflow.
+          # Strictly stage only files owned by live analysis.
           git add -- \
             data/live-analysis.json \
             data/analysis-history.json \
@@ -102,7 +99,7 @@ jobs:
             exit 0
           fi
 
-          git commit -m "robot: refresh live analysis"
+          git commit -m "robot: manually refresh live analysis"
 
           max_attempts=5
 
@@ -135,8 +132,9 @@ jobs:
       - name: Log execution
         if: always()
         run: |
-          echo "PipSight live-analysis workflow finished."
+          echo "PipSight manual live-analysis workflow finished."
           echo "Status: ${{ job.status }}"
           echo "Repository: ${{ github.repository }}"
+          echo "Branch: ${{ github.ref_name }}"
           echo "Run ID: ${{ github.run_id }}"
           echo "Completed at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"

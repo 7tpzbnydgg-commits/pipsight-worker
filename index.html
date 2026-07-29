@@ -18910,12 +18910,14 @@ document.addEventListener(
     }
 
     if(currentMode === "scalp"){
-      renderScalpPanel();
-    }else if(currentMode === "patterns"){
-      loadPatternDetector();
-    }else{
-      renderCurrentPair();
-    }
+  renderScalpPanel();
+}else if(currentMode === "patterns"){
+  loadPatternDetector({
+    refreshMaster:false
+  });
+}else{
+  renderCurrentPair();
+}
 
     Promise.allSettled([
       renderMasterSignal(),

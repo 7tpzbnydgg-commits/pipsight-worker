@@ -7222,10 +7222,10 @@ function runTradeResolution() {
   );
 
   const resolutionRun =
-    resolveAnalysisHistory(
-      loadedHistory.raw,
-      marketDataIndex
-    );
+  resolveAnalysisHistory(
+    loadedHistory,
+    marketDataIndex
+  );
 
   for (
     const result of

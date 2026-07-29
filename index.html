@@ -18833,19 +18833,21 @@ function startRefreshScheduler(){
   );
 
   APP_INTERVALS.push(
-    setInterval(
-      ()=>{
-        if(
-          canRefreshPatternDashboard()
-        ){
-          loadPatternDetector();
-        }
-      },
-      APP_CONFIG
-        .refreshMs
-        .patternPanel
-    )
-  );
+  setInterval(
+    ()=>{
+      if(
+        canRefreshPatternDashboard()
+      ){
+        loadPatternDetector({
+          refreshMaster:false
+        });
+      }
+    },
+    APP_CONFIG
+      .refreshMs
+      .patternPanel
+  )
+);
 
   APP_INTERVALS.push(
   setInterval(

@@ -18600,7 +18600,8 @@ function renderPatternCard(
 }
 
 async function loadPatternDetector({
-  forceRefresh = false
+  forceRefresh = false,
+  refreshMaster = true
 } = {}){
   currentMode =
     "patterns";
@@ -18744,7 +18745,9 @@ async function loadPatternDetector({
       </div>
     `;
 
-    await renderMasterSignal();
+    if(refreshMaster){
+  await renderMasterSignal();
+}
 
     return patterns;
   }catch(error){

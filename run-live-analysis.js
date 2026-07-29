@@ -11470,6 +11470,45 @@ function p6PreparePairInput(
       pair
     );
 
+  function p6PreparePairInput(
+  pair,
+  inputs
+) {
+  const pairKey =
+    normalizePairKey(pair);
+
+  const scalpResolution =
+    pairKey
+      ? resolveDedicatedScalpSignal(
+          inputs.scalpSignals,
+          pairKey,
+          DECIMALS[pairKey]
+        )
+      : {
+          valid: false,
+          reason:
+            `Unsupported dedicated scalp pair: ${pair}`,
+          signal: null,
+          meta: {
+            available: false,
+            pairFound: false,
+            valid: false,
+            decision: null,
+            updatedAt: null,
+            stale: null,
+            recordCount: 0,
+            timeframeCount: 0,
+          },
+        };
+
+  const scalpSignal =
+    scalpResolution.valid === true &&
+    scalpResolution.signal &&
+    scalpResolution.meta &&
+    scalpResolution.meta.updatedAt
+      ? scalpResolution.signal
+      : null;
+
   const scalpCandles =
     p6ExtractPairCandles(
       inputs.scalpCandles,
@@ -11492,6 +11531,7 @@ function p6PreparePairInput(
     pair,
 
     scalpSignal,
+    scalpResolution,
     scalpCandles,
     intradayCandles,
     dailyCandles,

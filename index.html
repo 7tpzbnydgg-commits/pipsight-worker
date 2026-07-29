@@ -16531,12 +16531,14 @@ async function setMode(mode){
   }
 
   if(mode === "scalp"){
-    await renderScalpPanel();
-  }else if(mode === "patterns"){
-    await loadPatternDetector();
-  }else{
-    await renderCurrentPair();
-  }
+  await renderScalpPanel();
+}else if(mode === "patterns"){
+  await loadPatternDetector({
+    refreshMaster:false
+  });
+}else{
+  await renderCurrentPair();
+}
 
   await renderMasterSignal();
 }

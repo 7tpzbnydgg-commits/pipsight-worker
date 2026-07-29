@@ -2804,10 +2804,34 @@ function resolveDedicatedScalpSignal(
     valid: true,
     reason: null,
 
-    signal: {
+        signal: {
+      ...(selectedRecord.sourceRecord || {}),
+
       decision,
+      signal: decision,
+
+      confidence:
+        decision === "HOLD"
+          ? 0
+          : firstFiniteNumber(
+              selectedRecord.sourceRecord &&
+                selectedRecord.sourceRecord.confidence,
+              selectedRecord.sourceRecord &&
+                selectedRecord.sourceRecord.confidencePct,
+              0
+            ),
+
       reason,
       perTF,
+
+      tradePlan:
+        decision === "HOLD"
+          ? null
+          : (
+              selectedRecord.sourceRecord &&
+              selectedRecord.sourceRecord.tradePlan
+            ) ||
+            null,
 
       entry:
         decision === "HOLD"

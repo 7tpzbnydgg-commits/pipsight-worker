@@ -17193,6 +17193,178 @@ async function renderCurrentPair({
 }
 
 // ════════════════════════════════════════════════════════════════
+// AUTHORITATIVE BACKEND ANALYSIS RESOLUTION
+// ════════════════════════════════════════════════════════════════
+
+function resolveBackendPairAnalysis(
+  liveAnalysis,
+  pair
+){
+  const payload =
+    safeObject(
+      liveAnalysis
+    );
+
+  const pairs =
+    safeObject(
+      payload.pairs
+    );
+
+  const pairLabel =
+    String(
+      pair?.label || ""
+    ).trim();
+
+  const pairKey =
+    String(
+      pair?.key || ""
+    ).trim();
+
+  const candidates = [
+    pairs[pairLabel],
+    pairs[pairKey],
+    payload[pairLabel],
+    payload[pairKey]
+  ];
+
+  for(const candidate of candidates){
+    if(
+      candidate &&
+      typeof candidate === "object" &&
+      !Array.isArray(candidate)
+    ){
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+
+function resolveBackendEngineResult(
+  liveAnalysis,
+  pair,
+  mode
+){
+  const pairAnalysis =
+    resolveBackendPairAnalysis(
+      liveAnalysis,
+      pair
+    );
+
+  if(!pairAnalysis){
+    return null;
+  }
+
+  const normalizedMode =
+    String(
+      mode || ""
+    )
+      .trim()
+      .toLowerCase();
+
+  const engines =
+    safeObject(
+      pairAnalysis.engines
+    );
+
+  const candidate =
+    pairAnalysis[normalizedMode] ||
+    engines[normalizedMode] ||
+    null;
+
+  if(
+    !candidate ||
+    typeof candidate !== "object" ||
+    Array.isArray(candidate)
+  ){
+    return null;
+  }
+
+  const decision =
+    normalizeSignalDecision(
+      candidate.decision ||
+      candidate.signal ||
+      candidate.action ||
+      candidate.direction
+    );
+
+  return {
+    ...candidate,
+
+    pair:
+      candidate.pair ||
+      candidate.pairLabel ||
+      candidate.symbol ||
+      pair?.label ||
+      null,
+
+    mode:
+      candidate.mode ||
+      normalizedMode,
+
+    decision,
+
+    signal:
+      decision,
+
+    action:
+      decision,
+
+    direction:
+      decision,
+
+    confidence:
+      safeNumber(
+        candidate.confidencePct ??
+        candidate.confidence,
+        null
+      ),
+
+    source:
+      candidate.source ||
+      candidate.sourceMode ||
+      "live-analysis",
+
+    backendAuthoritative:
+      true
+  };
+}
+
+
+async function getBackendDecisionForEngine(
+  pair,
+  mode,
+  {
+    forceRefresh = false
+  } = {}
+){
+  const response =
+    await fetchOptionalObservabilityJSON(
+      LIVE_ANALYSIS_URL,
+      {
+        forceRefresh,
+
+        validate:
+          validateLiveAnalysisPayload
+      }
+    );
+
+  if(
+    !response.available ||
+    !response.payload
+  ){
+    return null;
+  }
+
+  return resolveBackendEngineResult(
+    response.payload,
+    pair,
+    mode
+  );
+}
+
+// ════════════════════════════════════════════════════════════════
 // MASTER SIGNAL
 // ════════════════════════════════════════════════════════════════
 

@@ -1,8 +1,8 @@
-name: PipSight Robot — live GBP/JPY tick
+name: PipSight Pro — live GBP/JPY tick
 
 on:
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "4,14,24,34,44,54 * * * *"
 
   workflow_dispatch: {}
 
@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: pipsight-live-gbpjpy-${{ github.ref }}
+  group: pipsight-unified-analysis-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -36,6 +36,22 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Verify required source files
+        run: |
+          set -euo pipefail
+
+          test -f fetch-gbpjpy-live.js
+
+          echo "Required live GBP/JPY source file is available."
+
+      - name: Validate JavaScript syntax
+        run: |
+          set -euo pipefail
+
+          node --check fetch-gbpjpy-live.js
+
+          echo "Live GBP/JPY JavaScript syntax is valid."
+
       - name: Verify API secret
         env:
           TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
@@ -43,9 +59,11 @@ jobs:
           set -euo pipefail
 
           if [[ -z "${TWELVEDATA_API_KEY:-}" ]]; then
-            echo "TWELVEDATA_API_KEY is not configured."
+            echo "::error::TWELVEDATA_API_KEY is not configured."
             exit 1
           fi
+
+          echo "Required API configuration validated."
 
       - name: Fetch live GBP/JPY tick
         env:
@@ -59,15 +77,42 @@ jobs:
         run: |
           set -euo pipefail
 
-          test -s data/gbpjpy-live.json
+          node <<'NODE'
+          "use strict";
 
-          node - <<'NODE'
           const fs = require("fs");
 
-          const file = "data/gbpjpy-live.json";
-          const parsed = JSON.parse(
-            fs.readFileSync(file, "utf8")
-          );
+          const filePath =
+            "data/gbpjpy-live.json";
+
+          if (!fs.existsSync(filePath)) {
+            throw new Error(
+              `Required output file was not created: ${filePath}`
+            );
+          }
+
+          const raw =
+            fs.readFileSync(
+              filePath,
+              "utf8"
+            ).trim();
+
+          if (!raw) {
+            throw new Error(
+              `Output file is empty: ${filePath}`
+            );
+          }
+
+          let parsed;
+
+          try {
+            parsed =
+              JSON.parse(raw);
+          } catch (error) {
+            throw new Error(
+              `Output file contains invalid JSON: ${filePath}: ${error.message}`
+            );
+          }
 
           if (
             parsed === null ||
@@ -75,7 +120,7 @@ jobs:
             Array.isArray(parsed)
           ) {
             throw new Error(
-              "gbpjpy-live.json must contain a JSON object"
+              `${filePath} must contain a JSON object.`
             );
           }
 
@@ -88,18 +133,23 @@ jobs:
             parsed.currentPrice
           ];
 
-          const price = priceCandidates
-            .map(Number)
-            .find((value) => Number.isFinite(value) && value > 0);
+          const price =
+            priceCandidates
+              .map(Number)
+              .find(
+                (value) =>
+                  Number.isFinite(value) &&
+                  value > 0
+              );
 
-          if (!price) {
+          if (price === undefined) {
             throw new Error(
-              "gbpjpy-live.json does not contain a valid positive price"
+              `${filePath} does not contain a valid positive price.`
             );
           }
 
           console.log(
-            `Validated ${file} with price ${price}`
+            `Validated ${filePath} with price ${price}.`
           );
           NODE
 
@@ -113,7 +163,8 @@ jobs:
           git config user.email "actions@users.noreply.github.com"
 
           # Strictly stage only the file owned by this workflow.
-          git add -- data/gbpjpy-live.json
+          git add -- \
+            data/gbpjpy-live.json
 
           if git diff --cached --quiet; then
             echo "No live GBP/JPY tick changes to commit."
@@ -122,33 +173,39 @@ jobs:
 
           git commit -m "robot: refresh live GBP/JPY tick"
 
-          max_attempts=5
+          push_succeeded=false
 
-          for attempt in $(seq 1 "$max_attempts"); do
-            echo "Push attempt ${attempt}/${max_attempts}"
+          for attempt in 1 2 3 4 5; do
+            echo "Push attempt ${attempt} of 5..."
 
             if git push origin HEAD:main; then
-              echo "Live GBP/JPY tick pushed successfully."
-              exit 0
+              push_succeeded=true
+              break
             fi
 
-            if [[ "$attempt" -eq "$max_attempts" ]]; then
-              echo "Push failed after ${max_attempts} attempts."
-              exit 1
+            if [[ "${attempt}" -eq 5 ]]; then
+              break
             fi
 
-            echo "Remote branch changed. Rebasing before retry..."
+            echo "Push was rejected. Fetching and rebasing onto origin/main..."
 
             git fetch origin main
 
             if ! git rebase origin/main; then
-              echo "Rebase conflict detected."
+              echo "::error::Rebase failed while synchronizing live GBP/JPY tick."
               git rebase --abort || true
               exit 1
             fi
 
-            sleep $((attempt * 5))
+            sleep $((attempt * 2))
           done
+
+          if [[ "${push_succeeded}" != "true" ]]; then
+            echo "::error::Unable to push live GBP/JPY tick after 5 attempts."
+            exit 1
+          fi
+
+          echo "Live GBP/JPY tick committed and pushed successfully."
 
       - name: Log execution
         if: always()
@@ -156,5 +213,6 @@ jobs:
           echo "PipSight live GBP/JPY workflow finished."
           echo "Status: ${{ job.status }}"
           echo "Repository: ${{ github.repository }}"
+          echo "Branch: ${{ github.ref_name }}"
           echo "Run ID: ${{ github.run_id }}"
           echo "Completed at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"

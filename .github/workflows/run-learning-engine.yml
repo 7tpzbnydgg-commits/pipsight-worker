@@ -1,21 +1,28 @@
-name: run Learning Engine
+name: PipSight Pro — learning and AI memory
+
 on:
   schedule:
-    - cron: "0 * * * *"
+    - cron: "8 * * * *"
+
   workflow_dispatch: {}
+
 permissions:
   contents: write
+
 concurrency:
-  group: pipsight-learning-state-${{ github.ref }}
+  group: pipsight-unified-analysis-${{ github.ref }}
   cancel-in-progress: false
+
 jobs:
   sync-learning:
-    name: Run and save learning engine
+    name: Run and save learning and AI memory
     runs-on: ubuntu-latest
     timeout-minutes: 15
+
     defaults:
       run:
         shell: bash
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -23,48 +30,84 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
           persist-credentials: true
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+
       - name: Verify required source files
         run: |
           set -euo pipefail
+
           test -f run-learning-engine.js
           test -f learner.js
           test -f ai-memory.js
           test -f data/analysis-history.json
+
           echo "Required learning-engine and AI-memory files are available."
+
       - name: Validate JavaScript syntax
         run: |
           set -euo pipefail
+
           node --check run-learning-engine.js
           node --check learner.js
           node --check ai-memory.js
+
           echo "Learning-engine and AI-memory JavaScript syntax is valid."
+
       - name: Validate analysis history
         run: |
           set -euo pipefail
-          node - <<'NODE'
+
+          node <<'NODE'
+          "use strict";
+
           const fs = require("fs");
+
           const filePath =
             "data/analysis-history.json";
-          const history =
-            JSON.parse(
-              fs.readFileSync(
-                filePath,
-                "utf8"
-              )
+
+          if (!fs.existsSync(filePath)) {
+            throw new Error(
+              `Required source file does not exist: ${filePath}`
             );
+          }
+
+          const raw =
+            fs.readFileSync(
+              filePath,
+              "utf8"
+            ).trim();
+
+          if (!raw) {
+            throw new Error(
+              `${filePath} is empty.`
+            );
+          }
+
+          let history;
+
+          try {
+            history =
+              JSON.parse(raw);
+          } catch (error) {
+            throw new Error(
+              `${filePath} contains invalid JSON: ${error.message}`
+            );
+          }
+
           if (
             history === null ||
             typeof history !== "object" ||
             Array.isArray(history)
           ) {
             throw new Error(
-              "data/analysis-history.json must contain a JSON object."
+              `${filePath} must contain a JSON object.`
             );
           }
+
           if (
             history.closed !== undefined &&
             !Array.isArray(history.closed)
@@ -73,134 +116,226 @@ jobs:
               "analysis-history.json closed field must be an array."
             );
           }
+
           const closedCount =
             Array.isArray(history.closed)
               ? history.closed.length
               : 0;
+
           console.log(
             `Validated analysis history with ${closedCount} closed records.`
           );
           NODE
+
       - name: Run learning engine
         run: |
           set -euo pipefail
+
           node run-learning-engine.js
+
       - name: Verify generated learning files
         run: |
           set -euo pipefail
-          test -s data/learning-data.json
-          test -s data/confidence-data.json
-          test -s data/learning-engine-state.json
-          node - <<'NODE'
+
+          node <<'NODE'
+          "use strict";
+
           const fs = require("fs");
-          const files = [
+
+          const outputFiles = [
             "data/learning-data.json",
             "data/confidence-data.json",
             "data/learning-engine-state.json"
           ];
-          for (
-            const file of files
-          ) {
-            const parsed =
-              JSON.parse(
-                fs.readFileSync(
-                  file,
-                  "utf8"
-                )
-              );
-            if (
-              parsed === null ||
-              typeof parsed !== "object"
-            ) {
+
+          for (const filePath of outputFiles) {
+            if (!fs.existsSync(filePath)) {
               throw new Error(
-                `${file} must contain valid JSON data.`
+                `Required output file was not created: ${filePath}`
               );
             }
+
+            const raw =
+              fs.readFileSync(
+                filePath,
+                "utf8"
+              ).trim();
+
+            if (!raw) {
+              throw new Error(
+                `Output file is empty: ${filePath}`
+              );
+            }
+
+            let data;
+
+            try {
+              data =
+                JSON.parse(raw);
+            } catch (error) {
+              throw new Error(
+                `Output file contains invalid JSON: ${filePath}: ${error.message}`
+              );
+            }
+
+            if (
+              data === null ||
+              typeof data !== "object"
+            ) {
+              throw new Error(
+                `${filePath} must contain valid JSON data.`
+              );
+            }
+
             console.log(
-              `Validated: ${file}`
+              `Validated ${filePath}`
             );
           }
           NODE
+
       - name: Run AI Memory
         run: |
           set -euo pipefail
+
           node ai-memory.js
+
       - name: Verify generated AI-memory files
         run: |
           set -euo pipefail
-          test -s data/ai-memory.json
-          test -s data/ai-memory-state.json
-          node - <<'NODE'
+
+          node <<'NODE'
+          "use strict";
+
           const fs = require("fs");
-          const files = [
+
+          const outputFiles = [
             "data/ai-memory.json",
             "data/ai-memory-state.json"
           ];
-          for (
-            const file of files
-          ) {
-            const parsed =
-              JSON.parse(
-                fs.readFileSync(
-                  file,
-                  "utf8"
-                )
-              );
-            if (
-              parsed === null ||
-              typeof parsed !== "object" ||
-              Array.isArray(parsed)
-            ) {
+
+          for (const filePath of outputFiles) {
+            if (!fs.existsSync(filePath)) {
               throw new Error(
-                `${file} must contain a valid JSON object.`
+                `Required output file was not created: ${filePath}`
               );
             }
+
+            const raw =
+              fs.readFileSync(
+                filePath,
+                "utf8"
+              ).trim();
+
+            if (!raw) {
+              throw new Error(
+                `Output file is empty: ${filePath}`
+              );
+            }
+
+            let data;
+
+            try {
+              data =
+                JSON.parse(raw);
+            } catch (error) {
+              throw new Error(
+                `Output file contains invalid JSON: ${filePath}: ${error.message}`
+              );
+            }
+
+            if (
+              data === null ||
+              typeof data !== "object" ||
+              Array.isArray(data)
+            ) {
+              throw new Error(
+                `${filePath} must contain a valid JSON object.`
+              );
+            }
+
             console.log(
-              `Validated: ${file}`
+              `Validated ${filePath}`
             );
           }
           NODE
-      - name: Show learning-engine and AI-memory output
+
+      - name: Show learning and AI-memory outputs
         run: |
           set -euo pipefail
+
           echo "Generated learning and AI-memory files:"
+
           ls -lh \
             data/learning-data.json \
             data/confidence-data.json \
             data/learning-engine-state.json \
             data/ai-memory.json \
             data/ai-memory-state.json
-      - name: Commit updated learning and AI-memory files
+
+      - name: Commit and push learning and AI-memory state
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+
           git config user.name "pipsight-learning-robot"
           git config user.email "actions@users.noreply.github.com"
-          git add \
+
+          # Strictly stage only files owned by Learning and AI Memory.
+          git add -- \
             data/learning-data.json \
             data/confidence-data.json \
             data/learning-engine-state.json \
             data/ai-memory.json \
             data/ai-memory-state.json
+
           if git diff --cached --quiet; then
             echo "No learning-engine or AI-memory changes to commit."
             exit 0
           fi
-          git commit -m "Update PipSight learning and AI memory state"
-          git pull \
-            --rebase \
-            origin \
-            "${GITHUB_REF_NAME}"
-          git push \
-            origin \
-            "HEAD:${GITHUB_REF_NAME}"
+
+          git commit -m "robot: update learning and AI memory state"
+
+          push_succeeded=false
+
+          for attempt in 1 2 3 4 5; do
+            echo "Push attempt ${attempt} of 5..."
+
+            if git push origin HEAD:main; then
+              push_succeeded=true
+              break
+            fi
+
+            if [[ "${attempt}" -eq 5 ]]; then
+              break
+            fi
+
+            echo "Push was rejected. Fetching and rebasing onto origin/main..."
+
+            git fetch origin main
+
+            if ! git rebase origin/main; then
+              echo "::error::Rebase failed while synchronizing learning state."
+              git rebase --abort || true
+              exit 1
+            fi
+
+            sleep $((attempt * 2))
+          done
+
+          if [[ "${push_succeeded}" != "true" ]]; then
+            echo "::error::Unable to push learning state after 5 attempts."
+            exit 1
+          fi
+
+          echo "Learning and AI-memory state committed successfully."
+
       - name: Log execution
         if: always()
         run: |
           echo "PipSight learning-engine and AI-memory workflow finished."
           echo "Status: ${{ job.status }}"
           echo "Repository: ${{ github.repository }}"
-          echo "Branch: ${GITHUB_REF_NAME}"
+          echo "Branch: ${{ github.ref_name }}"
           echo "Run ID: ${{ github.run_id }}"
           echo "Completed at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"

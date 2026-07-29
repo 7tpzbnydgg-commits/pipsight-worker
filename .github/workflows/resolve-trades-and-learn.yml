@@ -1,0 +1,100 @@
+name: PipSight Pro — Resolve Trades and Learn
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pipsight-resolve-trades-and-learn-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve-and-learn:
+    name: Resolve Trades and Run Learning Engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Validate required files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required_files=(
+            "resolve-analysis-history.js"
+            "run-learning-engine.js"
+            "data/analysis-history.json"
+          )
+
+          for file in "${required_files[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "::error file=$file::Required file is missing: $file"
+              exit 1
+            fi
+          done
+
+          echo "All required resolver and learning files are available."
+
+      - name: Resolve open trades
+        run: node resolve-analysis-history.js
+
+      - name: Run learning engine
+        run: node run-learning-engine.js
+
+      - name: Show generated changes
+        shell: bash
+        run: |
+          echo "Changed files after resolution and learning:"
+          git status --short
+
+      - name: Commit resolution and learning outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          files_to_commit=(
+            "data/analysis-history.json"
+            "data/learning-data.json"
+            "data/confidence-data.json"
+            "data/learning-engine-state.json"
+          )
+
+          existing_files=()
+
+          for file in "${files_to_commit[@]}"; do
+            if [ -f "$file" ]; then
+              existing_files+=("$file")
+            fi
+          done
+
+          if [ "${#existing_files[@]}" -eq 0 ]; then
+            echo "No expected output files are available to commit."
+            exit 0
+          fi
+
+          git add -- "${existing_files[@]}"
+
+          if git diff --cached --quiet; then
+            echo "No resolution or learning changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Resolve trades and update AI learning data"
+
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"

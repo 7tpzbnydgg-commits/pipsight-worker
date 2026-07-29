@@ -17225,6 +17225,58 @@ if(backendAnalysis){
 // AUTHORITATIVE BACKEND ANALYSIS RESOLUTION
 // ════════════════════════════════════════════════════════════════
 
+function normalizeBackendPairIdentity(
+  value
+){
+  return String(
+    value || ""
+  )
+    .trim()
+    .toUpperCase()
+    .replace(
+      /[^A-Z0-9]/g,
+      ""
+    );
+}
+
+
+function backendPairAliases(
+  pair
+){
+  const normalizedPair =
+    normalizeBackendPairIdentity(
+      pair?.key ||
+      pair?.label ||
+      pair?.symbol
+    );
+
+  if(normalizedPair === "XAUUSD"){
+    return [
+      "XAU/USD",
+      "XAUUSD",
+      "XAU_USD",
+      "XAU-USD"
+    ];
+  }
+
+  if(normalizedPair === "GBPJPY"){
+    return [
+      "GBP/JPY",
+      "GBPJPY",
+      "GBP_JPY",
+      "GBP-JPY"
+    ];
+  }
+
+  return [
+    pair?.label,
+    pair?.key,
+    pair?.symbol
+  ]
+    .filter(Boolean);
+}
+
+
 function resolveBackendPairAnalysis(
   liveAnalysis,
   pair
@@ -17239,24 +17291,24 @@ function resolveBackendPairAnalysis(
       payload.pairs
     );
 
-  const pairLabel =
-    String(
-      pair?.label || ""
-    ).trim();
+  const requestedPairIdentity =
+    normalizeBackendPairIdentity(
+      pair?.key ||
+      pair?.label ||
+      pair?.symbol
+    );
 
-  const pairKey =
-    String(
-      pair?.key || ""
-    ).trim();
+  const aliases =
+    backendPairAliases(
+      pair
+    );
 
-  const candidates = [
-    pairs[pairLabel],
-    pairs[pairKey],
-    payload[pairLabel],
-    payload[pairKey]
-  ];
+  for(const alias of aliases){
+    const candidate =
+      pairs[alias] ||
+      payload[alias] ||
+      null;
 
-  for(const candidate of candidates){
     if(
       candidate &&
       typeof candidate === "object" &&
@@ -17266,7 +17318,296 @@ function resolveBackendPairAnalysis(
     }
   }
 
+  for(
+    const [
+      pairKey,
+      pairValue
+    ] of Object.entries(pairs)
+  ){
+    if(
+      normalizeBackendPairIdentity(
+        pairKey
+      ) !== requestedPairIdentity
+    ){
+      continue;
+    }
+
+    if(
+      pairValue &&
+      typeof pairValue === "object" &&
+      !Array.isArray(pairValue)
+    ){
+      return pairValue;
+    }
+  }
+
+  for(
+    const [
+      payloadKey,
+      payloadValue
+    ] of Object.entries(payload)
+  ){
+    if(
+      normalizeBackendPairIdentity(
+        payloadKey
+      ) !== requestedPairIdentity
+    ){
+      continue;
+    }
+
+    if(
+      payloadValue &&
+      typeof payloadValue === "object" &&
+      !Array.isArray(payloadValue)
+    ){
+      return payloadValue;
+    }
+  }
+
   return null;
+}
+
+
+function normalizeBackendTradePlan(
+  candidate
+){
+  const source =
+    candidate?.tradePlan ||
+    candidate?.plan ||
+    null;
+
+  if(
+    !source ||
+    typeof source !== "object" ||
+    Array.isArray(source)
+  ){
+    return null;
+  }
+
+  const entry =
+    safeNumber(
+      source.entry ??
+      source.entryPrice ??
+      candidate.entry ??
+      candidate.entryPrice,
+      null
+    );
+
+  const stop =
+    safeNumber(
+      source.stop ??
+      source.stopLoss ??
+      source.sl ??
+      candidate.stop ??
+      candidate.stopLoss ??
+      candidate.sl,
+      null
+    );
+
+  const target1 =
+    safeNumber(
+      source.target1 ??
+      source.takeProfit1 ??
+      source.tp1 ??
+      source.target ??
+      source.takeProfit ??
+      source.tp ??
+      candidate.target1 ??
+      candidate.takeProfit1 ??
+      candidate.tp1,
+      null
+    );
+
+  const target2 =
+    safeNumber(
+      source.target2 ??
+      source.takeProfit2 ??
+      source.tp2 ??
+      candidate.target2 ??
+      candidate.takeProfit2 ??
+      candidate.tp2,
+      null
+    );
+
+  const target3 =
+    safeNumber(
+      source.target3 ??
+      source.takeProfit3 ??
+      source.tp3 ??
+      candidate.target3 ??
+      candidate.takeProfit3 ??
+      candidate.tp3,
+      null
+    );
+
+  const riskReward =
+    safeNumber(
+      source.riskReward ??
+      source.rr ??
+      candidate.riskReward ??
+      candidate.rr,
+      null
+    );
+
+  return {
+    ...source,
+
+    entry,
+
+    entryPrice:
+      entry,
+
+    stop,
+
+    stopLoss:
+      stop,
+
+    sl:
+      stop,
+
+    target1,
+
+    takeProfit1:
+      target1,
+
+    tp1:
+      target1,
+
+    target2,
+
+    takeProfit2:
+      target2,
+
+    tp2:
+      target2,
+
+    target3,
+
+    takeProfit3:
+      target3,
+
+    tp3:
+      target3,
+
+    riskReward,
+
+    rr:
+      riskReward
+  };
+}
+
+
+function normalizeBackendStructure(
+  candidate
+){
+  const source =
+    safeObject(
+      candidate?.structure ||
+      candidate?.marketStructure
+    );
+
+  if(
+    Object.keys(source).length === 0
+  ){
+    return {
+      direction:
+        "NEUTRAL",
+
+      label:
+        "Not reported",
+
+      score:
+        null
+    };
+  }
+
+  return {
+    ...source,
+
+    direction:
+      normalizeSignalDecision(
+        source.direction
+      ),
+
+    label:
+      String(
+        source.label ||
+        source.detail ||
+        source.direction ||
+        "Not reported"
+      ),
+
+    score:
+      safeNumber(
+        source.score,
+        null
+      )
+  };
+}
+
+
+function normalizeBackendSupportResistance(
+  candidate
+){
+  const source =
+    safeObject(
+      candidate?.supportResistance ||
+      candidate?.sr
+    );
+
+  const supports =
+    safeArray(
+      source.supports ||
+      candidate?.supports
+    )
+      .map(
+        value =>
+          safeNumber(
+            value,
+            null
+          )
+      )
+      .filter(
+        value =>
+          value !== null
+      );
+
+  const resistances =
+    safeArray(
+      source.resistances ||
+      candidate?.resistances
+    )
+      .map(
+        value =>
+          safeNumber(
+            value,
+            null
+          )
+      )
+      .filter(
+        value =>
+          value !== null
+      );
+
+  return {
+    supports,
+
+    resistances,
+
+    nearestSupport:
+      safeNumber(
+        source.nearestSupport ??
+        candidate?.nearestSupport,
+        null
+      ),
+
+    nearestResistance:
+      safeNumber(
+        source.nearestResistance ??
+        candidate?.nearestResistance,
+        null
+      )
+  };
 }
 
 
@@ -17286,28 +17627,28 @@ function resolveBackendEngineResult(
   }
 
   const frontendMode =
-  String(
-    mode || ""
-  )
-    .trim()
-    .toLowerCase();
+    String(
+      mode || ""
+    )
+      .trim()
+      .toLowerCase();
 
-const backendMode =
-  frontendMode === "daily"
-    ? "intraday"
-    : frontendMode === "weekly"
-      ? "swing"
-      : frontendMode;
+  const backendMode =
+    frontendMode === "daily"
+      ? "intraday"
+      : frontendMode === "weekly"
+        ? "swing"
+        : frontendMode;
 
-const engines =
-  safeObject(
-    pairAnalysis.engines
-  );
+  const engines =
+    safeObject(
+      pairAnalysis.engines
+    );
 
-const candidate =
-  pairAnalysis[backendMode] ||
-  engines[backendMode] ||
-  null;
+  const candidate =
+    pairAnalysis[backendMode] ||
+    engines[backendMode] ||
+    null;
 
   if(
     !candidate ||
@@ -17325,6 +17666,96 @@ const candidate =
       candidate.direction
     );
 
+  const indicators =
+    safeObject(
+      candidate.indicators
+    );
+
+  const structure =
+    normalizeBackendStructure(
+      candidate
+    );
+
+  const supportResistance =
+    normalizeBackendSupportResistance(
+      candidate
+    );
+
+  const tradePlan =
+    normalizeBackendTradePlan(
+      candidate
+    );
+
+  const pipeline =
+    safeArray(
+      candidate.pipeline ||
+      candidate.steps
+    );
+
+  const price =
+    safeNumber(
+      candidate.lastClose ??
+      candidate.lastPrice ??
+      candidate.currentPrice ??
+      candidate.price ??
+      candidate.entry ??
+      candidate.entryPrice,
+      null
+    );
+
+  const confidence =
+    safeNumber(
+      candidate.confidencePct ??
+      candidate.confidence,
+      null
+    );
+
+  const trend =
+    String(
+      candidate.trendDirection ||
+      candidate.trend ||
+      candidate.rawDirection ||
+      "Not reported"
+    );
+
+  const trendLabel =
+    String(
+      candidate.trendLabel ||
+      candidate.trendDetail ||
+      trend ||
+      "Not reported"
+    );
+
+  const rsi =
+    safeNumber(
+      candidate.lastRsi ??
+      candidate.rsi ??
+      indicators.rsi,
+      null
+    );
+
+  const adx =
+    safeNumber(
+      candidate.adx ??
+      indicators.adx,
+      null
+    );
+
+  const atr =
+    safeNumber(
+      candidate.atr ??
+      indicators.atr,
+      null
+    );
+
+  const newsScore =
+    safeNumber(
+      candidate.newsScore ??
+      candidate.newsImpactScore ??
+      candidate.news?.score,
+      null
+    );
+
   return {
     ...candidate,
 
@@ -17335,8 +17766,31 @@ const candidate =
       pair?.label ||
       null,
 
+    pairLabel:
+      candidate.pairLabel ||
+      candidate.pair ||
+      candidate.symbol ||
+      pair?.label ||
+      null,
+
+    symbol:
+      candidate.symbol ||
+      candidate.pair ||
+      candidate.pairLabel ||
+      pair?.label ||
+      null,
+
     mode:
       candidate.mode ||
+      backendMode,
+
+    engine:
+      candidate.engine ||
+      backendMode,
+
+    engineName:
+      candidate.engineName ||
+      candidate.engine ||
       backendMode,
 
     decision,
@@ -17350,12 +17804,179 @@ const candidate =
     direction:
       decision,
 
-    confidence:
+    confidence,
+
+    confidencePct:
+      confidence,
+
+    price,
+
+    currentPrice:
+      price,
+
+    lastPrice:
+      price,
+
+    lastClose:
+      price,
+
+    trend,
+
+    trendDirection:
+      trend,
+
+    trendLabel,
+
+    lastRsi:
+      rsi,
+
+    rsi,
+
+    adx,
+
+    atr,
+
+    indicators: {
+      ...indicators,
+
+      rsi,
+
+      adx,
+
+      atr
+    },
+
+    structure,
+
+    marketStructure:
+      structure,
+
+    supportResistance,
+
+    sr:
+      supportResistance,
+
+    supports:
+      supportResistance.supports,
+
+    resistances:
+      supportResistance.resistances,
+
+    nearestSupport:
+      supportResistance.nearestSupport,
+
+    nearestResistance:
+      supportResistance.nearestResistance,
+
+    tradePlan,
+
+    plan:
+      tradePlan,
+
+    entry:
+      tradePlan?.entry ??
       safeNumber(
-        candidate.confidencePct ??
-        candidate.confidence,
+        candidate.entry ??
+        candidate.entryPrice,
         null
       ),
+
+    entryPrice:
+      tradePlan?.entry ??
+      safeNumber(
+        candidate.entryPrice ??
+        candidate.entry,
+        null
+      ),
+
+    stop:
+      tradePlan?.stop ??
+      safeNumber(
+        candidate.stop ??
+        candidate.stopLoss ??
+        candidate.sl,
+        null
+      ),
+
+    stopLoss:
+      tradePlan?.stop ??
+      safeNumber(
+        candidate.stopLoss ??
+        candidate.stop ??
+        candidate.sl,
+        null
+      ),
+
+    sl:
+      tradePlan?.stop ??
+      safeNumber(
+        candidate.sl ??
+        candidate.stop ??
+        candidate.stopLoss,
+        null
+      ),
+
+    target1:
+      tradePlan?.target1 ??
+      safeNumber(
+        candidate.target1 ??
+        candidate.takeProfit1 ??
+        candidate.tp1,
+        null
+      ),
+
+    target2:
+      tradePlan?.target2 ??
+      safeNumber(
+        candidate.target2 ??
+        candidate.takeProfit2 ??
+        candidate.tp2,
+        null
+      ),
+
+    target3:
+      tradePlan?.target3 ??
+      safeNumber(
+        candidate.target3 ??
+        candidate.takeProfit3 ??
+        candidate.tp3,
+        null
+      ),
+
+    riskReward:
+      tradePlan?.riskReward ??
+      safeNumber(
+        candidate.riskReward ??
+        candidate.rr,
+        null
+      ),
+
+    rr:
+      tradePlan?.rr ??
+      safeNumber(
+        candidate.rr ??
+        candidate.riskReward,
+        null
+      ),
+
+    pipeline,
+
+    steps:
+      pipeline,
+
+    newsScore,
+
+    suppressionReason:
+      decision === "HOLD"
+        ? (
+            candidate.suppressionReason ||
+            candidate.reason ||
+            null
+          )
+        : (
+            candidate.suppressionReason ||
+            null
+          ),
 
     source:
       candidate.source ||

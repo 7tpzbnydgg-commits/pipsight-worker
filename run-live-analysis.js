@@ -2469,8 +2469,13 @@ function parseDedicatedScalpRecord(
     );
 
   return {
-    mode,
-    decision,
+  sourceRecord: {
+    ...pairRecord,
+    ...record,
+  },
+
+  mode,
+  decision,
 
     entry:
       roundPrice(
@@ -11483,17 +11488,6 @@ function p6ValidateRuntime() {
 // ---------------------------------------------------------------------------
 // Pair input preparation
 // ---------------------------------------------------------------------------
-
-function p6PreparePairInput(
-  pair,
-  inputs
-) {
-  const scalpSignal =
-    p6ExtractPairSignal(
-      inputs.scalpSignals,
-      pair
-    );
-
   function p6PreparePairInput(
   pair,
   inputs

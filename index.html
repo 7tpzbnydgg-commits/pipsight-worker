@@ -17115,25 +17115,54 @@ async function renderCurrentPair({
           currentMode;
 
         const dataInfo =
-          await loadPairAnalysisData(
-            pair,
-            mode
-          );
+  await loadPairAnalysisData(
+    pair,
+    mode
+  );
 
-        let analysis =
-          analyze(
-            dataInfo.rows,
-            pair.label,
-            dataInfo.higherRows,
-            dataInfo.ohlcRows
-          );
+const backendAnalysis =
+  mode === "patterns"
+    ? null
+    : await getBackendDecisionForEngine(
+        pair,
+        mode,
+        {
+          forceRefresh
+        }
+      );
 
-        analysis =
-          applyLearnerGate(
-            analysis,
-            mode,
-            pair.key
-          );
+let analysis;
+
+if(backendAnalysis){
+  analysis =
+    backendAnalysis;
+}else{
+  analysis =
+    analyze(
+      dataInfo.rows,
+      pair.label,
+      dataInfo.higherRows,
+      dataInfo.ohlcRows
+    );
+
+  analysis =
+    applyLearnerGate(
+      analysis,
+      mode,
+      pair.key
+    );
+
+  analysis = {
+    ...analysis,
+
+    source:
+      analysis.source ||
+      "browser-fallback",
+
+    backendAuthoritative:
+      false
+  };
+}
 
         registerMainSignal(
           pair,

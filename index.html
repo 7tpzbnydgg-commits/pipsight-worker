@@ -2263,6 +2263,23 @@ function resolveLatestDirectionalSignal(
     "master"
   ];
 
+  /*
+   * Explicit equal-time priority.
+   *
+   * The newest valid BUY/SELL decision always wins.
+   * When timestamps are exactly equal, the backend
+   * Master decision has first priority.
+   *
+   * This affects dashboard observability only.
+   */
+  const equalTimeEnginePriority =
+    Object.freeze({
+      master: 4,
+      scalp: 3,
+      intraday: 2,
+      swing: 1
+    });
+
   const candidates =
     [];
 
@@ -2320,6 +2337,8 @@ function resolveLatestDirectionalSignal(
           engine.mode ??
           engineKey,
 
+        engineKey,
+
         source:
           engine.source ??
           engine.sourceMode ??
@@ -2360,8 +2379,26 @@ function resolveLatestDirectionalSignal(
           0
         );
 
-      return secondTime -
+      const timeDifference =
+        secondTime -
         firstTime;
+
+      if(timeDifference !== 0){
+        return timeDifference;
+      }
+
+      const firstPriority =
+        equalTimeEnginePriority[
+          first.engineKey
+        ] ?? 0;
+
+      const secondPriority =
+        equalTimeEnginePriority[
+          second.engineKey
+        ] ?? 0;
+
+      return secondPriority -
+        firstPriority;
     }
   );
 

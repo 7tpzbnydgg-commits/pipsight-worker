@@ -1,0 +1,4361 @@
+// resolve-analysis-history.js
+//
+// PipSight Pro — Analysis History Trade Resolver.
+//
+// Phase 9 goals:
+// - Resolve existing open history records against verified market candles.
+// - Preserve the existing analysis-history.json schema.
+// - Preserve legacy open / closed collections.
+// - Preserve current records / history / items aliases.
+// - Never modify trading strategy decisions.
+// - Never invent missing prices, timestamps or outcomes.
+// - Use deterministic processing and atomic JSON writes.
+// - Remain duplicate-safe across repeated runs.
+//
+// Reads:
+//   data/analysis-history.json
+//   data/scalp-candles.json
+//   data/intraday-h1.json
+//   data/daily-ohlc.json
+//
+// Writes:
+//   data/analysis-history.json
+//
+// Compatibility:
+// - CommonJS / Node.js 20.
+// - Existing Swing, Intraday, Scalp and Master logic remains unchanged.
+// - Existing Telegram logic remains unchanged.
+// - Existing Learning and AI Memory schemas remain unchanged.
+// - Existing legacy history records remain supported.
+
+"use strict";
+
+const fs =
+  require("fs");
+
+const path =
+  require("path");
+
+// ============================================================================
+// Engine metadata
+// ============================================================================
+
+const ENGINE_NAME =
+  "PipSight Pro Analysis History Resolver";
+
+const ENGINE_VERSION =
+  "1.0.0";
+
+const HISTORY_VERSION =
+  1;
+
+// ============================================================================
+// Paths
+// ============================================================================
+
+const ROOT_DIR =
+  __dirname;
+
+const DATA_DIR =
+  path.join(
+    ROOT_DIR,
+    "data"
+  );
+
+const ANALYSIS_HISTORY_PATH =
+  path.join(
+    DATA_DIR,
+    "analysis-history.json"
+  );
+
+const SCALP_CANDLES_PATH =
+  path.join(
+    DATA_DIR,
+    "scalp-candles.json"
+  );
+
+const INTRADAY_CANDLES_PATH =
+  path.join(
+    DATA_DIR,
+    "intraday-h1.json"
+  );
+
+const DAILY_CANDLES_PATH =
+  path.join(
+    DATA_DIR,
+    "daily-ohlc.json"
+  );
+
+// ============================================================================
+// Supported values
+// ============================================================================
+
+const SUPPORTED_PAIRS =
+  new Set([
+    "XAUUSD",
+    "GBPJPY"
+  ]);
+
+const SUPPORTED_DIRECTIONS =
+  new Set([
+    "BUY",
+    "SELL"
+  ]);
+
+const RESOLVED_OUTCOMES =
+  new Set([
+    "WIN",
+    "LOSS",
+    "BREAKEVEN"
+  ]);
+
+const OPEN_STATUSES =
+  new Set([
+    "open",
+    "pending",
+    "active"
+  ]);
+
+const CLOSED_STATUSES =
+  new Set([
+    "closed",
+    "resolved",
+    "complete",
+    "completed"
+  ]);
+
+const ENGINE_ALIASES =
+  Object.freeze({
+    swing:
+      "swing",
+
+    weekly:
+      "swing",
+
+    intraday:
+      "intraday",
+
+    daily:
+      "intraday",
+
+    scalp:
+      "scalp",
+
+    "scalp-5m":
+      "scalp",
+
+    "scalp-15m":
+      "scalp",
+
+    "scalp-30m":
+      "scalp",
+
+    master:
+      "master"
+  });
+
+// ============================================================================
+// Generic validation helpers
+// ============================================================================
+
+function isPlainObject(
+  value
+) {
+
+  return Boolean(
+    value &&
+    typeof value ===
+      "object" &&
+    !Array.isArray(
+      value
+    )
+  );
+
+}
+
+function asArray(
+  value
+) {
+
+  return Array.isArray(
+    value
+  )
+    ? value
+    : [];
+
+}
+
+function toFiniteNumber(
+  value
+) {
+
+  if (
+    value === null ||
+    value === undefined ||
+    (
+      typeof value ===
+        "string" &&
+      value.trim() ===
+        ""
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const number =
+    Number(
+      value
+    );
+
+  return Number.isFinite(
+    number
+  )
+    ? number
+    : null;
+
+}
+
+function toTrimmedString(
+  value
+) {
+
+  if (
+    value === null ||
+    value === undefined
+  ) {
+
+    return "";
+
+  }
+
+  return String(
+    value
+  ).trim();
+
+}
+
+function normalizeUpperString(
+  value
+) {
+
+  return toTrimmedString(
+    value
+  ).toUpperCase();
+
+}
+
+function normalizeLowerString(
+  value
+) {
+
+  return toTrimmedString(
+    value
+  ).toLowerCase();
+
+}
+
+function toTimestamp(
+  value
+) {
+
+  if (
+    value === null ||
+    value === undefined ||
+    value ===
+      ""
+  ) {
+
+    return null;
+
+  }
+
+  if (
+    typeof value ===
+      "number" &&
+    Number.isFinite(
+      value
+    )
+  ) {
+
+    const milliseconds =
+      value < 100000000000
+        ? value * 1000
+        : value;
+
+    const date =
+      new Date(
+        milliseconds
+      );
+
+    return Number.isNaN(
+      date.getTime()
+    )
+      ? null
+      : date.getTime();
+
+  }
+
+  if (
+    typeof value ===
+      "string"
+  ) {
+
+    const trimmed =
+      value.trim();
+
+    if (!trimmed) {
+
+      return null;
+
+    }
+
+    const numeric =
+      Number(
+        trimmed
+      );
+
+    if (
+      Number.isFinite(
+        numeric
+      )
+    ) {
+
+      return toTimestamp(
+        numeric
+      );
+
+    }
+
+    const parsed =
+      Date.parse(
+        trimmed
+      );
+
+    return Number.isNaN(
+      parsed
+    )
+      ? null
+      : parsed;
+
+  }
+
+  const parsed =
+    new Date(
+      value
+    ).getTime();
+
+  return Number.isNaN(
+    parsed
+  )
+    ? null
+    : parsed;
+
+}
+
+function toISOStringOrNull(
+  value
+) {
+
+  const timestamp =
+    toTimestamp(
+      value
+    );
+
+  if (
+    timestamp === null
+  ) {
+
+    return null;
+
+  }
+
+  return new Date(
+    timestamp
+  ).toISOString();
+
+}
+
+function cloneJSONValue(
+  value
+) {
+
+  if (
+    value === undefined
+  ) {
+
+    return undefined;
+
+  }
+
+  return JSON.parse(
+    JSON.stringify(
+      value
+    )
+  );
+
+}
+
+function ensureDirectory(
+  directoryPath
+) {
+
+  if (
+    fs.existsSync(
+      directoryPath
+    )
+  ) {
+
+    return;
+
+  }
+
+  fs.mkdirSync(
+    directoryPath,
+    {
+      recursive:
+        true
+    }
+  );
+
+}
+
+// ============================================================================
+// Safe JSON I/O
+// ============================================================================
+
+function readJSON(
+  filePath,
+  options = {}
+) {
+
+  const required =
+    options.required ===
+      true;
+
+  const fallbackValue =
+    options.fallbackValue ===
+      undefined
+      ? null
+      : options.fallbackValue;
+
+  if (
+    !fs.existsSync(
+      filePath
+    )
+  ) {
+
+    if (required) {
+
+      throw new Error(
+        `Required file does not exist: ${path.relative(
+          ROOT_DIR,
+          filePath
+        )}`
+      );
+
+    }
+
+    return fallbackValue;
+
+  }
+
+  const raw =
+    fs.readFileSync(
+      filePath,
+      "utf8"
+    );
+
+  if (
+    !raw.trim()
+  ) {
+
+    if (required) {
+
+      throw new Error(
+        `Required file is empty: ${path.relative(
+          ROOT_DIR,
+          filePath
+        )}`
+      );
+
+    }
+
+    return fallbackValue;
+
+  }
+
+  try {
+
+    return JSON.parse(
+      raw
+    );
+
+  } catch (
+    error
+  ) {
+
+    throw new Error(
+      `Invalid JSON in ${path.relative(
+        ROOT_DIR,
+        filePath
+      )}: ${error.message}`
+    );
+
+  }
+
+}
+
+function atomicWriteJSON(
+  filePath,
+  value
+) {
+
+  ensureDirectory(
+    path.dirname(
+      filePath
+    )
+  );
+
+  const temporaryPath =
+    `${filePath}.${process.pid}.${Date.now()}.tmp`;
+
+  let temporaryCreated =
+    false;
+
+  try {
+
+    fs.writeFileSync(
+      temporaryPath,
+      `${JSON.stringify(
+        value,
+        null,
+        2
+      )}\n`,
+      "utf8"
+    );
+
+    temporaryCreated =
+      true;
+
+    fs.renameSync(
+      temporaryPath,
+      filePath
+    );
+
+    temporaryCreated =
+      false;
+
+  } finally {
+
+    if (
+      temporaryCreated &&
+      fs.existsSync(
+        temporaryPath
+      )
+    ) {
+
+      try {
+
+        fs.unlinkSync(
+          temporaryPath
+        );
+
+      } catch (_) {
+
+        // Cleanup failure must not hide the original write error.
+
+      }
+
+    }
+
+  }
+
+}
+
+// ============================================================================
+// Pair normalization
+// ============================================================================
+
+function normalizePairKey(
+  value
+) {
+
+  const compact =
+    normalizeUpperString(
+      value
+    ).replace(
+      /[^A-Z0-9]/g,
+      ""
+    );
+
+  if (
+    compact ===
+      "XAUUSD"
+  ) {
+
+    return "XAUUSD";
+
+  }
+
+  if (
+    compact ===
+      "GBPJPY"
+  ) {
+
+    return "GBPJPY";
+
+  }
+
+  return null;
+
+}
+
+function pairLabelFromKey(
+  pairKey
+) {
+
+  if (
+    pairKey ===
+      "XAUUSD"
+  ) {
+
+    return "XAU/USD";
+
+  }
+
+  if (
+    pairKey ===
+      "GBPJPY"
+  ) {
+
+    return "GBP/JPY";
+
+  }
+
+  return null;
+
+}
+
+// ============================================================================
+// Direction, engine and status normalization
+// ============================================================================
+
+function normalizeDirection(
+  value
+) {
+
+  const direction =
+    normalizeUpperString(
+      value
+    );
+
+  return SUPPORTED_DIRECTIONS.has(
+    direction
+  )
+    ? direction
+    : null;
+
+}
+
+function normalizeEngine(
+  value
+) {
+
+  const engine =
+    normalizeLowerString(
+      value
+    );
+
+  return ENGINE_ALIASES[
+    engine
+  ] || null;
+
+}
+
+function normalizeOutcome(
+  value
+) {
+
+  const outcome =
+    normalizeUpperString(
+      value
+    );
+
+  return RESOLVED_OUTCOMES.has(
+    outcome
+  )
+    ? outcome
+    : null;
+
+}
+
+function normalizeStatus(
+  value,
+  outcome = null
+) {
+
+  if (
+    normalizeOutcome(
+      outcome
+    )
+  ) {
+
+    return "closed";
+
+  }
+
+  const status =
+    normalizeLowerString(
+      value
+    );
+
+  if (
+    CLOSED_STATUSES.has(
+      status
+    )
+  ) {
+
+    return "closed";
+
+  }
+
+  if (
+    OPEN_STATUSES.has(
+      status
+    )
+  ) {
+
+    return "open";
+
+  }
+
+  if (
+    status ===
+      "hold"
+  ) {
+
+    return "hold";
+
+  }
+
+  return status ||
+    null;
+
+}
+
+// ============================================================================
+// History record field extraction
+// ============================================================================
+
+function getRecordPairKey(
+  record
+) {
+
+  if (
+    !isPlainObject(
+      record
+    )
+  ) {
+
+    return null;
+
+  }
+
+  return normalizePairKey(
+    record.pair ??
+    record.symbol ??
+    record.pairLabel ??
+    record.snapshot?.pair ??
+    record.snapshot?.symbol
+  );
+
+}
+
+function getRecordDirection(
+  record
+) {
+
+  if (
+    !isPlainObject(
+      record
+    )
+  ) {
+
+    return null;
+
+  }
+
+  return normalizeDirection(
+    record.direction ??
+    record.decision ??
+    record.signal ??
+    record.action ??
+    record.tradePlan?.direction ??
+    record.snapshot?.direction ??
+    record.snapshot?.decision
+  );
+
+}
+
+function getRecordEngine(
+  record
+) {
+
+  if (
+    !isPlainObject(
+      record
+    )
+  ) {
+
+    return null;
+
+  }
+
+  return normalizeEngine(
+    record.engine ??
+    record.engineName ??
+    record.mode ??
+    record.strategy ??
+    record.snapshot?.engine ??
+    record.snapshot?.mode
+  );
+
+}
+
+function getRecordEntry(
+  record
+) {
+
+  if (
+    !isPlainObject(
+      record
+    )
+  ) {
+
+    return null;
+
+  }
+
+  return toFiniteNumber(
+    record.entry ??
+    record.entryPrice ??
+    record.tradePlan?.entry ??
+    record.tradePlan?.entryPrice ??
+    record.plan?.entry ??
+    record.snapshot?.entry ??
+    record.snapshot?.entryPrice ??
+    record.snapshot?.tradePlan?.entry
+  );
+
+}
+
+function getRecordStop(
+  record
+) {
+
+  if (
+    !isPlainObject(
+      record
+    )
+  ) {
+
+    return null;
+
+  }
+
+  return toFiniteNumber(
+    record.stop ??
+    record.stopLoss ??
+    record.sl ??
+    record.tradePlan?.stop ??
+    record.tradePlan?.stopLoss ??
+    record.tradePlan?.sl ??
+    record.plan?.stop ??
+    record.snapshot?.stop ??
+    record.snapshot?.stopLoss ??
+    record.snapshot?.tradePlan?.stop
+  );
+
+}
+
+function getRecordTargets(
+  record
+) {
+
+  if (
+    !isPlainObject(
+      record
+    )
+  ) {
+
+    return [];
+
+  }
+
+  const candidates = [
+    record.target1,
+    record.takeProfit1,
+    record.tp1,
+    record.target,
+    record.takeProfit,
+    record.tp,
+    record.tradePlan?.target1,
+    record.tradePlan?.takeProfit1,
+    record.tradePlan?.tp1,
+    record.tradePlan?.target,
+    record.plan?.target1,
+    record.snapshot?.target1,
+    record.snapshot?.takeProfit1,
+    record.snapshot?.tp1,
+    record.snapshot?.tradePlan?.target1,
+
+    record.target2,
+    record.takeProfit2,
+    record.tp2,
+    record.tradePlan?.target2,
+    record.tradePlan?.takeProfit2,
+    record.tradePlan?.tp2,
+    record.plan?.target2,
+    record.snapshot?.target2,
+    record.snapshot?.takeProfit2,
+    record.snapshot?.tp2,
+    record.snapshot?.tradePlan?.target2,
+
+    record.target3,
+    record.takeProfit3,
+    record.tp3,
+    record.tradePlan?.target3,
+    record.tradePlan?.takeProfit3,
+    record.tradePlan?.tp3,
+    record.plan?.target3,
+    record.snapshot?.target3,
+    record.snapshot?.takeProfit3,
+    record.snapshot?.tp3,
+    record.snapshot?.tradePlan?.target3
+  ];
+
+  const targets = [];
+
+  for (
+    const candidate of
+      candidates
+  ) {
+
+    const number =
+      toFiniteNumber(
+        candidate
+      );
+
+    if (
+      number === null ||
+      targets.includes(
+        number
+      )
+    ) {
+
+      continue;
+
+    }
+
+    targets.push(
+      number
+    );
+
+  }
+
+  return targets;
+
+}
+
+function getRecordOpenedTimestamp(
+  record
+) {
+
+  if (
+    !isPlainObject(
+      record
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const candidates = [
+    record.signalTimestamp,
+    record.signalTime,
+    record.openedAt,
+    record.createdAt,
+    record.recordedAt,
+    record.timestamp,
+    record.time,
+    record.generatedAt,
+    record.snapshot?.timestamp,
+    record.snapshot?.time,
+    record.snapshot?.generatedAt
+  ];
+
+  for (
+    const candidate of
+      candidates
+  ) {
+
+    const timestamp =
+      toTimestamp(
+        candidate
+      );
+
+    if (
+      timestamp !== null
+    ) {
+
+      return timestamp;
+
+    }
+
+  }
+
+  return null;
+
+}
+
+function getRecordOutcome(
+  record
+) {
+
+  if (
+    !isPlainObject(
+      record
+    )
+  ) {
+
+    return null;
+
+  }
+
+  return normalizeOutcome(
+    record.outcome ??
+    record.result ??
+    record.resolution?.outcome
+  );
+
+}
+
+function isRecordAlreadyResolved(
+  record
+) {
+
+  if (
+    !isPlainObject(
+      record
+    )
+  ) {
+
+    return false;
+
+  }
+
+  if (
+    getRecordOutcome(
+      record
+    )
+  ) {
+
+    return true;
+
+  }
+
+  return normalizeStatus(
+    record.status,
+    record.outcome
+  ) ===
+    "closed";
+
+}
+
+function isRecordOpenCandidate(
+  record
+) {
+
+  if (
+    !isPlainObject(
+      record
+    ) ||
+    isRecordAlreadyResolved(
+      record
+    )
+  ) {
+
+    return false;
+
+  }
+
+  const status =
+    normalizeStatus(
+      record.status,
+      record.outcome
+    );
+
+  if (
+    status ===
+      "hold"
+  ) {
+
+    return false;
+
+  }
+
+  return Boolean(
+    getRecordPairKey(
+      record
+    ) &&
+    getRecordDirection(
+      record
+    ) &&
+    getRecordEngine(
+      record
+    ) &&
+    getRecordEntry(
+      record
+    ) !== null &&
+    getRecordStop(
+      record
+    ) !== null &&
+    getRecordTargets(
+      record
+    ).length > 0 &&
+    getRecordOpenedTimestamp(
+      record
+    ) !== null
+  );
+
+}
+
+// ============================================================================
+// History normalization
+// ============================================================================
+
+function createEmptyHistory() {
+
+  const records = [];
+
+  return {
+    version:
+      HISTORY_VERSION,
+
+    updatedAt:
+      new Date().toISOString(),
+
+    open:
+      {},
+
+    closed:
+      [],
+
+    records,
+
+    history:
+      records,
+
+    items:
+      records
+  };
+
+}
+
+function normalizeAnalysisHistory(
+  rawHistory
+) {
+
+  if (
+    Array.isArray(
+      rawHistory
+    )
+  ) {
+
+    const records =
+      rawHistory;
+
+    return {
+      version:
+        HISTORY_VERSION,
+
+      updatedAt:
+        new Date().toISOString(),
+
+      open:
+        {},
+
+      closed:
+        [],
+
+      records,
+
+      history:
+        records,
+
+      items:
+        records
+    };
+
+  }
+
+  if (
+    !isPlainObject(
+      rawHistory
+    )
+  ) {
+
+    return createEmptyHistory();
+
+  }
+
+  let records;
+
+  if (
+    Array.isArray(
+      rawHistory.records
+    )
+  ) {
+
+    records =
+      rawHistory.records;
+
+  } else if (
+    Array.isArray(
+      rawHistory.history
+    )
+  ) {
+
+    records =
+      rawHistory.history;
+
+  } else if (
+    Array.isArray(
+      rawHistory.items
+    )
+  ) {
+
+    records =
+      rawHistory.items;
+
+  } else if (
+    Array.isArray(
+      rawHistory.signals
+    )
+  ) {
+
+    records =
+      rawHistory.signals;
+
+  } else {
+
+    records =
+      [];
+
+  }
+
+  const legacyOpen =
+    isPlainObject(
+      rawHistory.open
+    )
+      ? rawHistory.open
+      : {};
+
+  const legacyClosed =
+    asArray(
+      rawHistory.closed
+    );
+
+  return {
+    ...rawHistory,
+
+    version:
+      toFiniteNumber(
+        rawHistory.version
+      ) ??
+      HISTORY_VERSION,
+
+    updatedAt:
+      toISOStringOrNull(
+        rawHistory.updatedAt
+      ) ||
+      new Date().toISOString(),
+
+    open:
+      legacyOpen,
+
+    closed:
+      legacyClosed,
+
+    records,
+
+    // Preserve aliases as references to the same records array.
+    history:
+      records,
+
+    items:
+      records
+  };
+
+}
+
+function loadAnalysisHistory() {
+
+  const rawHistory =
+    readJSON(
+      ANALYSIS_HISTORY_PATH,
+      {
+        required:
+          true
+      }
+    );
+
+  return normalizeAnalysisHistory(
+    rawHistory
+  );
+
+}
+
+// ============================================================================
+// Candle field extraction
+// ============================================================================
+
+function getCandleTimestamp(
+  row
+) {
+
+  if (
+    !isPlainObject(
+      row
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const candidates = [
+    row.timestamp,
+    row.time,
+    row.datetime,
+    row.date,
+    row.openTime,
+    row.open_time,
+    row.startTime,
+    row.start_time,
+    row.createdAt,
+    row.generatedAt
+  ];
+
+  for (
+    const candidate of
+      candidates
+  ) {
+
+    const timestamp =
+      toTimestamp(
+        candidate
+      );
+
+    if (
+      timestamp !== null
+    ) {
+
+      return timestamp;
+
+    }
+
+  }
+
+  return null;
+
+}
+
+function getCandleOpen(
+  row
+) {
+
+  if (
+    !isPlainObject(
+      row
+    )
+  ) {
+
+    return null;
+
+  }
+
+  return toFiniteNumber(
+    row.open ??
+    row.o ??
+    row.openPrice ??
+    row.open_price
+  );
+
+}
+
+function getCandleHigh(
+  row
+) {
+
+  if (
+    !isPlainObject(
+      row
+    )
+  ) {
+
+    return null;
+
+  }
+
+  return toFiniteNumber(
+    row.high ??
+    row.h ??
+    row.highPrice ??
+    row.high_price
+  );
+
+}
+
+function getCandleLow(
+  row
+) {
+
+  if (
+    !isPlainObject(
+      row
+    )
+  ) {
+
+    return null;
+
+  }
+
+  return toFiniteNumber(
+    row.low ??
+    row.l ??
+    row.lowPrice ??
+    row.low_price
+  );
+
+}
+
+function getCandleClose(
+  row
+) {
+
+  if (
+    !isPlainObject(
+      row
+    )
+  ) {
+
+    return null;
+
+  }
+
+  return toFiniteNumber(
+    row.close ??
+    row.c ??
+    row.closePrice ??
+    row.close_price ??
+    row.price
+  );
+
+}
+
+function getCandleClosedState(
+  row
+) {
+
+  if (
+    !isPlainObject(
+      row
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const explicitClosed =
+    row.closed ??
+    row.isClosed ??
+    row.is_closed ??
+    row.complete ??
+    row.completed ??
+    row.final;
+
+  if (
+    explicitClosed ===
+      true
+  ) {
+
+    return true;
+
+  }
+
+  if (
+    explicitClosed ===
+      false
+  ) {
+
+    return false;
+
+  }
+
+  const status =
+    normalizeLowerString(
+      row.status ??
+      row.state ??
+      row.candleStatus
+    );
+
+  if (
+    status ===
+      "closed" ||
+    status ===
+      "complete" ||
+    status ===
+      "completed" ||
+    status ===
+      "final"
+  ) {
+
+    return true;
+
+  }
+
+  if (
+    status ===
+      "open" ||
+    status ===
+      "forming" ||
+    status ===
+      "active" ||
+    status ===
+      "incomplete"
+  ) {
+
+    return false;
+
+  }
+
+  return null;
+
+}
+
+// ============================================================================
+// Candle normalization
+// ============================================================================
+
+function normalizeCandle(
+  rawCandle,
+  options = {}
+) {
+
+  if (
+    !isPlainObject(
+      rawCandle
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const timestamp =
+    getCandleTimestamp(
+      rawCandle
+    );
+
+  const open =
+    getCandleOpen(
+      rawCandle
+    );
+
+  const high =
+    getCandleHigh(
+      rawCandle
+    );
+
+  const low =
+    getCandleLow(
+      rawCandle
+    );
+
+  const close =
+    getCandleClose(
+      rawCandle
+    );
+
+  if (
+    timestamp === null ||
+    open === null ||
+    high === null ||
+    low === null ||
+    close === null
+  ) {
+
+    return null;
+
+  }
+
+  if (
+    open <= 0 ||
+    high <= 0 ||
+    low <= 0 ||
+    close <= 0
+  ) {
+
+    return null;
+
+  }
+
+  if (
+    high < low ||
+    high < open ||
+    high < close ||
+    low > open ||
+    low > close
+  ) {
+
+    return null;
+
+  }
+
+  const explicitClosed =
+    getCandleClosedState(
+      rawCandle
+    );
+
+  if (
+    options.closedOnly ===
+      true &&
+    explicitClosed ===
+      false
+  ) {
+
+    return null;
+
+  }
+
+  return {
+    timestamp,
+
+    time:
+      new Date(
+        timestamp
+      ).toISOString(),
+
+    open,
+    high,
+    low,
+    close,
+
+    closed:
+      explicitClosed,
+
+    pair:
+      options.pairKey ||
+      normalizePairKey(
+        rawCandle.pair ??
+        rawCandle.symbol ??
+        rawCandle.instrument
+      ),
+
+    source:
+      options.source ||
+      null,
+
+    raw:
+      rawCandle
+  };
+
+}
+
+function normalizeCandles(
+  rawRows,
+  options = {}
+) {
+
+  const rows =
+    asArray(
+      rawRows
+    );
+
+  const candlesByTimestamp =
+    new Map();
+
+  let invalidCount =
+    0;
+
+  let duplicateCount =
+    0;
+
+  let explicitlyOpenCount =
+    0;
+
+  for (
+    const rawRow of
+      rows
+  ) {
+
+    const explicitClosed =
+      getCandleClosedState(
+        rawRow
+      );
+
+    if (
+      explicitClosed ===
+        false
+    ) {
+
+      explicitlyOpenCount +=
+        1;
+
+    }
+
+    const candle =
+      normalizeCandle(
+        rawRow,
+        options
+      );
+
+    if (!candle) {
+
+      invalidCount +=
+        1;
+
+      continue;
+
+    }
+
+    if (
+      candlesByTimestamp.has(
+        candle.timestamp
+      )
+    ) {
+
+      duplicateCount +=
+        1;
+
+    }
+
+    /*
+     * Deterministic duplicate handling:
+     * the later row in the source document replaces the earlier row.
+     */
+    candlesByTimestamp.set(
+      candle.timestamp,
+      candle
+    );
+
+  }
+
+  const candles =
+    Array.from(
+      candlesByTimestamp.values()
+    ).sort(
+      (
+        left,
+        right
+      ) =>
+        left.timestamp -
+        right.timestamp
+    );
+
+  return {
+    candles,
+
+    metadata: {
+      sourceRowCount:
+        rows.length,
+
+      validCandleCount:
+        candles.length,
+
+      invalidCandleCount:
+        invalidCount,
+
+      duplicateCandleCount:
+        duplicateCount,
+
+      explicitlyOpenCandleCount:
+        explicitlyOpenCount,
+
+      firstCandleTime:
+        candles.length > 0
+          ? candles[0].time
+          : null,
+
+      latestCandleTime:
+        candles.length > 0
+          ? candles[
+              candles.length - 1
+            ].time
+          : null
+    }
+  };
+
+}
+
+// ============================================================================
+// Pair-keyed document extraction
+// ============================================================================
+
+function getPairAliases(
+  pairKey
+) {
+
+  if (
+    pairKey ===
+      "XAUUSD"
+  ) {
+
+    return [
+      "XAUUSD",
+      "XAU/USD",
+      "XAU_USD",
+      "XAU-USD",
+      "xauusd",
+      "xau/usd",
+      "gold",
+      "GOLD"
+    ];
+
+  }
+
+  if (
+    pairKey ===
+      "GBPJPY"
+  ) {
+
+    return [
+      "GBPJPY",
+      "GBP/JPY",
+      "GBP_JPY",
+      "GBP-JPY",
+      "gbpjpy",
+      "gbp/jpy",
+      "GJ",
+      "gj"
+    ];
+
+  }
+
+  return [];
+
+}
+
+function findPairProperty(
+  object,
+  pairKey
+) {
+
+  if (
+    !isPlainObject(
+      object
+    )
+  ) {
+
+    return undefined;
+
+  }
+
+  for (
+    const alias of
+      getPairAliases(
+        pairKey
+      )
+  ) {
+
+    if (
+      Object.prototype.hasOwnProperty.call(
+        object,
+        alias
+      )
+    ) {
+
+      return object[
+        alias
+      ];
+
+    }
+
+  }
+
+  for (
+    const [
+      key,
+      value
+    ] of Object.entries(
+      object
+    )
+  ) {
+
+    if (
+      normalizePairKey(
+        key
+      ) ===
+        pairKey
+    ) {
+
+      return value;
+
+    }
+
+  }
+
+  return undefined;
+
+}
+
+function rowMatchesPair(
+  row,
+  pairKey
+) {
+
+  if (
+    !isPlainObject(
+      row
+    )
+  ) {
+
+    return false;
+
+  }
+
+  const rowPair =
+    normalizePairKey(
+      row.pair ??
+      row.symbol ??
+      row.instrument ??
+      row.market ??
+      row.asset ??
+      row.ticker
+    );
+
+  return rowPair ===
+    pairKey;
+
+}
+
+function extractPairRowsFromArray(
+  rows,
+  pairKey
+) {
+
+  const sourceRows =
+    asArray(
+      rows
+    );
+
+  const taggedRows =
+    sourceRows.filter(
+      (
+        row
+      ) =>
+        rowMatchesPair(
+          row,
+          pairKey
+        )
+    );
+
+  /*
+   * If rows contain pair tags, only the matching subset is safe.
+   * If no rows contain pair tags, the array may already be pair-specific.
+   */
+  const containsAnyPairTags =
+    sourceRows.some(
+      (
+        row
+      ) =>
+        Boolean(
+          normalizePairKey(
+            row?.pair ??
+            row?.symbol ??
+            row?.instrument ??
+            row?.market ??
+            row?.asset ??
+            row?.ticker
+          )
+        )
+    );
+
+  if (
+    containsAnyPairTags
+  ) {
+
+    return taggedRows;
+
+  }
+
+  return sourceRows;
+
+}
+
+function unwrapRowsContainer(
+  value,
+  pairKey
+) {
+
+  if (
+    Array.isArray(
+      value
+    )
+  ) {
+
+    return extractPairRowsFromArray(
+      value,
+      pairKey
+    );
+
+  }
+
+  if (
+    !isPlainObject(
+      value
+    )
+  ) {
+
+    return [];
+
+  }
+
+  const pairValue =
+    findPairProperty(
+      value,
+      pairKey
+    );
+
+  if (
+    pairValue !==
+      undefined &&
+    pairValue !==
+      value
+  ) {
+
+    const nestedPairRows =
+      unwrapRowsContainer(
+        pairValue,
+        pairKey
+      );
+
+    if (
+      nestedPairRows.length >
+        0
+    ) {
+
+      return nestedPairRows;
+
+    }
+
+  }
+
+  const containerKeys = [
+    "candles",
+    "rows",
+    "data",
+    "history",
+    "prices",
+    "ohlc",
+    "results",
+    "items",
+    "values",
+    "series"
+  ];
+
+  for (
+    const key of
+      containerKeys
+  ) {
+
+    if (
+      value[
+        key
+      ] ===
+        undefined
+    ) {
+
+      continue;
+
+    }
+
+    const nestedRows =
+      unwrapRowsContainer(
+        value[
+          key
+        ],
+        pairKey
+      );
+
+    if (
+      nestedRows.length >
+        0
+    ) {
+
+      return nestedRows;
+
+    }
+
+  }
+
+  return [];
+
+}
+
+function extractPairRows(
+  document,
+  pairKey
+) {
+
+  if (
+    !SUPPORTED_PAIRS.has(
+      pairKey
+    )
+  ) {
+
+    return [];
+
+  }
+
+  if (
+    Array.isArray(
+      document
+    )
+  ) {
+
+    return extractPairRowsFromArray(
+      document,
+      pairKey
+    );
+
+  }
+
+  if (
+    !isPlainObject(
+      document
+    )
+  ) {
+
+    return [];
+
+  }
+
+  const directPairValue =
+    findPairProperty(
+      document,
+      pairKey
+    );
+
+  if (
+    directPairValue !==
+      undefined
+  ) {
+
+    const directRows =
+      unwrapRowsContainer(
+        directPairValue,
+        pairKey
+      );
+
+    if (
+      directRows.length >
+        0
+    ) {
+
+      return directRows;
+
+    }
+
+  }
+
+  const pairContainerKeys = [
+    "pairs",
+    "symbols",
+    "markets",
+    "instruments",
+    "assets",
+    "results",
+    "data"
+  ];
+
+  for (
+    const key of
+      pairContainerKeys
+  ) {
+
+    if (
+      !isPlainObject(
+        document[
+          key
+        )
+    ) {
+
+      continue;
+
+    }
+
+    const pairValue =
+      findPairProperty(
+        document[
+          key
+        ],
+        pairKey
+      );
+
+    if (
+      pairValue ===
+        undefined
+    ) {
+
+      continue;
+
+    }
+
+    const nestedRows =
+      unwrapRowsContainer(
+        pairValue,
+        pairKey
+      );
+
+    if (
+      nestedRows.length >
+        0
+    ) {
+
+      return nestedRows;
+
+    }
+
+  }
+
+  return unwrapRowsContainer(
+    document,
+    pairKey
+  );
+
+}
+
+// ============================================================================
+// Market source document loading
+// ============================================================================
+
+function loadMarketSourceDocument(
+  filePath,
+  sourceName
+) {
+
+  if (
+    !fs.existsSync(
+      filePath
+    )
+  ) {
+
+    return {
+      available:
+        false,
+
+      source:
+        sourceName,
+
+      filePath,
+
+      document:
+        null,
+
+      error:
+        `${sourceName} does not exist`
+    };
+
+  }
+
+  try {
+
+    const document =
+      readJSON(
+        filePath,
+        {
+          required:
+            true
+        }
+      );
+
+    return {
+      available:
+        true,
+
+      source:
+        sourceName,
+
+      filePath,
+
+      document,
+
+      error:
+        null
+    };
+
+  } catch (
+    error
+  ) {
+
+    return {
+      available:
+        false,
+
+      source:
+        sourceName,
+
+      filePath,
+
+      document:
+        null,
+
+      error:
+        error.message
+    };
+
+  }
+
+}
+
+function loadMarketDocuments() {
+
+  return {
+    scalp:
+      loadMarketSourceDocument(
+        SCALP_CANDLES_PATH,
+        "data/scalp-candles.json"
+      ),
+
+    intraday:
+      loadMarketSourceDocument(
+        INTRADAY_CANDLES_PATH,
+        "data/intraday-h1.json"
+      ),
+
+    swing:
+      loadMarketSourceDocument(
+        DAILY_CANDLES_PATH,
+        "data/daily-ohlc.json"
+      )
+  };
+
+}
+
+// ============================================================================
+// Normalized market data construction
+// ============================================================================
+
+function buildPairMarketSource(
+  sourceDocument,
+  pairKey,
+  options = {}
+) {
+
+  if (
+    !sourceDocument ||
+    sourceDocument.available !==
+      true
+  ) {
+
+    return {
+      available:
+        false,
+
+      source:
+        sourceDocument?.source ||
+        options.source ||
+        null,
+
+      pair:
+        pairKey,
+
+      candles:
+        [],
+
+      metadata: {
+        sourceRowCount:
+          0,
+
+        validCandleCount:
+          0,
+
+        invalidCandleCount:
+          0,
+
+        duplicateCandleCount:
+          0,
+
+        explicitlyOpenCandleCount:
+          0,
+
+        firstCandleTime:
+          null,
+
+        latestCandleTime:
+          null,
+
+        error:
+          sourceDocument?.error ||
+          "Market source is unavailable"
+      }
+    };
+
+  }
+
+  const rawRows =
+    extractPairRows(
+      sourceDocument.document,
+      pairKey
+    );
+
+  const normalized =
+    normalizeCandles(
+      rawRows,
+      {
+        pairKey,
+
+        source:
+          sourceDocument.source,
+
+        /*
+         * Explicitly forming candles are rejected.
+         * Candles without a closed/open marker remain accepted because the
+         * existing market files may not provide that metadata.
+         */
+        closedOnly:
+          true
+      }
+    );
+
+  return {
+    available:
+      normalized.candles.length >
+      0,
+
+    source:
+      sourceDocument.source,
+
+    pair:
+      pairKey,
+
+    candles:
+      normalized.candles,
+
+    metadata: {
+      ...normalized.metadata,
+
+      error:
+        normalized.candles.length >
+          0
+          ? null
+          : `No valid ${pairKey} candles found in ${sourceDocument.source}`
+    }
+  };
+
+}
+
+function buildMarketDataIndex(
+  marketDocuments
+) {
+
+  const index =
+    {};
+
+  for (
+    const pairKey of
+      SUPPORTED_PAIRS
+  ) {
+
+    index[
+      pairKey
+    ] = {
+      scalp:
+        buildPairMarketSource(
+          marketDocuments.scalp,
+          pairKey
+        ),
+
+      intraday:
+        buildPairMarketSource(
+          marketDocuments.intraday,
+          pairKey
+        ),
+
+      swing:
+        buildPairMarketSource(
+          marketDocuments.swing,
+          pairKey
+        )
+    };
+
+  }
+
+  return index;
+
+}
+
+// ============================================================================
+// Engine source selection
+// ============================================================================
+
+function getPrimaryMarketSourceName(
+  engine
+) {
+
+  const normalizedEngine =
+    normalizeEngine(
+      engine
+    );
+
+  if (
+    normalizedEngine ===
+      "scalp"
+  ) {
+
+    return "scalp";
+
+  }
+
+  if (
+    normalizedEngine ===
+      "intraday"
+  ) {
+
+    return "intraday";
+
+  }
+
+  if (
+    normalizedEngine ===
+      "swing"
+  ) {
+
+    return "swing";
+
+  }
+
+  /*
+   * Master is a consensus engine and does not own an independent candle file.
+   * Its deterministic source policy is implemented in the resolution section.
+   */
+  if (
+    normalizedEngine ===
+      "master"
+  ) {
+
+    return "master";
+
+  }
+
+  return null;
+
+}
+
+function getPairMarketData(
+  marketDataIndex,
+  pairKey,
+  sourceName
+) {
+
+  if (
+    !isPlainObject(
+      marketDataIndex
+    ) ||
+    !isPlainObject(
+      marketDataIndex[
+        pairKey
+      ]
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const source =
+    marketDataIndex[
+      pairKey
+    ][
+      sourceName
+    ];
+
+  return isPlainObject(
+    source
+  )
+    ? source
+    : null;
+
+}
+
+function getCandlesAfterTimestamp(
+  candles,
+  openedTimestamp
+) {
+
+  const timestamp =
+    toTimestamp(
+      openedTimestamp
+    );
+
+  if (
+    timestamp === null
+  ) {
+
+    return [];
+
+  }
+
+  return asArray(
+    candles
+  ).filter(
+    (
+      candle
+    ) =>
+      isPlainObject(
+        candle
+      ) &&
+      toFiniteNumber(
+        candle.timestamp
+      ) !== null &&
+      candle.timestamp >
+        timestamp
+  );
+
+}
+
+// ============================================================================
+// Deterministic resolution policy
+// ============================================================================
+
+const RESOLUTION_POLICY =
+  Object.freeze({
+
+    /*
+     * A candle contains only OHLC data, not the exact intrabar price path.
+     *
+     * If Stop Loss and Take Profit are both touched inside the same candle,
+     * the resolver cannot prove which price was touched first.
+     *
+     * Conservative deterministic policy:
+     * treat the Stop Loss as having occurred first.
+     */
+    sameCandleConflict:
+      "STOP_FIRST",
+
+    /*
+     * The trade is considered won when target1 is reached.
+     *
+     * target2 and target3 remain available for diagnostic progression, but
+     * they do not change the existing WIN / LOSS / BREAKEVEN outcome schema.
+     */
+    winningTarget:
+      1,
+
+    /*
+     * The entry candle is excluded. Only candles strictly newer than the
+     * signal/open timestamp are evaluated.
+     */
+    includeEntryCandle:
+      false,
+
+    /*
+     * Master has no independent candle file. Use the most granular available
+     * source first, then fall back deterministically.
+     */
+    masterSourcePriority: [
+      "scalp",
+      "intraday",
+      "swing"
+    ]
+
+  });
+
+// ============================================================================
+// Price comparison helpers
+// ============================================================================
+
+function approximatelyEqual(
+  left,
+  right,
+  tolerance = 1e-10
+) {
+
+  const leftNumber =
+    toFiniteNumber(
+      left
+    );
+
+  const rightNumber =
+    toFiniteNumber(
+      right
+    );
+
+  if (
+    leftNumber === null ||
+    rightNumber === null
+  ) {
+
+    return false;
+
+  }
+
+  return Math.abs(
+    leftNumber -
+    rightNumber
+  ) <= tolerance;
+
+}
+
+function calculateProfitPoints(
+  direction,
+  entry,
+  exitPrice
+) {
+
+  const normalizedDirection =
+    normalizeDirection(
+      direction
+    );
+
+  const entryPrice =
+    toFiniteNumber(
+      entry
+    );
+
+  const finalExitPrice =
+    toFiniteNumber(
+      exitPrice
+    );
+
+  if (
+    !normalizedDirection ||
+    entryPrice === null ||
+    finalExitPrice === null
+  ) {
+
+    return null;
+
+  }
+
+  if (
+    normalizedDirection ===
+      "BUY"
+  ) {
+
+    return finalExitPrice -
+      entryPrice;
+
+  }
+
+  return entryPrice -
+    finalExitPrice;
+
+}
+
+function calculateResultPercentage(
+  direction,
+  entry,
+  exitPrice
+) {
+
+  const entryPrice =
+    toFiniteNumber(
+      entry
+    );
+
+  const profitPoints =
+    calculateProfitPoints(
+      direction,
+      entry,
+      exitPrice
+    );
+
+  if (
+    entryPrice === null ||
+    entryPrice <= 0 ||
+    profitPoints === null
+  ) {
+
+    return null;
+
+  }
+
+  return (
+    profitPoints /
+    entryPrice
+  ) * 100;
+
+}
+
+function calculateRiskPoints(
+  entry,
+  stop
+) {
+
+  const entryPrice =
+    toFiniteNumber(
+      entry
+    );
+
+  const stopPrice =
+    toFiniteNumber(
+      stop
+    );
+
+  if (
+    entryPrice === null ||
+    stopPrice === null
+  ) {
+
+    return null;
+
+  }
+
+  return Math.abs(
+    entryPrice -
+    stopPrice
+  );
+
+}
+
+function calculateRealizedR(
+  direction,
+  entry,
+  stop,
+  exitPrice
+) {
+
+  const riskPoints =
+    calculateRiskPoints(
+      entry,
+      stop
+    );
+
+  const profitPoints =
+    calculateProfitPoints(
+      direction,
+      entry,
+      exitPrice
+    );
+
+  if (
+    riskPoints === null ||
+    riskPoints <= 0 ||
+    profitPoints === null
+  ) {
+
+    return null;
+
+  }
+
+  return profitPoints /
+    riskPoints;
+
+}
+
+// ============================================================================
+// Trade-plan validation
+// ============================================================================
+
+function validateTradeGeometry(
+  direction,
+  entry,
+  stop,
+  targets
+) {
+
+  const normalizedDirection =
+    normalizeDirection(
+      direction
+    );
+
+  const entryPrice =
+    toFiniteNumber(
+      entry
+    );
+
+  const stopPrice =
+    toFiniteNumber(
+      stop
+    );
+
+  const targetPrices =
+    asArray(
+      targets
+    )
+      .map(
+        (
+          value
+        ) =>
+          toFiniteNumber(
+            value
+          )
+      )
+      .filter(
+        (
+          value
+        ) =>
+          value !== null
+      );
+
+  const errors =
+    [];
+
+  if (
+    !normalizedDirection
+  ) {
+
+    errors.push(
+      "Direction must be BUY or SELL"
+    );
+
+  }
+
+  if (
+    entryPrice === null ||
+    entryPrice <= 0
+  ) {
+
+    errors.push(
+      "Entry price is missing or invalid"
+    );
+
+  }
+
+  if (
+    stopPrice === null ||
+    stopPrice <= 0
+  ) {
+
+    errors.push(
+      "Stop price is missing or invalid"
+    );
+
+  }
+
+  if (
+    targetPrices.length ===
+      0
+  ) {
+
+    errors.push(
+      "At least one target is required"
+    );
+
+  }
+
+  if (
+    normalizedDirection ===
+      "BUY" &&
+    entryPrice !== null &&
+    stopPrice !== null
+  ) {
+
+    if (
+      stopPrice >=
+        entryPrice
+    ) {
+
+      errors.push(
+        "BUY stop must be below entry"
+      );
+
+    }
+
+    for (
+      const target of
+        targetPrices
+    ) {
+
+      if (
+        target <=
+          entryPrice
+      ) {
+
+        errors.push(
+          "BUY targets must be above entry"
+        );
+
+        break;
+
+      }
+
+    }
+
+  }
+
+  if (
+    normalizedDirection ===
+      "SELL" &&
+    entryPrice !== null &&
+    stopPrice !== null
+  ) {
+
+    if (
+      stopPrice <=
+        entryPrice
+    ) {
+
+      errors.push(
+        "SELL stop must be above entry"
+      );
+
+    }
+
+    for (
+      const target of
+        targetPrices
+    ) {
+
+      if (
+        target >=
+          entryPrice
+      ) {
+
+        errors.push(
+          "SELL targets must be below entry"
+        );
+
+        break;
+
+      }
+
+    }
+
+  }
+
+  return {
+    valid:
+      errors.length ===
+      0,
+
+    errors,
+
+    direction:
+      normalizedDirection,
+
+    entry:
+      entryPrice,
+
+    stop:
+      stopPrice,
+
+    targets:
+      targetPrices
+  };
+
+}
+
+// ============================================================================
+// Candle level-touch evaluation
+// ============================================================================
+
+function candleTouchesStop(
+  direction,
+  candle,
+  stop
+) {
+
+  const normalizedDirection =
+    normalizeDirection(
+      direction
+    );
+
+  const stopPrice =
+    toFiniteNumber(
+      stop
+    );
+
+  if (
+    !normalizedDirection ||
+    !isPlainObject(
+      candle
+    ) ||
+    stopPrice === null
+  ) {
+
+    return false;
+
+  }
+
+  if (
+    normalizedDirection ===
+      "BUY"
+  ) {
+
+    return candle.low <=
+      stopPrice;
+
+  }
+
+  return candle.high >=
+    stopPrice;
+
+}
+
+function candleTouchesTarget(
+  direction,
+  candle,
+  target
+) {
+
+  const normalizedDirection =
+    normalizeDirection(
+      direction
+    );
+
+  const targetPrice =
+    toFiniteNumber(
+      target
+    );
+
+  if (
+    !normalizedDirection ||
+    !isPlainObject(
+      candle
+    ) ||
+    targetPrice === null
+  ) {
+
+    return false;
+
+  }
+
+  if (
+    normalizedDirection ===
+      "BUY"
+  ) {
+
+    return candle.high >=
+      targetPrice;
+
+  }
+
+  return candle.low <=
+    targetPrice;
+
+}
+
+function getHighestTargetReached(
+  direction,
+  candle,
+  targets
+) {
+
+  let highestTargetReached =
+    0;
+
+  const targetPrices =
+    asArray(
+      targets
+    );
+
+  for (
+    let index =
+      0;
+    index <
+      targetPrices.length;
+    index +=
+      1
+  ) {
+
+    if (
+      candleTouchesTarget(
+        direction,
+        candle,
+        targetPrices[
+          index
+        ]
+      )
+    ) {
+
+      highestTargetReached =
+        index +
+        1;
+
+    }
+
+  }
+
+  return highestTargetReached;
+
+}
+
+function evaluateCandleAgainstTrade(
+  trade,
+  candle
+) {
+
+  if (
+    !isPlainObject(
+      trade
+    ) ||
+    !isPlainObject(
+      candle
+    )
+  ) {
+
+    return {
+      resolved:
+        false,
+
+      reason:
+        "Trade or candle is invalid"
+    };
+
+  }
+
+  const direction =
+    trade.direction;
+
+  const entry =
+    trade.entry;
+
+  const stop =
+    trade.stop;
+
+  const targets =
+    trade.targets;
+
+  const winningTargetIndex =
+    Math.max(
+      0,
+      RESOLUTION_POLICY
+        .winningTarget -
+      1
+    );
+
+  const winningTarget =
+    targets[
+      winningTargetIndex
+    ];
+
+  const stopTouched =
+    candleTouchesStop(
+      direction,
+      candle,
+      stop
+    );
+
+  const targetTouched =
+    candleTouchesTarget(
+      direction,
+      candle,
+      winningTarget
+    );
+
+  const highestTargetReached =
+    getHighestTargetReached(
+      direction,
+      candle,
+      targets
+    );
+
+  if (
+    stopTouched &&
+    targetTouched
+  ) {
+
+    return {
+      resolved:
+        true,
+
+      outcome:
+        approximatelyEqual(
+          stop,
+          entry
+        )
+          ? "BREAKEVEN"
+          : "LOSS",
+
+      exitPrice:
+        stop,
+
+      exitReason:
+        approximatelyEqual(
+          stop,
+          entry
+        )
+          ? "BREAKEVEN_STOP"
+          : "STOP_LOSS",
+
+      sameCandleConflict:
+        true,
+
+      conflictPolicy:
+        RESOLUTION_POLICY
+          .sameCandleConflict,
+
+      stopTouched:
+        true,
+
+      targetTouched:
+        true,
+
+      highestTargetReached,
+
+      resolvingCandle:
+        candle
+    };
+
+  }
+
+  if (
+    stopTouched
+  ) {
+
+    return {
+      resolved:
+        true,
+
+      outcome:
+        approximatelyEqual(
+          stop,
+          entry
+        )
+          ? "BREAKEVEN"
+          : "LOSS",
+
+      exitPrice:
+        stop,
+
+      exitReason:
+        approximatelyEqual(
+          stop,
+          entry
+        )
+          ? "BREAKEVEN_STOP"
+          : "STOP_LOSS",
+
+      sameCandleConflict:
+        false,
+
+      conflictPolicy:
+        null,
+
+      stopTouched:
+        true,
+
+      targetTouched:
+        false,
+
+      highestTargetReached,
+
+      resolvingCandle:
+        candle
+    };
+
+  }
+
+  if (
+    targetTouched
+  ) {
+
+    return {
+      resolved:
+        true,
+
+      outcome:
+        "WIN",
+
+      exitPrice:
+        winningTarget,
+
+      exitReason:
+        `TARGET_${
+          RESOLUTION_POLICY
+            .winningTarget
+        }`,
+
+      sameCandleConflict:
+        false,
+
+      conflictPolicy:
+        null,
+
+      stopTouched:
+        false,
+
+      targetTouched:
+        true,
+
+      highestTargetReached,
+
+      resolvingCandle:
+        candle
+    };
+
+  }
+
+  return {
+    resolved:
+      false,
+
+    outcome:
+      null,
+
+    exitPrice:
+      null,
+
+    exitReason:
+      null,
+
+    sameCandleConflict:
+      false,
+
+    conflictPolicy:
+      null,
+
+    stopTouched:
+      false,
+
+    targetTouched:
+      false,
+
+    highestTargetReached,
+
+    resolvingCandle:
+      null
+  };
+
+}
+
+// ============================================================================
+// Market excursion tracking
+// ============================================================================
+
+function calculateCandleExcursions(
+  direction,
+  entry,
+  candle
+) {
+
+  const normalizedDirection =
+    normalizeDirection(
+      direction
+    );
+
+  const entryPrice =
+    toFiniteNumber(
+      entry
+    );
+
+  if (
+    !normalizedDirection ||
+    entryPrice === null ||
+    !isPlainObject(
+      candle
+    )
+  ) {
+
+    return {
+      favorablePoints:
+        null,
+
+      adversePoints:
+        null
+    };
+
+  }
+
+  if (
+    normalizedDirection ===
+      "BUY"
+  ) {
+
+    return {
+      favorablePoints:
+        candle.high -
+        entryPrice,
+
+      adversePoints:
+        entryPrice -
+        candle.low
+    };
+
+  }
+
+  return {
+    favorablePoints:
+      entryPrice -
+      candle.low,
+
+    adversePoints:
+      candle.high -
+      entryPrice
+  };
+
+}
+
+function updateTradePathMetrics(
+  currentMetrics,
+  trade,
+  candle
+) {
+
+  const metrics =
+    isPlainObject(
+      currentMetrics
+    )
+      ? currentMetrics
+      : {
+          maximumFavorableExcursion:
+            0,
+
+          maximumAdverseExcursion:
+            0,
+
+          highestPrice:
+            null,
+
+          lowestPrice:
+            null,
+
+          highestTargetReached:
+            0,
+
+          candleCount:
+            0
+        };
+
+  const excursions =
+    calculateCandleExcursions(
+      trade.direction,
+      trade.entry,
+      candle
+    );
+
+  const favorable =
+    excursions
+      .favorablePoints ===
+      null
+      ? 0
+      : Math.max(
+          0,
+          excursions
+            .favorablePoints
+        );
+
+  const adverse =
+    excursions
+      .adversePoints ===
+      null
+      ? 0
+      : Math.max(
+          0,
+          excursions
+            .adversePoints
+        );
+
+  return {
+    maximumFavorableExcursion:
+      Math.max(
+        toFiniteNumber(
+          metrics
+            .maximumFavorableExcursion
+        ) ??
+        0,
+        favorable
+      ),
+
+    maximumAdverseExcursion:
+      Math.max(
+        toFiniteNumber(
+          metrics
+            .maximumAdverseExcursion
+        ) ??
+        0,
+        adverse
+      ),
+
+    highestPrice:
+      metrics.highestPrice ===
+        null ||
+      metrics.highestPrice ===
+        undefined
+        ? candle.high
+        : Math.max(
+            metrics.highestPrice,
+            candle.high
+          ),
+
+    lowestPrice:
+      metrics.lowestPrice ===
+        null ||
+      metrics.lowestPrice ===
+        undefined
+        ? candle.low
+        : Math.min(
+            metrics.lowestPrice,
+            candle.low
+          ),
+
+    highestTargetReached:
+      Math.max(
+        toFiniteNumber(
+          metrics
+            .highestTargetReached
+        ) ??
+        0,
+        getHighestTargetReached(
+          trade.direction,
+          candle,
+          trade.targets
+        )
+      ),
+
+    candleCount:
+      (
+        toFiniteNumber(
+          metrics.candleCount
+        ) ??
+        0
+      ) +
+      1
+  };
+
+}
+
+// ============================================================================
+// Source selection
+// ============================================================================
+
+function selectMasterMarketSource(
+  marketDataIndex,
+  pairKey,
+  openedTimestamp
+) {
+
+  const attempts =
+    [];
+
+  for (
+    const sourceName of
+      RESOLUTION_POLICY
+        .masterSourcePriority
+  ) {
+
+    const marketSource =
+      getPairMarketData(
+        marketDataIndex,
+        pairKey,
+        sourceName
+      );
+
+    if (
+      !marketSource ||
+      marketSource.available !==
+        true
+    ) {
+
+      attempts.push({
+        source:
+          sourceName,
+
+        available:
+          false,
+
+        candleCount:
+          0
+      });
+
+      continue;
+
+    }
+
+    const candles =
+      getCandlesAfterTimestamp(
+        marketSource.candles,
+        openedTimestamp
+      );
+
+    attempts.push({
+      source:
+        sourceName,
+
+      available:
+        true,
+
+      candleCount:
+        candles.length
+    });
+
+    if (
+      candles.length >
+        0
+    ) {
+
+      return {
+        selected:
+          marketSource,
+
+        sourceName,
+
+        candles,
+
+        attempts
+      };
+
+    }
+
+  }
+
+  return {
+    selected:
+      null,
+
+    sourceName:
+      null,
+
+    candles:
+      [],
+
+    attempts
+  };
+
+}
+
+function selectResolutionMarketSource(
+  marketDataIndex,
+  pairKey,
+  engine,
+  openedTimestamp
+) {
+
+  const normalizedEngine =
+    normalizeEngine(
+      engine
+    );
+
+  if (
+    normalizedEngine ===
+      "master"
+  ) {
+
+    return selectMasterMarketSource(
+      marketDataIndex,
+      pairKey,
+      openedTimestamp
+    );
+
+  }
+
+  const sourceName =
+    getPrimaryMarketSourceName(
+      normalizedEngine
+    );
+
+  if (!sourceName) {
+
+    return {
+      selected:
+        null,
+
+      sourceName:
+        null,
+
+      candles:
+        [],
+
+      attempts: [
+        {
+          source:
+            null,
+
+          available:
+            false,
+
+          candleCount:
+            0,
+
+          reason:
+            "Unsupported engine"
+        }
+      ]
+    };
+
+  }
+
+  const marketSource =
+    getPairMarketData(
+      marketDataIndex,
+      pairKey,
+      sourceName
+    );
+
+  if (
+    !marketSource ||
+    marketSource.available !==
+      true
+  ) {
+
+    return {
+      selected:
+        marketSource,
+
+      sourceName,
+
+      candles:
+        [],
+
+      attempts: [
+        {
+          source:
+            sourceName,
+
+          available:
+            false,
+
+          candleCount:
+            0,
+
+          reason:
+            marketSource?.metadata
+              ?.error ||
+            "Market source unavailable"
+        }
+      ]
+    };
+
+  }
+
+  const candles =
+    getCandlesAfterTimestamp(
+      marketSource.candles,
+      openedTimestamp
+    );
+
+  return {
+    selected:
+      marketSource,
+
+    sourceName,
+
+    candles,
+
+    attempts: [
+      {
+        source:
+          sourceName,
+
+        available:
+          true,
+
+        candleCount:
+          candles.length
+      }
+    ]
+  };
+
+}
+
+// ============================================================================
+// Record evaluation preparation
+// ============================================================================
+
+function prepareRecordForResolution(
+  record
+) {
+
+  if (
+    !isPlainObject(
+      record
+    )
+  ) {
+
+    return {
+      valid:
+        false,
+
+      errors: [
+        "History record is invalid"
+      ],
+
+      trade:
+        null
+    };
+
+  }
+
+  const pairKey =
+    getRecordPairKey(
+      record
+    );
+
+  const direction =
+    getRecordDirection(
+      record
+    );
+
+  const engine =
+    getRecordEngine(
+      record
+    );
+
+  const entry =
+    getRecordEntry(
+      record
+    );
+
+  const stop =
+    getRecordStop(
+      record
+    );
+
+  const targets =
+    getRecordTargets(
+      record
+    );
+
+  const openedTimestamp =
+    getRecordOpenedTimestamp(
+      record
+    );
+
+  const geometry =
+    validateTradeGeometry(
+      direction,
+      entry,
+      stop,
+      targets
+    );
+
+  const errors = [
+    ...geometry.errors
+  ];
+
+  if (!pairKey) {
+
+    errors.push(
+      "Pair is missing or unsupported"
+    );
+
+  }
+
+  if (!engine) {
+
+    errors.push(
+      "Engine is missing or unsupported"
+    );
+
+  }
+
+  if (
+    openedTimestamp ===
+      null
+  ) {
+
+    errors.push(
+      "Open timestamp is missing or invalid"
+    );
+
+  }
+
+  if (
+    isRecordAlreadyResolved(
+      record
+    )
+  ) {
+
+    errors.push(
+      "Record is already resolved"
+    );
+
+  }
+
+  if (
+    normalizeStatus(
+      record.status,
+      record.outcome
+    ) ===
+      "hold"
+  ) {
+
+    errors.push(
+      "HOLD records cannot be resolved"
+    );
+
+  }
+
+  return {
+    valid:
+      errors.length ===
+      0,
+
+    errors,
+
+    trade: {
+      pairKey,
+
+      pairLabel:
+        pairLabelFromKey(
+          pairKey
+        ),
+
+      direction:
+        geometry.direction,
+
+      engine,
+
+      entry:
+        geometry.entry,
+
+      stop:
+        geometry.stop,
+
+      targets:
+        geometry.targets,
+
+      openedTimestamp,
+
+      openedAt:
+        openedTimestamp ===
+          null
+          ? null
+          : new Date(
+              openedTimestamp
+            ).toISOString(),
+
+      record
+    }
+  };
+
+}
+
+// ============================================================================
+// Complete trade evaluation
+// ============================================================================
+
+function evaluatePreparedTrade(
+  preparedTrade,
+  marketDataIndex
+) {
+
+  if (
+    !isPlainObject(
+      preparedTrade
+    )
+  ) {
+
+    return {
+      resolved:
+        false,
+
+      eligible:
+        false,
+
+      reason:
+        "Prepared trade is invalid"
+    };
+
+  }
+
+  const sourceSelection =
+    selectResolutionMarketSource(
+      marketDataIndex,
+      preparedTrade.pairKey,
+      preparedTrade.engine,
+      preparedTrade.openedTimestamp
+    );
+
+  if (
+    !sourceSelection.selected ||
+    sourceSelection.candles.length ===
+      0
+  ) {
+
+    return {
+      resolved:
+        false,
+
+      eligible:
+        true,
+
+      reason:
+        "No newer valid candles are available",
+
+      sourceSelection,
+
+      pathMetrics:
+        null
+    };
+
+  }
+
+  let pathMetrics =
+    null;
+
+  for (
+    const candle of
+      sourceSelection.candles
+  ) {
+
+    pathMetrics =
+      updateTradePathMetrics(
+        pathMetrics,
+        preparedTrade,
+        candle
+      );
+
+    const candleResult =
+      evaluateCandleAgainstTrade(
+        preparedTrade,
+        candle
+      );
+
+    if (
+      candleResult.resolved !==
+        true
+    ) {
+
+      continue;
+
+    }
+
+    const resolvedAt =
+      candle.time;
+
+    const exitPrice =
+      candleResult.exitPrice;
+
+    const profitPoints =
+      calculateProfitPoints(
+        preparedTrade.direction,
+        preparedTrade.entry,
+        exitPrice
+      );
+
+    const resultPercentage =
+      calculateResultPercentage(
+        preparedTrade.direction,
+        preparedTrade.entry,
+        exitPrice
+      );
+
+    const realizedR =
+      calculateRealizedR(
+        preparedTrade.direction,
+        preparedTrade.entry,
+        preparedTrade.stop,
+        exitPrice
+      );
+
+    const durationMinutes =
+      Math.max(
+        0,
+        (
+          candle.timestamp -
+          preparedTrade.openedTimestamp
+        ) /
+        60000
+      );
+
+    const initialRisk =
+      calculateRiskPoints(
+        preparedTrade.entry,
+        preparedTrade.stop
+      );
+
+    return {
+      resolved:
+        true,
+
+      eligible:
+        true,
+
+      outcome:
+        candleResult.outcome,
+
+      exitPrice,
+
+      exitReason:
+        candleResult.exitReason,
+
+      resolvedAt,
+
+      closedAt:
+        resolvedAt,
+
+      profitPoints,
+
+      resultPercentage,
+
+      realizedR,
+
+      initialRisk,
+
+      durationMinutes,
+
+      highestTargetReached:
+        Math.max(
+          pathMetrics
+            ?.highestTargetReached ??
+          0,
+          candleResult
+            .highestTargetReached ??
+          0
+        ),
+
+      sameCandleConflict:
+        candleResult
+          .sameCandleConflict ===
+        true,
+
+      conflictPolicy:
+        candleResult
+          .conflictPolicy,
+
+      resolvingCandle: {
+        timestamp:
+          candle.timestamp,
+
+        time:
+          candle.time,
+
+        open:
+          candle.open,
+
+        high:
+          candle.high,
+
+        low:
+          candle.low,
+
+        close:
+          candle.close
+      },
+
+      marketSource:
+        sourceSelection.selected
+          .source,
+
+      marketSourceName:
+        sourceSelection.sourceName,
+
+      sourceSelection:
+        sourceSelection.attempts,
+
+      pathMetrics: {
+        ...pathMetrics,
+
+        initialRisk,
+
+        maximumFavorableR:
+          initialRisk !==
+            null &&
+          initialRisk >
+            0
+            ? (
+                pathMetrics
+                  .maximumFavorableExcursion /
+                initialRisk
+              )
+            : null,
+
+        maximumAdverseR:
+          initialRisk !==
+            null &&
+          initialRisk >
+            0
+            ? (
+                pathMetrics
+                  .maximumAdverseExcursion /
+                initialRisk
+              )
+            : null
+      }
+    };
+
+  }
+
+  return {
+    resolved:
+      false,
+
+    eligible:
+      true,
+
+    reason:
+      "Stop Loss and target1 have not been reached",
+
+    marketSource:
+      sourceSelection.selected
+        .source,
+
+    marketSourceName:
+      sourceSelection.sourceName,
+
+    sourceSelection:
+      sourceSelection.attempts,
+
+    evaluatedCandleCount:
+      sourceSelection.candles
+        .length,
+
+    latestEvaluatedCandle:
+      sourceSelection.candles[
+        sourceSelection.candles
+          .length -
+        1
+      ]?.time ||
+      null,
+
+    pathMetrics
+  };
+
+}
+
+function evaluateHistoryRecord(
+  record,
+  marketDataIndex
+) {
+
+  const preparation =
+    prepareRecordForResolution(
+      record
+    );
+
+  if (
+    preparation.valid !==
+      true
+  ) {
+
+    return {
+      resolved:
+        false,
+
+      eligible:
+        false,
+
+      reason:
+        preparation.errors.join(
+          "; "
+        ),
+
+      errors:
+        preparation.errors,
+
+      trade:
+        preparation.trade
+    };
+
+  }
+
+  return {
+    ...evaluatePreparedTrade(
+      preparation.trade,
+      marketDataIndex
+    ),
+
+    trade:
+      preparation.trade
+  };
+
+}

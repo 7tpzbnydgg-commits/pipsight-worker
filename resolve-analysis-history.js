@@ -2175,69 +2175,70 @@ function extractPairRows(
   }
 
   const pairContainerKeys = [
-    "pairs",
-    "symbols",
-    "markets",
-    "instruments",
-    "assets",
-    "results",
-    "data"
-  ];
+  "pairs",
+  "symbols",
+  "markets",
+  "instruments",
+  "assets",
+  "results",
+  "data"
+];
 
-  for (
-    const key of
-      pairContainerKeys
+for (
+  const key of
+  pairContainerKeys
+) {
+
+  if (
+    !isPlainObject(
+      document[
+        key
+      ]
+    )
   ) {
 
-    if (
-      !isPlainObject(
-        document[
-          key
-        )
-    ) {
-
-      continue;
-
-    }
-
-    const pairValue =
-      findPairProperty(
-        document[
-          key
-        ],
-        pairKey
-      );
-
-    if (
-      pairValue ===
-        undefined
-    ) {
-
-      continue;
-
-    }
-
-    const nestedRows =
-      unwrapRowsContainer(
-        pairValue,
-        pairKey
-      );
-
-    if (
-      nestedRows.length >
-        0
-    ) {
-
-      return nestedRows;
-
-    }
+    continue;
 
   }
 
-  return unwrapRowsContainer(
-    document,
-    pairKey
-  );
+  const pairValue =
+    findPairProperty(
+      document[
+        key
+      ],
+      pairKey
+    );
+
+  if (
+    pairValue ===
+    undefined
+  ) {
+
+    continue;
+
+  }
+
+  const nestedRows =
+    unwrapRowsContainer(
+      pairValue,
+      pairKey
+    );
+
+  if (
+    nestedRows.length >
+    0
+  ) {
+
+    return nestedRows;
+
+  }
+
+}
+
+return unwrapRowsContainer(
+  document,
+  pairKey
+);
 
 }
 

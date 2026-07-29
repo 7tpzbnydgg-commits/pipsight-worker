@@ -13639,36 +13639,33 @@ function isScalpSignalFresh(
   signal,
   payload,
   maximumAgeMinutes =
-    APP_CONFIG
-      .freshnessMinutes
-      .scalpSignals
+    APP_CONFIG.freshnessMinutes.scalpSignals
 ){
-  const signalTimestamp =
-    safeDateMs(
-      signal &&
-      signal.generatedAt
-    );
+  const quality =
+    signal?.prepared?.quality?.m5 ??
+    payload?.prepared?.quality?.m5 ??
+    null;
 
-  const payloadTimestamp =
-    safeDateMs(
-      workerUpdatedAt(
-        payload
-      )
-    );
+  if(quality && typeof quality.stale === "boolean"){
+    return !quality.stale;
+  }
 
   const timestamp =
-    signalTimestamp ??
-    payloadTimestamp;
+    safeDateMs(
+      signal?.generatedAt ??
+      payload?.generatedAt ??
+      signal?.prepared?.updatedAt?.m5 ??
+      payload?.prepared?.updatedAt?.m5 ??
+      null
+    );
 
   if(timestamp == null){
     return false;
   }
 
   return (
-    Date.now() -
-    timestamp <=
-    maximumAgeMinutes *
-    60_000
+    Date.now() - timestamp
+      <= maximumAgeMinutes * 60_000
   );
 }
 

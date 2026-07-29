@@ -1,8 +1,8 @@
-name: PipSight Robot — intraday H1 (H4 derived)
+name: PipSight Pro — intraday H1 market data
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "7,22,37,52 * * * *"
 
   workflow_dispatch: {}
 
@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: pipsight-intraday-h1-${{ github.ref }}
+  group: pipsight-unified-analysis-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -36,6 +36,22 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Verify required source files
+        run: |
+          set -euo pipefail
+
+          test -f fetch-intraday-h1.js
+
+          echo "Required Intraday H1 source file is available."
+
+      - name: Validate JavaScript syntax
+        run: |
+          set -euo pipefail
+
+          node --check fetch-intraday-h1.js
+
+          echo "Intraday H1 JavaScript syntax is valid."
+
       - name: Verify API secret
         env:
           TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
@@ -43,9 +59,11 @@ jobs:
           set -euo pipefail
 
           if [[ -z "${TWELVEDATA_API_KEY:-}" ]]; then
-            echo "TWELVEDATA_API_KEY is not configured."
+            echo "::error::TWELVEDATA_API_KEY is not configured."
             exit 1
           fi
+
+          echo "Required API configuration validated."
 
       - name: Fetch intraday H1
         env:
@@ -59,15 +77,42 @@ jobs:
         run: |
           set -euo pipefail
 
-          test -s data/intraday-h1.json
+          node <<'NODE'
+          "use strict";
 
-          node - <<'NODE'
           const fs = require("fs");
 
-          const file = "data/intraday-h1.json";
-          const parsed = JSON.parse(
-            fs.readFileSync(file, "utf8")
-          );
+          const filePath =
+            "data/intraday-h1.json";
+
+          if (!fs.existsSync(filePath)) {
+            throw new Error(
+              `Required output file was not created: ${filePath}`
+            );
+          }
+
+          const raw =
+            fs.readFileSync(
+              filePath,
+              "utf8"
+            ).trim();
+
+          if (!raw) {
+            throw new Error(
+              `Output file is empty: ${filePath}`
+            );
+          }
+
+          let parsed;
+
+          try {
+            parsed =
+              JSON.parse(raw);
+          } catch (error) {
+            throw new Error(
+              `Output file contains invalid JSON: ${filePath}: ${error.message}`
+            );
+          }
 
           if (
             parsed === null ||
@@ -75,60 +120,76 @@ jobs:
             Array.isArray(parsed)
           ) {
             throw new Error(
-              "intraday-h1.json must contain a JSON object"
+              `${filePath} must contain a JSON object.`
             );
           }
 
-          const pairKeys = ["XAUUSD", "GBPJPY"];
+          const pairKeys = [
+            "XAUUSD",
+            "GBPJPY"
+          ];
 
           for (const pairKey of pairKeys) {
-            const rows = parsed[pairKey];
+            const rows =
+              parsed[pairKey];
 
             if (!Array.isArray(rows)) {
               throw new Error(
-                `${pairKey} must contain an array`
+                `${pairKey} must contain an array.`
               );
             }
 
             if (rows.length === 0) {
               throw new Error(
-                `${pairKey} contains no H1 candles`
+                `${pairKey} contains no H1 candles.`
               );
             }
 
-            const latest = rows[rows.length - 1];
+            const latest =
+              rows[rows.length - 1];
 
             if (
               !latest ||
-              typeof latest !== "object"
+              typeof latest !== "object" ||
+              Array.isArray(latest)
             ) {
               throw new Error(
-                `${pairKey} latest candle is invalid`
+                `${pairKey} latest candle is invalid.`
               );
             }
 
-            for (const field of [
-              "open",
-              "high",
-              "low",
-              "close"
-            ]) {
-              const value = Number(latest[field]);
+            const open =
+              Number(latest.open);
 
+            const high =
+              Number(latest.high);
+
+            const low =
+              Number(latest.low);
+
+            const close =
+              Number(latest.close);
+
+            const values = {
+              open,
+              high,
+              low,
+              close
+            };
+
+            for (
+              const [field, value]
+              of Object.entries(values)
+            ) {
               if (
                 !Number.isFinite(value) ||
                 value <= 0
               ) {
                 throw new Error(
-                  `${pairKey} latest ${field} is invalid`
+                  `${pairKey} latest ${field} is invalid.`
                 );
               }
             }
-
-            const open = Number(latest.open);
-            const high = Number(latest.high);
-            const low = Number(latest.low);
-            const close = Number(latest.close);
 
             if (
               high < low ||
@@ -138,12 +199,18 @@ jobs:
               low > close
             ) {
               throw new Error(
-                `${pairKey} latest OHLC relationships are invalid`
+                `${pairKey} latest OHLC relationships are invalid.`
               );
             }
+
+            console.log(
+              `Validated latest ${pairKey} H1 candle.`
+            );
           }
 
-          console.log("Validated:", file);
+          console.log(
+            `Validated ${filePath}`
+          );
           NODE
 
       - name: Commit and push updated H1 data
@@ -156,7 +223,8 @@ jobs:
           git config user.email "actions@users.noreply.github.com"
 
           # Strictly stage only the file owned by this workflow.
-          git add -- data/intraday-h1.json
+          git add -- \
+            data/intraday-h1.json
 
           if git diff --cached --quiet; then
             echo "No intraday H1 changes to commit."
@@ -165,39 +233,46 @@ jobs:
 
           git commit -m "robot: refresh intraday H1"
 
-          max_attempts=5
+          push_succeeded=false
 
-          for attempt in $(seq 1 "$max_attempts"); do
-            echo "Push attempt ${attempt}/${max_attempts}"
+          for attempt in 1 2 3 4 5; do
+            echo "Push attempt ${attempt} of 5..."
 
             if git push origin HEAD:main; then
-              echo "Intraday H1 data pushed successfully."
-              exit 0
+              push_succeeded=true
+              break
             fi
 
-            if [[ "$attempt" -eq "$max_attempts" ]]; then
-              echo "Push failed after ${max_attempts} attempts."
-              exit 1
+            if [[ "${attempt}" -eq 5 ]]; then
+              break
             fi
 
-            echo "Remote branch changed. Rebasing before retry..."
+            echo "Push was rejected. Fetching and rebasing onto origin/main..."
 
             git fetch origin main
 
             if ! git rebase origin/main; then
-              echo "Rebase conflict detected."
+              echo "::error::Rebase failed while synchronizing Intraday H1 data."
               git rebase --abort || true
               exit 1
             fi
 
-            sleep $((attempt * 5))
+            sleep $((attempt * 2))
           done
+
+          if [[ "${push_succeeded}" != "true" ]]; then
+            echo "::error::Unable to push Intraday H1 data after 5 attempts."
+            exit 1
+          fi
+
+          echo "Intraday H1 data committed and pushed successfully."
 
       - name: Log execution
         if: always()
         run: |
-          echo "PipSight intraday H1 workflow finished."
+          echo "PipSight Intraday H1 workflow finished."
           echo "Status: ${{ job.status }}"
           echo "Repository: ${{ github.repository }}"
+          echo "Branch: ${{ github.ref_name }}"
           echo "Run ID: ${{ github.run_id }}"
           echo "Completed at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"

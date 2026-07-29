@@ -840,7 +840,9 @@ function readH1Rows(pair) {
     );
 
   return {
-    ...normalizeRows(extracted),
+    ...normalizeClosedH1Rows(
+      extracted
+    ),
 
     source:
       "intraday-h1.json",

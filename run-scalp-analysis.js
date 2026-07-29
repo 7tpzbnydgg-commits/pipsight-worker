@@ -715,6 +715,85 @@ function extractPairRows(
 }
 
 /* =====================================================================
+   Defensive H1 Closed-Candle Filtering
+   ===================================================================== */
+
+function currentUtcHourTimestamp(
+  nowMs = Date.now()
+) {
+  const current =
+    new Date(nowMs);
+
+  current.setUTCMinutes(
+    0,
+    0,
+    0
+  );
+
+  return current.getTime();
+}
+
+function normalizeClosedH1Rows(
+  input,
+  nowMs = Date.now()
+) {
+  const normalized =
+    normalizeRows(input);
+
+  const currentHourTimestamp =
+    currentUtcHourTimestamp(
+      nowMs
+    );
+
+  let timeFilteredCount = 0;
+
+  const rows =
+    normalized.rows.filter(row => {
+      if (
+        !Number.isFinite(
+          row?.timestamp
+        )
+      ) {
+        timeFilteredCount++;
+        return false;
+      }
+
+      /*
+       * An H1 candle whose timestamp equals the current UTC hour
+       * is still open. Any timestamp after it is future data.
+       *
+       * Only candles from completed UTC hours may reach the
+       * scalp strategy.
+       */
+      if (
+        row.timestamp >=
+        currentHourTimestamp
+      ) {
+        timeFilteredCount++;
+        return false;
+      }
+
+      return true;
+    });
+
+  return {
+    ...normalized,
+
+    rows,
+
+    openCandlesRemoved:
+      normalized.openCandlesRemoved +
+      timeFilteredCount,
+
+    hasOHLC:
+      rows.length > 0 &&
+      rows.every(
+        row => row.hasOHLC
+      )
+  };
+}
+
+/* =====================================================================
    Source Readers
    ===================================================================== */
 

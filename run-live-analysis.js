@@ -11670,8 +11670,12 @@ function p6RunPairAnalysis(
       pipeline.scalp,
 
     allowPrimaryScalpHold:
-      runtimeOptions.allowPrimaryScalpHold ===
-      true,
+      Boolean(
+        pairInput.scalpSignal &&
+        pairInput.scalpResolution &&
+        pairInput.scalpResolution.valid === true
+      ) ||
+      runtimeOptions.allowPrimaryScalpHold === true,
 
     maximumPrimaryScalpAgeMs:
       runtimeOptions.maximumPrimaryScalpAgeMs,

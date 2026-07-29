@@ -1,4 +1,4 @@
-name: PipSight Robot — fetch news
+name: PipSight Pro — unified news and signals
 
 on:
   schedule:
@@ -10,14 +10,14 @@ permissions:
   contents: write
 
 concurrency:
-  group: pipsight-fetch-news-${{ github.ref }}
+  group: pipsight-news-signals-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  fetch:
-    name: Fetch and publish news feed
+  analyze:
+    name: Refresh news and publish signals
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     defaults:
       run:
@@ -35,6 +35,25 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+
+      - name: Verify required source files
+        run: |
+          set -euo pipefail
+
+          test -f fetch-news.js
+          test -f fetch-signals.js
+          test -f package.json
+
+          echo "Required news and signal-engine files are available."
+
+      - name: Validate JavaScript syntax
+        run: |
+          set -euo pipefail
+
+          node --check fetch-news.js
+          node --check fetch-signals.js
+
+          echo "News and signal-engine JavaScript syntax is valid."
 
       - name: Install dependencies
         run: |
@@ -54,16 +73,42 @@ jobs:
         run: |
           set -euo pipefail
 
-          test -s data/news-feed.json
+          node <<'NODE'
+          "use strict";
 
-          node - <<'NODE'
           const fs = require("fs");
 
-          const file = "data/news-feed.json";
+          const filePath =
+            "data/news-feed.json";
 
-          const parsed = JSON.parse(
-            fs.readFileSync(file, "utf8")
-          );
+          if (!fs.existsSync(filePath)) {
+            throw new Error(
+              `Required output file was not created: ${filePath}`
+            );
+          }
+
+          const raw =
+            fs.readFileSync(
+              filePath,
+              "utf8"
+            ).trim();
+
+          if (!raw) {
+            throw new Error(
+              `Output file is empty: ${filePath}`
+            );
+          }
+
+          let parsed;
+
+          try {
+            parsed =
+              JSON.parse(raw);
+          } catch (error) {
+            throw new Error(
+              `Output file contains invalid JSON: ${filePath}: ${error.message}`
+            );
+          }
 
           if (
             parsed === null ||
@@ -73,21 +118,22 @@ jobs:
             )
           ) {
             throw new Error(
-              "news-feed.json must contain a valid JSON array or object"
+              `${filePath} must contain a valid JSON array or object.`
             );
           }
 
-          const possibleItems = Array.isArray(parsed)
-            ? parsed
-            : Array.isArray(parsed.items)
-              ? parsed.items
-              : Array.isArray(parsed.news)
-                ? parsed.news
-                : Array.isArray(parsed.articles)
-                  ? parsed.articles
-                  : Array.isArray(parsed.data)
-                    ? parsed.data
-                    : null;
+          const possibleItems =
+            Array.isArray(parsed)
+              ? parsed
+              : Array.isArray(parsed.items)
+                ? parsed.items
+                : Array.isArray(parsed.news)
+                  ? parsed.news
+                  : Array.isArray(parsed.articles)
+                    ? parsed.articles
+                    : Array.isArray(parsed.data)
+                      ? parsed.data
+                      : null;
 
           if (
             possibleItems &&
@@ -98,20 +144,84 @@ jobs:
             )
           ) {
             throw new Error(
-              "news-feed.json contains an invalid news item"
+              `${filePath} contains an invalid news item.`
             );
           }
 
           console.log(
-            "Validated:",
-            file,
+            `Validated ${filePath}`,
             possibleItems
-              ? `(${possibleItems.length} items)`
-              : "(valid object structure)"
+              ? `with ${possibleItems.length} items.`
+              : "with a valid object structure."
           );
           NODE
 
-      - name: Commit and push updated feed
+      - name: Run signal engine
+        run: |
+          set -euo pipefail
+
+          node fetch-signals.js
+
+      - name: Validate signal outputs
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          "use strict";
+
+          const fs = require("fs");
+
+          const outputFiles = [
+            "data/signals.json",
+            "data/signal-log.json"
+          ];
+
+          for (const filePath of outputFiles) {
+            if (!fs.existsSync(filePath)) {
+              throw new Error(
+                `Required output file was not created: ${filePath}`
+              );
+            }
+
+            const raw =
+              fs.readFileSync(
+                filePath,
+                "utf8"
+              ).trim();
+
+            if (!raw) {
+              throw new Error(
+                `Output file is empty: ${filePath}`
+              );
+            }
+
+            let parsed;
+
+            try {
+              parsed =
+                JSON.parse(raw);
+            } catch (error) {
+              throw new Error(
+                `Output file contains invalid JSON: ${filePath}: ${error.message}`
+              );
+            }
+
+            if (
+              parsed === null ||
+              typeof parsed !== "object"
+            ) {
+              throw new Error(
+                `${filePath} must contain valid JSON data.`
+              );
+            }
+
+            console.log(
+              `Validated ${filePath}`
+            );
+          }
+          NODE
+
+      - name: Commit and push unified news and signals
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -120,49 +230,59 @@ jobs:
           git config user.name "pipsight-robot"
           git config user.email "actions@users.noreply.github.com"
 
-          # Strictly stage only the file owned by this workflow.
-          git add -- data/news-feed.json
+          # Strictly stage only files owned by this unified workflow.
+          git add -- \
+            data/news-feed.json \
+            data/signals.json \
+            data/signal-log.json
 
           if git diff --cached --quiet; then
-            echo "No news feed changes to commit."
+            echo "No news or signal changes to commit."
             exit 0
           fi
 
-          git commit -m "robot: refresh news feed"
+          git commit -m "robot: refresh unified news and signals"
 
-          max_attempts=5
+          push_succeeded=false
 
-          for attempt in $(seq 1 "$max_attempts"); do
-            echo "Push attempt ${attempt}/${max_attempts}"
+          for attempt in 1 2 3 4 5; do
+            echo "Push attempt ${attempt} of 5..."
 
             if git push origin HEAD:main; then
-              echo "News feed pushed successfully."
-              exit 0
+              push_succeeded=true
+              break
             fi
 
-            if [[ "$attempt" -eq "$max_attempts" ]]; then
-              echo "Push failed after ${max_attempts} attempts."
-              exit 1
+            if [[ "${attempt}" -eq 5 ]]; then
+              break
             fi
 
-            echo "Remote branch changed. Rebasing before retry..."
+            echo "Push was rejected. Fetching and rebasing onto origin/main..."
 
             git fetch origin main
 
             if ! git rebase origin/main; then
-              echo "Rebase conflict detected."
+              echo "::error::Rebase failed while synchronizing news and signals."
               git rebase --abort || true
               exit 1
             fi
 
-            sleep $((attempt * 5))
+            sleep $((attempt * 2))
           done
+
+          if [[ "${push_succeeded}" != "true" ]]; then
+            echo "::error::Unable to push news and signals after 5 attempts."
+            exit 1
+          fi
+
+          echo "News and signal outputs committed successfully."
 
       - name: Log execution
         if: always()
         run: |
-          echo "PipSight fetch-news workflow finished."
+          echo "PipSight unified news-and-signals workflow finished."
           echo "Status: ${{ job.status }}"
           echo "Repository: ${{ github.repository }}"
+          echo "Branch: ${{ github.ref_name }}"
           echo "Run ID: ${{ github.run_id }}"
           echo "Completed at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"

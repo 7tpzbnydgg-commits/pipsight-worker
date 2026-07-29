@@ -1,21 +1,18 @@
-name: PipSight Robot — fetch signals
+name: PipSight Pro — signals manual recovery
 
 on:
-  schedule:
-    - cron: "*/30 * * * *"
-
   workflow_dispatch: {}
 
 permissions:
   contents: write
 
 concurrency:
-  group: pipsight-fetch-signals-${{ github.ref }}
+  group: pipsight-news-signals-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   fetch:
-    name: Fetch and publish signals
+    name: Run and publish signals manually
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -34,7 +31,80 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: "20"
+
+      - name: Verify required source files
+        run: |
+          set -euo pipefail
+
+          test -f fetch-signals.js
+          test -f data/news-feed.json
+          test -f data/xau-usd-history.json
+
+          echo "Required signal-engine source files are available."
+
+      - name: Validate signal-engine syntax
+        run: |
+          set -euo pipefail
+
+          node --check fetch-signals.js
+
+          echo "Signal-engine JavaScript syntax is valid."
+
+      - name: Validate news input
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          "use strict";
+
+          const fs = require("fs");
+
+          const filePath =
+            "data/news-feed.json";
+
+          if (!fs.existsSync(filePath)) {
+            throw new Error(
+              `Required source file does not exist: ${filePath}`
+            );
+          }
+
+          const raw =
+            fs.readFileSync(
+              filePath,
+              "utf8"
+            ).trim();
+
+          if (!raw) {
+            throw new Error(
+              `Source file is empty: ${filePath}`
+            );
+          }
+
+          let parsed;
+
+          try {
+            parsed =
+              JSON.parse(raw);
+          } catch (error) {
+            throw new Error(
+              `${filePath} contains invalid JSON: ${error.message}`
+            );
+          }
+
+          if (
+            parsed === null ||
+            typeof parsed !== "object"
+          ) {
+            throw new Error(
+              `${filePath} must contain valid JSON data.`
+            );
+          }
+
+          console.log(
+            `Validated ${filePath}`
+          );
+          NODE
 
       - name: Run signal engine
         run: |
@@ -46,22 +116,60 @@ jobs:
         run: |
           set -euo pipefail
 
-          test -s data/signals.json
-          test -s data/signal-log.json
+          node <<'NODE'
+          "use strict";
 
-          node -e "
-            const fs = require('fs');
+          const fs = require("fs");
 
-            const files = [
-              'data/signals.json',
-              'data/signal-log.json'
-            ];
+          const outputFiles = [
+            "data/signals.json",
+            "data/signal-log.json"
+          ];
 
-            for (const file of files) {
-              JSON.parse(fs.readFileSync(file, 'utf8'));
-              console.log('Validated:', file);
+          for (const filePath of outputFiles) {
+            if (!fs.existsSync(filePath)) {
+              throw new Error(
+                `Required output file was not created: ${filePath}`
+              );
             }
-          "
+
+            const raw =
+              fs.readFileSync(
+                filePath,
+                "utf8"
+              ).trim();
+
+            if (!raw) {
+              throw new Error(
+                `Output file is empty: ${filePath}`
+              );
+            }
+
+            let parsed;
+
+            try {
+              parsed =
+                JSON.parse(raw);
+            } catch (error) {
+              throw new Error(
+                `Output file contains invalid JSON: ${filePath}: ${error.message}`
+              );
+            }
+
+            if (
+              parsed === null ||
+              typeof parsed !== "object"
+            ) {
+              throw new Error(
+                `${filePath} must contain valid JSON data.`
+              );
+            }
+
+            console.log(
+              `Validated ${filePath}`
+            );
+          }
+          NODE
 
       - name: Commit and push updated signals
         env:
@@ -72,7 +180,7 @@ jobs:
           git config user.name "pipsight-robot"
           git config user.email "actions@users.noreply.github.com"
 
-          # Strictly stage only the files owned by this workflow.
+          # Strictly stage only files owned by the signal engine.
           git add -- \
             data/signals.json \
             data/signal-log.json
@@ -82,42 +190,48 @@ jobs:
             exit 0
           fi
 
-          git commit -m "robot: refresh signals"
+          git commit -m "robot: manually refresh signals"
 
-          max_attempts=5
+          push_succeeded=false
 
-          for attempt in $(seq 1 "$max_attempts"); do
-            echo "Push attempt ${attempt}/${max_attempts}"
+          for attempt in 1 2 3 4 5; do
+            echo "Push attempt ${attempt} of 5..."
 
             if git push origin HEAD:main; then
-              echo "Signal files pushed successfully."
-              exit 0
+              push_succeeded=true
+              break
             fi
 
-            if [[ "$attempt" -eq "$max_attempts" ]]; then
-              echo "Push failed after ${max_attempts} attempts."
-              exit 1
+            if [[ "${attempt}" -eq 5 ]]; then
+              break
             fi
 
-            echo "Remote branch changed. Rebasing before retry..."
+            echo "Push was rejected. Fetching and rebasing onto origin/main..."
 
             git fetch origin main
 
             if ! git rebase origin/main; then
-              echo "Rebase conflict detected."
-
+              echo "::error::Rebase failed while synchronizing signal files."
               git rebase --abort || true
               exit 1
             fi
 
-            sleep $((attempt * 5))
+            sleep $((attempt * 2))
           done
+
+          if [[ "${push_succeeded}" != "true" ]]; then
+            echo "::error::Unable to push signal files after 5 attempts."
+            exit 1
+          fi
+
+          echo "Signal files committed and pushed successfully."
 
       - name: Log execution
         if: always()
         run: |
-          echo "PipSight fetch-signals workflow finished."
+          echo "PipSight manual signal workflow finished."
           echo "Status: ${{ job.status }}"
           echo "Repository: ${{ github.repository }}"
+          echo "Branch: ${{ github.ref_name }}"
           echo "Run ID: ${{ github.run_id }}"
           echo "Completed at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"

@@ -17285,22 +17285,29 @@ function resolveBackendEngineResult(
     return null;
   }
 
-  const normalizedMode =
-    String(
-      mode || ""
-    )
-      .trim()
-      .toLowerCase();
+  const frontendMode =
+  String(
+    mode || ""
+  )
+    .trim()
+    .toLowerCase();
 
-  const engines =
-    safeObject(
-      pairAnalysis.engines
-    );
+const backendMode =
+  frontendMode === "daily"
+    ? "intraday"
+    : frontendMode === "weekly"
+      ? "swing"
+      : frontendMode;
 
-  const candidate =
-    pairAnalysis[normalizedMode] ||
-    engines[normalizedMode] ||
-    null;
+const engines =
+  safeObject(
+    pairAnalysis.engines
+  );
+
+const candidate =
+  pairAnalysis[backendMode] ||
+  engines[backendMode] ||
+  null;
 
   if(
     !candidate ||
@@ -17330,7 +17337,7 @@ function resolveBackendEngineResult(
 
     mode:
       candidate.mode ||
-      normalizedMode,
+      backendMode,
 
     decision,
 

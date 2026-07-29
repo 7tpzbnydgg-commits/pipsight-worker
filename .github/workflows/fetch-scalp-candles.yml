@@ -1,21 +1,27 @@
-name: PipSight Robot — scalp candles (5m)
+name: PipSight Pro — unified scalp and live analysis
 
 on:
   schedule:
     - cron: "*/10 * * * *"
+
   workflow_dispatch: {}
 
 permissions:
   contents: write
 
 concurrency:
-  group: pipsight-scalp-${{ github.ref }}
+  group: pipsight-unified-analysis-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  PIPSIGHT_TELEGRAM_MODES: "master,swing,intraday,scalp"
+  PIPSIGHT_TELEGRAM_NOTIFY_HOLD: "false"
+
 jobs:
-  fetch:
+  analyze:
+    name: Refresh and publish unified analysis
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     defaults:
       run:
@@ -27,6 +33,7 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -51,6 +58,7 @@ jobs:
           TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
         run: |
           set -euo pipefail
+
           node fetch-scalp-candles.js
 
       - name: Validate scalp candles output
@@ -65,13 +73,17 @@ jobs:
           const filePath = "data/scalp-candles.json";
 
           if (!fs.existsSync(filePath)) {
-            throw new Error(`Required output file was not created: ${filePath}`);
+            throw new Error(
+              `Required output file was not created: ${filePath}`
+            );
           }
 
           const raw = fs.readFileSync(filePath, "utf8").trim();
 
           if (!raw) {
-            throw new Error(`Output file is empty: ${filePath}`);
+            throw new Error(
+              `Output file is empty: ${filePath}`
+            );
           }
 
           let data;
@@ -84,7 +96,10 @@ jobs:
             );
           }
 
-          if (data === null || typeof data !== "object") {
+          if (
+            data === null ||
+            typeof data !== "object"
+          ) {
             throw new Error(
               `Output file must contain a JSON object or array: ${filePath}`
             );
@@ -96,6 +111,7 @@ jobs:
       - name: Run scalp analysis
         run: |
           set -euo pipefail
+
           node run-scalp-analysis.js
 
       - name: Validate scalp analysis outputs
@@ -122,7 +138,9 @@ jobs:
             const raw = fs.readFileSync(filePath, "utf8").trim();
 
             if (!raw) {
-              throw new Error(`Output file is empty: ${filePath}`);
+              throw new Error(
+                `Output file is empty: ${filePath}`
+              );
             }
 
             let data;
@@ -135,7 +153,10 @@ jobs:
               );
             }
 
-            if (data === null || typeof data !== "object") {
+            if (
+              data === null ||
+              typeof data !== "object"
+            ) {
               throw new Error(
                 `Output file must contain a JSON object or array: ${filePath}`
               );
@@ -145,7 +166,69 @@ jobs:
           }
           NODE
 
-      - name: Commit updated scalp data
+      - name: Run live analysis
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -euo pipefail
+
+          node run-live-analysis.js
+
+      - name: Validate live analysis outputs
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          "use strict";
+
+          const fs = require("fs");
+
+          const outputFiles = [
+            "data/live-analysis.json",
+            "data/analysis-history.json",
+            "data/notify-state.json"
+          ];
+
+          for (const filePath of outputFiles) {
+            if (!fs.existsSync(filePath)) {
+              throw new Error(
+                `Required output file was not created: ${filePath}`
+              );
+            }
+
+            const raw = fs.readFileSync(filePath, "utf8").trim();
+
+            if (!raw) {
+              throw new Error(
+                `Output file is empty: ${filePath}`
+              );
+            }
+
+            let data;
+
+            try {
+              data = JSON.parse(raw);
+            } catch (error) {
+              throw new Error(
+                `Output file contains invalid JSON: ${filePath}: ${error.message}`
+              );
+            }
+
+            if (
+              data === null ||
+              typeof data !== "object"
+            ) {
+              throw new Error(
+                `Output file must contain a JSON object or array: ${filePath}`
+              );
+            }
+
+            console.log(`Validated ${filePath}`);
+          }
+          NODE
+
+      - name: Commit and push unified analysis snapshot
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -154,17 +237,21 @@ jobs:
           git config user.name "pipsight-robot"
           git config user.email "actions@users.noreply.github.com"
 
-          git add \
+          # Strictly stage only files owned by this unified workflow.
+          git add -- \
             data/scalp-candles.json \
             data/scalp-signals.json \
-            data/scalp-signal-log.json
+            data/scalp-signal-log.json \
+            data/live-analysis.json \
+            data/analysis-history.json \
+            data/notify-state.json
 
           if git diff --cached --quiet; then
-            echo "No scalp data changes to commit."
+            echo "No unified analysis changes to commit."
             exit 0
           fi
 
-          git commit -m "robot: refresh scalp candles and signals"
+          git commit -m "robot: refresh unified scalp and live analysis"
 
           push_succeeded=false
 
@@ -185,7 +272,7 @@ jobs:
             git fetch origin main
 
             if ! git rebase origin/main; then
-              echo "::error::Rebase failed while synchronizing scalp data."
+              echo "::error::Rebase failed while synchronizing unified analysis."
               git rebase --abort || true
               exit 1
             fi
@@ -194,17 +281,18 @@ jobs:
           done
 
           if [[ "${push_succeeded}" != "true" ]]; then
-            echo "::error::Unable to push scalp data after 5 attempts."
+            echo "::error::Unable to push unified analysis after 5 attempts."
             exit 1
           fi
 
-          echo "Scalp data committed and pushed successfully."
+          echo "Unified analysis committed and pushed successfully."
 
       - name: Log execution
         if: always()
         run: |
-          echo "Scalp workflow finished at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          echo "PipSight unified analysis workflow finished."
+          echo "Status: ${{ job.status }}"
           echo "Repository: ${{ github.repository }}"
           echo "Branch: ${{ github.ref_name }}"
           echo "Run ID: ${{ github.run_id }}"
-          echo "Final status: ${{ job.status }}"
+          echo "Completed at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"

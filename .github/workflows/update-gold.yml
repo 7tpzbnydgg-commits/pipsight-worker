@@ -1,8 +1,8 @@
-name: Update Gold Price History
+name: PipSight Pro — update gold price history
 
 on:
   schedule:
-    - cron: "0 * * * *"
+    - cron: "25 * * * *"
 
   workflow_dispatch: {}
 
@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: pipsight-update-gold-history-${{ github.ref }}
+  group: pipsight-unified-analysis-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -36,6 +36,22 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Verify required source files
+        run: |
+          set -euo pipefail
+
+          test -f scripts/update-history.js
+
+          echo "Required gold-history source file is available."
+
+      - name: Validate JavaScript syntax
+        run: |
+          set -euo pipefail
+
+          node --check scripts/update-history.js
+
+          echo "Gold-history JavaScript syntax is valid."
+
       - name: Fetch live gold price and update history
         run: |
           set -euo pipefail
@@ -46,84 +62,182 @@ jobs:
         run: |
           set -euo pipefail
 
-          test -s data/xau-usd-history.json
+          node <<'NODE'
+          "use strict";
 
-          node -e "
-            const fs = require('fs');
+          const fs = require("fs");
 
-            const file = 'data/xau-usd-history.json';
-            const parsed = JSON.parse(
-              fs.readFileSync(file, 'utf8')
+          const filePath =
+            "data/xau-usd-history.json";
+
+          if (!fs.existsSync(filePath)) {
+            throw new Error(
+              `Required output file was not created: ${filePath}`
             );
+          }
+
+          const raw =
+            fs.readFileSync(
+              filePath,
+              "utf8"
+            ).trim();
+
+          if (!raw) {
+            throw new Error(
+              `Gold-history output is empty: ${filePath}`
+            );
+          }
+
+          let parsed;
+
+          try {
+            parsed =
+              JSON.parse(raw);
+          } catch (error) {
+            throw new Error(
+              `Gold-history output contains invalid JSON: ${error.message}`
+            );
+          }
+
+          if (
+            parsed === null ||
+            (
+              typeof parsed !== "object" &&
+              !Array.isArray(parsed)
+            )
+          ) {
+            throw new Error(
+              "Gold-history output has an invalid JSON structure."
+            );
+          }
+
+          const rows =
+            Array.isArray(parsed)
+              ? parsed
+              : Array.isArray(parsed.rows)
+                ? parsed.rows
+                : Array.isArray(parsed.data)
+                  ? parsed.data
+                  : Array.isArray(parsed.history)
+                    ? parsed.history
+                    : null;
+
+          if (
+            rows !== null &&
+            rows.length === 0
+          ) {
+            throw new Error(
+              "Gold-history output contains no history rows."
+            );
+          }
+
+          if (rows !== null) {
+            const latest =
+              rows[rows.length - 1];
 
             if (
-              parsed === null ||
-              (
-                typeof parsed !== 'object' &&
-                !Array.isArray(parsed)
-              )
+              !latest ||
+              typeof latest !== "object" ||
+              Array.isArray(latest)
             ) {
               throw new Error(
-                'Gold history output has an invalid JSON structure'
+                "Latest gold-history row is invalid."
               );
             }
 
-            console.log('Validated:', file);
-          "
+            const priceCandidates = [
+              latest.close,
+              latest.price,
+              latest.value,
+              latest.rate,
+              latest.last
+            ];
 
-      - name: Commit and push if changed
+            const latestPrice =
+              priceCandidates
+                .map(Number)
+                .find(
+                  (value) =>
+                    Number.isFinite(value) &&
+                    value > 0
+                );
+
+            if (latestPrice === undefined) {
+              throw new Error(
+                "Latest gold-history row does not contain a valid positive price."
+              );
+            }
+
+            console.log(
+              `Validated latest gold-history price: ${latestPrice}`
+            );
+          }
+
+          console.log(
+            `Validated ${filePath}`
+          );
+          NODE
+
+      - name: Commit and push updated gold history
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "pipsight-robot"
+          git config user.email "actions@users.noreply.github.com"
 
           # Strictly stage only the file owned by this workflow.
-          git add -- data/xau-usd-history.json
+          git add -- \
+            data/xau-usd-history.json
 
           if git diff --cached --quiet; then
-            echo "No gold history changes to commit."
+            echo "No gold-history changes to commit."
             exit 0
           fi
 
-          git commit -m "Update gold price history [skip ci]"
+          git commit -m "robot: update gold price history"
 
-          max_attempts=5
+          push_succeeded=false
 
-          for attempt in $(seq 1 "$max_attempts"); do
-            echo "Push attempt ${attempt}/${max_attempts}"
+          for attempt in 1 2 3 4 5; do
+            echo "Push attempt ${attempt} of 5..."
 
             if git push origin HEAD:main; then
-              echo "Gold history pushed successfully."
-              exit 0
+              push_succeeded=true
+              break
             fi
 
-            if [[ "$attempt" -eq "$max_attempts" ]]; then
-              echo "Push failed after ${max_attempts} attempts."
-              exit 1
+            if [[ "${attempt}" -eq 5 ]]; then
+              break
             fi
 
-            echo "Remote branch changed. Rebasing before retry..."
+            echo "Push was rejected. Fetching and rebasing onto origin/main..."
 
             git fetch origin main
 
             if ! git rebase origin/main; then
-              echo "Rebase conflict detected."
-
+              echo "::error::Rebase failed while synchronizing gold history."
               git rebase --abort || true
               exit 1
             fi
 
-            sleep $((attempt * 5))
+            sleep $((attempt * 2))
           done
+
+          if [[ "${push_succeeded}" != "true" ]]; then
+            echo "::error::Unable to push gold history after 5 attempts."
+            exit 1
+          fi
+
+          echo "Gold history committed and pushed successfully."
 
       - name: Log execution
         if: always()
         run: |
-          echo "PipSight gold history workflow finished."
+          echo "PipSight gold-history workflow finished."
           echo "Status: ${{ job.status }}"
           echo "Repository: ${{ github.repository }}"
+          echo "Branch: ${{ github.ref_name }}"
           echo "Run ID: ${{ github.run_id }}"
           echo "Completed at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"

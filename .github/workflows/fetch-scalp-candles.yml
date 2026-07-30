@@ -19,9 +19,9 @@ env:
 
 jobs:
   analyze:
-    name: Refresh and publish unified analysis
+    name: Refresh, resolve and publish unified analysis
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     defaults:
       run:
@@ -40,7 +40,7 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Validate required configuration
+      - name: Validate required configuration and files
         env:
           TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
         run: |
@@ -51,7 +51,45 @@ jobs:
             exit 1
           fi
 
-          echo "Required configuration validated."
+          required_files=(
+            "fetch-scalp-candles.js"
+            "run-scalp-analysis.js"
+            "run-live-analysis.js"
+            "resolve-analysis-history.js"
+            "run-learning-engine.js"
+            "learner.js"
+            "ai-memory.js"
+            "data/analysis-history.json"
+          )
+
+          for file in "${required_files[@]}"; do
+            if [[ ! -f "$file" ]]; then
+              echo "::error file=$file::Required file is missing: $file"
+              exit 1
+            fi
+          done
+
+          echo "Required configuration and pipeline files are available."
+
+      - name: Validate JavaScript syntax
+        run: |
+          set -euo pipefail
+
+          scripts=(
+            "fetch-scalp-candles.js"
+            "run-scalp-analysis.js"
+            "run-live-analysis.js"
+            "resolve-analysis-history.js"
+            "run-learning-engine.js"
+            "learner.js"
+            "ai-memory.js"
+          )
+
+          for script in "${scripts[@]}"; do
+            node --check "$script"
+          done
+
+          echo "Unified pipeline JavaScript syntax is valid."
 
       - name: Fetch scalp candles
         env:
@@ -61,7 +99,7 @@ jobs:
 
           node fetch-scalp-candles.js
 
-      - name: Validate scalp candles output
+      - name: Validate closed scalp candles
         run: |
           set -euo pipefail
 
@@ -70,7 +108,11 @@ jobs:
 
           const fs = require("fs");
 
-          const filePath = "data/scalp-candles.json";
+          const filePath =
+            "data/scalp-candles.json";
+
+          const intervalMs =
+            5 * 60 * 1000;
 
           if (!fs.existsSync(filePath)) {
             throw new Error(
@@ -78,7 +120,11 @@ jobs:
             );
           }
 
-          const raw = fs.readFileSync(filePath, "utf8").trim();
+          const raw =
+            fs.readFileSync(
+              filePath,
+              "utf8"
+            ).trim();
 
           if (!raw) {
             throw new Error(
@@ -89,23 +135,176 @@ jobs:
           let data;
 
           try {
-            data = JSON.parse(raw);
+            data =
+              JSON.parse(raw);
           } catch (error) {
             throw new Error(
-              `Output file contains invalid JSON: ${filePath}: ${error.message}`
+              `Output file contains invalid JSON: ${error.message}`
             );
           }
 
           if (
             data === null ||
-            typeof data !== "object"
+            typeof data !== "object" ||
+            Array.isArray(data)
           ) {
             throw new Error(
-              `Output file must contain a JSON object or array: ${filePath}`
+              `${filePath} must contain a JSON object.`
             );
           }
 
-          console.log(`Validated ${filePath}`);
+          const pairs = [
+            "XAUUSD",
+            "GBPJPY"
+          ];
+
+          const nowMs =
+            Date.now();
+
+          for (const pair of pairs) {
+            const rows =
+              data[pair];
+
+            if (
+              !Array.isArray(rows) ||
+              rows.length === 0
+            ) {
+              throw new Error(
+                `${filePath} does not contain usable ${pair} candles.`
+              );
+            }
+
+            let previousTimestamp =
+              null;
+
+            for (
+              let index = 0;
+              index < rows.length;
+              index++
+            ) {
+              const row =
+                rows[index];
+
+              if (
+                row === null ||
+                typeof row !== "object"
+              ) {
+                throw new Error(
+                  `${pair} candle ${index} is invalid.`
+                );
+              }
+
+              const timestamp =
+                Date.parse(
+                  String(
+                    row.time ??
+                    row.datetime ??
+                    ""
+                  ).replace(
+                    " ",
+                    "T"
+                  ) + (
+                    String(
+                      row.time ??
+                      row.datetime ??
+                      ""
+                    ).includes("Z")
+                      ? ""
+                      : "Z"
+                  )
+                );
+
+              if (!Number.isFinite(timestamp)) {
+                throw new Error(
+                  `${pair} candle ${index} has an invalid timestamp.`
+                );
+              }
+
+              if (
+                timestamp +
+                  intervalMs >
+                nowMs
+              ) {
+                throw new Error(
+                  `${pair} candle ${index} is still open or future-dated.`
+                );
+              }
+
+              const open =
+                Number(row.open);
+
+              const high =
+                Number(row.high);
+
+              const low =
+                Number(row.low);
+
+              const close =
+                Number(row.close);
+
+              if (
+                ![
+                  open,
+                  high,
+                  low,
+                  close
+                ].every(
+                  Number.isFinite
+                )
+              ) {
+                throw new Error(
+                  `${pair} candle ${index} contains invalid OHLC values.`
+                );
+              }
+
+              if (
+                open <= 0 ||
+                high <= 0 ||
+                low <= 0 ||
+                close <= 0 ||
+                high < low ||
+                high < open ||
+                high < close ||
+                low > open ||
+                low > close
+              ) {
+                throw new Error(
+                  `${pair} candle ${index} contains invalid OHLC geometry.`
+                );
+              }
+
+              if (
+                previousTimestamp !== null &&
+                timestamp <=
+                  previousTimestamp
+              ) {
+                throw new Error(
+                  `${pair} candles are not strictly chronological.`
+                );
+              }
+
+              previousTimestamp =
+                timestamp;
+            }
+
+            const stale =
+              data.stale?.[pair] ===
+                true ||
+              data.metadata?.[pair]
+                ?.stale ===
+                true;
+
+            if (stale) {
+              console.warn(
+                `${pair} source is stale. ` +
+                "The scalp engine must publish WAIT only."
+              );
+            }
+
+            console.log(
+              `Validated ${rows.length} completed ${pair} candles.`
+            );
+          }
           NODE
 
       - name: Run scalp analysis
@@ -135,7 +334,11 @@ jobs:
               );
             }
 
-            const raw = fs.readFileSync(filePath, "utf8").trim();
+            const raw =
+              fs.readFileSync(
+                filePath,
+                "utf8"
+              ).trim();
 
             if (!raw) {
               throw new Error(
@@ -146,10 +349,11 @@ jobs:
             let data;
 
             try {
-              data = JSON.parse(raw);
+              data =
+                JSON.parse(raw);
             } catch (error) {
               throw new Error(
-                `Output file contains invalid JSON: ${filePath}: ${error.message}`
+                `${filePath} contains invalid JSON: ${error.message}`
               );
             }
 
@@ -158,11 +362,13 @@ jobs:
               typeof data !== "object"
             ) {
               throw new Error(
-                `Output file must contain a JSON object or array: ${filePath}`
+                `${filePath} must contain valid JSON data.`
               );
             }
 
-            console.log(`Validated ${filePath}`);
+            console.log(
+              `Validated ${filePath}`
+            );
           }
           NODE
 
@@ -197,7 +403,11 @@ jobs:
               );
             }
 
-            const raw = fs.readFileSync(filePath, "utf8").trim();
+            const raw =
+              fs.readFileSync(
+                filePath,
+                "utf8"
+              ).trim();
 
             if (!raw) {
               throw new Error(
@@ -208,10 +418,11 @@ jobs:
             let data;
 
             try {
-              data = JSON.parse(raw);
+              data =
+                JSON.parse(raw);
             } catch (error) {
               throw new Error(
-                `Output file contains invalid JSON: ${filePath}: ${error.message}`
+                `${filePath} contains invalid JSON: ${error.message}`
               );
             }
 
@@ -220,15 +431,288 @@ jobs:
               typeof data !== "object"
             ) {
               throw new Error(
-                `Output file must contain a JSON object or array: ${filePath}`
+                `${filePath} must contain valid JSON data.`
               );
             }
 
-            console.log(`Validated ${filePath}`);
+            console.log(
+              `Validated ${filePath}`
+            );
           }
           NODE
 
-      - name: Commit and push unified analysis snapshot
+      - name: Resolve open trades
+        id: resolve
+        run: |
+          set -euo pipefail
+
+          history_file="data/analysis-history.json"
+          before_file="${RUNNER_TEMP}/analysis-history-before-resolver.json"
+
+          cp "$history_file" "$before_file"
+
+          node resolve-analysis-history.js
+
+          if cmp -s "$before_file" "$history_file"; then
+            echo "history_changed=false" >> "$GITHUB_OUTPUT"
+            echo "Resolver did not change analysis history."
+          else
+            echo "history_changed=true" >> "$GITHUB_OUTPUT"
+            echo "Resolver changed analysis history."
+          fi
+
+      - name: Validate resolved analysis history
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          "use strict";
+
+          const fs = require("fs");
+
+          const filePath =
+            "data/analysis-history.json";
+
+          const raw =
+            fs.readFileSync(
+              filePath,
+              "utf8"
+            ).trim();
+
+          if (!raw) {
+            throw new Error(
+              `${filePath} is empty.`
+            );
+          }
+
+          let history;
+
+          try {
+            history =
+              JSON.parse(raw);
+          } catch (error) {
+            throw new Error(
+              `${filePath} contains invalid JSON: ${error.message}`
+            );
+          }
+
+          if (
+            history === null ||
+            typeof history !== "object" ||
+            Array.isArray(history)
+          ) {
+            throw new Error(
+              `${filePath} must contain a JSON object.`
+            );
+          }
+
+          if (
+            !Array.isArray(history.records) ||
+            !Array.isArray(history.history) ||
+            !Array.isArray(history.items) ||
+            !Array.isArray(history.closed)
+          ) {
+            throw new Error(
+              "History records, history, items and closed must be arrays."
+            );
+          }
+
+          if (
+            history.records.length !==
+              history.history.length ||
+            history.records.length !==
+              history.items.length
+          ) {
+            throw new Error(
+              "History aliases are not synchronized."
+            );
+          }
+
+          console.log(
+            `Validated history: ` +
+            `${history.records.length} rich records, ` +
+            `${history.closed.length} legacy closed records.`
+          );
+          NODE
+
+      - name: Determine learning refresh requirement
+        id: learning-gate
+        run: |
+          set -euo pipefail
+
+          refresh="${{ steps.resolve.outputs.history_changed }}"
+
+          required_outputs=(
+            "data/learning-data.json"
+            "data/confidence-data.json"
+            "data/learning-engine-state.json"
+            "data/ai-memory.json"
+            "data/ai-memory-state.json"
+          )
+
+          for file in "${required_outputs[@]}"; do
+            if [[ ! -s "$file" ]]; then
+              echo "Missing required adaptive output: $file"
+              refresh="true"
+            fi
+          done
+
+          echo "refresh=$refresh" >> "$GITHUB_OUTPUT"
+
+          if [[ "$refresh" == "true" ]]; then
+            echo "Learning and AI Memory refresh is required."
+          else
+            echo "No resolved-history change; adaptive refresh will be skipped."
+          fi
+
+      - name: Run learning engine
+        if: steps.learning-gate.outputs.refresh == 'true'
+        run: |
+          set -euo pipefail
+
+          node run-learning-engine.js
+
+      - name: Validate learning outputs
+        if: steps.learning-gate.outputs.refresh == 'true'
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          "use strict";
+
+          const fs = require("fs");
+
+          const outputFiles = [
+            "data/learning-data.json",
+            "data/confidence-data.json",
+            "data/learning-engine-state.json"
+          ];
+
+          for (const filePath of outputFiles) {
+            if (!fs.existsSync(filePath)) {
+              throw new Error(
+                `Required learning output was not created: ${filePath}`
+              );
+            }
+
+            const raw =
+              fs.readFileSync(
+                filePath,
+                "utf8"
+              ).trim();
+
+            if (!raw) {
+              throw new Error(
+                `Learning output is empty: ${filePath}`
+              );
+            }
+
+            let data;
+
+            try {
+              data =
+                JSON.parse(raw);
+            } catch (error) {
+              throw new Error(
+                `${filePath} contains invalid JSON: ${error.message}`
+              );
+            }
+
+            if (
+              data === null ||
+              typeof data !== "object" ||
+              Array.isArray(data)
+            ) {
+              throw new Error(
+                `${filePath} must contain a JSON object.`
+              );
+            }
+
+            console.log(
+              `Validated ${filePath}`
+            );
+          }
+          NODE
+
+      - name: Run AI Memory
+        if: steps.learning-gate.outputs.refresh == 'true'
+        run: |
+          set -euo pipefail
+
+          node ai-memory.js
+
+      - name: Validate AI Memory outputs
+        if: steps.learning-gate.outputs.refresh == 'true'
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          "use strict";
+
+          const fs = require("fs");
+
+          const outputFiles = [
+            "data/ai-memory.json",
+            "data/ai-memory-state.json"
+          ];
+
+          for (const filePath of outputFiles) {
+            if (!fs.existsSync(filePath)) {
+              throw new Error(
+                `Required AI Memory output was not created: ${filePath}`
+              );
+            }
+
+            const raw =
+              fs.readFileSync(
+                filePath,
+                "utf8"
+              ).trim();
+
+            if (!raw) {
+              throw new Error(
+                `AI Memory output is empty: ${filePath}`
+              );
+            }
+
+            let data;
+
+            try {
+              data =
+                JSON.parse(raw);
+            } catch (error) {
+              throw new Error(
+                `${filePath} contains invalid JSON: ${error.message}`
+              );
+            }
+
+            if (
+              data === null ||
+              typeof data !== "object" ||
+              Array.isArray(data)
+            ) {
+              throw new Error(
+                `${filePath} must contain a JSON object.`
+              );
+            }
+
+            console.log(
+              `Validated ${filePath}`
+            );
+          }
+          NODE
+
+      - name: Show unified pipeline changes
+        run: |
+          set -euo pipefail
+
+          echo "Changed files after unified pipeline:"
+          git status --short
+
+          echo "Resolver history changed: ${{ steps.resolve.outputs.history_changed }}"
+          echo "Adaptive refresh executed: ${{ steps.learning-gate.outputs.refresh }}"
+
+      - name: Commit and push unified pipeline snapshot
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -237,42 +721,62 @@ jobs:
           git config user.name "pipsight-robot"
           git config user.email "actions@users.noreply.github.com"
 
-          # Strictly stage only files owned by this unified workflow.
-          git add -- \
-            data/scalp-candles.json \
-            data/scalp-signals.json \
-            data/scalp-signal-log.json \
-            data/live-analysis.json \
-            data/analysis-history.json \
-            data/notify-state.json
+          files_to_commit=(
+            "data/scalp-candles.json"
+            "data/scalp-signals.json"
+            "data/scalp-signal-log.json"
+            "data/live-analysis.json"
+            "data/analysis-history.json"
+            "data/notify-state.json"
+            "data/learning-data.json"
+            "data/confidence-data.json"
+            "data/learning-engine-state.json"
+            "data/ai-memory.json"
+            "data/ai-memory-state.json"
+          )
 
-          if git diff --cached --quiet; then
-            echo "No unified analysis changes to commit."
+          existing_files=()
+
+          for file in "${files_to_commit[@]}"; do
+            if [[ -f "$file" ]]; then
+              existing_files+=("$file")
+            fi
+          done
+
+          if [[ "${#existing_files[@]}" -eq 0 ]]; then
+            echo "No unified pipeline output files are available."
             exit 0
           fi
 
-          git commit -m "robot: refresh unified scalp and live analysis"
+          git add -- "${existing_files[@]}"
+
+          if git diff --cached --quiet; then
+            echo "No unified pipeline changes to commit."
+            exit 0
+          fi
+
+          git commit -m "robot: refresh unified analysis and adaptive state"
 
           push_succeeded=false
 
           for attempt in 1 2 3 4 5; do
             echo "Push attempt ${attempt} of 5..."
 
-            if git push origin HEAD:main; then
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
               push_succeeded=true
               break
             fi
 
-            if [[ "${attempt}" -eq 5 ]]; then
+            if [[ "$attempt" -eq 5 ]]; then
               break
             fi
 
-            echo "Push was rejected. Fetching and rebasing onto origin/main..."
+            echo "Push was rejected. Fetching and rebasing..."
 
-            git fetch origin main
+            git fetch origin "${GITHUB_REF_NAME}"
 
-            if ! git rebase origin/main; then
-              echo "::error::Rebase failed while synchronizing unified analysis."
+            if ! git rebase "origin/${GITHUB_REF_NAME}"; then
+              echo "::error::Rebase failed while synchronizing the unified pipeline."
               git rebase --abort || true
               exit 1
             fi
@@ -280,17 +784,17 @@ jobs:
             sleep $((attempt * 2))
           done
 
-          if [[ "${push_succeeded}" != "true" ]]; then
-            echo "::error::Unable to push unified analysis after 5 attempts."
+          if [[ "$push_succeeded" != "true" ]]; then
+            echo "::error::Unable to push unified pipeline state after 5 attempts."
             exit 1
           fi
 
-          echo "Unified analysis committed and pushed successfully."
+          echo "Unified pipeline state committed successfully."
 
       - name: Log execution
         if: always()
         run: |
-          echo "PipSight unified analysis workflow finished."
+          echo "PipSight unified pipeline workflow finished."
           echo "Status: ${{ job.status }}"
           echo "Repository: ${{ github.repository }}"
           echo "Branch: ${{ github.ref_name }}"

@@ -5089,8 +5089,20 @@ function applyAiMemoryConfidenceAdjustment(
       100
     );
 
+  const explainabilityStatus =
+    !memoryResult.matched
+      ? "NO_MATCH"
+      : memoryResult.samples <
+          AI_MEMORY_MIN_TRADES
+        ? "INSUFFICIENT_DATA"
+        : adjustment === 0
+          ? "NEUTRAL"
+          : adjustment > 0
+            ? "SUPPORTIVE"
+            : "CAUTION";
+
   /*
-   * Only confidence is changed.
+   * Only confidence and additive explainability metadata are changed.
    *
    * Direction, signal eligibility, entry, SL, TP and ATR calculations
    * remain untouched.
@@ -5098,9 +5110,60 @@ function applyAiMemoryConfidenceAdjustment(
   analysis.confidence =
     adjustedConfidence;
 
+  analysis.confidenceExplainability = {
+    version: 1,
+
+    adjustmentOwner:
+      "scalp-engine",
+
+    baseConfidence,
+
+    aiAdjustment:
+      adjustment,
+
+    finalConfidence:
+      adjustedConfidence,
+
+    evaluated: true,
+
+    matched:
+      memoryResult.matched ===
+      true,
+
+    applied:
+      memoryResult.applied ===
+      true,
+
+    status:
+      explainabilityStatus,
+
+    source:
+      memoryResult.source,
+
+    key:
+      memoryResult.key,
+
+    sampleSize:
+      memoryResult.samples,
+
+    winRate:
+      memoryResult.winRate,
+
+    profitFactor:
+      memoryResult.profitFactor,
+
+    /*
+     * Scalp Engine does not currently calculate a separate reliability
+     * metric. Missing metadata is preserved as null rather than invented.
+     */
+    reliability: null,
+
+    reason:
+      memoryResult.reason
+  };
+
   /*
-   * Existing steps array is used for additive observability without
-   * changing the signal root schema.
+   * Existing steps array remains the human-readable pipeline view.
    */
   if (
     Array.isArray(
@@ -5124,7 +5187,8 @@ function applyAiMemoryConfidenceAdjustment(
               `${memoryResult.source} ${memoryResult.key}; ` +
               `${memoryResult.samples} trades, ` +
               `${memoryResult.winRate}% win rate, ` +
-              `${memoryResult.profitFactor} profit factor`
+              `${memoryResult.profitFactor} profit factor; ` +
+              memoryResult.reason
             )
           : (
               `Base ${baseConfidence}, adjustment +0, ` +

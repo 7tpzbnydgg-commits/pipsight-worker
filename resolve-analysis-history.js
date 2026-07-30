@@ -49,6 +49,21 @@ const ENGINE_VERSION =
 const HISTORY_VERSION =
   1;
 
+const RECORD_CLOCK_SKEW_TOLERANCE_MS =
+  5 * 60 * 1000;
+
+const MARKET_SOURCE_INTERVAL_MINUTES =
+  Object.freeze({
+    scalp:
+      5,
+
+    intraday:
+      60,
+
+    swing:
+      24 * 60
+  });
+
 // ============================================================================
 // Paths
 // ============================================================================
@@ -328,9 +343,55 @@ function toTimestamp(
 
     }
 
+    let normalized =
+      trimmed;
+
+    /*
+     * Market files use UTC timestamps but may omit an explicit timezone.
+     * Normalize those exact date/time forms to UTC so resolution does not
+     * depend on the host machine timezone.
+     */
+    if (
+      /^\d{4}-\d{2}-\d{2}$/.test(
+        normalized
+      )
+    ) {
+
+      normalized +=
+        "T00:00:00Z";
+
+    } else {
+
+      if (
+        /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(
+          normalized
+        )
+      ) {
+
+        normalized =
+          normalized.replace(
+            " ",
+            "T"
+          );
+
+      }
+
+      if (
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?$/.test(
+          normalized
+        )
+      ) {
+
+        normalized +=
+          "Z";
+
+      }
+
+    }
+
     const parsed =
       Date.parse(
-        trimmed
+        normalized
       );
 
     return Number.isNaN(
@@ -983,17 +1044,71 @@ function getRecordOpenedTimestamp(
 
   }
 
+  /*
+   * Market-candle timestamps have priority over record persistence times.
+   * This keeps analyzedCandleAt authoritative when the upstream pipeline
+   * provides it and prevents createdAt from silently replacing market time.
+   */
   const candidates = [
+    record.analyzedCandleAt,
+    record.snapshot?.analyzedCandleAt,
     record.signalTimestamp,
     record.signalTime,
     record.openedAt,
-    record.createdAt,
-    record.recordedAt,
+    record.snapshot?.signalTimestamp,
+    record.snapshot?.signalTime,
     record.timestamp,
     record.time,
-    record.generatedAt,
     record.snapshot?.timestamp,
     record.snapshot?.time,
+    record.generatedAt,
+    record.snapshot?.generatedAt,
+    record.createdAt,
+    record.recordedAt
+  ];
+
+  for (
+    const candidate of
+      candidates
+  ) {
+
+    const timestamp =
+      toTimestamp(
+        candidate
+      );
+
+    if (
+      timestamp !== null
+    ) {
+
+      return timestamp;
+
+    }
+
+  }
+
+  return null;
+
+}
+
+function getRecordCreationTimestamp(
+  record
+) {
+
+  if (
+    !isPlainObject(
+      record
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const candidates = [
+    record.recordedAt,
+    record.createdAt,
+    record.generatedAt,
     record.snapshot?.generatedAt
   ];
 
@@ -1018,6 +1133,62 @@ function getRecordOpenedTimestamp(
   }
 
   return null;
+
+}
+
+function validateRecordTimestampSafety(
+  record,
+  openedTimestamp,
+  nowMs = Date.now()
+) {
+
+  const errors = [];
+
+  const safeNowMs =
+    Number.isFinite(
+      nowMs
+    )
+      ? nowMs
+      : Date.now();
+
+  if (
+    openedTimestamp === null
+  ) {
+
+    return errors;
+
+  }
+
+  if (
+    openedTimestamp >
+      safeNowMs
+  ) {
+
+    errors.push(
+      "Open timestamp is in the future"
+    );
+
+  }
+
+  const creationTimestamp =
+    getRecordCreationTimestamp(
+      record
+    );
+
+  if (
+    creationTimestamp !== null &&
+    openedTimestamp >
+      creationTimestamp +
+      RECORD_CLOCK_SKEW_TOLERANCE_MS
+  ) {
+
+    errors.push(
+      "Open timestamp occurs after record creation time"
+    );
+
+  }
+
+  return errors;
 
 }
 
@@ -1552,6 +1723,157 @@ function getCandleClosedState(
 // Candle normalization
 // ============================================================================
 
+function getCandleTimeSafety(
+  rawCandle,
+  options = {}
+) {
+
+  const timestamp =
+    getCandleTimestamp(
+      rawCandle
+    );
+
+  const explicitClosed =
+    getCandleClosedState(
+      rawCandle
+    );
+
+  const safeNowMs =
+    Number.isFinite(
+      options.nowMs
+    )
+      ? options.nowMs
+      : Date.now();
+
+  const intervalMinutes =
+    toFiniteNumber(
+      options.intervalMinutes
+    );
+
+  const intervalMs =
+    intervalMinutes !== null &&
+    intervalMinutes > 0
+      ? intervalMinutes *
+        60 *
+        1000
+      : null;
+
+  if (
+    timestamp === null
+  ) {
+
+    return {
+      safe:
+        false,
+
+      reason:
+        "invalid-time",
+
+      timestamp:
+        null,
+
+      closeTimestamp:
+        null,
+
+      explicitClosed
+    };
+
+  }
+
+  if (
+    timestamp >
+      safeNowMs
+  ) {
+
+    return {
+      safe:
+        false,
+
+      reason:
+        "future-candle",
+
+      timestamp,
+
+      closeTimestamp:
+        intervalMs === null
+          ? null
+          : timestamp +
+            intervalMs,
+
+      explicitClosed
+    };
+
+  }
+
+  if (
+    options.closedOnly ===
+      true &&
+    explicitClosed ===
+      false
+  ) {
+
+    return {
+      safe:
+        false,
+
+      reason:
+        "explicitly-open",
+
+      timestamp,
+
+      closeTimestamp:
+        intervalMs === null
+          ? null
+          : timestamp +
+            intervalMs,
+
+      explicitClosed
+    };
+
+  }
+
+  const closeTimestamp =
+    intervalMs === null
+      ? null
+      : timestamp +
+        intervalMs;
+
+  if (
+    options.closedOnly ===
+      true &&
+    closeTimestamp !== null &&
+    closeTimestamp >
+      safeNowMs
+  ) {
+
+    return {
+      safe:
+        false,
+
+      reason:
+        "incomplete-by-time",
+
+      timestamp,
+      closeTimestamp,
+      explicitClosed
+    };
+
+  }
+
+  return {
+    safe:
+      true,
+
+    reason:
+      null,
+
+    timestamp,
+    closeTimestamp,
+    explicitClosed
+  };
+
+}
+
 function normalizeCandle(
   rawCandle,
   options = {}
@@ -1567,10 +1889,23 @@ function normalizeCandle(
 
   }
 
-  const timestamp =
-    getCandleTimestamp(
-      rawCandle
+  const timeSafety =
+    getCandleTimeSafety(
+      rawCandle,
+      options
     );
+
+  if (
+    timeSafety.safe !==
+      true
+  ) {
+
+    return null;
+
+  }
+
+  const timestamp =
+    timeSafety.timestamp;
 
   const open =
     getCandleOpen(
@@ -1627,22 +1962,6 @@ function normalizeCandle(
 
   }
 
-  const explicitClosed =
-    getCandleClosedState(
-      rawCandle
-    );
-
-  if (
-    options.closedOnly ===
-      true &&
-    explicitClosed ===
-      false
-  ) {
-
-    return null;
-
-  }
-
   return {
     timestamp,
 
@@ -1651,13 +1970,24 @@ function normalizeCandle(
         timestamp
       ).toISOString(),
 
+    closeTimestamp:
+      timeSafety.closeTimestamp,
+
+    closeTime:
+      timeSafety.closeTimestamp ===
+        null
+        ? null
+        : new Date(
+            timeSafety.closeTimestamp
+          ).toISOString(),
+
     open,
     high,
     low,
     close,
 
     closed:
-      explicitClosed,
+      timeSafety.explicitClosed,
 
     pair:
       options.pairKey ||
@@ -1690,6 +2020,17 @@ function normalizeCandles(
   const candlesByTimestamp =
     new Map();
 
+  const normalizedOptions = {
+    ...options,
+
+    nowMs:
+      Number.isFinite(
+        options.nowMs
+      )
+        ? options.nowMs
+        : Date.now()
+  };
+
   let invalidCount =
     0;
 
@@ -1699,19 +2040,26 @@ function normalizeCandles(
   let explicitlyOpenCount =
     0;
 
+  let futureCandleCount =
+    0;
+
+  let incompleteByTimeCount =
+    0;
+
   for (
     const rawRow of
       rows
   ) {
 
-    const explicitClosed =
-      getCandleClosedState(
-        rawRow
+    const timeSafety =
+      getCandleTimeSafety(
+        rawRow,
+        normalizedOptions
       );
 
     if (
-      explicitClosed ===
-        false
+      timeSafety.reason ===
+        "explicitly-open"
     ) {
 
       explicitlyOpenCount +=
@@ -1719,10 +2067,30 @@ function normalizeCandles(
 
     }
 
+    if (
+      timeSafety.reason ===
+        "future-candle"
+    ) {
+
+      futureCandleCount +=
+        1;
+
+    }
+
+    if (
+      timeSafety.reason ===
+        "incomplete-by-time"
+    ) {
+
+      incompleteByTimeCount +=
+        1;
+
+    }
+
     const candle =
       normalizeCandle(
         rawRow,
-        options
+        normalizedOptions
       );
 
     if (!candle) {
@@ -1786,6 +2154,16 @@ function normalizeCandles(
 
       explicitlyOpenCandleCount:
         explicitlyOpenCount,
+
+      futureCandleCount,
+
+      incompleteByTimeCandleCount:
+        incompleteByTimeCount,
+
+      intervalMinutes:
+        toFiniteNumber(
+          normalizedOptions.intervalMinutes
+        ),
 
       firstCandleTime:
         candles.length > 0
@@ -2359,6 +2737,18 @@ function buildPairMarketSource(
   options = {}
 ) {
 
+  const intervalMinutes =
+    toFiniteNumber(
+      options.intervalMinutes
+    );
+
+  const safeNowMs =
+    Number.isFinite(
+      options.nowMs
+    )
+      ? options.nowMs
+      : Date.now();
+
   if (
     !sourceDocument ||
     sourceDocument.available !==
@@ -2396,6 +2786,14 @@ function buildPairMarketSource(
         explicitlyOpenCandleCount:
           0,
 
+        futureCandleCount:
+          0,
+
+        incompleteByTimeCandleCount:
+          0,
+
+        intervalMinutes,
+
         firstCandleTime:
           null,
 
@@ -2425,13 +2823,13 @@ function buildPairMarketSource(
         source:
           sourceDocument.source,
 
-        /*
-         * Explicitly forming candles are rejected.
-         * Candles without a closed/open marker remain accepted because the
-         * existing market files may not provide that metadata.
-         */
         closedOnly:
-          true
+          true,
+
+        intervalMinutes,
+
+        nowMs:
+          safeNowMs
       }
     );
 
@@ -2469,6 +2867,13 @@ function buildMarketDataIndex(
   const index =
     {};
 
+  /*
+   * Use one fixed clock snapshot for every pair and source in this run.
+   * This prevents boundary differences during the same resolver execution.
+   */
+  const normalizationNowMs =
+    Date.now();
+
   for (
     const pairKey of
       SUPPORTED_PAIRS
@@ -2480,19 +2885,43 @@ function buildMarketDataIndex(
       scalp:
         buildPairMarketSource(
           marketDocuments.scalp,
-          pairKey
+          pairKey,
+          {
+            intervalMinutes:
+              MARKET_SOURCE_INTERVAL_MINUTES
+                .scalp,
+
+            nowMs:
+              normalizationNowMs
+          }
         ),
 
       intraday:
         buildPairMarketSource(
           marketDocuments.intraday,
-          pairKey
+          pairKey,
+          {
+            intervalMinutes:
+              MARKET_SOURCE_INTERVAL_MINUTES
+                .intraday,
+
+            nowMs:
+              normalizationNowMs
+          }
         ),
 
       swing:
         buildPairMarketSource(
           marketDocuments.swing,
-          pairKey
+          pairKey,
+          {
+            intervalMinutes:
+              MARKET_SOURCE_INTERVAL_MINUTES
+                .swing,
+
+            nowMs:
+              normalizationNowMs
+          }
         )
     };
 
@@ -2597,7 +3026,8 @@ function getPairMarketData(
 
 function getCandlesAfterTimestamp(
   candles,
-  openedTimestamp
+  openedTimestamp,
+  nowMs = Date.now()
 ) {
 
   const timestamp =
@@ -2605,8 +3035,17 @@ function getCandlesAfterTimestamp(
       openedTimestamp
     );
 
+  const safeNowMs =
+    Number.isFinite(
+      nowMs
+    )
+      ? nowMs
+      : Date.now();
+
   if (
-    timestamp === null
+    timestamp === null ||
+    timestamp >
+      safeNowMs
   ) {
 
     return [];
@@ -2618,15 +3057,78 @@ function getCandlesAfterTimestamp(
   ).filter(
     (
       candle
-    ) =>
-      isPlainObject(
-        candle
-      ) &&
-      toFiniteNumber(
-        candle.timestamp
-      ) !== null &&
-      candle.timestamp >
-        timestamp
+    ) => {
+
+      if (
+        !isPlainObject(
+          candle
+        )
+      ) {
+
+        return false;
+
+      }
+
+      const candleTimestamp =
+        toFiniteNumber(
+          candle.timestamp
+        );
+
+      const candleCloseTimestamp =
+        toFiniteNumber(
+          candle.closeTimestamp
+        );
+
+      /*
+       * Preserve the existing entry-candle exclusion policy.
+       * Only candles whose start timestamp is strictly newer than the
+       * verified trade-open timestamp may be evaluated.
+       */
+      if (
+        candleTimestamp ===
+          null ||
+        candleTimestamp <=
+          timestamp ||
+        candleTimestamp >
+          safeNowMs
+      ) {
+
+        return false;
+
+      }
+
+      /*
+       * Explicitly open candles can never resolve a trade.
+       */
+      if (
+        candle.closed ===
+          false
+      ) {
+
+        return false;
+
+      }
+
+      /*
+       * A normalized resolver candle must have a valid close boundary.
+       * The full interval must be completed before its high/low can be used.
+       */
+      if (
+        candleCloseTimestamp ===
+          null ||
+        candleCloseTimestamp >
+          safeNowMs ||
+        candleCloseTimestamp <=
+          candleTimestamp
+      ) {
+
+        return false;
+
+      }
+
+      return true;
+
+    }
   );
 
 }
@@ -3931,6 +4433,13 @@ function prepareRecordForResolution(
   const errors = [
     ...geometry.errors
   ];
+
+  errors.push(
+    ...validateRecordTimestampSafety(
+      record,
+      openedTimestamp
+    )
+  );
 
   if (!pairKey) {
 

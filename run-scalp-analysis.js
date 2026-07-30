@@ -56,6 +56,11 @@ const LOG_OUT_PATH = path.join(
   "scalp-signal-log.json"
 );
 
+const AI_MEMORY_PATH = path.join(
+  DATA_DIR,
+  "ai-memory.json"
+);
+
 const MAX_SIGNAL_LOG = 5000;
 /*
  * Duplicate suppression:
@@ -72,6 +77,17 @@ const MIN_M5_ROWS = 40;
 const MIN_M15_ROWS = 35;
 const MIN_M30_ROWS = 35;
 const MIN_H1_ROWS = 20;
+
+/*
+ * AI Memory confidence safety:
+ *
+ * - Memory remains advisory.
+ * - Direction, eligibility and trade-plan logic are never changed.
+ * - Small samples are ignored.
+ * - Final adjustment is strictly bounded.
+ */
+const AI_MEMORY_MIN_TRADES = 20;
+const AI_MEMORY_MAX_ADJUSTMENT = 6;
 
 const PAIRS = Object.freeze([
   {
@@ -5135,6 +5151,24 @@ function run() {
       }
     );
 
+  const aiMemory =
+    readJsonFile(
+      AI_MEMORY_PATH,
+      null
+    );
+
+  if (
+    !aiMemory ||
+    typeof aiMemory !== "object" ||
+    Array.isArray(aiMemory)
+  ) {
+
+    console.warn(
+      "[Scalp Engine] AI Memory unavailable or malformed; " +
+      "confidence adjustment disabled for this run."
+    );
+  }
+
   const news =
     readNewsFeed();
 
@@ -5308,6 +5342,16 @@ function run() {
         rows,
         pair.label
       );
+
+      if (aiMemory) {
+
+        applyAiMemoryConfidenceAdjustment(
+          analysis,
+          aiMemory,
+          pair
+        );
+
+      }
        
       analysis.mode =
         mode;

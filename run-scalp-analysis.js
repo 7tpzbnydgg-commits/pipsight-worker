@@ -715,37 +715,29 @@ function extractPairRows(
 }
 
 /* =====================================================================
-   Defensive H1 Closed-Candle Filtering
+   Defensive Closed-Candle Time Filtering
    ===================================================================== */
 
-function currentUtcHourTimestamp(
-  nowMs = Date.now()
-) {
-  const current =
-    new Date(nowMs);
-
-  current.setUTCMinutes(
-    0,
-    0,
-    0
-  );
-
-  return current.getTime();
-}
-
-function normalizeClosedH1Rows(
+function normalizeClosedIntervalRows(
   input,
+  intervalMinutes,
   nowMs = Date.now()
 ) {
   const normalized =
     normalizeRows(input);
 
-  const currentHourTimestamp =
-    currentUtcHourTimestamp(
-      nowMs
-    );
+  const safeNowMs =
+    Number.isFinite(nowMs)
+      ? nowMs
+      : Date.now();
 
-  let timeFilteredCount = 0;
+  const intervalMs =
+    intervalMinutes *
+    60 *
+    1000;
+
+  let openTimeFilteredCount = 0;
+  let futureTimeFilteredCount = 0;
 
   const rows =
     normalized.rows.filter(row => {
@@ -754,36 +746,62 @@ function normalizeClosedH1Rows(
           row?.timestamp
         )
       ) {
-        timeFilteredCount++;
+        futureTimeFilteredCount++;
         return false;
       }
 
       /*
-       * An H1 candle whose timestamp equals the current UTC hour
-       * is still open. Any timestamp after it is future data.
-       *
-       * Only candles from completed UTC hours may reach the
-       * scalp strategy.
+       * A timestamp after the current clock is future data.
        */
       if (
-        row.timestamp >=
-        currentHourTimestamp
+        row.timestamp >
+        safeNowMs
       ) {
-        timeFilteredCount++;
+        futureTimeFilteredCount++;
+        return false;
+      }
+
+      /*
+       * Candle timestamps represent interval start time.
+       * The complete interval must have elapsed before analysis.
+       */
+      if (
+        row.timestamp +
+          intervalMs >
+        safeNowMs
+      ) {
+        openTimeFilteredCount++;
         return false;
       }
 
       return true;
     });
 
+  const totalTimeFilteredCount =
+    openTimeFilteredCount +
+    futureTimeFilteredCount;
+
   return {
     ...normalized,
 
     rows,
 
+    /*
+     * Preserve existing telemetry semantics. This field continues to
+     * represent all candles removed for not being safely completed.
+     */
     openCandlesRemoved:
       normalized.openCandlesRemoved +
-      timeFilteredCount,
+      totalTimeFilteredCount,
+
+    /*
+     * Additive diagnostics for exact future-time visibility.
+     */
+    futureCandlesRemoved:
+      futureTimeFilteredCount,
+
+    timeFilteredCandlesRemoved:
+      totalTimeFilteredCount,
 
     hasOHLC:
       rows.length > 0 &&
@@ -793,9 +811,128 @@ function normalizeClosedH1Rows(
   };
 }
 
+function normalizeClosedM5Rows(
+  input,
+  nowMs = Date.now()
+) {
+  return normalizeClosedIntervalRows(
+    input,
+    5,
+    nowMs
+  );
+}
+
+function normalizeClosedH1Rows(
+  input,
+  nowMs = Date.now()
+) {
+  return normalizeClosedIntervalRows(
+    input,
+    60,
+    nowMs
+  );
+}
+
 /* =====================================================================
    Source Readers
    ===================================================================== */
+
+function sourceValueForPair(
+  container,
+  pair
+) {
+  if (
+    !container ||
+    typeof container !== "object"
+  ) {
+    return undefined;
+  }
+
+  const expectedKey =
+    normalizePairKey(
+      pair.key
+    );
+
+  const possibleKeys = [
+    pair.key,
+    pair.label,
+    pair.label.replace("/", "-"),
+    pair.label.replace("/", "_"),
+    pair.label.replace("/", ""),
+    pair.key.toLowerCase()
+  ];
+
+  for (const key of possibleKeys) {
+    if (
+      Object.prototype.hasOwnProperty.call(
+        container,
+        key
+      )
+    ) {
+      return container[key];
+    }
+  }
+
+  for (
+    const [
+      sourceKey,
+      sourceValue
+    ] of Object.entries(container)
+  ) {
+    if (
+      normalizePairKey(sourceKey) ===
+      expectedKey
+    ) {
+      return sourceValue;
+    }
+  }
+
+  return undefined;
+}
+
+function readSourceSafety(
+  source,
+  pair
+) {
+  const metadata =
+    sourceValueForPair(
+      source?.metadata,
+      pair
+    );
+
+  const pairStale =
+    sourceValueForPair(
+      source?.stale,
+      pair
+    );
+
+  const fetchSucceeded =
+    typeof metadata?.fetchSucceeded ===
+    "boolean"
+      ? metadata.fetchSucceeded
+      : null;
+
+  const fallbackUsed =
+    metadata?.fallbackUsed === true ||
+    metadata?.source === "local-cache";
+
+  const sourceMarkedStale =
+    source?.stale === true ||
+    pairStale === true ||
+    metadata?.stale === true ||
+    metadata?.quality?.stale === true;
+
+  return {
+    fetchSucceeded,
+    fallbackUsed,
+    sourceMarkedStale,
+
+    stale:
+      sourceMarkedStale ||
+      fallbackUsed ||
+      fetchSucceeded === false
+  };
+}
 
 function readScalpRows(pair) {
   const source =
@@ -810,8 +947,20 @@ function readScalpRows(pair) {
       pair
     );
 
+  const sourceSafety =
+    readSourceSafety(
+      source,
+      pair
+    );
+
   return {
-    ...normalizeRows(extracted),
+    /*
+     * Independent defensive protection even when the collector has already
+     * removed current and future M5 candles.
+     */
+    ...normalizeClosedM5Rows(
+      extracted
+    ),
 
     source:
       "scalp-candles.json",
@@ -822,7 +971,16 @@ function readScalpRows(pair) {
         : null,
 
     sourceStale:
-      source?.stale === true
+      sourceSafety.stale,
+
+    sourceMarkedStale:
+      sourceSafety.sourceMarkedStale,
+
+    sourceFallbackUsed:
+      sourceSafety.fallbackUsed,
+
+    sourceFetchSucceeded:
+      sourceSafety.fetchSucceeded
   };
 }
 
@@ -835,6 +993,12 @@ function readH1Rows(pair) {
 
   const extracted =
     extractPairRows(
+      source,
+      pair
+    );
+
+  const sourceSafety =
+    readSourceSafety(
       source,
       pair
     );
@@ -853,7 +1017,16 @@ function readH1Rows(pair) {
         : null,
 
     sourceStale:
-      source?.stale === true
+      sourceSafety.stale,
+
+    sourceMarkedStale:
+      sourceSafety.sourceMarkedStale,
+
+    sourceFallbackUsed:
+      sourceSafety.fallbackUsed,
+
+    sourceFetchSucceeded:
+      sourceSafety.fetchSucceeded
   };
 }
 
@@ -866,7 +1039,9 @@ function candleDataQuality(
   expectedIntervalMinutes
 ) {
   const rows =
-    normalized.rows;
+    Array.isArray(normalized?.rows)
+      ? normalized.rows
+      : [];
 
   const firstDate =
     rows.length > 0
@@ -900,23 +1075,63 @@ function candleDataQuality(
     }
   }
 
+  /*
+   * Existing four-interval freshness policy is preserved:
+   * M5 = 20 minutes
+   * H1 = 240 minutes
+   */
   const staleThresholdMinutes =
     expectedIntervalMinutes * 4;
+
+  const sourceMarkedStale =
+    normalized?.sourceMarkedStale ===
+    true;
+
+  const fallbackUsed =
+    normalized?.sourceFallbackUsed ===
+    true;
+
+  const fetchSucceeded =
+    typeof normalized?.sourceFetchSucceeded ===
+    "boolean"
+      ? normalized.sourceFetchSucceeded
+      : null;
+
+  const stale =
+    normalized?.sourceStale === true ||
+    sourceMarkedStale ||
+    fallbackUsed ||
+    fetchSucceeded === false ||
+    ageMinutes === null ||
+    ageMinutes >
+      staleThresholdMinutes;
 
   return {
     validRows:
       rows.length,
 
     rejectedRows:
-      normalized.rejected,
+      normalized?.rejected ?? 0,
 
     duplicateTimestamps:
       normalized
-        .duplicateTimestamps,
+        ?.duplicateTimestamps ??
+      0,
 
     openCandlesRemoved:
       normalized
-        .openCandlesRemoved,
+        ?.openCandlesRemoved ??
+      0,
+
+    futureCandlesRemoved:
+      normalized
+        ?.futureCandlesRemoved ??
+      0,
+
+    timeFilteredCandlesRemoved:
+      normalized
+        ?.timeFilteredCandlesRemoved ??
+      0,
 
     firstDate,
     lastDate,
@@ -924,16 +1139,18 @@ function candleDataQuality(
 
     expectedIntervalMinutes,
 
-    hasOHLC:
-      normalized.hasOHLC,
+    staleThresholdMinutes,
 
-    stale:
-      normalized.sourceStale === true ||
-      (
-        ageMinutes !== null &&
-        ageMinutes >
-          staleThresholdMinutes
-      )
+    hasOHLC:
+      normalized?.hasOHLC === true,
+
+    sourceMarkedStale,
+
+    fallbackUsed,
+
+    fetchSucceeded,
+
+    stale
   };
 }
 
@@ -2952,6 +3169,170 @@ function appendSkippedPipelineSteps(
 
 }
 
+function describeUnsafeDataSource(
+  label,
+  quality
+) {
+  const details = [];
+
+  if (
+    quality?.fetchSucceeded ===
+    false
+  ) {
+    details.push(
+      "latest fetch failed"
+    );
+  }
+
+  if (
+    quality?.fallbackUsed ===
+    true
+  ) {
+    details.push(
+      "cache fallback is active"
+    );
+  }
+
+  if (
+    quality?.sourceMarkedStale ===
+    true
+  ) {
+    details.push(
+      "source is marked stale"
+    );
+  }
+
+  if (
+    quality?.ageMinutes ===
+    null ||
+    quality?.ageMinutes ===
+    undefined
+  ) {
+    details.push(
+      "latest candle age is unavailable"
+    );
+  } else if (
+    Number.isFinite(
+      quality.ageMinutes
+    ) &&
+    Number.isFinite(
+      quality.staleThresholdMinutes
+    ) &&
+    quality.ageMinutes >
+      quality.staleThresholdMinutes
+  ) {
+    details.push(
+      `latest candle is ${quality.ageMinutes} minute(s) old; ` +
+      `maximum allowed age is ${quality.staleThresholdMinutes} minute(s)`
+    );
+  }
+
+  if (details.length === 0) {
+    details.push(
+      "source failed freshness validation"
+    );
+  }
+
+  return (
+    `${label}: ` +
+    details.join(", ")
+  );
+}
+
+function buildModeDataSafetyIssues(
+  mode,
+  prepared
+) {
+  const issues = [];
+
+  const m5Quality =
+    prepared?.quality?.m5;
+
+  /*
+   * Every scalp mode is ultimately generated from M5 candles.
+   * Unsafe M5 therefore blocks M5, M15 and M30.
+   */
+  if (
+    !m5Quality ||
+    m5Quality.stale === true
+  ) {
+    issues.push(
+      describeUnsafeDataSource(
+        "M5 market data",
+        m5Quality
+      )
+    );
+  }
+
+  /*
+   * M5 and M15 higher-timeframe confirmation is derived from the same
+   * fresh M5 snapshot. M30 alone depends on the external H1 source.
+   */
+  if (mode === "M30") {
+    const h1Quality =
+      prepared?.quality?.h1;
+
+    if (
+      !h1Quality ||
+      h1Quality.stale === true
+    ) {
+      issues.push(
+        describeUnsafeDataSource(
+          "H1 confirmation data",
+          h1Quality
+        )
+      );
+    }
+  }
+
+  return issues;
+}
+
+function createDataSafetyBlockedAnalysis(
+  pairLabel,
+  issues
+) {
+  const result = {
+    pair: pairLabel,
+    signal: "WAIT",
+    confidence: 0,
+    reasons: [
+      "Market data safety block"
+    ],
+    steps: [],
+    tradePlan: null
+  };
+
+  result.steps.push({
+    name:
+      "Market Data Safety",
+
+    pass:
+      false,
+
+    detail:
+      Array.isArray(issues) &&
+      issues.length > 0
+        ? issues.join("; ")
+        : "Required market data failed freshness validation"
+  });
+
+  appendSkippedPipelineSteps(
+    result,
+    [
+      "EMA Trend",
+      "MACD",
+      "RSI",
+      "Higher TF",
+      "News",
+      "Risk Reward"
+    ],
+    "Market Data Safety"
+  );
+
+  return result;
+}
+
 function analyze(
   rows,
   pairLabel,
@@ -4234,14 +4615,25 @@ function run() {
           pairNews
         );
 
-      const analysis =
-        analyze(
-          rows,
-          pair.label,
-          score,
-          higherRows,
-          pairNews
+      const dataSafetyIssues =
+        buildModeDataSafetyIssues(
+          mode,
+          prepared
         );
+
+      const analysis =
+        dataSafetyIssues.length > 0
+          ? createDataSafetyBlockedAnalysis(
+              pair.label,
+              dataSafetyIssues
+            )
+          : analyze(
+              rows,
+              pair.label,
+              score,
+              higherRows,
+              pairNews
+            );
        
       /*
        * Apply additive ATR Dynamic TP/SL extension.

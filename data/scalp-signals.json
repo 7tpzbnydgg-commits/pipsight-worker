@@ -1,67 +1,106 @@
 {
-  "generatedAt": "2026-07-30T22:50:37.487Z",
+  "generatedAt": "2026-07-30T23:00:55.825Z",
   "engineVersion": "1.0.0",
   "strategyVersion": "scalp-lockstep-1.0",
   "signals": [
     {
       "pair": "XAU/USD",
-      "signal": "WAIT",
-      "confidence": 0,
-      "reasons": [
-        "RSI confirmation failed"
-      ],
+      "signal": "BUY",
+      "confidence": 86,
+      "reasons": [],
       "steps": [
         {
           "name": "EMA Trend",
           "pass": true,
-          "detail": "BUY EMA alignment confirmed: price 4110.5043, EMA20 4106.848598, EMA50 4105.784821, EMA100 4102.221451, EMA200 4093.523924"
+          "detail": "BUY EMA alignment confirmed: price 4109.68321, EMA20 4107.255898, EMA50 4106.064346, EMA100 4102.535589, EMA200 4093.929145"
         },
         {
           "name": "MACD",
           "pass": true,
-          "detail": "BUY confirmed: MACD 0.907023 is above signal 0.095702; histogram 0.811321"
+          "detail": "BUY confirmed: MACD 1.094648 is above signal 0.449542; histogram 0.645106"
         },
         {
           "name": "RSI",
-          "pass": false,
-          "detail": "BUY RSI confirmation failed at 69.12; required range 45–65"
+          "pass": true,
+          "detail": "BUY RSI confirmation passed at 63.01; required range 45–65"
         },
         {
           "name": "Higher TF",
-          "pass": null,
-          "status": "skip",
-          "detail": "Skipped because RSI did not pass"
+          "pass": true,
+          "detail": "Higher timeframe confirms the same BUY direction"
         },
         {
           "name": "News",
-          "pass": null,
-          "status": "skip",
-          "detail": "Skipped because RSI did not pass"
+          "pass": true,
+          "detail": "No conflicting high-impact news found across 3 pair-specific item(s); net news score 25"
         },
         {
           "name": "Risk Reward",
-          "pass": null,
-          "status": "skip",
-          "detail": "Skipped because RSI did not pass"
+          "pass": true,
+          "detail": "Risk:Reward passed at 1:21.3 using entry 4109.68321, stop 4109.64534 and target 4110.48997"
+        },
+        {
+          "name": "ATR Dynamic TP/SL",
+          "pass": true,
+          "detail": "XAU/USD BUY ATR(14)=1.57 SL 1x ATR, TP1 2x ATR, TP2 3x ATR, TP3 4x ATR"
+        },
+        {
+          "name": "AI Memory Confidence",
+          "pass": true,
+          "detail": "Base 85, adjustment +1, final 86; engineDirection scalp::BUY; 67 trades, 22.39% win rate, 1.4317 profit factor; Qualified historical profitability adjustment"
         }
       ],
-      "tradePlan": null,
+      "tradePlan": {
+        "entry": 4109.68,
+        "stopLoss": 4108.11,
+        "target1": 4112.83,
+        "target2": 4114.4,
+        "target3": 4115.97,
+        "riskReward": 2.01,
+        "atr": 1.57,
+        "atrPeriod": 14,
+        "riskModel": "ATR_DYNAMIC",
+        "stopAtrMultiplier": 1,
+        "targetAtrMultipliers": [
+          2,
+          3,
+          4
+        ]
+      },
+      "confidenceExplainability": {
+        "version": 1,
+        "adjustmentOwner": "scalp-engine",
+        "baseConfidence": 85,
+        "aiAdjustment": 1,
+        "finalConfidence": 86,
+        "evaluated": true,
+        "matched": true,
+        "applied": true,
+        "status": "SUPPORTIVE",
+        "source": "engineDirection",
+        "key": "scalp::BUY",
+        "sampleSize": 67,
+        "winRate": 22.39,
+        "profitFactor": 1.4317,
+        "reliability": null,
+        "reason": "Qualified historical profitability adjustment"
+      },
       "mode": "M5",
-      "generatedAt": "2026-07-30T22:50:37.487Z",
-      "analyzedCandleAt": "2026-07-30T22:45:00.000Z",
+      "generatedAt": "2026-07-30T23:00:55.825Z",
+      "analyzedCandleAt": "2026-07-30T22:55:00.000Z",
       "prepared": {
         "counts": {
           "m5": 360,
-          "m15": 119,
-          "m30": 59,
-          "h1": 889
+          "m15": 120,
+          "m30": 60,
+          "h1": 890
         },
         "source": {
           "m5": "scalp-candles.json",
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-07-30T22:50:37.404Z",
+          "m5": "2026-07-30T23:00:55.759Z",
           "h1": "2026-07-30T22:45:26.102Z"
         },
         "quality": {
@@ -72,8 +111,8 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-29T16:50:00.000Z",
-            "lastDate": "2026-07-30T22:45:00.000Z",
+            "firstDate": "2026-07-29T17:00:00.000Z",
+            "lastDate": "2026-07-30T22:55:00.000Z",
             "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
@@ -84,15 +123,15 @@
             "stale": false
           },
           "h1": {
-            "validRows": 889,
+            "validRows": 890,
             "rejectedRows": 0,
             "duplicateTimestamps": 0,
-            "openCandlesRemoved": 11,
-            "futureCandlesRemoved": 10,
-            "timeFilteredCandlesRemoved": 11,
+            "openCandlesRemoved": 10,
+            "futureCandlesRemoved": 9,
+            "timeFilteredCandlesRemoved": 10,
             "firstDate": "2026-06-23T21:00:00.000Z",
-            "lastDate": "2026-07-30T21:00:00.000Z",
-            "ageMinutes": 110,
+            "lastDate": "2026-07-30T22:00:00.000Z",
+            "ageMinutes": 60,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,
@@ -115,12 +154,12 @@
         {
           "name": "EMA Trend",
           "pass": true,
-          "detail": "BUY EMA alignment confirmed: price 4110.29959, EMA20 4106.05032, EMA50 4101.560385, EMA100 4095.220078, EMA200 4078.570079"
+          "detail": "BUY EMA alignment confirmed: price 4109.68321, EMA20 4106.43273, EMA50 4101.698509, EMA100 4095.50974, EMA200 4078.821959"
         },
         {
           "name": "MACD",
           "pass": false,
-          "detail": "BUY not confirmed: MACD 2.437641 is not above signal 3.217663; histogram -0.780022"
+          "detail": "BUY not confirmed: MACD 2.494808 is not above signal 3.073092; histogram -0.578284"
         },
         {
           "name": "RSI",
@@ -149,21 +188,21 @@
       ],
       "tradePlan": null,
       "mode": "M15",
-      "generatedAt": "2026-07-30T22:50:37.487Z",
-      "analyzedCandleAt": "2026-07-30T22:30:00.000Z",
+      "generatedAt": "2026-07-30T23:00:55.825Z",
+      "analyzedCandleAt": "2026-07-30T22:45:00.000Z",
       "prepared": {
         "counts": {
           "m5": 360,
-          "m15": 119,
-          "m30": 59,
-          "h1": 889
+          "m15": 120,
+          "m30": 60,
+          "h1": 890
         },
         "source": {
           "m5": "scalp-candles.json",
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-07-30T22:50:37.404Z",
+          "m5": "2026-07-30T23:00:55.759Z",
           "h1": "2026-07-30T22:45:26.102Z"
         },
         "quality": {
@@ -174,8 +213,8 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-29T16:50:00.000Z",
-            "lastDate": "2026-07-30T22:45:00.000Z",
+            "firstDate": "2026-07-29T17:00:00.000Z",
+            "lastDate": "2026-07-30T22:55:00.000Z",
             "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
@@ -186,15 +225,15 @@
             "stale": false
           },
           "h1": {
-            "validRows": 889,
+            "validRows": 890,
             "rejectedRows": 0,
             "duplicateTimestamps": 0,
-            "openCandlesRemoved": 11,
-            "futureCandlesRemoved": 10,
-            "timeFilteredCandlesRemoved": 11,
+            "openCandlesRemoved": 10,
+            "futureCandlesRemoved": 9,
+            "timeFilteredCandlesRemoved": 10,
             "firstDate": "2026-06-23T21:00:00.000Z",
-            "lastDate": "2026-07-30T21:00:00.000Z",
-            "ageMinutes": 110,
+            "lastDate": "2026-07-30T22:00:00.000Z",
+            "ageMinutes": 60,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,
@@ -217,12 +256,12 @@
         {
           "name": "EMA Trend",
           "pass": true,
-          "detail": "BUY EMA alignment confirmed: price 4107.65213, EMA20 4105.611305, EMA50 4100.793244, EMA100 4094.501592, EMA200 4078.096258"
+          "detail": "BUY EMA alignment confirmed: price 4109.68321, EMA20 4106.425686, EMA50 4101.72903, EMA100 4095.481051, EMA200 4078.647917"
         },
         {
           "name": "MACD",
           "pass": false,
-          "detail": "BUY not confirmed: MACD 8.182469 is not above signal 9.319286; histogram -1.136817"
+          "detail": "BUY not confirmed: MACD 7.999557 is not above signal 9.05534; histogram -1.055783"
         },
         {
           "name": "RSI",
@@ -251,21 +290,21 @@
       ],
       "tradePlan": null,
       "mode": "M30",
-      "generatedAt": "2026-07-30T22:50:37.487Z",
-      "analyzedCandleAt": "2026-07-30T22:00:00.000Z",
+      "generatedAt": "2026-07-30T23:00:55.825Z",
+      "analyzedCandleAt": "2026-07-30T22:30:00.000Z",
       "prepared": {
         "counts": {
           "m5": 360,
-          "m15": 119,
-          "m30": 59,
-          "h1": 889
+          "m15": 120,
+          "m30": 60,
+          "h1": 890
         },
         "source": {
           "m5": "scalp-candles.json",
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-07-30T22:50:37.404Z",
+          "m5": "2026-07-30T23:00:55.759Z",
           "h1": "2026-07-30T22:45:26.102Z"
         },
         "quality": {
@@ -276,8 +315,8 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-29T16:50:00.000Z",
-            "lastDate": "2026-07-30T22:45:00.000Z",
+            "firstDate": "2026-07-29T17:00:00.000Z",
+            "lastDate": "2026-07-30T22:55:00.000Z",
             "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
@@ -288,15 +327,15 @@
             "stale": false
           },
           "h1": {
-            "validRows": 889,
+            "validRows": 890,
             "rejectedRows": 0,
             "duplicateTimestamps": 0,
-            "openCandlesRemoved": 11,
-            "futureCandlesRemoved": 10,
-            "timeFilteredCandlesRemoved": 11,
+            "openCandlesRemoved": 10,
+            "futureCandlesRemoved": 9,
+            "timeFilteredCandlesRemoved": 10,
             "firstDate": "2026-06-23T21:00:00.000Z",
-            "lastDate": "2026-07-30T21:00:00.000Z",
-            "ageMinutes": 110,
+            "lastDate": "2026-07-30T22:00:00.000Z",
+            "ageMinutes": 60,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,
@@ -354,21 +393,21 @@
       ],
       "tradePlan": null,
       "mode": "M5",
-      "generatedAt": "2026-07-30T22:50:37.487Z",
-      "analyzedCandleAt": "2026-07-30T22:45:00.000Z",
+      "generatedAt": "2026-07-30T23:00:55.825Z",
+      "analyzedCandleAt": "2026-07-30T22:55:00.000Z",
       "prepared": {
         "counts": {
           "m5": 360,
-          "m15": 119,
-          "m30": 59,
-          "h1": 889
+          "m15": 120,
+          "m30": 60,
+          "h1": 890
         },
         "source": {
           "m5": "scalp-candles.json",
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-07-30T22:50:37.404Z",
+          "m5": "2026-07-30T23:00:55.759Z",
           "h1": "2026-07-30T22:45:26.102Z"
         },
         "quality": {
@@ -379,8 +418,8 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-29T16:50:00.000Z",
-            "lastDate": "2026-07-30T22:45:00.000Z",
+            "firstDate": "2026-07-29T17:00:00.000Z",
+            "lastDate": "2026-07-30T22:55:00.000Z",
             "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
@@ -391,15 +430,15 @@
             "stale": false
           },
           "h1": {
-            "validRows": 889,
+            "validRows": 890,
             "rejectedRows": 0,
             "duplicateTimestamps": 0,
-            "openCandlesRemoved": 11,
-            "futureCandlesRemoved": 10,
-            "timeFilteredCandlesRemoved": 11,
+            "openCandlesRemoved": 10,
+            "futureCandlesRemoved": 9,
+            "timeFilteredCandlesRemoved": 10,
             "firstDate": "2026-06-23T21:00:00.000Z",
-            "lastDate": "2026-07-30T21:00:00.000Z",
-            "ageMinutes": 110,
+            "lastDate": "2026-07-30T22:00:00.000Z",
+            "ageMinutes": 60,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,
@@ -457,21 +496,21 @@
       ],
       "tradePlan": null,
       "mode": "M15",
-      "generatedAt": "2026-07-30T22:50:37.487Z",
-      "analyzedCandleAt": "2026-07-30T22:30:00.000Z",
+      "generatedAt": "2026-07-30T23:00:55.825Z",
+      "analyzedCandleAt": "2026-07-30T22:45:00.000Z",
       "prepared": {
         "counts": {
           "m5": 360,
-          "m15": 119,
-          "m30": 59,
-          "h1": 889
+          "m15": 120,
+          "m30": 60,
+          "h1": 890
         },
         "source": {
           "m5": "scalp-candles.json",
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-07-30T22:50:37.404Z",
+          "m5": "2026-07-30T23:00:55.759Z",
           "h1": "2026-07-30T22:45:26.102Z"
         },
         "quality": {
@@ -482,8 +521,8 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-29T16:50:00.000Z",
-            "lastDate": "2026-07-30T22:45:00.000Z",
+            "firstDate": "2026-07-29T17:00:00.000Z",
+            "lastDate": "2026-07-30T22:55:00.000Z",
             "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
@@ -494,15 +533,15 @@
             "stale": false
           },
           "h1": {
-            "validRows": 889,
+            "validRows": 890,
             "rejectedRows": 0,
             "duplicateTimestamps": 0,
-            "openCandlesRemoved": 11,
-            "futureCandlesRemoved": 10,
-            "timeFilteredCandlesRemoved": 11,
+            "openCandlesRemoved": 10,
+            "futureCandlesRemoved": 9,
+            "timeFilteredCandlesRemoved": 10,
             "firstDate": "2026-06-23T21:00:00.000Z",
-            "lastDate": "2026-07-30T21:00:00.000Z",
-            "ageMinutes": 110,
+            "lastDate": "2026-07-30T22:00:00.000Z",
+            "ageMinutes": 60,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,
@@ -560,21 +599,21 @@
       ],
       "tradePlan": null,
       "mode": "M30",
-      "generatedAt": "2026-07-30T22:50:37.487Z",
-      "analyzedCandleAt": "2026-07-30T22:00:00.000Z",
+      "generatedAt": "2026-07-30T23:00:55.825Z",
+      "analyzedCandleAt": "2026-07-30T22:30:00.000Z",
       "prepared": {
         "counts": {
           "m5": 360,
-          "m15": 119,
-          "m30": 59,
-          "h1": 889
+          "m15": 120,
+          "m30": 60,
+          "h1": 890
         },
         "source": {
           "m5": "scalp-candles.json",
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-07-30T22:50:37.404Z",
+          "m5": "2026-07-30T23:00:55.759Z",
           "h1": "2026-07-30T22:45:26.102Z"
         },
         "quality": {
@@ -585,8 +624,8 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-29T16:50:00.000Z",
-            "lastDate": "2026-07-30T22:45:00.000Z",
+            "firstDate": "2026-07-29T17:00:00.000Z",
+            "lastDate": "2026-07-30T22:55:00.000Z",
             "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
@@ -597,15 +636,15 @@
             "stale": false
           },
           "h1": {
-            "validRows": 889,
+            "validRows": 890,
             "rejectedRows": 0,
             "duplicateTimestamps": 0,
-            "openCandlesRemoved": 11,
-            "futureCandlesRemoved": 10,
-            "timeFilteredCandlesRemoved": 11,
+            "openCandlesRemoved": 10,
+            "futureCandlesRemoved": 9,
+            "timeFilteredCandlesRemoved": 10,
             "firstDate": "2026-06-23T21:00:00.000Z",
-            "lastDate": "2026-07-30T21:00:00.000Z",
-            "ageMinutes": 110,
+            "lastDate": "2026-07-30T22:00:00.000Z",
+            "ageMinutes": 60,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,

@@ -9567,6 +9567,12 @@ function liveHistoryRecordFromEngine(
         canonical
       ),
 
+    confidenceExplainability:
+      liveCloneValue(
+        canonical.confidenceExplainability ||
+        null
+      ),
+
     aiMemory:
       liveCloneValue(
         canonical.aiMemory ||

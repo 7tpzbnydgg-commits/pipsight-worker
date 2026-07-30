@@ -7325,7 +7325,10 @@ function resolveAnalysisHistory(
   const originalRecords = [
     ...workingHistory.records
   ];
-
+  const initialOpenInventory =
+    buildOpenTradeInventory(
+      workingHistory
+    );
   const results =
     [];
 
@@ -7629,13 +7632,46 @@ function resolveAnalysisHistory(
       )
   };
 
+  const historyBeforeStatistics =
+    workingHistory;
+
+  const historyWithStatistics =
+    rebuildExistingStatistics(
+      workingHistory
+    );
+
+  const statisticsChanged =
+    statisticsContainersChanged(
+      historyBeforeStatistics,
+      historyWithStatistics
+    );
+
+  workingHistory =
+    statisticsChanged
+      ? {
+          ...historyWithStatistics,
+          updatedAt:
+            new Date().toISOString()
+        }
+      : historyWithStatistics;
+
+  const finalOpenInventory =
+    buildOpenTradeInventory(
+      workingHistory
+    );
+
+  const legacyOpenIntegrity =
+    summarizeLegacyOpenIntegrity(
+      finalOpenInventory
+    );
+
   return {
     history:
       workingHistory,
 
     changed:
-      resolvedCount >
-      0,
+      resolvedCount > 0 ||
+      statisticsChanged,
 
     summary: {
       totalRichRecords:
@@ -7654,15 +7690,42 @@ function resolveAnalysisHistory(
 
       legacyClosedAppendedCount,
 
+      initialLegacyOpenCount:
+        initialOpenInventory
+          .legacyOpenCount,
+
       finalLegacyOpenCount:
-        countOpenTradesInValue(
-          workingHistory.open
-        ),
+        finalOpenInventory
+          .legacyOpenCount,
+
+      legacyMatchedOpenCount:
+        finalOpenInventory
+          .legacyMatchedOpenCount,
+
+      legacyMatchedResolvedCount:
+        finalOpenInventory
+          .legacyMatchedResolvedCount,
+
+      legacyOrphanCount:
+        finalOpenInventory
+          .legacyOrphanCount,
+
+      legacyMalformedCount:
+        finalOpenInventory
+          .legacyMalformedCount,
+
+      uniqueOpenTradeCount:
+        finalOpenInventory
+          .uniqueOpenCount,
+
+      statisticsChanged,
 
       finalLegacyClosedCount:
         workingHistory.closed
           .length
     },
+
+    legacyOpenIntegrity,
 
     results
   };
@@ -7897,6 +7960,71 @@ function logResolutionResult(
 
 }
 
+function logLegacyOpenIntegrity(
+  integrity
+) {
+  if (!isPlainObject(integrity)) {
+    return;
+  }
+  console.log("");
+  console.log(
+    "[trade-resolver] Legacy open integrity"
+  );
+  console.log(
+    `  Total legacy open entries: ${integrity.total ?? 0}`
+  );
+  console.log(
+    `  Matched rich open: ${integrity.matchedOpen ?? 0}`
+  );
+  console.log(
+    `  Matched resolved rich: ${integrity.matchedResolved ?? 0}`
+  );
+  console.log(
+    `  Orphan legacy open: ${integrity.orphan ?? 0}`
+  );
+  console.log(
+    `  Malformed legacy open: ${integrity.malformed ?? 0}`
+  );
+  for (
+    const entry of
+      asArray(integrity.entries)
+  ) {
+    if (
+      entry.classification !==
+        "orphan" &&
+      entry.classification !==
+        "malformed" &&
+      entry.classification !==
+        "matched-resolved"
+    ) {
+      continue;
+    }
+    const identity = [
+      entry.pair ||
+        "unknown-pair",
+      entry.engine ||
+        "unknown-engine",
+      entry.timeframe ||
+        "unknown-timeframe"
+    ].join(" / ");
+    console.warn(
+      `  ${String(
+        entry.classification
+      ).toUpperCase()} ` +
+      `${entry.path || "unknown-path"}: ` +
+      identity
+    );
+    if (
+      Array.isArray(entry.errors) &&
+      entry.errors.length > 0
+    ) {
+      console.warn(
+        `    ${entry.errors.join("; ")}`
+      );
+    }
+  }
+}
+
 function logRunSummary(
   summary,
   options = {}
@@ -7948,6 +8076,26 @@ function logRunSummary(
 
   console.log(
     `  Final legacy open: ${summary.finalLegacyOpenCount}`
+  );
+
+  console.log(
+    `  Orphan legacy open: ${summary.legacyOrphanCount}`
+  );
+
+  console.log(
+    `  Malformed legacy open: ${summary.legacyMalformedCount}`
+  );
+
+  console.log(
+    `  Unique open trades: ${summary.uniqueOpenTradeCount}`
+  );
+
+  console.log(
+    `  Statistics refreshed: ${
+      summary.statisticsChanged
+        ? "YES"
+        : "NO"
+    }`
   );
 
   console.log(
@@ -8261,11 +8409,15 @@ function runTradeResolution() {
     `[trade-resolver] Loaded ${loadedHistory.closed.length} legacy closed trades.`
   );
 
+  const loadedOpenInventory =
+    buildOpenTradeInventory(
+      loadedHistory
+    );
+
   console.log(
     `[trade-resolver] Current legacy open count: ${
-      countOpenTradesInValue(
-        loadedHistory.open
-      )
+      loadedOpenInventory
+        .legacyOpenCount
     }`
   );
 
@@ -8302,6 +8454,11 @@ function runTradeResolution() {
     );
 
   }
+
+  logLegacyOpenIntegrity(
+    resolutionRun
+      .legacyOpenIntegrity
+  );
 
   let persistence =
     null;
@@ -8366,6 +8523,10 @@ function runTradeResolution() {
 
     summary:
       resolutionRun.summary,
+
+    legacyOpenIntegrity:
+      resolutionRun
+        .legacyOpenIntegrity,
 
     results:
       resolutionRun.results

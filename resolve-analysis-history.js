@@ -6397,6 +6397,31 @@ function createLegacyClosedTrade(
 
   }
 
+    const confidenceExplainability =
+    isPlainObject(
+      richRecord
+        .confidenceExplainability
+    )
+      ? richRecord
+          .confidenceExplainability
+      : isPlainObject(
+          richRecord.snapshot?.
+            confidenceExplainability
+        )
+        ? richRecord.snapshot
+            .confidenceExplainability
+        : null;
+
+  if (confidenceExplainability) {
+
+    legacyTrade
+      .confidenceExplainability =
+        cloneJSONValue(
+          confidenceExplainability
+        );
+
+  }
+
   if (
     richRecord.aiMemory !==
       undefined

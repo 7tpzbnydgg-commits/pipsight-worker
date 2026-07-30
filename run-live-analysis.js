@@ -1618,14 +1618,6 @@ function applyAIMemoryConfidenceAdjustment(
     };
   }
 
-  if (
-    !AI_MEMORY_INTEGRATION.enabled
-  ) {
-    return buildUnappliedResult(
-      "AI Memory integration is disabled"
-    );
-  }
-
   /*
    * The dedicated Scalp Signal Engine is the canonical owner of Scalp
    * confidence adjustment.
@@ -1646,6 +1638,14 @@ function applyAIMemoryConfidenceAdjustment(
       "AI Memory confidence was already evaluated by the Scalp Signal Engine; Live Analysis preserved the upstream confidence without applying a second adjustment"
     );
   }
+
+  if (
+    !AI_MEMORY_INTEGRATION.enabled
+  ) {
+    return buildUnappliedResult(
+      "AI Memory integration is disabled"
+    );
+  } 
 
   if (
     AI_MEMORY_INTEGRATION.mode !==

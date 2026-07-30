@@ -6322,142 +6322,501 @@ function replaceRichHistoryRecord(
 }
 
 // ============================================================================
-// Legacy statistics
+// Legacy open integrity and statistics
 // ============================================================================
+
+function deriveLegacyOpenContext(
+  context,
+  key
+) {
+  const nextContext = {
+    ...(
+      isPlainObject(context)
+        ? context
+        : {}
+    )
+  };
+
+  const tokens =
+    toTrimmedString(key)
+      .split(/[:|]/)
+      .map(token => token.trim())
+      .filter(Boolean);
+
+  for (const token of tokens) {
+    const pairKey =
+      normalizePairKey(token);
+
+    if (pairKey) {
+      nextContext.pairKey =
+        pairKey;
+    }
+
+    const engine =
+      normalizeEngine(token);
+
+    if (engine) {
+      nextContext.engine =
+        engine;
+
+      nextContext.engineAlias =
+        token;
+    }
+
+    const timeframeMetadata =
+      getRecordTimeframeMetadata({
+        engine: token,
+        mode: token
+      });
+
+    if (timeframeMetadata.timeframe) {
+      nextContext.timeframe =
+        timeframeMetadata.timeframe;
+
+      nextContext.timeframeSource =
+        "legacy-open-key";
+    }
+  }
+
+  return nextContext;
+}
+
+function looksLikeLegacyOpenTrade(
+  value
+) {
+  if (!isPlainObject(value)) {
+    return false;
+  }
+
+  const tradeFields = [
+    "direction",
+    "decision",
+    "signal",
+    "action",
+    "entry",
+    "entryPrice",
+    "stop",
+    "stopLoss",
+    "sl",
+    "target",
+    "target1",
+    "takeProfit",
+    "tp",
+    "openedAt",
+    "signalTime",
+    "signalTimestamp"
+  ];
+
+  return tradeFields.some(
+    field =>
+      Object.prototype.hasOwnProperty.call(
+        value,
+        field
+      )
+  );
+}
+
+function applyLegacyOpenContext(
+  value,
+  context
+) {
+  const record = {
+    ...value
+  };
+
+  if (
+    !getRecordPairKey(record) &&
+    context?.pairKey
+  ) {
+    record.pair =
+      context.pairKey;
+  }
+
+  if (
+    !getRecordEngine(record) &&
+    context?.engine
+  ) {
+    record.engine =
+      context.engineAlias ||
+      context.engine;
+  }
+
+  if (
+    !getRecordTimeframe(record) &&
+    context?.timeframe
+  ) {
+    record.sourceTimeframe =
+      context.timeframe;
+
+    record.timeframeSource =
+      context.timeframeSource ||
+      "legacy-open-key";
+  }
+
+  return record;
+}
+
+function buildLegacyOpenDescriptor(
+  value,
+  context,
+  pathParts,
+  richRecords
+) {
+  const record =
+    applyLegacyOpenContext(
+      value,
+      context
+    );
+
+  const pairKey =
+    getRecordPairKey(record);
+
+  const engine =
+    getRecordEngine(record);
+
+  const direction =
+    getRecordDirection(record);
+
+  const entry =
+    getRecordEntry(record);
+
+  const stop =
+    getRecordStop(record);
+
+  const targets =
+    getRecordTargets(record);
+
+  const openedTimestamp =
+    getRecordOpenedTimestamp(record);
+
+  const errors = [];
+
+  if (!pairKey) {
+    errors.push(
+      "Pair is missing or unsupported"
+    );
+  }
+
+  if (!engine) {
+    errors.push(
+      "Engine is missing or unsupported"
+    );
+  }
+
+  if (!direction) {
+    errors.push(
+      "Direction is missing or unsupported"
+    );
+  }
+
+  if (entry === null) {
+    errors.push(
+      "Entry price is missing or invalid"
+    );
+  }
+
+  if (stop === null) {
+    errors.push(
+      "Stop price is missing or invalid"
+    );
+  }
+
+  if (targets.length === 0) {
+    errors.push(
+      "Target is missing or invalid"
+    );
+  }
+
+  if (openedTimestamp === null) {
+    errors.push(
+      "Open timestamp is missing or invalid"
+    );
+  }
+
+  const geometry =
+    validateTradeGeometry(
+      direction,
+      entry,
+      stop,
+      targets
+    );
+
+  for (const error of geometry.errors) {
+    if (!errors.includes(error)) {
+      errors.push(error);
+    }
+  }
+
+  const matchingRichRecord =
+    asArray(richRecords).find(
+      candidate =>
+        recordsReferToSameTrade(
+          candidate,
+          record
+        )
+    ) ||
+    null;
+
+  let classification;
+
+  if (errors.length > 0) {
+    classification =
+      "malformed";
+  } else if (!matchingRichRecord) {
+    classification =
+      "orphan";
+  } else if (
+    isRecordAlreadyResolved(
+      matchingRichRecord
+    )
+  ) {
+    classification =
+      "matched-resolved";
+  } else {
+    classification =
+      "matched-open";
+  }
+
+  return {
+    path:
+      pathParts.join("."),
+
+    record,
+
+    pairKey,
+    engine,
+
+    timeframe:
+      getRecordTimeframe(record),
+
+    timeframeSource:
+      toTrimmedString(
+        record.timeframeSource
+      ) ||
+      getRecordTimeframeMetadata(
+        record
+      ).source,
+
+    openedAt:
+      openedTimestamp === null
+        ? null
+        : new Date(
+            openedTimestamp
+          ).toISOString(),
+
+    setupIdentity:
+      buildStableSetupIdentity(
+        record
+      ),
+
+    classification,
+    errors,
+    matchingRichRecord
+  };
+}
+
+function collectLegacyOpenTradeDescriptors(
+  openCollection,
+  richRecords = []
+) {
+  const descriptors = [];
+
+  function visit(
+    value,
+    context,
+    pathParts
+  ) {
+    if (Array.isArray(value)) {
+      value.forEach(
+        (item, index) =>
+          visit(
+            item,
+            context,
+            [
+              ...pathParts,
+              String(index)
+            ]
+          )
+      );
+
+      return;
+    }
+
+    if (!isPlainObject(value)) {
+      return;
+    }
+
+    if (looksLikeLegacyOpenTrade(value)) {
+      descriptors.push(
+        buildLegacyOpenDescriptor(
+          value,
+          context,
+          pathParts,
+          richRecords
+        )
+      );
+
+      return;
+    }
+
+    for (
+      const [
+        key,
+        childValue
+      ] of Object.entries(value)
+    ) {
+      visit(
+        childValue,
+        deriveLegacyOpenContext(
+          context,
+          key
+        ),
+        [
+          ...pathParts,
+          key
+        ]
+      );
+    }
+  }
+
+  visit(
+    isPlainObject(openCollection)
+      ? openCollection
+      : {},
+    {},
+    []
+  );
+
+  return descriptors;
+}
 
 function countOpenTradesInValue(
   value
 ) {
-
-  if (
-    Array.isArray(
-      value
-    )
-  ) {
-
-    return value.reduce(
-      (
-        total,
-        item
-      ) =>
-        total +
-        countOpenTradesInValue(
-          item
-        ),
-      0
-    );
-
-  }
-
-  if (
-    !isPlainObject(
-      value
-    )
-  ) {
-
-    return 0;
-
-  }
-
-  if (
-    isRecordOpenCandidate(
-      value
-    )
-  ) {
-
-    return 1;
-
-  }
-
-  return Object.values(
+  return collectLegacyOpenTradeDescriptors(
     value
-  ).reduce(
-    (
-      total,
-      item
-    ) =>
-      total +
-      countOpenTradesInValue(
-        item
-      ),
-    0
-  );
-
+  ).length;
 }
 
-function buildEngineStatistics(
-  history,
-  engine
+function buildOpenTradeInventory(
+  history
 ) {
-
-  const normalizedEngine =
-    normalizeEngine(
-      engine
-    );
-
-  const closedTrades =
+  const richRecords =
     asArray(
-      history.closed
-    ).filter(
-      (
-        trade
-      ) =>
-        getRecordEngine(
-          trade
-        ) ===
-          normalizedEngine &&
-        getRecordOutcome(
-          trade
-        )
+      history?.records
     );
 
+  const richOpenRecords =
+    richRecords.filter(
+      record =>
+        isRecordOpenCandidate(record)
+    );
+
+  const legacyDescriptors =
+    collectLegacyOpenTradeDescriptors(
+      history?.open,
+      richRecords
+    );
+
+  const uniqueOpenRecords = [
+    ...richOpenRecords
+  ];
+
+  for (const descriptor of legacyDescriptors) {
+    /*
+     * A legacy entry matching an already resolved rich record is stale
+     * legacy state, not a genuinely open position.
+     */
+    if (
+      descriptor.classification ===
+      "matched-resolved"
+    ) {
+      continue;
+    }
+
+    const alreadyIncluded =
+      uniqueOpenRecords.some(
+        record =>
+          recordsReferToSameTrade(
+            record,
+            descriptor.record
+          )
+      );
+
+    if (!alreadyIncluded) {
+      uniqueOpenRecords.push(
+        descriptor.record
+      );
+    }
+  }
+
+  return {
+    richOpenRecords,
+    legacyDescriptors,
+    uniqueOpenRecords,
+
+    richOpenCount:
+      richOpenRecords.length,
+
+    legacyOpenCount:
+      legacyDescriptors.length,
+
+    legacyMatchedOpenCount:
+      legacyDescriptors.filter(
+        descriptor =>
+          descriptor.classification ===
+          "matched-open"
+      ).length,
+
+    legacyMatchedResolvedCount:
+      legacyDescriptors.filter(
+        descriptor =>
+          descriptor.classification ===
+          "matched-resolved"
+      ).length,
+
+    legacyOrphanCount:
+      legacyDescriptors.filter(
+        descriptor =>
+          descriptor.classification ===
+          "orphan"
+      ).length,
+
+    legacyMalformedCount:
+      legacyDescriptors.filter(
+        descriptor =>
+          descriptor.classification ===
+          "malformed"
+      ).length,
+
+    uniqueOpenCount:
+      uniqueOpenRecords.length
+  };
+}
+
+function buildClosedStatistics(
+  closedTrades,
+  openCount
+) {
   const wins =
     closedTrades.filter(
-      (
-        trade
-      ) =>
-        getRecordOutcome(
-          trade
-        ) ===
-          "WIN"
+      trade =>
+        getRecordOutcome(trade) ===
+        "WIN"
     ).length;
 
   const losses =
     closedTrades.filter(
-      (
-        trade
-      ) =>
-        getRecordOutcome(
-          trade
-        ) ===
-          "LOSS"
+      trade =>
+        getRecordOutcome(trade) ===
+        "LOSS"
     ).length;
 
   const breakevens =
     closedTrades.filter(
-      (
-        trade
-      ) =>
-        getRecordOutcome(
-          trade
-        ) ===
-          "BREAKEVEN"
-    ).length;
-
-  const openCount =
-    asArray(
-      history.records
-    ).filter(
-      (
-        record
-      ) =>
-        getRecordEngine(
-          record
-        ) ===
-          normalizedEngine &&
-        isRecordOpenCandidate(
-          record
-        )
+      trade =>
+        getRecordOutcome(trade) ===
+        "BREAKEVEN"
     ).length;
 
   const decisiveTrades =
@@ -6469,47 +6828,108 @@ function buildEngineStatistics(
       closedTrades.length,
 
     wins,
-
     losses,
-
     breakevens,
 
     winRate:
-      decisiveTrades >
-        0
+      decisiveTrades > 0
         ? Number(
             (
               wins /
               decisiveTrades *
               100
-            ).toFixed(
-              2
-            )
+            ).toFixed(2)
           )
         : 0,
 
     openCount
   };
-
 }
 
-function rebuildExistingStatistics(
-  history
+function buildEngineStatistics(
+  history,
+  engine,
+  openInventory = null
 ) {
+  const normalizedEngine =
+    normalizeEngine(engine);
+
+  const inventory =
+    openInventory ||
+    buildOpenTradeInventory(
+      history
+    );
+
+  const closedTrades =
+    asArray(
+      history.closed
+    ).filter(
+      trade =>
+        getRecordEngine(trade) ===
+          normalizedEngine &&
+        getRecordOutcome(trade)
+    );
+
+  const openCount =
+    inventory.uniqueOpenRecords.filter(
+      record =>
+        getRecordEngine(record) ===
+          normalizedEngine &&
+        !isRecordAlreadyResolved(record)
+    ).length;
+
+  return buildClosedStatistics(
+    closedTrades,
+    openCount
+  );
+}
+
+function buildOverallStatistics(
+  history,
+  openInventory = null
+) {
+  const inventory =
+    openInventory ||
+    buildOpenTradeInventory(
+      history
+    );
+
+  const closedTrades =
+    asArray(
+      history.closed
+    ).filter(
+      trade =>
+        getRecordOutcome(trade)
+    );
+
+  return buildClosedStatistics(
+    closedTrades,
+    inventory.uniqueOpenCount
+  );
+}
+
+function rebuildStatisticsContainer(
+  history,
+  sourceStatistics,
+  openInventory
+) {
+  const statistics = {
+    ...sourceStatistics
+  };
 
   if (
-    !isPlainObject(
-      history.statistics
+    isPlainObject(
+      statistics.overall
     )
   ) {
-
-    return history;
-
+    statistics.overall = {
+      ...statistics.overall,
+      ...buildOverallStatistics(
+        history,
+        openInventory
+      )
+    };
   }
-
-  const statistics = {
-    ...history.statistics
-  };
 
   const engines = [
     "scalp",
@@ -6518,46 +6938,182 @@ function rebuildExistingStatistics(
     "master"
   ];
 
-  for (
-    const engine of
-      engines
-  ) {
-
+  for (const engine of engines) {
     /*
-     * Only update a statistics section that already exists.
-     * This avoids creating a new top-level schema.
+     * Update only sections that already exist.
      */
     if (
       !isPlainObject(
-        statistics[
-          engine
-        ]
+        statistics[engine]
       )
     ) {
-
       continue;
-
     }
 
-    statistics[
-      engine
-    ] = {
-      ...statistics[
-        engine
-      ],
+    statistics[engine] = {
+      ...statistics[engine],
       ...buildEngineStatistics(
         history,
-        engine
+        engine,
+        openInventory
       )
     };
-
   }
 
-  return {
-    ...history,
-    statistics
+  return statistics;
+}
+
+function rebuildExistingStatistics(
+  history
+) {
+  const openInventory =
+    buildOpenTradeInventory(
+      history
+    );
+
+  let updatedHistory =
+    history;
+
+  /*
+   * Production data uses `stats`; older compatibility data may use
+   * `statistics`. Update whichever roots already exist.
+   */
+  if (
+    isPlainObject(
+      history.stats
+    )
+  ) {
+    updatedHistory = {
+      ...updatedHistory,
+
+      stats:
+        rebuildStatisticsContainer(
+          history,
+          history.stats,
+          openInventory
+        )
+    };
+  }
+
+  if (
+    isPlainObject(
+      history.statistics
+    )
+  ) {
+    updatedHistory = {
+      ...updatedHistory,
+
+      statistics:
+        rebuildStatisticsContainer(
+          history,
+          history.statistics,
+          openInventory
+        )
+    };
+  }
+
+  return updatedHistory;
+}
+
+function statisticsContainersChanged(
+  beforeHistory,
+  afterHistory
+) {
+  const before = {
+    stats:
+      isPlainObject(
+        beforeHistory?.stats
+      )
+        ? beforeHistory.stats
+        : null,
+
+    statistics:
+      isPlainObject(
+        beforeHistory?.statistics
+      )
+        ? beforeHistory.statistics
+        : null
   };
 
+  const after = {
+    stats:
+      isPlainObject(
+        afterHistory?.stats
+      )
+        ? afterHistory.stats
+        : null,
+
+    statistics:
+      isPlainObject(
+        afterHistory?.statistics
+      )
+        ? afterHistory.statistics
+        : null
+  };
+
+  return (
+    JSON.stringify(before) !==
+    JSON.stringify(after)
+  );
+}
+
+function summarizeLegacyOpenIntegrity(
+  inventory
+) {
+  return {
+    total:
+      inventory.legacyOpenCount,
+
+    matchedOpen:
+      inventory.legacyMatchedOpenCount,
+
+    matchedResolved:
+      inventory.legacyMatchedResolvedCount,
+
+    orphan:
+      inventory.legacyOrphanCount,
+
+    malformed:
+      inventory.legacyMalformedCount,
+
+    uniqueOpenTrades:
+      inventory.uniqueOpenCount,
+
+    entries:
+      inventory.legacyDescriptors.map(
+        descriptor => ({
+          path:
+            descriptor.path ||
+            null,
+
+          pair:
+            descriptor.pairKey,
+
+          engine:
+            descriptor.engine,
+
+          timeframe:
+            descriptor.timeframe,
+
+          timeframeSource:
+            descriptor.timeframeSource ||
+            null,
+
+          openedAt:
+            descriptor.openedAt,
+
+          setupIdentity:
+            descriptor.setupIdentity,
+
+          classification:
+            descriptor.classification,
+
+          errors: [
+            ...descriptor.errors
+          ]
+        })
+      )
+  };
 }
 
 // ============================================================================

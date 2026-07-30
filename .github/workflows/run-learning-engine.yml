@@ -1,4 +1,4 @@
-name: PipSight Pro — learning and AI memory
+name: PipSight Pro — hourly resolver, learning and AI memory
 
 on:
   schedule:
@@ -15,9 +15,9 @@ concurrency:
 
 jobs:
   sync-learning:
-    name: Run and save learning and AI memory
+    name: Resolve trades and refresh adaptive state
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     defaults:
       run:
@@ -36,28 +36,45 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Verify required source files
+      - name: Verify required pipeline files
         run: |
           set -euo pipefail
 
-          test -f run-learning-engine.js
-          test -f learner.js
-          test -f ai-memory.js
-          test -f data/analysis-history.json
+          required_files=(
+            "resolve-analysis-history.js"
+            "run-learning-engine.js"
+            "learner.js"
+            "ai-memory.js"
+            "data/analysis-history.json"
+          )
 
-          echo "Required learning-engine and AI-memory files are available."
+          for file in "${required_files[@]}"; do
+            if [[ ! -f "$file" ]]; then
+              echo "::error file=$file::Required file is missing: $file"
+              exit 1
+            fi
+          done
+
+          echo "Required resolver, Learning and AI Memory files are available."
 
       - name: Validate JavaScript syntax
         run: |
           set -euo pipefail
 
-          node --check run-learning-engine.js
-          node --check learner.js
-          node --check ai-memory.js
+          scripts=(
+            "resolve-analysis-history.js"
+            "run-learning-engine.js"
+            "learner.js"
+            "ai-memory.js"
+          )
 
-          echo "Learning-engine and AI-memory JavaScript syntax is valid."
+          for script in "${scripts[@]}"; do
+            node --check "$script"
+          done
 
-      - name: Validate analysis history
+          echo "Resolver, Learning and AI Memory JavaScript syntax is valid."
+
+      - name: Validate source analysis history
         run: |
           set -euo pipefail
 
@@ -117,13 +134,166 @@ jobs:
             );
           }
 
+          if (
+            history.records !== undefined &&
+            !Array.isArray(history.records)
+          ) {
+            throw new Error(
+              "analysis-history.json records field must be an array."
+            );
+          }
+
+          if (
+            history.open !== undefined &&
+            (
+              history.open === null ||
+              typeof history.open !== "object" ||
+              Array.isArray(history.open)
+            )
+          ) {
+            throw new Error(
+              "analysis-history.json open field must be an object."
+            );
+          }
+
           const closedCount =
             Array.isArray(history.closed)
               ? history.closed.length
               : 0;
 
+          const richCount =
+            Array.isArray(history.records)
+              ? history.records.length
+              : 0;
+
           console.log(
-            `Validated analysis history with ${closedCount} closed records.`
+            `Validated source history with ` +
+            `${richCount} rich records and ` +
+            `${closedCount} closed records.`
+          );
+          NODE
+
+      - name: Resolve open trades
+        id: resolve
+        run: |
+          set -euo pipefail
+
+          history_file="data/analysis-history.json"
+          before_file="${RUNNER_TEMP}/analysis-history-before-resolver.json"
+
+          cp "$history_file" "$before_file"
+
+          node resolve-analysis-history.js
+
+          if cmp -s "$before_file" "$history_file"; then
+            echo "history_changed=false" >> "$GITHUB_OUTPUT"
+            echo "Resolver did not change analysis history."
+          else
+            echo "history_changed=true" >> "$GITHUB_OUTPUT"
+            echo "Resolver changed analysis history."
+          fi
+
+      - name: Validate resolved analysis history
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          "use strict";
+
+          const fs = require("fs");
+
+          const filePath =
+            "data/analysis-history.json";
+
+          const raw =
+            fs.readFileSync(
+              filePath,
+              "utf8"
+            ).trim();
+
+          if (!raw) {
+            throw new Error(
+              `${filePath} is empty after resolution.`
+            );
+          }
+
+          let history;
+
+          try {
+            history =
+              JSON.parse(raw);
+          } catch (error) {
+            throw new Error(
+              `${filePath} contains invalid JSON after resolution: ${error.message}`
+            );
+          }
+
+          if (
+            history === null ||
+            typeof history !== "object" ||
+            Array.isArray(history)
+          ) {
+            throw new Error(
+              `${filePath} must contain a JSON object.`
+            );
+          }
+
+          const arrayFields = [
+            "records",
+            "history",
+            "items",
+            "closed"
+          ];
+
+          for (const field of arrayFields) {
+            if (!Array.isArray(history[field])) {
+              throw new Error(
+                `${filePath} field ${field} must be an array after resolution.`
+              );
+            }
+          }
+
+          if (
+            history.records.length !==
+              history.history.length ||
+            history.records.length !==
+              history.items.length
+          ) {
+            throw new Error(
+              "Resolved history aliases are not synchronized."
+            );
+          }
+
+          if (
+            history.stats !== undefined &&
+            (
+              history.stats === null ||
+              typeof history.stats !== "object" ||
+              Array.isArray(history.stats)
+            )
+          ) {
+            throw new Error(
+              "analysis-history.json stats field must be an object."
+            );
+          }
+
+          if (
+            history.statistics !== undefined &&
+            (
+              history.statistics === null ||
+              typeof history.statistics !== "object" ||
+              Array.isArray(history.statistics)
+            )
+          ) {
+            throw new Error(
+              "analysis-history.json statistics field must be an object."
+            );
+          }
+
+          console.log(
+            `Validated resolved history with ` +
+            `${history.records.length} rich records and ` +
+            `${history.closed.length} closed records.`
           );
           NODE
 
@@ -174,16 +344,17 @@ jobs:
                 JSON.parse(raw);
             } catch (error) {
               throw new Error(
-                `Output file contains invalid JSON: ${filePath}: ${error.message}`
+                `${filePath} contains invalid JSON: ${error.message}`
               );
             }
 
             if (
               data === null ||
-              typeof data !== "object"
+              typeof data !== "object" ||
+              Array.isArray(data)
             ) {
               throw new Error(
-                `${filePath} must contain valid JSON data.`
+                `${filePath} must contain a valid JSON object.`
               );
             }
 
@@ -199,7 +370,7 @@ jobs:
 
           node ai-memory.js
 
-      - name: Verify generated AI-memory files
+      - name: Verify generated AI Memory files
         run: |
           set -euo pipefail
 
@@ -239,7 +410,7 @@ jobs:
                 JSON.parse(raw);
             } catch (error) {
               throw new Error(
-                `Output file contains invalid JSON: ${filePath}: ${error.message}`
+                `${filePath} contains invalid JSON: ${error.message}`
               );
             }
 
@@ -259,63 +430,87 @@ jobs:
           }
           NODE
 
-      - name: Show learning and AI-memory outputs
+      - name: Show adaptive pipeline outputs
         run: |
           set -euo pipefail
 
-          echo "Generated learning and AI-memory files:"
+          echo "Generated resolver, Learning and AI Memory files:"
 
           ls -lh \
+            data/analysis-history.json \
             data/learning-data.json \
             data/confidence-data.json \
             data/learning-engine-state.json \
             data/ai-memory.json \
             data/ai-memory-state.json
 
-      - name: Commit and push learning and AI-memory state
+          echo ""
+          echo "Changed files:"
+          git status --short
+
+          echo ""
+          echo "Resolver history changed: ${{ steps.resolve.outputs.history_changed }}"
+
+      - name: Commit and push hourly adaptive state
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
-          git config user.name "pipsight-learning-robot"
+          git config user.name "pipsight-adaptive-robot"
           git config user.email "actions@users.noreply.github.com"
 
-          # Strictly stage only files owned by Learning and AI Memory.
-          git add -- \
-            data/learning-data.json \
-            data/confidence-data.json \
-            data/learning-engine-state.json \
-            data/ai-memory.json \
-            data/ai-memory-state.json
+          files_to_commit=(
+            "data/analysis-history.json"
+            "data/learning-data.json"
+            "data/confidence-data.json"
+            "data/learning-engine-state.json"
+            "data/ai-memory.json"
+            "data/ai-memory-state.json"
+          )
 
-          if git diff --cached --quiet; then
-            echo "No learning-engine or AI-memory changes to commit."
+          existing_files=()
+
+          for file in "${files_to_commit[@]}"; do
+            if [[ -f "$file" ]]; then
+              existing_files+=("$file")
+            fi
+          done
+
+          if [[ "${#existing_files[@]}" -eq 0 ]]; then
+            echo "No adaptive pipeline files are available to commit."
             exit 0
           fi
 
-          git commit -m "robot: update learning and AI memory state"
+          git add -- "${existing_files[@]}"
+
+          if git diff --cached --quiet; then
+            echo "No resolver, Learning or AI Memory changes to commit."
+            exit 0
+          fi
+
+          git commit -m "robot: refresh hourly adaptive state"
 
           push_succeeded=false
 
           for attempt in 1 2 3 4 5; do
             echo "Push attempt ${attempt} of 5..."
 
-            if git push origin HEAD:main; then
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
               push_succeeded=true
               break
             fi
 
-            if [[ "${attempt}" -eq 5 ]]; then
+            if [[ "$attempt" -eq 5 ]]; then
               break
             fi
 
-            echo "Push was rejected. Fetching and rebasing onto origin/main..."
+            echo "Push was rejected. Fetching and rebasing..."
 
-            git fetch origin main
+            git fetch origin "${GITHUB_REF_NAME}"
 
-            if ! git rebase origin/main; then
-              echo "::error::Rebase failed while synchronizing learning state."
+            if ! git rebase "origin/${GITHUB_REF_NAME}"; then
+              echo "::error::Rebase failed while synchronizing hourly adaptive state."
               git rebase --abort || true
               exit 1
             fi
@@ -323,17 +518,17 @@ jobs:
             sleep $((attempt * 2))
           done
 
-          if [[ "${push_succeeded}" != "true" ]]; then
-            echo "::error::Unable to push learning state after 5 attempts."
+          if [[ "$push_succeeded" != "true" ]]; then
+            echo "::error::Unable to push hourly adaptive state after 5 attempts."
             exit 1
           fi
 
-          echo "Learning and AI-memory state committed successfully."
+          echo "Hourly adaptive state committed successfully."
 
       - name: Log execution
         if: always()
         run: |
-          echo "PipSight learning-engine and AI-memory workflow finished."
+          echo "PipSight hourly resolver, Learning and AI Memory workflow finished."
           echo "Status: ${{ job.status }}"
           echo "Repository: ${{ github.repository }}"
           echo "Branch: ${{ github.ref_name }}"

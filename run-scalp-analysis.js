@@ -974,14 +974,31 @@ function aggregateCandles(
     return [];
   }
 
+  const sourceIntervalMinutes = 5;
+
+  const expectedCandleCount =
+    timeframeMinutes %
+      sourceIntervalMinutes ===
+      0
+      ? timeframeMinutes /
+        sourceIntervalMinutes
+      : 1;
+
+  const sourceIntervalMs =
+    sourceIntervalMinutes *
+    60 *
+    1000;
+
   const buckets =
     new Map();
 
   for (const row of rows) {
-
     if (
       !row ||
-      !row.isClosed
+      !row.isClosed ||
+      !Number.isFinite(
+        row.timestamp
+      )
     ) {
       continue;
     }
@@ -1000,41 +1017,48 @@ function aggregateCandles(
       bucketTime.toISOString();
 
     if (!buckets.has(key)) {
-
       buckets.set(key, {
+        candle: {
+          date: key,
 
-        date: key,
+          timestamp:
+            bucketTime.getTime(),
 
-        timestamp:
-          bucketTime.getTime(),
+          open:
+            row.open,
 
-        open:
-          row.open,
+          high:
+            row.high,
 
-        high:
-          row.high,
+          low:
+            row.low,
 
-        low:
-          row.low,
+          close:
+            row.close,
 
-        close:
-          row.close,
+          volume:
+            row.volume || 0,
 
-        volume:
-          row.volume || 0,
+          hasOHLC:
+            row.hasOHLC,
 
-        hasOHLC:
-          row.hasOHLC,
+          isClosed: true
+        },
 
-        isClosed: true
-
+        sourceTimestamps:
+          new Set()
       });
-
-      continue;
     }
 
-    const candle =
+    const bucket =
       buckets.get(key);
+
+    const candle =
+      bucket.candle;
+
+    bucket.sourceTimestamps.add(
+      row.timestamp
+    );
 
     candle.high =
       Math.max(
@@ -1059,15 +1083,47 @@ function aggregateCandles(
       row.hasOHLC;
   }
 
-  return Array
-    .from(
-      buckets.values()
-    )
-    .sort(
-      (a, b) =>
-        a.timestamp -
-        b.timestamp
-    );
+  const completed = [];
+
+  for (const bucket of buckets.values()) {
+    const bucketStart =
+      bucket.candle.timestamp;
+
+    let complete = true;
+
+    for (
+      let index = 0;
+      index <
+        expectedCandleCount;
+      index++
+    ) {
+      const expectedTimestamp =
+        bucketStart +
+        index *
+          sourceIntervalMs;
+
+      if (
+        !bucket.sourceTimestamps.has(
+          expectedTimestamp
+        )
+      ) {
+        complete = false;
+        break;
+      }
+    }
+
+    if (complete) {
+      completed.push(
+        bucket.candle
+      );
+    }
+  }
+
+  return completed.sort(
+    (a, b) =>
+      a.timestamp -
+      b.timestamp
+  );
 }
 
 /* =====================================================================

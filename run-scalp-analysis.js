@@ -4462,6 +4462,666 @@ function buildPreparedMarketData(
 }
 
 /* =====================================================================
+   AI Memory Confidence Adapter
+   ===================================================================== */
+
+function normalizeMemoryEngine(
+  value
+) {
+
+  const normalized =
+    String(
+      value ?? ""
+    )
+      .trim()
+      .toLowerCase();
+
+  if (
+    normalized === "scalp" ||
+    normalized === "scalping" ||
+    normalized.startsWith(
+      "scalp-"
+    )
+  ) {
+
+    return "scalp";
+  }
+
+  return normalized || null;
+}
+
+
+function normalizeMemoryDirection(
+  value
+) {
+
+  const normalized =
+    String(
+      value ?? ""
+    )
+      .trim()
+      .toUpperCase();
+
+  if (
+    normalized === "BUY" ||
+    normalized === "LONG" ||
+    normalized === "BULLISH"
+  ) {
+
+    return "BUY";
+  }
+
+  if (
+    normalized === "SELL" ||
+    normalized === "SHORT" ||
+    normalized === "BEARISH"
+  ) {
+
+    return "SELL";
+  }
+
+  return null;
+}
+
+
+function normalizeMemoryPair(
+  value
+) {
+
+  return normalizePairKey(
+    value
+  );
+}
+
+
+function validMemoryStatistic(
+  value
+) {
+
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value)
+  ) {
+
+    return false;
+  }
+
+  const totalTrades =
+    numericValue(
+      value.totalTrades
+    );
+
+  const wins =
+    numericValue(
+      value.wins
+    );
+
+  const losses =
+    numericValue(
+      value.losses
+    );
+
+  const winRate =
+    numericValue(
+      value.winRate
+    );
+
+  const profitFactor =
+    numericValue(
+      value.profitFactor
+    );
+
+  if (
+    totalTrades === null ||
+    wins === null ||
+    losses === null ||
+    winRate === null ||
+    profitFactor === null
+  ) {
+
+    return false;
+  }
+
+  if (
+    !Number.isInteger(totalTrades) ||
+    !Number.isInteger(wins) ||
+    !Number.isInteger(losses) ||
+    totalTrades < 0 ||
+    wins < 0 ||
+    losses < 0 ||
+    wins + losses > totalTrades ||
+    winRate < 0 ||
+    winRate > 100 ||
+    profitFactor < 0
+  ) {
+
+    return false;
+  }
+
+  return true;
+}
+
+
+function getAiMemoryCandidate(
+  memory,
+  pair,
+  engine,
+  direction
+) {
+
+  if (
+    !memory ||
+    typeof memory !== "object" ||
+    Array.isArray(memory) ||
+    !memory.combinations ||
+    typeof memory.combinations !==
+      "object"
+  ) {
+
+    return null;
+  }
+
+  const normalizedPair =
+    normalizeMemoryPair(
+      pair
+    );
+
+  const normalizedEngine =
+    normalizeMemoryEngine(
+      engine
+    );
+
+  const normalizedDirection =
+    normalizeMemoryDirection(
+      direction
+    );
+
+  if (
+    !normalizedPair ||
+    !normalizedEngine ||
+    !normalizedDirection
+  ) {
+
+    return null;
+  }
+
+  const candidates = [
+    {
+      source:
+        "pairEngineDirection",
+
+      key:
+        `${normalizedPair}::` +
+        `${normalizedEngine}::` +
+        `${normalizedDirection}`
+    },
+    {
+      source:
+        "pairDirection",
+
+      key:
+        `${normalizedPair}::` +
+        `${normalizedDirection}`
+    },
+    {
+      source:
+        "engineDirection",
+
+      key:
+        `${normalizedEngine}::` +
+        `${normalizedDirection}`
+    }
+  ];
+
+  for (const candidate of candidates) {
+
+    const container =
+      memory.combinations[
+        candidate.source
+      ];
+
+    if (
+      !container ||
+      typeof container !== "object" ||
+      Array.isArray(container)
+    ) {
+
+      continue;
+    }
+
+    const statistic =
+      container[
+        candidate.key
+      ];
+
+    if (
+      !validMemoryStatistic(
+        statistic
+      )
+    ) {
+
+      continue;
+    }
+
+    return {
+      source:
+        candidate.source,
+
+      key:
+        candidate.key,
+
+      statistic
+    };
+  }
+
+  return null;
+}
+
+
+function memorySampleWeight(
+  totalTrades
+) {
+
+  if (
+    totalTrades < AI_MEMORY_MIN_TRADES
+  ) {
+
+    return 0;
+  }
+
+  if (
+    totalTrades < 40
+  ) {
+
+    return 0.5;
+  }
+
+  if (
+    totalTrades < 80
+  ) {
+
+    return 0.75;
+  }
+
+  return 1;
+}
+
+
+function calculateAiMemoryAdjustment(
+  statistic
+) {
+
+  if (
+    !validMemoryStatistic(
+      statistic
+    )
+  ) {
+
+    return 0;
+  }
+
+  const totalTrades =
+    numericValue(
+      statistic.totalTrades
+    );
+
+  const winRate =
+    numericValue(
+      statistic.winRate
+    );
+
+  const profitFactor =
+    numericValue(
+      statistic.profitFactor
+    );
+
+  const averageProfitPoints =
+    numericValue(
+      statistic.averageProfitPoints
+    );
+
+  const sampleWeight =
+    memorySampleWeight(
+      totalTrades
+    );
+
+  if (sampleWeight === 0) {
+
+    return 0;
+  }
+
+  let score = 0;
+
+  /*
+   * Profit factor is the primary profitability signal.
+   */
+  if (profitFactor >= 1.5) {
+
+    score += 3;
+
+  } else if (
+    profitFactor >= 1.2
+  ) {
+
+    score += 2;
+
+  } else if (
+    profitFactor >= 1.05
+  ) {
+
+    score += 1;
+
+  } else if (
+    profitFactor < 0.5
+  ) {
+
+    score -= 4;
+
+  } else if (
+    profitFactor < 0.8
+  ) {
+
+    score -= 3;
+
+  } else if (
+    profitFactor < 1
+  ) {
+
+    score -= 1;
+  }
+
+  /*
+   * Win rate is secondary because different risk/reward profiles can
+   * remain profitable with lower win rates.
+   */
+  if (winRate >= 45) {
+
+    score += 2;
+
+  } else if (
+    winRate >= 35
+  ) {
+
+    score += 1;
+
+  } else if (
+    winRate < 20
+  ) {
+
+    score -= 3;
+
+  } else if (
+    winRate < 30
+  ) {
+
+    score -= 2;
+  }
+
+  /*
+   * Average realized points only provide a small confirmation.
+   */
+  if (
+    averageProfitPoints !== null
+  ) {
+
+    if (
+      averageProfitPoints > 0
+    ) {
+
+      score += 1;
+
+    } else if (
+      averageProfitPoints < 0
+    ) {
+
+      score -= 1;
+    }
+  }
+
+  const weightedScore =
+    Math.round(
+      score *
+      sampleWeight
+    );
+
+  return clamp(
+    weightedScore,
+    -AI_MEMORY_MAX_ADJUSTMENT,
+    AI_MEMORY_MAX_ADJUSTMENT
+  );
+}
+
+
+function buildNoAiMemoryAdjustment(
+  reason
+) {
+
+  return {
+    matched: false,
+    applied: false,
+    source: null,
+    key: null,
+    samples: 0,
+    winRate: null,
+    profitFactor: null,
+    adjustment: 0,
+    reason
+  };
+}
+
+
+function evaluateAiMemoryConfidence(
+  memory,
+  pair,
+  direction
+) {
+
+  const normalizedDirection =
+    normalizeMemoryDirection(
+      direction
+    );
+
+  if (!normalizedDirection) {
+
+    return buildNoAiMemoryAdjustment(
+      "Signal is not actionable"
+    );
+  }
+
+  const candidate =
+    getAiMemoryCandidate(
+      memory,
+      pair,
+      "scalp",
+      normalizedDirection
+    );
+
+  if (!candidate) {
+
+    return buildNoAiMemoryAdjustment(
+      "No valid matching AI Memory statistic"
+    );
+  }
+
+  const totalTrades =
+    numericValue(
+      candidate.statistic.totalTrades
+    );
+
+  if (
+    totalTrades <
+    AI_MEMORY_MIN_TRADES
+  ) {
+
+    return {
+      matched: true,
+      applied: false,
+      source:
+        candidate.source,
+      key:
+        candidate.key,
+      samples:
+        totalTrades,
+      winRate:
+        numericValue(
+          candidate.statistic.winRate
+        ),
+      profitFactor:
+        numericValue(
+          candidate.statistic.profitFactor
+        ),
+      adjustment: 0,
+      reason:
+        `Insufficient samples: ${totalTrades}/${AI_MEMORY_MIN_TRADES}`
+    };
+  }
+
+  const adjustment =
+    calculateAiMemoryAdjustment(
+      candidate.statistic
+    );
+
+  return {
+    matched: true,
+    applied:
+      adjustment !== 0,
+    source:
+      candidate.source,
+    key:
+      candidate.key,
+    samples:
+      totalTrades,
+    winRate:
+      numericValue(
+        candidate.statistic.winRate
+      ),
+    profitFactor:
+      numericValue(
+        candidate.statistic.profitFactor
+      ),
+    adjustment,
+    reason:
+      adjustment === 0
+        ? "Qualified memory produced a neutral adjustment"
+        : "Qualified historical profitability adjustment"
+  };
+}
+
+
+function applyAiMemoryConfidenceAdjustment(
+  analysis,
+  memory,
+  pair
+) {
+
+  if (
+    !analysis ||
+    typeof analysis !== "object"
+  ) {
+
+    return analysis;
+  }
+
+  const direction =
+    normalizeMemoryDirection(
+      analysis.signal
+    );
+
+  /*
+   * WAIT and malformed results remain completely unchanged.
+   */
+  if (
+    !direction ||
+    !analysis.tradePlan ||
+    typeof analysis.tradePlan !==
+      "object"
+  ) {
+
+    return analysis;
+  }
+
+  const baseConfidence =
+    numericValue(
+      analysis.confidence
+    );
+
+  if (baseConfidence === null) {
+
+    return analysis;
+  }
+
+  const memoryResult =
+    evaluateAiMemoryConfidence(
+      memory,
+      pair,
+      direction
+    );
+
+  const adjustment =
+    numericValue(
+      memoryResult.adjustment
+    ) ?? 0;
+
+  const adjustedConfidence =
+    clamp(
+      Math.round(
+        baseConfidence +
+        adjustment
+      ),
+      0,
+      100
+    );
+
+  /*
+   * Only confidence is changed.
+   *
+   * Direction, signal eligibility, entry, SL, TP and ATR calculations
+   * remain untouched.
+   */
+  analysis.confidence =
+    adjustedConfidence;
+
+  /*
+   * Existing steps array is used for additive observability without
+   * changing the signal root schema.
+   */
+  if (
+    Array.isArray(
+      analysis.steps
+    )
+  ) {
+
+    analysis.steps.push({
+      name:
+        "AI Memory Confidence",
+
+      pass:
+        true,
+
+      detail:
+        memoryResult.matched
+          ? (
+              `Base ${baseConfidence}, adjustment ` +
+              `${adjustment >= 0 ? "+" : ""}${adjustment}, ` +
+              `final ${adjustedConfidence}; ` +
+              `${memoryResult.source} ${memoryResult.key}; ` +
+              `${memoryResult.samples} trades, ` +
+              `${memoryResult.winRate}% win rate, ` +
+              `${memoryResult.profitFactor} profit factor`
+            )
+          : (
+              `Base ${baseConfidence}, adjustment +0, ` +
+              `final ${adjustedConfidence}; ` +
+              memoryResult.reason
+            )
+    });
+  }
+
+  return analysis;
+}
+
+/* =====================================================================
    Main Worker
    ===================================================================== */
 

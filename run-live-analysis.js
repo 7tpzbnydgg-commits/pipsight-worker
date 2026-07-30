@@ -1480,6 +1480,55 @@ function createAIMemoryAssessment(
   };
 }
 
+function hasUpstreamAIMemoryConfidenceStep(
+  engineResult
+) {
+  if (
+    !engineResult ||
+    typeof engineResult !== "object" ||
+    Array.isArray(engineResult)
+  ) {
+    return false;
+  }
+
+  const steps =
+    Array.isArray(
+      engineResult.steps
+    )
+      ? engineResult.steps
+      : Array.isArray(
+          engineResult.pipeline
+        )
+        ? engineResult.pipeline
+        : [];
+
+  return steps.some((step) => {
+    if (
+      !step ||
+      typeof step !== "object" ||
+      Array.isArray(step)
+    ) {
+      return false;
+    }
+
+    const name =
+      typeof step.name === "string"
+        ? step.name
+            .trim()
+            .toLowerCase()
+            .replace(
+              /[^a-z0-9]/g,
+              ""
+            )
+        : "";
+
+    return (
+      name ===
+      "aimemoryconfidence"
+    );
+  });
+}
+
 // ========================================================
 // AI Memory Controlled Confidence Application
 // ========================================================
@@ -1574,6 +1623,27 @@ function applyAIMemoryConfidenceAdjustment(
   ) {
     return buildUnappliedResult(
       "AI Memory integration is disabled"
+    );
+  }
+
+  /*
+   * The dedicated Scalp Signal Engine is the canonical owner of Scalp
+   * confidence adjustment.
+   *
+   * Its existing "AI Memory Confidence" pipeline step proves that
+   * AI Memory was already evaluated upstream, including cases where
+   * the bounded adjustment was zero.
+   *
+   * Preserve that confidence and never apply a second Live Analysis
+   * adjustment.
+   */
+  if (
+    hasUpstreamAIMemoryConfidenceStep(
+      engineResult
+    )
+  ) {
+    return buildUnappliedResult(
+      "AI Memory confidence was already evaluated by the Scalp Signal Engine; Live Analysis preserved the upstream confidence without applying a second adjustment"
     );
   }
 

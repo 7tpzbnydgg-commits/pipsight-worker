@@ -2441,24 +2441,26 @@ function parseDedicatedScalpRecord(
     );
 
   const updatedAt =
-    normalizeTime(
-      firstString(
-        record.updatedAt,
-        record.generatedAt,
-        record.analyzedCandleAt,
-        record.timestamp,
-        record.time,
+  normalizeTime(
+    firstString(
+      record.analyzedCandleAt,
+      record.updatedAt,
+      record.timestamp,
+      record.time,
+      record.generatedAt,
 
-        pairRecord.updatedAt,
-        pairRecord.generatedAt,
-        pairRecord.analyzedCandleAt,
+      pairRecord.analyzedCandleAt,
+      pairRecord.updatedAt,
+      pairRecord.timestamp,
+      pairRecord.time,
+      pairRecord.generatedAt,
 
-        rawScalpSignals.updatedAt,
-        rawScalpSignals.generatedAt,
-        rawScalpSignals.timestamp,
-        rawScalpSignals.time
-      )
-    );
+      rawScalpSignals.updatedAt,
+      rawScalpSignals.timestamp,
+      rawScalpSignals.time,
+      rawScalpSignals.generatedAt
+    )
+  );
 
   const reason =
     firstString(

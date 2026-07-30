@@ -1530,6 +1530,227 @@ function hasUpstreamAIMemoryConfidenceStep(
 }
 
 // ========================================================
+// Confidence Explainability Helpers
+// ========================================================
+
+function normalizeConfidenceExplainabilityStatus(
+  memoryAssessment,
+  appliedAdjustment
+) {
+  if (appliedAdjustment > 0) {
+    return "SUPPORTIVE";
+  }
+
+  if (appliedAdjustment < 0) {
+    return "CAUTION";
+  }
+
+  const status =
+    memoryAssessment &&
+    typeof memoryAssessment.status === "string"
+      ? memoryAssessment.status
+          .trim()
+          .toUpperCase()
+      : "NEUTRAL";
+
+  if (
+    status === "STRONGLY_SUPPORTIVE" ||
+    status === "SUPPORTIVE"
+  ) {
+    return "SUPPORTIVE";
+  }
+
+  if (status === "CAUTION") {
+    return "CAUTION";
+  }
+
+  if (
+    status === "INSUFFICIENT_DATA" ||
+    status === "NO_MATCH" ||
+    status === "NOT_APPLICABLE" ||
+    status === "UNAVAILABLE"
+  ) {
+    return status;
+  }
+
+  return "NEUTRAL";
+}
+
+
+function buildConfidenceExplainability(
+  engineResult,
+  memoryAssessment,
+  options = {}
+) {
+  /*
+   * Preserve Scalp Engine provenance exactly.
+   *
+   * This also ensures the Part 3B duplicate-adjustment guard does not
+   * replace the original Scalp explanation with a downstream version.
+   */
+  if (
+    engineResult &&
+    typeof engineResult === "object" &&
+    !Array.isArray(engineResult) &&
+    engineResult.confidenceExplainability &&
+    typeof engineResult.confidenceExplainability === "object" &&
+    !Array.isArray(
+      engineResult.confidenceExplainability
+    )
+  ) {
+    return liveCloneValue(
+      engineResult.confidenceExplainability
+    );
+  }
+
+  const baseConfidenceValue =
+    firstFiniteNumber(
+      options.baseConfidence
+    );
+
+  const baseConfidence =
+    baseConfidenceValue === null
+      ? 0
+      : clampAIMemoryNumber(
+          baseConfidenceValue,
+          0,
+          100
+        );
+
+  const aiAdjustmentValue =
+    firstFiniteNumber(
+      options.aiAdjustment
+    );
+
+  const aiAdjustment =
+    aiAdjustmentValue === null
+      ? 0
+      : Math.round(
+          aiAdjustmentValue
+        );
+
+  const finalConfidenceValue =
+    firstFiniteNumber(
+      options.finalConfidence
+    );
+
+  const finalConfidence =
+    finalConfidenceValue === null
+      ? baseConfidence
+      : clampAIMemoryNumber(
+          finalConfidenceValue,
+          0,
+          100
+        );
+
+  const sampleSizeValue =
+    firstFiniteNumber(
+      memoryAssessment &&
+        memoryAssessment.sampleSize
+    );
+
+  const sampleSize =
+    sampleSizeValue === null
+      ? 0
+      : Math.max(
+          0,
+          Math.trunc(sampleSizeValue)
+        );
+
+  /*
+   * Missing statistical metadata remains null.
+   * Zero is never invented for missing win rate, profit factor or
+   * reliability.
+   */
+  const winRate =
+    firstFiniteNumber(
+      memoryAssessment &&
+        memoryAssessment.winRate
+    );
+
+  const profitFactor =
+    firstFiniteNumber(
+      memoryAssessment &&
+        memoryAssessment.profitFactor
+    );
+
+  const reliability =
+    firstFiniteNumber(
+      memoryAssessment &&
+        memoryAssessment.reliability
+    );
+
+  return {
+    version: 1,
+
+    adjustmentOwner:
+      "live-analysis",
+
+    baseConfidence,
+
+    aiAdjustment,
+
+    finalConfidence,
+
+    evaluated:
+      Boolean(
+        memoryAssessment &&
+        memoryAssessment.enabled === true &&
+        memoryAssessment.available === true &&
+        memoryAssessment.valid === true
+      ),
+
+    matched:
+      Boolean(
+        memoryAssessment &&
+        memoryAssessment.matchedBy &&
+        memoryAssessment.matchedKey
+      ),
+
+    applied:
+      options.applied === true,
+
+    status:
+      normalizeConfidenceExplainabilityStatus(
+        memoryAssessment,
+        aiAdjustment
+      ),
+
+    source:
+      memoryAssessment &&
+      typeof memoryAssessment.matchedBy ===
+        "string"
+        ? memoryAssessment.matchedBy
+        : null,
+
+    key:
+      memoryAssessment &&
+      typeof memoryAssessment.matchedKey ===
+        "string"
+        ? memoryAssessment.matchedKey
+        : null,
+
+    sampleSize,
+
+    winRate,
+
+    profitFactor,
+
+    reliability,
+
+    reason:
+      options.applicationReason ||
+      (
+        memoryAssessment &&
+        typeof memoryAssessment.reason ===
+          "string"
+          ? memoryAssessment.reason
+          : "AI Memory confidence evaluation did not provide a reason"
+      )
+  };
+}
+
+// ========================================================
 // AI Memory Controlled Confidence Application
 // ========================================================
 
@@ -1596,6 +1817,25 @@ function applyAIMemoryConfidenceAdjustment(
 
       aiMemoryAdjustedConfidence:
         originalConfidence,
+
+      confidenceExplainability:
+        buildConfidenceExplainability(
+          engineResult,
+          memoryAssessment,
+          {
+            baseConfidence:
+              originalConfidence,
+
+            aiAdjustment: 0,
+
+            finalConfidence:
+              originalConfidence,
+
+            applied: false,
+
+            applicationReason
+          }
+        ),
 
       aiMemory: {
         ...memoryAssessment,
@@ -1809,6 +2049,31 @@ function applyAIMemoryConfidenceAdjustment(
 
     aiMemoryAdjustedConfidence:
       adjustedConfidence,
+
+    confidenceExplainability:
+      buildConfidenceExplainability(
+        engineResult,
+        memoryAssessment,
+        {
+          baseConfidence:
+            originalConfidence,
+
+          aiAdjustment:
+            appliedAdjustment,
+
+          finalConfidence:
+            adjustedConfidence,
+
+          applied: true,
+
+          applicationReason:
+            `AI Memory applied a bounded confidence adjustment of ${
+              appliedAdjustment > 0
+                ? "+"
+                : ""
+            }${appliedAdjustment}`
+        }
+      ),
 
     aiMemory: {
       ...memoryAssessment,
@@ -7546,6 +7811,7 @@ function buildCanonicalEngineResult(
     "originalConfidence",
     "aiMemoryAdjustedConfidence",
     "aiMemory",
+    "confidenceExplainability",
   ];
 
   for (const key of passthroughKeys) {

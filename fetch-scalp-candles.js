@@ -289,72 +289,110 @@ function timestampToMs(value) {
     : null;
 }
 
-function ageMinutes(value) {
+function ageMinutes(
+  value,
+  referenceTimeMs = Date.now()
+) {
   const timestamp =
     timestampToMs(value);
 
-  if (!Number.isFinite(timestamp)) {
+  if (
+    !Number.isFinite(timestamp) ||
+    !Number.isFinite(referenceTimeMs)
+  ) {
     return null;
   }
 
   return Math.max(
     0,
     (
-      Date.now() -
+      referenceTimeMs -
       timestamp
     ) /
     60_000
   );
 }
 
-function floorToInterval(timestamp) {
-  if (!Number.isFinite(timestamp)) {
-    return null;
-  }
-
-  return (
-    Math.floor(
-      timestamp / INTERVAL_MS
-    ) * INTERVAL_MS
-  );
-}
-
 /*
- * A candle whose start time matches the current 5-minute bucket may still
- * be forming.
+ * Twelve Data candle timestamps represent candle start time.
+ *
+ * A candle is safe for downstream analysis only when its full interval has
+ * elapsed. Future timestamps are classified separately so they can never be
+ * mistaken for closed data.
  */
-function isPossiblyOpenCandle(time) {
+function getCandleTimeState(
+  time,
+  referenceTimeMs = Date.now()
+) {
   const candleTime =
     timestampToMs(time);
 
-  if (!Number.isFinite(candleTime)) {
-    return false;
+  if (
+    !Number.isFinite(candleTime) ||
+    !Number.isFinite(referenceTimeMs)
+  ) {
+    return "invalid";
   }
 
+  if (candleTime > referenceTimeMs) {
+    return "future";
+  }
+
+  if (
+    candleTime +
+      INTERVAL_MS >
+    referenceTimeMs
+  ) {
+    return "open";
+  }
+
+  return "closed";
+}
+
+function isPossiblyOpenCandle(
+  time,
+  referenceTimeMs = Date.now()
+) {
   return (
-    candleTime ===
-    floorToInterval(Date.now())
+    getCandleTimeState(
+      time,
+      referenceTimeMs
+    ) === "open"
+  );
+}
+
+function isClosedCandle(
+  time,
+  referenceTimeMs = Date.now()
+) {
+  return (
+    getCandleTimeState(
+      time,
+      referenceTimeMs
+    ) === "closed"
   );
 }
 
 /*
- * Returns only candles that should be fully closed according to their
- * timestamp.
- *
- * We do not remove the open candle from the main backward-compatible
- * arrays. Instead, closed-candle counts are exposed in metadata so the
- * strategy engine can deliberately avoid incomplete candles.
+ * Main output arrays are closed-candle-only. This helper remains defensive
+ * for cached or externally supplied arrays.
  */
-function countClosedCandles(rows) {
+function countClosedCandles(
+  rows,
+  referenceTimeMs = Date.now()
+) {
   if (!Array.isArray(rows)) {
     return 0;
   }
 
   return rows.reduce(
     (count, row) =>
-      isPossiblyOpenCandle(row.time)
-        ? count
-        : count + 1,
+      isClosedCandle(
+        row?.time,
+        referenceTimeMs
+      )
+        ? count + 1
+        : count,
     0
   );
 }
@@ -446,7 +484,10 @@ function atomicWriteJson(
    Candle Validation
    ===================================================================== */
 
-function normalizeCandle(raw) {
+function normalizeCandle(
+  raw,
+  referenceTimeMs = Date.now()
+) {
   if (
     !raw ||
     typeof raw !== "object"
@@ -457,11 +498,50 @@ function normalizeCandle(raw) {
     };
   }
 
+  const safeReferenceTimeMs =
+    Number.isFinite(referenceTimeMs)
+      ? referenceTimeMs
+      : Date.now();
+
   const time =
     normalizeTimestamp(
       raw.datetime ||
       raw.time
     );
+
+  if (!time) {
+    return {
+      candle: null,
+      reason: "invalid-time"
+    };
+  }
+
+  const timeState =
+    getCandleTimeState(
+      time,
+      safeReferenceTimeMs
+    );
+
+  if (timeState === "future") {
+    return {
+      candle: null,
+      reason: "future-candle-time"
+    };
+  }
+
+  if (timeState === "open") {
+    return {
+      candle: null,
+      reason: "open-candle"
+    };
+  }
+
+  if (timeState === "invalid") {
+    return {
+      candle: null,
+      reason: "invalid-time"
+    };
+  }
 
   const open =
     parsePrice(raw.open);
@@ -474,13 +554,6 @@ function normalizeCandle(raw) {
 
   const close =
     parsePrice(raw.close);
-
-  if (!time) {
-    return {
-      candle: null,
-      reason: "invalid-time"
-    };
-  }
 
   if (
     !isFiniteNumber(open) ||
@@ -666,7 +739,10 @@ function analyzeTimeGaps(rows) {
    Candle Collection Normalization
    ===================================================================== */
 
-function normalizeCandles(values) {
+function normalizeCandles(
+  values,
+  referenceTimeMs = Date.now()
+) {
   const byTime =
     new Map();
 
@@ -674,6 +750,11 @@ function normalizeCandles(values) {
 
   let rejectedCount = 0;
   let duplicateCount = 0;
+
+  const safeReferenceTimeMs =
+    Number.isFinite(referenceTimeMs)
+      ? referenceTimeMs
+      : Date.now();
 
   if (!Array.isArray(values)) {
     return {
@@ -714,7 +795,10 @@ function normalizeCandles(values) {
 
   for (const raw of values) {
     const result =
-      normalizeCandle(raw);
+      normalizeCandle(
+        raw,
+        safeReferenceTimeMs
+      );
 
     if (!result.candle) {
       rejectedCount++;
@@ -772,11 +856,15 @@ function normalizeCandles(values) {
     null;
 
   const latestAgeMinutes =
-    ageMinutes(lastTime);
+    ageMinutes(
+      lastTime,
+      safeReferenceTimeMs
+    );
 
   const openLastCandle =
     isPossiblyOpenCandle(
-      lastTime
+      lastTime,
+      safeReferenceTimeMs
     );
 
   return {
@@ -817,7 +905,10 @@ function normalizeCandles(values) {
         openLastCandle,
 
       closedCandleCount:
-        countClosedCandles(rows),
+        countClosedCandles(
+          rows,
+          safeReferenceTimeMs
+        ),
 
       gaps:
         analyzeTimeGaps(rows)
@@ -1205,15 +1296,19 @@ function mergeCandleRows(
    Closed-Candle Helpers
    ===================================================================== */
 
-function getClosedRows(rows) {
+function getClosedRows(
+  rows,
+  referenceTimeMs = Date.now()
+) {
   if (!Array.isArray(rows)) {
     return [];
   }
 
   return rows.filter(
     row =>
-      !isPossiblyOpenCandle(
-        row.time
+      isClosedCandle(
+        row?.time,
+        referenceTimeMs
       )
   );
 }

@@ -1,27 +1,27 @@
 {
-  "updatedAt": "2026-07-30T01:24:53.620Z",
+  "updatedAt": "2026-07-30T09:41:27.542Z",
   "engineVersion": "2.1.0",
   "strategyVersion": "legacy-lockstep-2.1",
-  "durationMs": 22,
+  "durationMs": 23,
   "pairCount": 2,
   "snapshotCount": 4,
   "errorCount": 0,
-  "newsItemCount": 12,
+  "newsItemCount": 9,
   "errors": [],
   "signals": [
     {
       "pair": "XAU/USD",
       "mode": "daily",
       "decimals": 2,
-      "lastClose": 4075.88,
+      "lastClose": 4035.86,
       "lastDate": "2026-07-30",
       "signal": "HOLD",
-      "suppressionReason": "NO TRADE — no confirmed trend direction yet",
+      "suppressionReason": "NO TRADE — stopped at \"MACD Confirmation\"",
       "tradePlan": null,
-      "confidence": null,
-      "passCount": 0,
-      "gatedCount": 1,
-      "trendLabel": "Partial bearish lean only (3/4) — not enough to qualify",
+      "confidence": 50,
+      "passCount": 2,
+      "gatedCount": 3,
+      "trendLabel": "Bearish — full EMA stack 20<50<100<200",
       "structure": "Bearish structure — lower highs & lower lows",
       "structureDetails": {
         "label": "Bearish structure — lower highs & lower lows",
@@ -30,12 +30,12 @@
       },
       "sr": {
         "resistances": [
-          4079.48,
-          4116.42784
+          4040,
+          4079.48
         ],
         "supports": [
-          4040.59968,
-          4034.28982
+          4034.28982,
+          4024.112741875
         ],
         "source": "OHLC swing levels"
       },
@@ -55,43 +55,43 @@
             "fullStack": true
           },
           "values": {
-            "ema20": 4065.811855820698,
-            "ema50": 4141.356173036231,
-            "ema100": 4279.971660120471,
-            "ema200": 4351.325419786039,
-            "close": 4075.88085
+            "ema20": 4062.0005615349837,
+            "ema50": 4139.786816565643,
+            "ema100": 4279.179212793739,
+            "ema200": 4350.927224860666,
+            "close": 4035.86226
           },
-          "bullCount": 1,
-          "bearCount": 3
+          "bullCount": 0,
+          "bearCount": 4
         },
         "macd": {
           "ready": true,
-          "macd": -15.666875298208652,
-          "signal": -23.83304120691141,
-          "histogram": 8.166165908702759
+          "macd": -18.859241452054903,
+          "signal": -24.47151443768066,
+          "histogram": 5.612272985625758
         },
         "rsi": {
           "period": 14,
-          "value": 49.77894613880353
+          "value": 45.388434522607994
         },
         "volatility": {
           "type": "ATR",
           "period": 14,
-          "atr": 65.0366115009375,
-          "percent": 0.01595645552321224,
-          "buffer": 32.51830575046875
+          "atr": 67.56330935808033,
+          "percent": 0.01674073717225432,
+          "buffer": 33.781654679040166
         }
       },
       "pipeline": [
         {
           "name": "Trend",
-          "status": "fail",
-          "detail": "Partial bearish lean only (3/4) — not enough to qualify"
+          "status": "pass",
+          "detail": "Bearish — full EMA stack 20<50<100<200"
         },
         {
           "name": "EMA Alignment",
-          "status": "skip",
-          "detail": "Not reached — an earlier required step failed"
+          "status": "pass",
+          "detail": "Full EMA stack confirms bearish alignment"
         },
         {
           "name": "ADX > 25?",
@@ -105,8 +105,8 @@
         },
         {
           "name": "MACD Confirmation",
-          "status": "skip",
-          "detail": "Not reached — an earlier required step failed"
+          "status": "fail",
+          "detail": "MACD -18.8592 vs signal -24.4715 — does not confirm SELL"
         },
         {
           "name": "RSI Confirmation",
@@ -136,7 +136,7 @@
         {
           "name": "ATR Stop Loss",
           "status": "skip",
-          "detail": "No confirmed trend direction yet"
+          "detail": "Not reached — an earlier required step failed"
         },
         {
           "name": "Risk:Reward ≥ 1:2",
@@ -146,7 +146,7 @@
         {
           "name": "Confidence Score",
           "status": "info",
-          "detail": "No confirmed trend direction yet to score"
+          "detail": "50% — composite of pipeline pass-rate, market structure, news alignment, candle context and multi-timeframe agreement. It does not override the legacy gate."
         }
       ],
       "data": {
@@ -167,7 +167,7 @@
       "pair": "XAU/USD",
       "mode": "weekly",
       "decimals": 2,
-      "lastClose": 4075.88,
+      "lastClose": 4035.86,
       "lastDate": "2026-07-30",
       "signal": "HOLD",
       "suppressionReason": "NO TRADE — no confirmed trend direction yet",
@@ -209,30 +209,30 @@
             "fullStack": false
           },
           "values": {
-            "ema20": 4208.992446945798,
-            "ema50": 4334.904524669701,
-            "ema100": 4298.933185483825,
-            "ema200": 3955.905448859367,
-            "close": 4075.88085
+            "ema20": 4202.322681945799,
+            "ema50": 4331.424647278396,
+            "ema100": 4296.880950099209,
+            "ema200": 3954.866004963263,
+            "close": 4035.86226
           },
           "bullCount": 2,
           "bearCount": 2
         },
         "macd": {
           "ready": true,
-          "macd": -117.20466082159601,
-          "signal": -46.50960355147964,
-          "histogram": -70.69505727011637
+          "macd": -120.39702697544271,
+          "signal": -47.148076782248985,
+          "histogram": -73.24895019319374
         },
         "rsi": {
           "period": 14,
-          "value": 39.58433778851264
+          "value": 38.14007537203742
         },
         "volatility": {
           "type": "ATR",
           "period": 14,
           "atr": 241.19185138077577,
-          "percent": 0.05917539306399886,
+          "percent": 0.05976216130348705,
           "buffer": 120.59592569038789
         }
       },
@@ -321,7 +321,7 @@
       "pair": "GBP/JPY",
       "mode": "daily",
       "decimals": 3,
-      "lastClose": 218.327,
+      "lastClose": 218.342,
       "lastDate": "2026-07-30",
       "signal": "HOLD",
       "suppressionReason": "NO TRADE — stopped at \"MACD Confirmation\"",
@@ -363,30 +363,30 @@
             "fullStack": true
           },
           "values": {
-            "ema20": 217.81253398108709,
-            "ema50": 216.59866148431595,
-            "ema100": 215.2803744789752,
-            "ema200": 212.82482766305705,
-            "close": 218.32665
+            "ema20": 217.81401493346803,
+            "ema50": 216.59927128823753,
+            "ema100": 215.2806823997673,
+            "ema200": 212.8249823894252,
+            "close": 218.3422
           },
           "bullCount": 4,
           "bearCount": 0
         },
         "macd": {
           "ready": true,
-          "macd": 0.5610005350371807,
-          "signal": 0.7018317153651674,
-          "histogram": -0.1408311803279867
+          "macd": 0.5622409908776547,
+          "signal": 0.7020798065332623,
+          "histogram": -0.13983881565560763
         },
         "rsi": {
           "period": 14,
-          "value": 58.98645163646319
+          "value": 59.171668053434445
         },
         "volatility": {
           "type": "ATR",
           "period": 14,
           "atr": 0.856126990983377,
-          "percent": 0.003921312359180049,
+          "percent": 0.003921033089267109,
           "buffer": 0.4280634954916885
         }
       },
@@ -414,7 +414,7 @@
         {
           "name": "MACD Confirmation",
           "status": "fail",
-          "detail": "MACD 0.5610 vs signal 0.7018 — does not confirm BUY"
+          "detail": "MACD 0.5622 vs signal 0.7021 — does not confirm BUY"
         },
         {
           "name": "RSI Confirmation",
@@ -475,7 +475,7 @@
       "pair": "GBP/JPY",
       "mode": "weekly",
       "decimals": 3,
-      "lastClose": 218.327,
+      "lastClose": 218.342,
       "lastDate": "2026-07-30",
       "signal": "HOLD",
       "suppressionReason": "NO TRADE — stopped at \"RSI Confirmation\"",
@@ -503,8 +503,8 @@
       "candlePattern": {
         "available": true,
         "direction": null,
-        "pattern": "Doji",
-        "detail": "Doji shows indecision and does not confirm either direction"
+        "pattern": "No strong pattern",
+        "detail": "No qualifying engulfing, pin-bar or doji confirmation"
       },
       "indicators": {
         "ema": {
@@ -516,30 +516,30 @@
             "fullStack": false
           },
           "values": {
-            "ema20": 215.91525550391347,
-            "ema50": 213.90950732007036,
-            "ema100": 211.15101279638338,
-            "ema200": 203.69513050822792,
-            "close": 218.32665
+            "ema20": 215.91784717058013,
+            "ema50": 213.91080315340372,
+            "ema100": 211.15179029638338,
+            "ema200": 203.6955192582279,
+            "close": 218.3422
           },
           "bullCount": 4,
           "bearCount": 0
         },
         "macd": {
           "ready": true,
-          "macd": 2.325436376791089,
-          "signal": 2.1413180065130057,
-          "histogram": 0.1841183702780831
+          "macd": 2.3266768326315344,
+          "signal": 2.141566097681095,
+          "histogram": 0.1851107349504395
         },
         "rsi": {
           "period": 14,
-          "value": 66.11705323214417
+          "value": 66.14831200650562
         },
         "volatility": {
           "type": "ATR",
           "period": 14,
           "atr": 2.7442289646894387,
-          "percent": 0.012569372381655829,
+          "percent": 0.012568477210037449,
           "buffer": 1.3721144823447193
         }
       },
@@ -567,7 +567,7 @@
         {
           "name": "MACD Confirmation",
           "status": "pass",
-          "detail": "MACD 2.3254 vs signal 2.1413 — confirms BUY"
+          "detail": "MACD 2.3267 vs signal 2.1416 — confirms BUY"
         },
         {
           "name": "RSI Confirmation",
@@ -582,7 +582,7 @@
         {
           "name": "Candle Pattern",
           "status": "info",
-          "detail": "Doji: Doji shows indecision and does not confirm either direction"
+          "detail": "No strong pattern: No qualifying engulfing, pin-bar or doji confirmation"
         },
         {
           "name": "High-Impact News Filter",

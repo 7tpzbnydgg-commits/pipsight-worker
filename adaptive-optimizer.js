@@ -1009,8 +1009,8 @@ function normalizeOptionalDimension(
 
 }
 
-/**
- * Convert one AI Memory performance metric into a strict canonical form.
+ /**
+  * Convert one AI Memory performance metric...
  *
  * No missing value is invented:
  * - Missing profitFactor remains null.

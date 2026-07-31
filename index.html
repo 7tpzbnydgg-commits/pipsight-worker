@@ -17087,7 +17087,18 @@ function mainPanelHTML(
       pair
     );
 
-  return `
+  const displayPrice =
+    safeNumber(
+      latestScalpPrice(
+        pair.key
+      ),
+      safeNumber(
+        analysis.lastClose,
+        null
+      )
+    );
+
+  return ` `
     <div class="card">
       <div class="hero">
         <div>

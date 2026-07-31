@@ -5044,25 +5044,69 @@ function applyAiMemoryConfidenceAdjustment(
       analysis.signal
     );
 
-  /*
-   * WAIT and malformed results remain completely unchanged.
-   */
-  if (
-    !direction ||
-    !analysis.tradePlan ||
-    typeof analysis.tradePlan !==
-      "object"
-  ) {
-
-    return analysis;
-  }
-
   const baseConfidence =
     numericValue(
       analysis.confidence
     );
 
   if (baseConfidence === null) {
+
+    return analysis;
+  }
+
+  const hasActionableTradePlan =
+    Boolean(direction) &&
+    Boolean(analysis.tradePlan) &&
+    typeof analysis.tradePlan ===
+      "object";
+
+  /*
+   * WAIT and non-actionable results keep their existing signal,
+   * confidence, pipeline and trade-plan behavior unchanged.
+   *
+   * Only additive confidence provenance is attached.
+   */
+  if (!hasActionableTradePlan) {
+
+    analysis.confidenceExplainability = {
+      version: 1,
+
+      adjustmentOwner:
+        "scalp-engine",
+
+      baseConfidence,
+
+      aiAdjustment: 0,
+
+      finalConfidence:
+        baseConfidence,
+
+      evaluated: true,
+
+      matched: false,
+
+      applied: false,
+
+      status:
+        "NOT_APPLICABLE",
+
+      source: null,
+
+      key: null,
+
+      sampleSize: 0,
+
+      winRate: null,
+
+      profitFactor: null,
+
+      reliability: null,
+
+      reason:
+        direction
+          ? "Confidence adjustment requires a valid trade plan"
+          : "Confidence adjustment requires a BUY or SELL decision"
+    };
 
     return analysis;
   }

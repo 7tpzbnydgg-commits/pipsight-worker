@@ -5451,16 +5451,12 @@ function run() {
         pair.label
       );
 
-      if (aiMemory) {
+      applyAiMemoryConfidenceAdjustment(
+        analysis,
+        aiMemory,
+        pair.label
+      );
 
-        applyAiMemoryConfidenceAdjustment(
-          analysis,
-          aiMemory,
-          pair
-        );
-
-      }
-       
       analysis.mode =
         mode;
 

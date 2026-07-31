@@ -1009,7 +1009,6 @@ function normalizeOptionalDimension(
 
 }
 
-/
 /**
  * Convert one AI Memory performance metric into a strict canonical form.
  *

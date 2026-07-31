@@ -2094,13 +2094,49 @@ function isRecommendationRelevantToScalp(
 
     if (
       engine !==
-        TARGET_ENGINE
+      TARGET_ENGINE
     ) {
 
       return {
         relevant: false,
         reason:
           `Engine ${engine || "unknown"} is outside scalp Phase B1.`
+      };
+
+    }
+
+  }
+
+  /*
+   * Phase B1 supports only Scalp timeframes.
+   * Ignore optimizer recommendations that belong
+   * to unrelated higher-timeframe scopes.
+   */
+  if (
+    scopeType ===
+    "timeframe"
+  ) {
+
+    const timeframe =
+      normalizeTimeframe(
+        scope.timeframe ??
+        scope.key
+      );
+
+    if (
+      timeframe ===
+      null
+    ) {
+
+      return {
+        relevant: false,
+        reason:
+          `Timeframe ${
+            toTrimmedString(
+              scope.timeframe ??
+              scope.key
+            ) || "unknown"
+          } is outside supported Scalp modes.`
       };
 
     }

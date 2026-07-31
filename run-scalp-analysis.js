@@ -3409,7 +3409,56 @@ function analyze(
      STEP 1 : EMA Trend
      ============================= */
 
-  if (!emaState.fullAlignment) {
+  /*
+   * Primary Scalp EMA gate only:
+   *
+   * - Existing 4/4 alignment remains fully accepted.
+   * - A controlled 3/4 alignment is accepted only when the core
+   *   EMA20 -> EMA50 -> EMA100 structure agrees with the direction.
+   * - Higher-timeframe confirmation remains strict because
+   *   trendDirectionOf() and getEMAState() are unchanged.
+   */
+
+  const qualifiedBullishPartial =
+    emaState.available === true &&
+    emaState.bullishCount === 3 &&
+    emaState.values.ema20 >
+      emaState.values.ema50 &&
+    emaState.values.ema50 >
+      emaState.values.ema100;
+
+  const qualifiedBearishPartial =
+    emaState.available === true &&
+    emaState.bearishCount === 3 &&
+    emaState.values.ema20 <
+      emaState.values.ema50 &&
+    emaState.values.ema50 <
+      emaState.values.ema100;
+
+  const qualifiedPartialAlignment =
+    !emaState.fullAlignment &&
+    (
+      qualifiedBullishPartial ||
+      qualifiedBearishPartial
+    );
+
+  const emaAlignmentAccepted =
+    emaState.fullAlignment ||
+    qualifiedPartialAlignment;
+
+  const direction =
+    emaState.fullAlignment
+      ? emaState.direction
+      : qualifiedBullishPartial
+        ? "BUY"
+        : qualifiedBearishPartial
+          ? "SELL"
+          : null;
+
+  if (
+    !emaAlignmentAccepted ||
+    !direction
+  ) {
 
     result.steps.push({
       name: "EMA Trend",
@@ -3417,7 +3466,7 @@ function analyze(
       detail:
         !emaState.available
           ? "EMA trend values are unavailable because there are not enough valid candles"
-          : `Full EMA alignment failed; bullish checks ${emaState.bullishCount ?? 0}/4, bearish checks ${emaState.bearishCount ?? 0}/4`
+          : `EMA alignment failed; bullish checks ${emaState.bullishCount ?? 0}/4, bearish checks ${emaState.bearishCount ?? 0}/4; qualified 3/4 core alignment not confirmed`
     });
 
     result.reasons.push(
@@ -3439,18 +3488,21 @@ function analyze(
     return result;
   }
 
-  const direction =
-    emaState.direction;
-
   result.steps.push({
     name: "EMA Trend",
     pass: true,
     detail:
-      `${direction} EMA alignment confirmed: price ${round(emaState.lastClose, 6)}, ` +
-      `EMA20 ${round(emaState.values.ema20, 6)}, ` +
-      `EMA50 ${round(emaState.values.ema50, 6)}, ` +
-      `EMA100 ${round(emaState.values.ema100, 6)}, ` +
-      `EMA200 ${round(emaState.values.ema200, 6)}`
+      qualifiedPartialAlignment
+        ? `${direction} qualified partial EMA alignment confirmed at 3/4 with EMA20–EMA50–EMA100 core structure; confidence penalty -10: price ${round(emaState.lastClose, 6)}, ` +
+          `EMA20 ${round(emaState.values.ema20, 6)}, ` +
+          `EMA50 ${round(emaState.values.ema50, 6)}, ` +
+          `EMA100 ${round(emaState.values.ema100, 6)}, ` +
+          `EMA200 ${round(emaState.values.ema200, 6)}`
+        : `${direction} full EMA alignment confirmed at 4/4: price ${round(emaState.lastClose, 6)}, ` +
+          `EMA20 ${round(emaState.values.ema20, 6)}, ` +
+          `EMA50 ${round(emaState.values.ema50, 6)}, ` +
+          `EMA100 ${round(emaState.values.ema100, 6)}, ` +
+          `EMA200 ${round(emaState.values.ema200, 6)}`
   });
 
   /* =============================

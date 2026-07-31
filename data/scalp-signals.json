@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-07-31T10:50:33.923Z",
+  "generatedAt": "2026-07-31T11:10:33.689Z",
   "engineVersion": "1.0.0",
   "strategyVersion": "scalp-lockstep-1.0",
   "signals": [
@@ -8,18 +8,377 @@
       "signal": "WAIT",
       "confidence": 0,
       "reasons": [
+        "EMA alignment failed"
+      ],
+      "steps": [
+        {
+          "name": "EMA Trend",
+          "pass": false,
+          "detail": "Full EMA alignment failed; bullish checks 1/4, bearish checks 3/4"
+        },
+        {
+          "name": "MACD",
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because EMA Trend did not pass"
+        },
+        {
+          "name": "RSI",
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because EMA Trend did not pass"
+        },
+        {
+          "name": "Higher TF",
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because EMA Trend did not pass"
+        },
+        {
+          "name": "News",
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because EMA Trend did not pass"
+        },
+        {
+          "name": "Risk Reward",
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because EMA Trend did not pass"
+        }
+      ],
+      "tradePlan": null,
+      "confidenceExplainability": {
+        "version": 1,
+        "adjustmentOwner": "scalp-engine",
+        "baseConfidence": 0,
+        "aiAdjustment": 0,
+        "finalConfidence": 0,
+        "evaluated": true,
+        "matched": false,
+        "applied": false,
+        "status": "NOT_APPLICABLE",
+        "source": null,
+        "key": null,
+        "sampleSize": 0,
+        "winRate": null,
+        "profitFactor": null,
+        "reliability": null,
+        "reason": "Confidence adjustment requires a BUY or SELL decision"
+      },
+      "mode": "M5",
+      "generatedAt": "2026-07-31T11:10:33.689Z",
+      "analyzedCandleAt": "2026-07-31T11:05:00.000Z",
+      "prepared": {
+        "counts": {
+          "m5": 360,
+          "m15": 119,
+          "m30": 59,
+          "h1": 894
+        },
+        "source": {
+          "m5": "scalp-candles.json",
+          "h1": "intraday-h1.json"
+        },
+        "updatedAt": {
+          "m5": "2026-07-31T11:10:33.587Z",
+          "h1": "2026-07-31T10:45:28.471Z"
+        },
+        "quality": {
+          "m5": {
+            "validRows": 360,
+            "rejectedRows": 0,
+            "duplicateTimestamps": 0,
+            "openCandlesRemoved": 0,
+            "futureCandlesRemoved": 0,
+            "timeFilteredCandlesRemoved": 0,
+            "firstDate": "2026-07-30T05:10:00.000Z",
+            "lastDate": "2026-07-31T11:05:00.000Z",
+            "ageMinutes": 5,
+            "expectedIntervalMinutes": 5,
+            "staleThresholdMinutes": 20,
+            "hasOHLC": true,
+            "sourceMarkedStale": false,
+            "fallbackUsed": false,
+            "fetchSucceeded": true,
+            "stale": false
+          },
+          "h1": {
+            "validRows": 894,
+            "rejectedRows": 0,
+            "duplicateTimestamps": 0,
+            "openCandlesRemoved": 0,
+            "futureCandlesRemoved": 0,
+            "timeFilteredCandlesRemoved": 0,
+            "firstDate": "2026-06-24T04:00:00.000Z",
+            "lastDate": "2026-07-31T09:00:00.000Z",
+            "ageMinutes": 130,
+            "expectedIntervalMinutes": 60,
+            "staleThresholdMinutes": 240,
+            "hasOHLC": true,
+            "sourceMarkedStale": false,
+            "fallbackUsed": false,
+            "fetchSucceeded": true,
+            "stale": false
+          }
+        }
+      }
+    },
+    {
+      "pair": "XAU/USD",
+      "signal": "WAIT",
+      "confidence": 0,
+      "reasons": [
+        "RSI confirmation failed"
+      ],
+      "steps": [
+        {
+          "name": "EMA Trend",
+          "pass": true,
+          "detail": "SELL EMA alignment confirmed: price 4054.32586, EMA20 4061.762782, EMA50 4069.625707, EMA100 4074.681017, EMA200 4081.5333"
+        },
+        {
+          "name": "MACD",
+          "pass": true,
+          "detail": "SELL confirmed: MACD -7.561714 is below signal -7.300593; histogram -0.261121"
+        },
+        {
+          "name": "RSI",
+          "pass": false,
+          "detail": "SELL RSI confirmation failed at 33.98; required range 35–55"
+        },
+        {
+          "name": "Higher TF",
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because RSI did not pass"
+        },
+        {
+          "name": "News",
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because RSI did not pass"
+        },
+        {
+          "name": "Risk Reward",
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because RSI did not pass"
+        }
+      ],
+      "tradePlan": null,
+      "confidenceExplainability": {
+        "version": 1,
+        "adjustmentOwner": "scalp-engine",
+        "baseConfidence": 0,
+        "aiAdjustment": 0,
+        "finalConfidence": 0,
+        "evaluated": true,
+        "matched": false,
+        "applied": false,
+        "status": "NOT_APPLICABLE",
+        "source": null,
+        "key": null,
+        "sampleSize": 0,
+        "winRate": null,
+        "profitFactor": null,
+        "reliability": null,
+        "reason": "Confidence adjustment requires a BUY or SELL decision"
+      },
+      "mode": "M15",
+      "generatedAt": "2026-07-31T11:10:33.689Z",
+      "analyzedCandleAt": "2026-07-31T10:45:00.000Z",
+      "prepared": {
+        "counts": {
+          "m5": 360,
+          "m15": 119,
+          "m30": 59,
+          "h1": 894
+        },
+        "source": {
+          "m5": "scalp-candles.json",
+          "h1": "intraday-h1.json"
+        },
+        "updatedAt": {
+          "m5": "2026-07-31T11:10:33.587Z",
+          "h1": "2026-07-31T10:45:28.471Z"
+        },
+        "quality": {
+          "m5": {
+            "validRows": 360,
+            "rejectedRows": 0,
+            "duplicateTimestamps": 0,
+            "openCandlesRemoved": 0,
+            "futureCandlesRemoved": 0,
+            "timeFilteredCandlesRemoved": 0,
+            "firstDate": "2026-07-30T05:10:00.000Z",
+            "lastDate": "2026-07-31T11:05:00.000Z",
+            "ageMinutes": 5,
+            "expectedIntervalMinutes": 5,
+            "staleThresholdMinutes": 20,
+            "hasOHLC": true,
+            "sourceMarkedStale": false,
+            "fallbackUsed": false,
+            "fetchSucceeded": true,
+            "stale": false
+          },
+          "h1": {
+            "validRows": 894,
+            "rejectedRows": 0,
+            "duplicateTimestamps": 0,
+            "openCandlesRemoved": 0,
+            "futureCandlesRemoved": 0,
+            "timeFilteredCandlesRemoved": 0,
+            "firstDate": "2026-06-24T04:00:00.000Z",
+            "lastDate": "2026-07-31T09:00:00.000Z",
+            "ageMinutes": 130,
+            "expectedIntervalMinutes": 60,
+            "staleThresholdMinutes": 240,
+            "hasOHLC": true,
+            "sourceMarkedStale": false,
+            "fallbackUsed": false,
+            "fetchSucceeded": true,
+            "stale": false
+          }
+        }
+      }
+    },
+    {
+      "pair": "XAU/USD",
+      "signal": "WAIT",
+      "confidence": 0,
+      "reasons": [
+        "RSI confirmation failed"
+      ],
+      "steps": [
+        {
+          "name": "EMA Trend",
+          "pass": true,
+          "detail": "SELL EMA alignment confirmed: price 4054.32586, EMA20 4061.236167, EMA50 4069.633636, EMA100 4074.552702, EMA200 4081.575961"
+        },
+        {
+          "name": "MACD",
+          "pass": true,
+          "detail": "SELL confirmed: MACD -9.158473 is below signal -6.394136; histogram -2.764337"
+        },
+        {
+          "name": "RSI",
+          "pass": false,
+          "detail": "SELL RSI confirmation failed at 34.84; required range 35–55"
+        },
+        {
+          "name": "Higher TF",
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because RSI did not pass"
+        },
+        {
+          "name": "News",
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because RSI did not pass"
+        },
+        {
+          "name": "Risk Reward",
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because RSI did not pass"
+        }
+      ],
+      "tradePlan": null,
+      "confidenceExplainability": {
+        "version": 1,
+        "adjustmentOwner": "scalp-engine",
+        "baseConfidence": 0,
+        "aiAdjustment": 0,
+        "finalConfidence": 0,
+        "evaluated": true,
+        "matched": false,
+        "applied": false,
+        "status": "NOT_APPLICABLE",
+        "source": null,
+        "key": null,
+        "sampleSize": 0,
+        "winRate": null,
+        "profitFactor": null,
+        "reliability": null,
+        "reason": "Confidence adjustment requires a BUY or SELL decision"
+      },
+      "mode": "M30",
+      "generatedAt": "2026-07-31T11:10:33.689Z",
+      "analyzedCandleAt": "2026-07-31T10:30:00.000Z",
+      "prepared": {
+        "counts": {
+          "m5": 360,
+          "m15": 119,
+          "m30": 59,
+          "h1": 894
+        },
+        "source": {
+          "m5": "scalp-candles.json",
+          "h1": "intraday-h1.json"
+        },
+        "updatedAt": {
+          "m5": "2026-07-31T11:10:33.587Z",
+          "h1": "2026-07-31T10:45:28.471Z"
+        },
+        "quality": {
+          "m5": {
+            "validRows": 360,
+            "rejectedRows": 0,
+            "duplicateTimestamps": 0,
+            "openCandlesRemoved": 0,
+            "futureCandlesRemoved": 0,
+            "timeFilteredCandlesRemoved": 0,
+            "firstDate": "2026-07-30T05:10:00.000Z",
+            "lastDate": "2026-07-31T11:05:00.000Z",
+            "ageMinutes": 5,
+            "expectedIntervalMinutes": 5,
+            "staleThresholdMinutes": 20,
+            "hasOHLC": true,
+            "sourceMarkedStale": false,
+            "fallbackUsed": false,
+            "fetchSucceeded": true,
+            "stale": false
+          },
+          "h1": {
+            "validRows": 894,
+            "rejectedRows": 0,
+            "duplicateTimestamps": 0,
+            "openCandlesRemoved": 0,
+            "futureCandlesRemoved": 0,
+            "timeFilteredCandlesRemoved": 0,
+            "firstDate": "2026-06-24T04:00:00.000Z",
+            "lastDate": "2026-07-31T09:00:00.000Z",
+            "ageMinutes": 130,
+            "expectedIntervalMinutes": 60,
+            "staleThresholdMinutes": 240,
+            "hasOHLC": true,
+            "sourceMarkedStale": false,
+            "fallbackUsed": false,
+            "fetchSucceeded": true,
+            "stale": false
+          }
+        }
+      }
+    },
+    {
+      "pair": "GBP/JPY",
+      "signal": "WAIT",
+      "confidence": 0,
+      "reasons": [
         "MACD confirmation failed"
       ],
       "steps": [
         {
           "name": "EMA Trend",
           "pass": true,
-          "detail": "SELL EMA alignment confirmed: price 4056.1946, EMA20 4057.96147, EMA50 4063.790719, EMA100 4069.929089, EMA200 4075.835418"
+          "detail": "SELL EMA alignment confirmed: price 215.1296, EMA20 215.153335, EMA50 215.302132, EMA100 215.424651, EMA200 215.723808"
         },
         {
           "name": "MACD",
           "pass": false,
-          "detail": "SELL not confirmed: MACD -2.095962 is not below signal -2.777448; histogram 0.681486"
+          "detail": "SELL not confirmed: MACD -0.005518 is not below signal -0.018271; histogram 0.012753"
         },
         {
           "name": "RSI",
@@ -66,8 +425,8 @@
         "reason": "Confidence adjustment requires a BUY or SELL decision"
       },
       "mode": "M5",
-      "generatedAt": "2026-07-31T10:50:33.923Z",
-      "analyzedCandleAt": "2026-07-31T10:45:00.000Z",
+      "generatedAt": "2026-07-31T11:10:33.689Z",
+      "analyzedCandleAt": "2026-07-31T11:05:00.000Z",
       "prepared": {
         "counts": {
           "m5": 360,
@@ -80,7 +439,7 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-07-31T10:50:33.598Z",
+          "m5": "2026-07-31T11:10:33.587Z",
           "h1": "2026-07-31T10:45:28.471Z"
         },
         "quality": {
@@ -91,8 +450,8 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-30T04:50:00.000Z",
-            "lastDate": "2026-07-31T10:45:00.000Z",
+            "firstDate": "2026-07-30T05:10:00.000Z",
+            "lastDate": "2026-07-31T11:05:00.000Z",
             "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
@@ -111,245 +470,7 @@
             "timeFilteredCandlesRemoved": 0,
             "firstDate": "2026-06-24T04:00:00.000Z",
             "lastDate": "2026-07-31T09:00:00.000Z",
-            "ageMinutes": 110,
-            "expectedIntervalMinutes": 60,
-            "staleThresholdMinutes": 240,
-            "hasOHLC": true,
-            "sourceMarkedStale": false,
-            "fallbackUsed": false,
-            "fetchSucceeded": true,
-            "stale": false
-          }
-        }
-      }
-    },
-    {
-      "pair": "XAU/USD",
-      "signal": "WAIT",
-      "confidence": 0,
-      "reasons": [
-        "RSI confirmation failed"
-      ],
-      "steps": [
-        {
-          "name": "EMA Trend",
-          "pass": true,
-          "detail": "SELL EMA alignment confirmed: price 4054.71703, EMA20 4062.637725, EMA50 4070.532571, EMA100 4075.378463, EMA200 4081.461063"
-        },
-        {
-          "name": "MACD",
-          "pass": true,
-          "detail": "SELL confirmed: MACD -7.761496 is below signal -7.235857; histogram -0.525639"
-        },
-        {
-          "name": "RSI",
-          "pass": false,
-          "detail": "SELL RSI confirmation failed at 34.31; required range 35–55"
-        },
-        {
-          "name": "Higher TF",
-          "pass": null,
-          "status": "skip",
-          "detail": "Skipped because RSI did not pass"
-        },
-        {
-          "name": "News",
-          "pass": null,
-          "status": "skip",
-          "detail": "Skipped because RSI did not pass"
-        },
-        {
-          "name": "Risk Reward",
-          "pass": null,
-          "status": "skip",
-          "detail": "Skipped because RSI did not pass"
-        }
-      ],
-      "tradePlan": null,
-      "confidenceExplainability": {
-        "version": 1,
-        "adjustmentOwner": "scalp-engine",
-        "baseConfidence": 0,
-        "aiAdjustment": 0,
-        "finalConfidence": 0,
-        "evaluated": true,
-        "matched": false,
-        "applied": false,
-        "status": "NOT_APPLICABLE",
-        "source": null,
-        "key": null,
-        "sampleSize": 0,
-        "winRate": null,
-        "profitFactor": null,
-        "reliability": null,
-        "reason": "Confidence adjustment requires a BUY or SELL decision"
-      },
-      "mode": "M15",
-      "generatedAt": "2026-07-31T10:50:33.923Z",
-      "analyzedCandleAt": "2026-07-31T10:30:00.000Z",
-      "prepared": {
-        "counts": {
-          "m5": 360,
-          "m15": 119,
-          "m30": 59,
-          "h1": 894
-        },
-        "source": {
-          "m5": "scalp-candles.json",
-          "h1": "intraday-h1.json"
-        },
-        "updatedAt": {
-          "m5": "2026-07-31T10:50:33.598Z",
-          "h1": "2026-07-31T10:45:28.471Z"
-        },
-        "quality": {
-          "m5": {
-            "validRows": 360,
-            "rejectedRows": 0,
-            "duplicateTimestamps": 0,
-            "openCandlesRemoved": 0,
-            "futureCandlesRemoved": 0,
-            "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-30T04:50:00.000Z",
-            "lastDate": "2026-07-31T10:45:00.000Z",
-            "ageMinutes": 5,
-            "expectedIntervalMinutes": 5,
-            "staleThresholdMinutes": 20,
-            "hasOHLC": true,
-            "sourceMarkedStale": false,
-            "fallbackUsed": false,
-            "fetchSucceeded": true,
-            "stale": false
-          },
-          "h1": {
-            "validRows": 894,
-            "rejectedRows": 0,
-            "duplicateTimestamps": 0,
-            "openCandlesRemoved": 0,
-            "futureCandlesRemoved": 0,
-            "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-06-24T04:00:00.000Z",
-            "lastDate": "2026-07-31T09:00:00.000Z",
-            "ageMinutes": 110,
-            "expectedIntervalMinutes": 60,
-            "staleThresholdMinutes": 240,
-            "hasOHLC": true,
-            "sourceMarkedStale": false,
-            "fallbackUsed": false,
-            "fetchSucceeded": true,
-            "stale": false
-          }
-        }
-      }
-    },
-    {
-      "pair": "XAU/USD",
-      "signal": "WAIT",
-      "confidence": 0,
-      "reasons": [
-        "RSI confirmation failed"
-      ],
-      "steps": [
-        {
-          "name": "EMA Trend",
-          "pass": true,
-          "detail": "SELL EMA alignment confirmed: price 4052.97491, EMA20 4062.963769, EMA50 4071.442439, EMA100 4075.935965, EMA200 4081.425442"
-        },
-        {
-          "name": "MACD",
-          "pass": true,
-          "detail": "SELL confirmed: MACD -8.847494 is below signal -5.684516; histogram -3.162978"
-        },
-        {
-          "name": "RSI",
-          "pass": false,
-          "detail": "SELL RSI confirmation failed at 33.14; required range 35–55"
-        },
-        {
-          "name": "Higher TF",
-          "pass": null,
-          "status": "skip",
-          "detail": "Skipped because RSI did not pass"
-        },
-        {
-          "name": "News",
-          "pass": null,
-          "status": "skip",
-          "detail": "Skipped because RSI did not pass"
-        },
-        {
-          "name": "Risk Reward",
-          "pass": null,
-          "status": "skip",
-          "detail": "Skipped because RSI did not pass"
-        }
-      ],
-      "tradePlan": null,
-      "confidenceExplainability": {
-        "version": 1,
-        "adjustmentOwner": "scalp-engine",
-        "baseConfidence": 0,
-        "aiAdjustment": 0,
-        "finalConfidence": 0,
-        "evaluated": true,
-        "matched": false,
-        "applied": false,
-        "status": "NOT_APPLICABLE",
-        "source": null,
-        "key": null,
-        "sampleSize": 0,
-        "winRate": null,
-        "profitFactor": null,
-        "reliability": null,
-        "reason": "Confidence adjustment requires a BUY or SELL decision"
-      },
-      "mode": "M30",
-      "generatedAt": "2026-07-31T10:50:33.923Z",
-      "analyzedCandleAt": "2026-07-31T10:00:00.000Z",
-      "prepared": {
-        "counts": {
-          "m5": 360,
-          "m15": 119,
-          "m30": 59,
-          "h1": 894
-        },
-        "source": {
-          "m5": "scalp-candles.json",
-          "h1": "intraday-h1.json"
-        },
-        "updatedAt": {
-          "m5": "2026-07-31T10:50:33.598Z",
-          "h1": "2026-07-31T10:45:28.471Z"
-        },
-        "quality": {
-          "m5": {
-            "validRows": 360,
-            "rejectedRows": 0,
-            "duplicateTimestamps": 0,
-            "openCandlesRemoved": 0,
-            "futureCandlesRemoved": 0,
-            "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-30T04:50:00.000Z",
-            "lastDate": "2026-07-31T10:45:00.000Z",
-            "ageMinutes": 5,
-            "expectedIntervalMinutes": 5,
-            "staleThresholdMinutes": 20,
-            "hasOHLC": true,
-            "sourceMarkedStale": false,
-            "fallbackUsed": false,
-            "fetchSucceeded": true,
-            "stale": false
-          },
-          "h1": {
-            "validRows": 894,
-            "rejectedRows": 0,
-            "duplicateTimestamps": 0,
-            "openCandlesRemoved": 0,
-            "futureCandlesRemoved": 0,
-            "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-06-24T04:00:00.000Z",
-            "lastDate": "2026-07-31T09:00:00.000Z",
-            "ageMinutes": 110,
+            "ageMinutes": 130,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,
@@ -372,12 +493,12 @@
         {
           "name": "EMA Trend",
           "pass": true,
-          "detail": "SELL EMA alignment confirmed: price 215.12045, EMA20 215.160156, EMA50 215.326542, EMA100 215.44898, EMA200 215.748712"
+          "detail": "SELL EMA alignment confirmed: price 215.13508, EMA20 215.262548, EMA50 215.42956, EMA100 215.643465, EMA200 216.041952"
         },
         {
           "name": "MACD",
           "pass": false,
-          "detail": "SELL not confirmed: MACD -0.006436 is not below signal -0.036196; histogram 0.02976"
+          "detail": "SELL not confirmed: MACD -0.191849 is not below signal -0.197215; histogram 0.005366"
         },
         {
           "name": "RSI",
@@ -402,123 +523,6 @@
           "pass": null,
           "status": "skip",
           "detail": "Skipped because MACD did not pass"
-        }
-      ],
-      "tradePlan": null,
-      "confidenceExplainability": {
-        "version": 1,
-        "adjustmentOwner": "scalp-engine",
-        "baseConfidence": 0,
-        "aiAdjustment": 0,
-        "finalConfidence": 0,
-        "evaluated": true,
-        "matched": false,
-        "applied": false,
-        "status": "NOT_APPLICABLE",
-        "source": null,
-        "key": null,
-        "sampleSize": 0,
-        "winRate": null,
-        "profitFactor": null,
-        "reliability": null,
-        "reason": "Confidence adjustment requires a BUY or SELL decision"
-      },
-      "mode": "M5",
-      "generatedAt": "2026-07-31T10:50:33.923Z",
-      "analyzedCandleAt": "2026-07-31T10:45:00.000Z",
-      "prepared": {
-        "counts": {
-          "m5": 360,
-          "m15": 119,
-          "m30": 59,
-          "h1": 894
-        },
-        "source": {
-          "m5": "scalp-candles.json",
-          "h1": "intraday-h1.json"
-        },
-        "updatedAt": {
-          "m5": "2026-07-31T10:50:33.598Z",
-          "h1": "2026-07-31T10:45:28.471Z"
-        },
-        "quality": {
-          "m5": {
-            "validRows": 360,
-            "rejectedRows": 0,
-            "duplicateTimestamps": 0,
-            "openCandlesRemoved": 0,
-            "futureCandlesRemoved": 0,
-            "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-30T04:50:00.000Z",
-            "lastDate": "2026-07-31T10:45:00.000Z",
-            "ageMinutes": 5,
-            "expectedIntervalMinutes": 5,
-            "staleThresholdMinutes": 20,
-            "hasOHLC": true,
-            "sourceMarkedStale": false,
-            "fallbackUsed": false,
-            "fetchSucceeded": true,
-            "stale": false
-          },
-          "h1": {
-            "validRows": 894,
-            "rejectedRows": 0,
-            "duplicateTimestamps": 0,
-            "openCandlesRemoved": 0,
-            "futureCandlesRemoved": 0,
-            "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-06-24T04:00:00.000Z",
-            "lastDate": "2026-07-31T09:00:00.000Z",
-            "ageMinutes": 110,
-            "expectedIntervalMinutes": 60,
-            "staleThresholdMinutes": 240,
-            "hasOHLC": true,
-            "sourceMarkedStale": false,
-            "fallbackUsed": false,
-            "fetchSucceeded": true,
-            "stale": false
-          }
-        }
-      }
-    },
-    {
-      "pair": "GBP/JPY",
-      "signal": "WAIT",
-      "confidence": 0,
-      "reasons": [
-        "High impact news conflict"
-      ],
-      "steps": [
-        {
-          "name": "EMA Trend",
-          "pass": true,
-          "detail": "SELL EMA alignment confirmed: price 215.12592, EMA20 215.277544, EMA50 215.446105, EMA100 215.660243, EMA200 216.067754"
-        },
-        {
-          "name": "MACD",
-          "pass": true,
-          "detail": "SELL confirmed: MACD -0.203853 is below signal -0.198539; histogram -0.005314"
-        },
-        {
-          "name": "RSI",
-          "pass": true,
-          "detail": "SELL RSI confirmation passed at 45.95; required range 35–55"
-        },
-        {
-          "name": "Higher TF",
-          "pass": true,
-          "detail": "Higher timeframe confirms the same SELL direction"
-        },
-        {
-          "name": "News",
-          "pass": false,
-          "detail": "Conflicting high-impact news detected: Untitled news item with sentiment 10"
-        },
-        {
-          "name": "Risk Reward",
-          "pass": null,
-          "status": "skip",
-          "detail": "Skipped because News did not pass"
         }
       ],
       "tradePlan": null,
@@ -541,8 +545,8 @@
         "reason": "Confidence adjustment requires a BUY or SELL decision"
       },
       "mode": "M15",
-      "generatedAt": "2026-07-31T10:50:33.923Z",
-      "analyzedCandleAt": "2026-07-31T10:30:00.000Z",
+      "generatedAt": "2026-07-31T11:10:33.689Z",
+      "analyzedCandleAt": "2026-07-31T10:45:00.000Z",
       "prepared": {
         "counts": {
           "m5": 360,
@@ -555,7 +559,7 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-07-31T10:50:33.598Z",
+          "m5": "2026-07-31T11:10:33.587Z",
           "h1": "2026-07-31T10:45:28.471Z"
         },
         "quality": {
@@ -566,8 +570,8 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-30T04:50:00.000Z",
-            "lastDate": "2026-07-31T10:45:00.000Z",
+            "firstDate": "2026-07-30T05:10:00.000Z",
+            "lastDate": "2026-07-31T11:05:00.000Z",
             "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
@@ -586,7 +590,7 @@
             "timeFilteredCandlesRemoved": 0,
             "firstDate": "2026-06-24T04:00:00.000Z",
             "lastDate": "2026-07-31T09:00:00.000Z",
-            "ageMinutes": 110,
+            "ageMinutes": 130,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,
@@ -609,17 +613,17 @@
         {
           "name": "EMA Trend",
           "pass": true,
-          "detail": "SELL EMA alignment confirmed: price 215.21986, EMA20 215.252945, EMA50 215.427724, EMA100 215.653297, EMA200 216.051608"
+          "detail": "SELL EMA alignment confirmed: price 215.13508, EMA20 215.229372, EMA50 215.399071, EMA100 215.619505, EMA200 215.996528"
         },
         {
           "name": "MACD",
           "pass": true,
-          "detail": "SELL confirmed: MACD -0.235127 is below signal -0.174853; histogram -0.060274"
+          "detail": "SELL confirmed: MACD -0.236625 is below signal -0.191405; histogram -0.04522"
         },
         {
           "name": "RSI",
           "pass": true,
-          "detail": "SELL RSI confirmation passed at 46.67; required range 35–55"
+          "detail": "SELL RSI confirmation passed at 45.87; required range 35–55"
         },
         {
           "name": "Higher TF",
@@ -658,8 +662,8 @@
         "reason": "Confidence adjustment requires a BUY or SELL decision"
       },
       "mode": "M30",
-      "generatedAt": "2026-07-31T10:50:33.923Z",
-      "analyzedCandleAt": "2026-07-31T10:00:00.000Z",
+      "generatedAt": "2026-07-31T11:10:33.689Z",
+      "analyzedCandleAt": "2026-07-31T10:30:00.000Z",
       "prepared": {
         "counts": {
           "m5": 360,
@@ -672,7 +676,7 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-07-31T10:50:33.598Z",
+          "m5": "2026-07-31T11:10:33.587Z",
           "h1": "2026-07-31T10:45:28.471Z"
         },
         "quality": {
@@ -683,8 +687,8 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-30T04:50:00.000Z",
-            "lastDate": "2026-07-31T10:45:00.000Z",
+            "firstDate": "2026-07-30T05:10:00.000Z",
+            "lastDate": "2026-07-31T11:05:00.000Z",
             "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
@@ -703,7 +707,7 @@
             "timeFilteredCandlesRemoved": 0,
             "firstDate": "2026-06-24T04:00:00.000Z",
             "lastDate": "2026-07-31T09:00:00.000Z",
-            "ageMinutes": 110,
+            "ageMinutes": 130,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,

@@ -605,6 +605,60 @@ function normalizeCandle(raw) {
     };
   }
 
+    const candleTimestamp =
+    timestampToMs(
+      time
+    );
+
+  const currentHourStart =
+    floorToHourMs(
+      Date.now()
+    );
+
+  if (
+    !Number.isFinite(
+      candleTimestamp
+    ) ||
+    !Number.isFinite(
+      currentHourStart
+    )
+  ) {
+    return {
+      candle: null,
+      reason: "invalid-time"
+    };
+  }
+
+  /*
+   * H1 timestamps represent candle opening times.
+   *
+   * A timestamp after the current UTC hour is future data and must never
+   * enter indicators, cache merging or downstream analysis.
+   */
+  if (
+    candleTimestamp >
+      currentHourStart
+  ) {
+    return {
+      candle: null,
+      reason: "future-candle"
+    };
+  }
+
+  /*
+   * A candle stamped with the current UTC hour is still forming.
+   * Only fully closed H1 candles are retained.
+   */
+  if (
+    candleTimestamp ===
+      currentHourStart
+  ) {
+    return {
+      candle: null,
+      reason: "open-candle"
+    };
+  } 
+
   const open =
     parsePrice(raw.open);
 

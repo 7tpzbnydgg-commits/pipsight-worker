@@ -635,6 +635,29 @@ function normalizeCandles(values) {
       continue;
     }
 
+    /*
+     * Twelve Data can return the current UTC daily candle
+     * while it is still forming.
+     *
+     * Daily analysis must use completed D1 candles only.
+     * This also removes an open candle inherited from cache.
+     */
+    if (
+      isPossiblyOpenCandle(
+        result.candle.date
+      )
+    ) {
+      rejectedCount++;
+
+      rejectedReasons["open-candle"] =
+        (
+          rejectedReasons["open-candle"] ||
+          0
+        ) + 1;
+
+      continue;
+    }
+
     const { date } =
       result.candle;
 

@@ -5513,14 +5513,30 @@ function normalizeCandle(row){
     row.timestamp ??
     row.date;
 
+    /*
+   * Worker candle timestamps such as "YYYY-MM-DD HH:mm:ss"
+   * represent UTC clock boundaries. Browsers otherwise parse
+   * this non-ISO format in the device's local timezone.
+   */
+  const normalizedTimeValue =
+    typeof timeValue === "string" &&
+    /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/
+      .test(
+        timeValue.trim()
+      )
+      ? `${timeValue.trim().replace(" ", "T")}Z`
+      : timeValue;
+
   const timeMs =
-    typeof timeValue === "number"
+    typeof normalizedTimeValue === "number"
       ? (
-          timeValue < 10_000_000_000
-            ? timeValue * 1000
-            : timeValue
+          normalizedTimeValue < 10_000_000_000
+            ? normalizedTimeValue * 1000
+            : normalizedTimeValue
         )
-      : safeDateMs(timeValue);
+      : safeDateMs(
+          normalizedTimeValue
+        );
 
   const open =
     safeNumber(

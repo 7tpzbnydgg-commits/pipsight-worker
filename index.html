@@ -462,7 +462,7 @@
     margin-top:8px !important;
   }
 
-  .chart-fullscreen #tvchart{
+  .chart-fullscreen #tradingViewWidget{
     height:100%;
   }
 
@@ -3986,6 +3986,93 @@ function isChartFullscreen(){
     ".chart-fullscreen"
   );
 }
+
+// ════════════════════════════════════════════════════════════════
+// TRADINGVIEW CHART
+// ════════════════════════════════════════════════════════════════
+
+function renderTradingViewChart(
+  pair = currentPair
+){
+  const container =
+    document.getElementById(
+      "tradingViewWidget"
+    );
+
+  if(!container){
+    return;
+  }
+
+  const symbol =
+    pair &&
+    typeof pair.tvSymbol === "string"
+      ? pair.tvSymbol.trim()
+      : "";
+
+  if(!symbol){
+    container.innerHTML = "";
+    delete container.dataset.tvSymbol;
+    return;
+  }
+
+  if(
+    container.dataset.tvSymbol ===
+      symbol &&
+    container.querySelector("iframe")
+  ){
+    return;
+  }
+
+  if(
+    !window.TradingView ||
+    typeof window.TradingView.widget !==
+      "function"
+  ){
+    container.innerHTML = `
+      <div class="loading">
+        TradingView chart unavailable
+      </div>
+    `;
+
+    delete container.dataset.tvSymbol;
+    return;
+  }
+
+  container.innerHTML = "";
+  container.dataset.tvSymbol =
+    symbol;
+
+  try{
+    new window.TradingView.widget({
+      autosize:true,
+      symbol,
+      interval:
+        currentInterval || "60",
+      timezone:"Etc/UTC",
+      theme:"dark",
+      style:"1",
+      locale:"en",
+      enable_publishing:false,
+      allow_symbol_change:true,
+      hide_side_toolbar:false,
+      container_id:
+        "tradingViewWidget"
+    });
+  }catch(error){
+    delete container.dataset.tvSymbol;
+
+    container.innerHTML = `
+      <div class="loading">
+        TradingView chart unavailable
+      </div>
+    `;
+
+    console.error(
+      "TradingView initialization failed:",
+      error
+    );
+  }
+}      
 
 function canRefreshMainDashboard(){
   return (

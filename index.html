@@ -14981,18 +14981,25 @@ function updateScalpTracker(
     const candidateCandles =
       candles.filter(
         candle=>{
-          const candleMs =
+          const candleOpenMs =
             candleTimeMs(
               candle
             );
 
+          if(candleOpenMs == null){
+            return false;
+          }
+
+          const candleCloseMs =
+            candleOpenMs +
+            timeframeMilliseconds(
+              5
+            );
+
           return (
-            candleMs != null &&
-            (
-              openedAtMs == null ||
-              candleMs >=
+            openedAtMs == null ||
+            candleCloseMs >
               openedAtMs
-            )
           );
         }
       );

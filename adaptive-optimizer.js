@@ -1921,12 +1921,38 @@ function normalizeLearningConfidence(
 
   }
 
-  const confidence =
-    clamp(
-      value.confidence,
-      0,
-      100
-    );
+  /*
+   * learningConfidence is an optional overlay copied from
+   * confidence-data.json. It is not the authoritative trade outcome
+   * record. Therefore confidence may be null and the overlay outcome
+   * counters may be unavailable or zero even when resolved is positive.
+   */
+  let confidence =
+    null;
+
+  if (
+    value.confidence !== null &&
+    value.confidence !== undefined
+  ) {
+
+    confidence =
+      clamp(
+        value.confidence,
+        0,
+        100
+      );
+
+    if (
+      confidence === null
+    ) {
+
+      errors.push(
+        `${label}.confidence is invalid.`
+      );
+
+    }
+
+  }
 
   const total =
     toNonNegativeInteger(
@@ -1979,16 +2005,6 @@ function normalizeLearningConfidence(
         MIN_VALID_PROFIT_FACTOR,
         MAX_REASONABLE_PROFIT_FACTOR
       );
-
-  }
-
-  if (
-    confidence === null
-  ) {
-
-    errors.push(
-      `${label}.confidence is invalid.`
-    );
 
   }
 
@@ -2075,6 +2091,18 @@ function normalizeLearningConfidence(
   }
 
   if (
+    total !== null &&
+    resolved !== null &&
+    resolved > total
+  ) {
+
+    errors.push(
+      `${label}.resolved exceeds total.`
+    );
+
+  }
+
+  if (
     resolved !== null &&
     wins !== null &&
     losses !== null &&
@@ -2083,25 +2111,23 @@ function normalizeLearningConfidence(
       wins +
       losses +
       breakevens
-    ) !==
-      resolved
+    ) !== resolved
   ) {
 
-    errors.push(
-      `${label} outcome counts do not equal resolved.`
+    warnings.push(
+      `${label} outcome counters are incomplete; ` +
+      `authoritative AI Memory performance counters remain in the parent metric.`
     );
 
   }
 
   if (
-    total !== null &&
-    resolved !== null &&
-    resolved >
-      total
+    confidence === null
   ) {
 
-    errors.push(
-      `${label}.resolved exceeds total.`
+    warnings.push(
+      `${label}.confidence is unavailable; ` +
+      `parent metric confidence.average remains the safe fallback.`
     );
 
   }
@@ -2113,10 +2139,12 @@ function normalizeLearningConfidence(
     return {
       valid: false,
       value: null,
+
       errors:
         uniqueSortedStrings(
           errors
         ),
+
       warnings:
         uniqueSortedStrings(
           warnings
@@ -2130,10 +2158,12 @@ function normalizeLearningConfidence(
 
     value: {
       confidence:
-        round(
-          confidence,
-          4
-        ),
+        confidence === null
+          ? null
+          : round(
+              confidence,
+              4
+            ),
 
       total,
       resolved,

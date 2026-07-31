@@ -18574,7 +18574,46 @@ async function getBackendDecisionForEngine(
 async function getDecisionForEngine(
   pair
 ){
-  if(currentMode === "patterns"){
+  const mode =
+    currentMode;
+
+  const response =
+    await fetchOptionalObservabilityJSON(
+      LIVE_ANALYSIS_URL,
+      {
+        validate:
+          validateLiveAnalysisPayload
+      }
+    );
+
+  if(
+    response.available &&
+    response.payload
+  ){
+    const masterResult =
+      resolveBackendEngineResult(
+        response.payload,
+        pair,
+        "master"
+      );
+
+    if(masterResult){
+      return masterResult;
+    }
+
+    const selectedModeResult =
+      resolveBackendEngineResult(
+        response.payload,
+        pair,
+        mode
+      );
+
+    if(selectedModeResult){
+      return selectedModeResult;
+    }
+  }
+
+  if(mode === "patterns"){
     return {
       signal:
         "HOLD",
@@ -18593,17 +18632,7 @@ async function getDecisionForEngine(
     };
   }
 
-  const backendResult =
-    await getBackendDecisionForEngine(
-      pair,
-      currentMode
-    );
-
-  if(backendResult){
-    return backendResult;
-  }
-
-  if(currentMode === "scalp"){
+  if(mode === "scalp"){
     return getScalpSignalForPair(
       pair,
       {
@@ -18616,7 +18645,7 @@ async function getDecisionForEngine(
   const dataInfo =
     await loadPairAnalysisData(
       pair,
-      currentMode
+      mode
     );
 
   const browserFallback =

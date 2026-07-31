@@ -5045,6 +5045,17 @@ function buildLegacyWeeklyCandles(rawDailyRows, options = {}) {
 // ---------------------------------------------------------------------------
 
 function prepareLiveAnalysisFrames(input = {}) {
+  const nowMs =
+    candleNumber(
+      input.nowMs,
+      Date.now()
+    );
+
+  const currentUtcDayStart =
+    utcDayBucketStart(
+      nowMs
+    );
+
   const scalpRows = normalizeLiveCandleArray(
     input.scalpCandles || input.scalpRows || [],
     {
@@ -5065,6 +5076,11 @@ function prepareLiveAnalysisFrames(input = {}) {
     }
   );
 
+  /*
+   * Defensive closed-D1 boundary:
+   * remove the current UTC day and any future daily rows even when an
+   * upstream or cached file still contains a forming candle.
+   */
   const suppliedDailyRows = normalizeLiveCandleArray(
     input.dailyCandles ||
       input.dailyRows ||
@@ -5074,6 +5090,10 @@ function prepareLiveAnalysisFrames(input = {}) {
       source: "daily",
       maxRows: input.maxDailyRows || 1500,
     }
+  ).filter(
+    row =>
+      row.timestamp <
+      currentUtcDayStart
   );
 
   const derivedH1Rows =
@@ -5081,6 +5101,7 @@ function prepareLiveAnalysisFrames(input = {}) {
       ? intradayRows
       : aggregateLiveCandles(scalpRows, "H1", {
           includeActive: true,
+          nowMs,
           maxRows: input.maxIntradayRows || 3000,
           source: "scalp-derived-h1",
         });
@@ -5089,13 +5110,15 @@ function prepareLiveAnalysisFrames(input = {}) {
     suppliedDailyRows.length > 0
       ? suppliedDailyRows
       : aggregateDailyCandles(derivedH1Rows, {
-          includeActive: true,
+          includeActive: false,
+          nowMs,
           maxRows: input.maxDailyRows || 1500,
           source: "h1-derived-d1",
         });
 
   const weeklyRows = buildLegacyWeeklyCandles(derivedDailyRows, {
-    includeActive: true,
+    includeActive: false,
+    nowMs,
     maxRows: input.maxWeeklyRows || 500,
     source: "daily-derived-w1",
   });

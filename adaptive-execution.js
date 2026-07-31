@@ -3740,3 +3740,3016 @@ function summarizeScalpResolutions(
   return summary;
 
 }
+
+/* =====================================================================
+   Dry-Run Output Summary
+   ===================================================================== */
+
+function createEmptyExecutionSummary() {
+
+  return {
+    totalContexts: 0,
+    resolvedContexts: 0,
+    noChangeContexts: 0,
+    blockedContexts: 0,
+    noRecommendationContexts: 0,
+    invalidContexts: 0,
+    positiveAdjustments: 0,
+    negativeAdjustments: 0,
+    zeroAdjustments: 0,
+    liveAppliedContexts: 0
+  };
+
+}
+
+/* =====================================================================
+   Dry-Run Output Document
+   ===================================================================== */
+
+function createEmptyExecutionDocument(
+  generatedAt =
+    new Date().toISOString()
+) {
+
+  return {
+    version:
+      EXECUTION_SCHEMA_VERSION,
+
+    engineName:
+      ENGINE_NAME,
+
+    engineVersion:
+      ENGINE_VERSION,
+
+    mode:
+      EXECUTION_MODE,
+
+    targetEngine:
+      TARGET_ENGINE,
+
+    generatedAt,
+
+    sourceUpdatedAt:
+      null,
+
+    summary:
+      createEmptyExecutionSummary(),
+
+    resolutions:
+      [],
+
+    activeExecution: {
+      enabled:
+        false,
+
+      liveApplied:
+        false,
+
+      reason:
+        "Phase B1 is dry-run only and is not consumed by the production Scalp engine.",
+
+      confidenceAdjustments:
+        {}
+    },
+
+    precedencePolicy: {
+      strategy:
+        "FIRST_PRESENT_MOST_SPECIFIC_SCOPE",
+
+      stackingAllowed:
+        false,
+
+      broaderFallbackAfterPresentScopeFailure:
+        false,
+
+      order:
+        cloneJSONCompatible(
+          SCOPE_PRECEDENCE
+        )
+    },
+
+    source: {
+      optimizationPath:
+        path.relative(
+          ROOT_DIR,
+          OPTIMIZATION_PATH
+        ),
+
+      optimizationStatePath:
+        path.relative(
+          ROOT_DIR,
+          OPTIMIZATION_STATE_PATH
+        ),
+
+      optimizationHash:
+        null,
+
+      optimizationStateHash:
+        null,
+
+      optimizationGeneratedAt:
+        null,
+
+      optimizationSourceUpdatedAt:
+        null,
+
+      optimizerLastSuccessfulRunAt:
+        null
+    },
+
+    safety: {
+      dryRunOnly:
+        true,
+
+      liveApplicationEnabled:
+        LIVE_APPLICATION_ENABLED,
+
+      sourceCodeModification:
+        false,
+
+      externalApiCalls:
+        false,
+
+      signalGeneration:
+        false,
+
+      decisionModification:
+        false,
+
+      tradePlanModification:
+        false,
+
+      telegramModification:
+        false,
+
+      existingSchemaModification:
+        false,
+
+      targetEngine:
+        TARGET_ENGINE,
+
+      minimumResolvedTrades:
+        REQUIRED_MINIMUM_TRADES,
+
+      maximumFinalAdjustment:
+        MAX_FINAL_ADJUSTMENT,
+
+      recommendationStacking:
+        false,
+
+      exactContextResolution:
+        true
+    },
+
+    validation: {
+      valid:
+        true,
+
+      errors:
+        [],
+
+      warnings:
+        []
+    },
+
+    metadata: {
+      deterministic:
+        true,
+
+      atomicWrites:
+        true,
+
+      sourceHashing:
+        true,
+
+      supportedPairs:
+        cloneJSONCompatible(
+          SUPPORTED_PAIRS
+        ),
+
+      supportedDirections:
+        cloneJSONCompatible(
+          SUPPORTED_DIRECTIONS
+        ),
+
+      supportedModes:
+        cloneJSONCompatible(
+          SUPPORTED_MODES
+        ),
+
+      totalSupportedContexts:
+        (
+          SUPPORTED_PAIRS.length *
+          SUPPORTED_DIRECTIONS.length *
+          SUPPORTED_MODES.length
+        ),
+
+      missingRecommendationPolicy:
+        "Missing candidates are skipped until the first present recommendation is found.",
+
+      ineligibleSpecificScopePolicy:
+        "A present but unusable more-specific scope blocks broader fallback and produces adjustment 0.",
+
+      applicationPolicy:
+        "Results are advisory dry-run outputs and are not consumed by live strategy engines."
+    }
+  };
+
+}
+
+/* =====================================================================
+   Resolution Entry Validation
+   ===================================================================== */
+
+function validateExecutionContext(
+  context,
+  label
+) {
+
+  const errors =
+    [];
+
+  if (
+    !isPlainObject(
+      context
+    )
+  ) {
+
+    return {
+      valid: false,
+
+      errors: [
+        `${label} must be a JSON object.`
+      ]
+    };
+
+  }
+
+  const normalized =
+    createScalpContext({
+      pair:
+        context.pair,
+
+      direction:
+        context.direction,
+
+      mode:
+        context.mode
+    });
+
+  if (
+    normalized === null
+  ) {
+
+    errors.push(
+      `${label} is not a supported Scalp context.`
+    );
+
+  } else {
+
+    if (
+      context.engine !==
+        TARGET_ENGINE
+    ) {
+
+      errors.push(
+        `${label}.engine must equal ${TARGET_ENGINE}.`
+      );
+
+    }
+
+    if (
+      context.timeframe !==
+        normalized.timeframe
+    ) {
+
+      errors.push(
+        `${label}.timeframe does not match the Scalp mode.`
+      );
+
+    }
+
+  }
+
+  return {
+    valid:
+      errors.length === 0,
+
+    errors:
+      uniqueSortedStrings(
+        errors
+      )
+  };
+
+}
+
+function validateSelectedScope(
+  selectedScope,
+  label
+) {
+
+  const errors =
+    [];
+
+  if (
+    selectedScope === null
+  ) {
+
+    return {
+      valid: true,
+      errors
+    };
+
+  }
+
+  if (
+    !isPlainObject(
+      selectedScope
+    )
+  ) {
+
+    return {
+      valid: false,
+
+      errors: [
+        `${label} must be null or a JSON object.`
+      ]
+    };
+
+  }
+
+  const precedence =
+    toNonNegativeInteger(
+      selectedScope.precedence
+    );
+
+  if (
+    precedence === null ||
+    precedence < 1 ||
+    precedence >
+      SCOPE_PRECEDENCE.length
+  ) {
+
+    errors.push(
+      `${label}.precedence is invalid.`
+    );
+
+  }
+
+  const type =
+    toTrimmedString(
+      selectedScope.type
+    );
+
+  if (
+    !ALLOWED_SCOPE_TYPES.has(
+      type
+    )
+  ) {
+
+    errors.push(
+      `${label}.type is unsupported.`
+    );
+
+  }
+
+  if (
+    precedence !== null &&
+    precedence >= 1 &&
+    precedence <=
+      SCOPE_PRECEDENCE.length &&
+    SCOPE_PRECEDENCE[
+      precedence - 1
+    ] !==
+      type
+  ) {
+
+    errors.push(
+      `${label}.precedence does not match the configured scope order.`
+    );
+
+  }
+
+  if (
+    !toTrimmedString(
+      selectedScope.key
+    )
+  ) {
+
+    errors.push(
+      `${label}.key is invalid.`
+    );
+
+  }
+
+  if (
+    !toTrimmedString(
+      selectedScope.recommendationId
+    )
+  ) {
+
+    errors.push(
+      `${label}.recommendationId is invalid.`
+    );
+
+  }
+
+  const totalTrades =
+    toNonNegativeInteger(
+      selectedScope.totalTrades
+    );
+
+  if (
+    totalTrades === null
+  ) {
+
+    errors.push(
+      `${label}.totalTrades is invalid.`
+    );
+
+  }
+
+  const optimizerAdjustment =
+    toFiniteNumber(
+      selectedScope.optimizerAdjustment
+    );
+
+  if (
+    optimizerAdjustment === null ||
+    Math.abs(
+      optimizerAdjustment
+    ) >
+      MAX_FINAL_ADJUSTMENT
+  ) {
+
+    errors.push(
+      `${label}.optimizerAdjustment exceeds Phase B1 limits.`
+    );
+
+  }
+
+  return {
+    valid:
+      errors.length === 0,
+
+    errors:
+      uniqueSortedStrings(
+        errors
+      )
+  };
+
+}
+
+function validateInspectedCandidate(
+  candidate,
+  label
+) {
+
+  const errors =
+    [];
+
+  if (
+    !isPlainObject(
+      candidate
+    )
+  ) {
+
+    return {
+      valid: false,
+
+      errors: [
+        `${label} must be a JSON object.`
+      ]
+    };
+
+  }
+
+  const precedence =
+    toNonNegativeInteger(
+      candidate.precedence
+    );
+
+  if (
+    precedence === null ||
+    precedence < 1 ||
+    precedence >
+      SCOPE_PRECEDENCE.length
+  ) {
+
+    errors.push(
+      `${label}.precedence is invalid.`
+    );
+
+  }
+
+  const scopeType =
+    toTrimmedString(
+      candidate.scopeType
+    );
+
+  if (
+    !ALLOWED_SCOPE_TYPES.has(
+      scopeType
+    )
+  ) {
+
+    errors.push(
+      `${label}.scopeType is unsupported.`
+    );
+
+  }
+
+  if (
+    precedence !== null &&
+    precedence >= 1 &&
+    precedence <=
+      SCOPE_PRECEDENCE.length &&
+    SCOPE_PRECEDENCE[
+      precedence - 1
+    ] !==
+      scopeType
+  ) {
+
+    errors.push(
+      `${label}.precedence does not match scopeType.`
+    );
+
+  }
+
+  if (
+    !toTrimmedString(
+      candidate.recommendationId
+    )
+  ) {
+
+    errors.push(
+      `${label}.recommendationId is invalid.`
+    );
+
+  }
+
+  if (
+    typeof candidate.present !==
+      "boolean"
+  ) {
+
+    errors.push(
+      `${label}.present must be boolean.`
+    );
+
+  }
+
+  if (
+    typeof candidate.usable !==
+      "boolean"
+  ) {
+
+    errors.push(
+      `${label}.usable must be boolean.`
+    );
+
+  }
+
+  const adjustment =
+    toFiniteNumber(
+      candidate.adjustment
+    );
+
+  if (
+    adjustment === null ||
+    Math.abs(
+      adjustment
+    ) >
+      MAX_FINAL_ADJUSTMENT
+  ) {
+
+    errors.push(
+      `${label}.adjustment exceeds Phase B1 limits.`
+    );
+
+  }
+
+  if (
+    candidate.present ===
+      false &&
+    candidate.usable ===
+      true
+  ) {
+
+    errors.push(
+      `${label} cannot be usable when recommendation is absent.`
+    );
+
+  }
+
+  if (
+    !Array.isArray(
+      candidate.reasons
+    )
+  ) {
+
+    errors.push(
+      `${label}.reasons must be an array.`
+    );
+
+  }
+
+  return {
+    valid:
+      errors.length === 0,
+
+    errors:
+      uniqueSortedStrings(
+        errors
+      )
+  };
+
+}
+
+function validateExecutionResolution(
+  resolution,
+  index
+) {
+
+  const errors =
+    [];
+
+  const warnings =
+    [];
+
+  const label =
+    `resolutions[${index}]`;
+
+  if (
+    !isPlainObject(
+      resolution
+    )
+  ) {
+
+    return {
+      valid: false,
+
+      errors: [
+        `${label} must be a JSON object.`
+      ],
+
+      warnings
+    };
+
+  }
+
+  if (
+    resolution.valid !==
+      true
+  ) {
+
+    errors.push(
+      `${label}.valid must be true.`
+    );
+
+  }
+
+  const contextResult =
+    validateExecutionContext(
+      resolution.context,
+      `${label}.context`
+    );
+
+  errors.push(
+    ...contextResult.errors
+  );
+
+  const acceptedStatuses =
+    new Set([
+      "RESOLVED",
+      "RESOLVED_NO_CHANGE",
+      "BLOCKED_BY_MORE_SPECIFIC_SCOPE",
+      "NO_RECOMMENDATION"
+    ]);
+
+  if (
+    !acceptedStatuses.has(
+      toTrimmedString(
+        resolution.status
+      )
+    )
+  ) {
+
+    errors.push(
+      `${label}.status is invalid.`
+    );
+
+  }
+
+  const proposedAdjustment =
+    toFiniteNumber(
+      resolution.proposedAdjustment
+    );
+
+  if (
+    proposedAdjustment ===
+      null ||
+    Math.abs(
+      proposedAdjustment
+    ) >
+      MAX_FINAL_ADJUSTMENT
+  ) {
+
+    errors.push(
+      `${label}.proposedAdjustment exceeds Phase B1 limits.`
+    );
+
+  }
+
+  if (
+    resolution.liveApplied !==
+      false
+  ) {
+
+    errors.push(
+      `${label}.liveApplied must remain false.`
+    );
+
+  }
+
+  if (
+    resolution.status ===
+      "BLOCKED_BY_MORE_SPECIFIC_SCOPE" &&
+    proposedAdjustment !==
+      0
+  ) {
+
+    errors.push(
+      `${label} blocked resolution must have adjustment 0.`
+    );
+
+  }
+
+  if (
+    resolution.status ===
+      "NO_RECOMMENDATION" &&
+    proposedAdjustment !==
+      0
+  ) {
+
+    errors.push(
+      `${label} no-recommendation resolution must have adjustment 0.`
+    );
+
+  }
+
+  if (
+    resolution.status ===
+      "RESOLVED" &&
+    proposedAdjustment ===
+      0
+  ) {
+
+    errors.push(
+      `${label} RESOLVED status requires a non-zero adjustment.`
+    );
+
+  }
+
+  if (
+    resolution.status ===
+      "RESOLVED_NO_CHANGE" &&
+    proposedAdjustment !==
+      0
+  ) {
+
+    errors.push(
+      `${label} RESOLVED_NO_CHANGE status requires adjustment 0.`
+    );
+
+  }
+
+  const selectedScopeResult =
+    validateSelectedScope(
+      resolution.selectedScope,
+      `${label}.selectedScope`
+    );
+
+  errors.push(
+    ...selectedScopeResult.errors
+  );
+
+  if (
+    (
+      resolution.status ===
+        "RESOLVED" ||
+      resolution.status ===
+        "RESOLVED_NO_CHANGE" ||
+      resolution.status ===
+        "BLOCKED_BY_MORE_SPECIFIC_SCOPE"
+    ) &&
+    resolution.selectedScope ===
+      null
+  ) {
+
+    errors.push(
+      `${label}.selectedScope is required for status ${resolution.status}.`
+    );
+
+  }
+
+  if (
+    resolution.status ===
+      "NO_RECOMMENDATION" &&
+    resolution.selectedScope !==
+      null
+  ) {
+
+    errors.push(
+      `${label}.selectedScope must be null when no recommendation exists.`
+    );
+
+  }
+
+  if (
+    !Array.isArray(
+      resolution.candidates
+    )
+  ) {
+
+    errors.push(
+      `${label}.candidates must be an array.`
+    );
+
+  } else {
+
+    for (
+      let candidateIndex = 0;
+      candidateIndex <
+        resolution.candidates.length;
+      candidateIndex++
+    ) {
+
+      const candidateResult =
+        validateInspectedCandidate(
+          resolution.candidates[
+            candidateIndex
+          ],
+          (
+            `${label}.candidates[` +
+            `${candidateIndex}]`
+          )
+        );
+
+      errors.push(
+        ...candidateResult.errors
+      );
+
+    }
+
+  }
+
+  if (
+    !Array.isArray(
+      resolution.reasons
+    )
+  ) {
+
+    errors.push(
+      `${label}.reasons must be an array.`
+    );
+
+  }
+
+  if (
+    Array.isArray(
+      resolution.errors
+    ) &&
+    resolution.errors.length >
+      0
+  ) {
+
+    errors.push(
+      `${label} contains internal resolution errors.`
+    );
+
+  }
+
+  if (
+    Array.isArray(
+      resolution.warnings
+    )
+  ) {
+
+    warnings.push(
+      ...resolution.warnings
+    );
+
+  }
+
+  return {
+    valid:
+      errors.length === 0,
+
+    errors:
+      uniqueSortedStrings(
+        errors
+      ),
+
+    warnings:
+      uniqueSortedStrings(
+        warnings
+      )
+  };
+
+}
+
+/* =====================================================================
+   Execution Document Validation
+   ===================================================================== */
+
+function validateExecutionDocument(
+  document
+) {
+
+  const errors =
+    [];
+
+  const warnings =
+    [];
+
+  if (
+    !isPlainObject(
+      document
+    )
+  ) {
+
+    return {
+      valid: false,
+
+      errors: [
+        "Adaptive execution document must be a JSON object."
+      ],
+
+      warnings
+    };
+
+  }
+
+  if (
+    document.version !==
+      EXECUTION_SCHEMA_VERSION
+  ) {
+
+    errors.push(
+      "Adaptive execution schema version is invalid."
+    );
+
+  }
+
+  if (
+    document.engineName !==
+      ENGINE_NAME
+  ) {
+
+    errors.push(
+      "Adaptive execution engine name is invalid."
+    );
+
+  }
+
+  if (
+    document.engineVersion !==
+      ENGINE_VERSION
+  ) {
+
+    errors.push(
+      "Adaptive execution engine version is invalid."
+    );
+
+  }
+
+  if (
+    document.mode !==
+      EXECUTION_MODE
+  ) {
+
+    errors.push(
+      `Adaptive execution mode must remain ${EXECUTION_MODE}.`
+    );
+
+  }
+
+  if (
+    document.targetEngine !==
+      TARGET_ENGINE
+  ) {
+
+    errors.push(
+      `Adaptive execution targetEngine must equal ${TARGET_ENGINE}.`
+    );
+
+  }
+
+  if (
+    !toISOStringOrNull(
+      document.generatedAt
+    )
+  ) {
+
+    errors.push(
+      "Adaptive execution generatedAt is invalid."
+    );
+
+  }
+
+  if (
+    document.sourceUpdatedAt !==
+      null &&
+    !toISOStringOrNull(
+      document.sourceUpdatedAt
+    )
+  ) {
+
+    errors.push(
+      "Adaptive execution sourceUpdatedAt is invalid."
+    );
+
+  }
+
+  if (
+    !Array.isArray(
+      document.resolutions
+    )
+  ) {
+
+    errors.push(
+      "Adaptive execution resolutions must be an array."
+    );
+
+  } else {
+
+    const expectedContextCount =
+      (
+        SUPPORTED_PAIRS.length *
+        SUPPORTED_DIRECTIONS.length *
+        SUPPORTED_MODES.length
+      );
+
+    if (
+      document.resolutions.length !==
+        expectedContextCount
+    ) {
+
+      errors.push(
+        `Adaptive execution must contain exactly ${expectedContextCount} Scalp contexts.`
+      );
+
+    }
+
+    const seenContexts =
+      new Set();
+
+    for (
+      let index = 0;
+      index <
+        document.resolutions.length;
+      index++
+    ) {
+
+      const result =
+        validateExecutionResolution(
+          document.resolutions[index],
+          index
+        );
+
+      errors.push(
+        ...result.errors
+      );
+
+      warnings.push(
+        ...result.warnings
+      );
+
+      const context =
+        document.resolutions[
+          index
+        ]?.context;
+
+      if (
+        isPlainObject(
+          context
+        )
+      ) {
+
+        const contextId =
+          (
+            `${context.pair}::` +
+            `${context.direction}::` +
+            `${context.mode}`
+          );
+
+        if (
+          seenContexts.has(
+            contextId
+          )
+        ) {
+
+          errors.push(
+            `Duplicate adaptive execution context: ${contextId}.`
+          );
+
+        } else {
+
+          seenContexts.add(
+            contextId
+          );
+
+        }
+
+      }
+
+    }
+
+  }
+
+  if (
+    !isPlainObject(
+      document.summary
+    )
+  ) {
+
+    errors.push(
+      "Adaptive execution summary must be a JSON object."
+    );
+
+  } else {
+
+    const calculatedSummary =
+      summarizeScalpResolutions(
+        document.resolutions
+      );
+
+    const summaryFields =
+      Object.keys(
+        createEmptyExecutionSummary()
+      );
+
+    for (
+      const field of
+      summaryFields
+    ) {
+
+      if (
+        toNonNegativeInteger(
+          document.summary[field]
+        ) ===
+          null
+      ) {
+
+        errors.push(
+          `Adaptive execution summary.${field} is invalid.`
+        );
+
+      } else if (
+        document.summary[field] !==
+          calculatedSummary[field]
+      ) {
+
+        errors.push(
+          `Adaptive execution summary.${field} does not match resolutions.`
+        );
+
+      }
+
+    }
+
+  }
+
+  if (
+    !isPlainObject(
+      document.activeExecution
+    )
+  ) {
+
+    errors.push(
+      "Adaptive execution activeExecution section is missing."
+    );
+
+  } else {
+
+    if (
+      document.activeExecution.enabled !==
+        false
+    ) {
+
+      errors.push(
+        "Adaptive execution activeExecution.enabled must remain false."
+      );
+
+    }
+
+    if (
+      document.activeExecution.liveApplied !==
+        false
+    ) {
+
+      errors.push(
+        "Adaptive execution activeExecution.liveApplied must remain false."
+      );
+
+    }
+
+    if (
+      !isPlainObject(
+        document.activeExecution
+          .confidenceAdjustments
+      ) ||
+      Object.keys(
+        document.activeExecution
+          .confidenceAdjustments
+      ).length >
+        0
+    ) {
+
+      errors.push(
+        "Dry-run activeExecution.confidenceAdjustments must remain empty."
+      );
+
+    }
+
+  }
+
+  if (
+    !isPlainObject(
+      document.precedencePolicy
+    )
+  ) {
+
+    errors.push(
+      "Adaptive execution precedencePolicy section is missing."
+    );
+
+  } else {
+
+    if (
+      document.precedencePolicy
+        .stackingAllowed !==
+        false
+    ) {
+
+      errors.push(
+        "Adaptive execution recommendation stacking must remain disabled."
+      );
+
+    }
+
+    if (
+      document.precedencePolicy
+        .broaderFallbackAfterPresentScopeFailure !==
+        false
+    ) {
+
+      errors.push(
+        "Broader fallback after a present-scope failure must remain disabled."
+      );
+
+    }
+
+    if (
+      !Array.isArray(
+        document.precedencePolicy.order
+      ) ||
+      createHash(
+        document.precedencePolicy.order
+      ) !==
+        createHash(
+          SCOPE_PRECEDENCE
+        )
+    ) {
+
+      errors.push(
+        "Adaptive execution precedence order is inconsistent."
+      );
+
+    }
+
+  }
+
+  if (
+    !isPlainObject(
+      document.safety
+    )
+  ) {
+
+    errors.push(
+      "Adaptive execution safety section is missing."
+    );
+
+  } else {
+
+    if (
+      document.safety.dryRunOnly !==
+        true
+    ) {
+
+      errors.push(
+        "Adaptive execution safety.dryRunOnly must be true."
+      );
+
+    }
+
+    if (
+      document.safety.liveApplicationEnabled !==
+        false
+    ) {
+
+      errors.push(
+        "Adaptive execution live application must remain disabled."
+      );
+
+    }
+
+    const requiredFalseFlags =
+      [
+        "sourceCodeModification",
+        "externalApiCalls",
+        "signalGeneration",
+        "decisionModification",
+        "tradePlanModification",
+        "telegramModification",
+        "existingSchemaModification",
+        "recommendationStacking"
+      ];
+
+    for (
+      const flag of
+      requiredFalseFlags
+    ) {
+
+      if (
+        document.safety[flag] !==
+          false
+      ) {
+
+        errors.push(
+          `Adaptive execution safety.${flag} must be false.`
+        );
+
+      }
+
+    }
+
+    if (
+      document.safety.targetEngine !==
+        TARGET_ENGINE
+    ) {
+
+      errors.push(
+        "Adaptive execution safety target engine is inconsistent."
+      );
+
+    }
+
+    if (
+      document.safety.minimumResolvedTrades !==
+        REQUIRED_MINIMUM_TRADES
+    ) {
+
+      errors.push(
+        "Adaptive execution minimum resolved-trade gate is inconsistent."
+      );
+
+    }
+
+    if (
+      document.safety.maximumFinalAdjustment !==
+        MAX_FINAL_ADJUSTMENT
+    ) {
+
+      errors.push(
+        "Adaptive execution maximum adjustment limit is inconsistent."
+      );
+
+    }
+
+  }
+
+  return {
+    valid:
+      errors.length === 0,
+
+    errors:
+      uniqueSortedStrings(
+        errors
+      ),
+
+    warnings:
+      uniqueSortedStrings(
+        warnings
+      )
+  };
+
+}
+
+/* =====================================================================
+   Build Final Dry-Run Document
+   ===================================================================== */
+
+function buildExecutionDocument({
+  sourceBundle,
+  generatedAt =
+    new Date().toISOString()
+}) {
+
+  const document =
+    createEmptyExecutionDocument(
+      generatedAt
+    );
+
+  if (
+    !isPlainObject(
+      sourceBundle
+    ) ||
+    sourceBundle.valid !==
+      true
+  ) {
+
+    document.validation = {
+      valid: false,
+
+      errors: [
+        "Valid adaptive optimization source bundle is required."
+      ],
+
+      warnings:
+        uniqueSortedStrings(
+          sourceBundle?.warnings ||
+          []
+        )
+    };
+
+    return document;
+
+  }
+
+  const resolutionResult =
+    resolveAllScalpContexts(
+      sourceBundle
+        .recommendationIndex
+    );
+
+  document.sourceUpdatedAt =
+    (
+      sourceBundle
+        .document
+        ?.sourceUpdatedAt ||
+      sourceBundle
+        .document
+        ?.generatedAt ||
+      null
+    );
+
+  document.resolutions =
+    resolutionResult.resolutions;
+
+  document.summary =
+    summarizeScalpResolutions(
+      document.resolutions
+    );
+
+  document.source = {
+    optimizationPath:
+      path.relative(
+        ROOT_DIR,
+        OPTIMIZATION_PATH
+      ),
+
+    optimizationStatePath:
+      path.relative(
+        ROOT_DIR,
+        OPTIMIZATION_STATE_PATH
+      ),
+
+    optimizationHash:
+      sourceBundle
+        .sourceHashes
+        .optimization,
+
+    optimizationStateHash:
+      sourceBundle
+        .sourceHashes
+        .optimizationState,
+
+    optimizationGeneratedAt:
+      sourceBundle
+        .document
+        ?.generatedAt ||
+      null,
+
+    optimizationSourceUpdatedAt:
+      sourceBundle
+        .document
+        ?.sourceUpdatedAt ||
+      null,
+
+    optimizerLastSuccessfulRunAt:
+      sourceBundle
+        .state
+        ?.lastSuccessfulRunAt ||
+      null
+  };
+
+  document.validation = {
+    valid:
+      resolutionResult.valid,
+
+    errors:
+      uniqueSortedStrings(
+        resolutionResult.errors
+      ),
+
+    warnings:
+      uniqueSortedStrings([
+        ...sourceBundle.warnings,
+        ...resolutionResult.warnings
+      ])
+  };
+
+  const validationResult =
+    validateExecutionDocument(
+      document
+    );
+
+  document.validation = {
+    valid:
+      (
+        document.validation.valid &&
+        validationResult.valid
+      ),
+
+    errors:
+      uniqueSortedStrings([
+        ...document.validation.errors,
+        ...validationResult.errors
+      ]),
+
+    warnings:
+      uniqueSortedStrings([
+        ...document.validation.warnings,
+        ...validationResult.warnings
+      ])
+  };
+
+  return document;
+
+}
+
+/* =====================================================================
+   Execution State Structures
+   ===================================================================== */
+
+function createEmptyExecutionState(
+  createdAt =
+    new Date().toISOString()
+) {
+
+  return {
+    version:
+      STATE_SCHEMA_VERSION,
+
+    engineName:
+      ENGINE_NAME,
+
+    engineVersion:
+      ENGINE_VERSION,
+
+    mode:
+      EXECUTION_MODE,
+
+    targetEngine:
+      TARGET_ENGINE,
+
+    createdAt,
+
+    updatedAt:
+      createdAt,
+
+    lastRunAt:
+      null,
+
+    lastSuccessfulRunAt:
+      null,
+
+    sourceHashes: {
+      optimization:
+        null,
+
+      optimizationState:
+        null
+    },
+
+    outputHash:
+      null,
+
+    counters: {
+      runs:
+        0,
+
+      successfulRuns:
+        0,
+
+      failedRuns:
+        0,
+
+      updatedRuns:
+        0,
+
+      unchangedRuns:
+        0,
+
+      resolvedContextsObserved:
+        0,
+
+      noChangeContextsObserved:
+        0,
+
+      blockedContextsObserved:
+        0,
+
+      noRecommendationContextsObserved:
+        0,
+
+      positiveAdjustmentsObserved:
+        0,
+
+      negativeAdjustmentsObserved:
+        0,
+
+      zeroAdjustmentsObserved:
+        0,
+
+      liveAppliedContextsObserved:
+        0
+    },
+
+    lastRun: {
+      status:
+        "NEVER_RUN",
+
+      startedAt:
+        null,
+
+      completedAt:
+        null,
+
+      sourceChanged:
+        false,
+
+      outputChanged:
+        false,
+
+      outputWritten:
+        false,
+
+      stateWritten:
+        false,
+
+      totalContexts:
+        0,
+
+      resolvedContexts:
+        0,
+
+      noChangeContexts:
+        0,
+
+      blockedContexts:
+        0,
+
+      noRecommendationContexts:
+        0,
+
+      invalidContexts:
+        0,
+
+      positiveAdjustments:
+        0,
+
+      negativeAdjustments:
+        0,
+
+      zeroAdjustments:
+        0,
+
+      liveAppliedContexts:
+        0,
+
+      warnings:
+        [],
+
+      error:
+        null
+    }
+  };
+
+}
+
+/* =====================================================================
+   Execution State Validation
+   ===================================================================== */
+
+function validateExecutionState(
+  state
+) {
+
+  const errors =
+    [];
+
+  if (
+    !isPlainObject(
+      state
+    )
+  ) {
+
+    return {
+      valid: false,
+
+      errors: [
+        "Adaptive execution state must be a JSON object."
+      ]
+    };
+
+  }
+
+  if (
+    state.version !==
+      STATE_SCHEMA_VERSION
+  ) {
+
+    errors.push(
+      "Adaptive execution state schema version is invalid."
+    );
+
+  }
+
+  if (
+    state.engineName !==
+      ENGINE_NAME
+  ) {
+
+    errors.push(
+      "Adaptive execution state engine name is invalid."
+    );
+
+  }
+
+  if (
+    state.engineVersion !==
+      ENGINE_VERSION
+  ) {
+
+    errors.push(
+      "Adaptive execution state engine version is invalid."
+    );
+
+  }
+
+  if (
+    state.mode !==
+      EXECUTION_MODE
+  ) {
+
+    errors.push(
+      "Adaptive execution state mode is invalid."
+    );
+
+  }
+
+  if (
+    state.targetEngine !==
+      TARGET_ENGINE
+  ) {
+
+    errors.push(
+      "Adaptive execution state target engine is invalid."
+    );
+
+  }
+
+  if (
+    !toISOStringOrNull(
+      state.createdAt
+    )
+  ) {
+
+    errors.push(
+      "Adaptive execution state createdAt is invalid."
+    );
+
+  }
+
+  if (
+    !toISOStringOrNull(
+      state.updatedAt
+    )
+  ) {
+
+    errors.push(
+      "Adaptive execution state updatedAt is invalid."
+    );
+
+  }
+
+  if (
+    state.lastRunAt !==
+      null &&
+    !toISOStringOrNull(
+      state.lastRunAt
+    )
+  ) {
+
+    errors.push(
+      "Adaptive execution state lastRunAt is invalid."
+    );
+
+  }
+
+  if (
+    state.lastSuccessfulRunAt !==
+      null &&
+    !toISOStringOrNull(
+      state.lastSuccessfulRunAt
+    )
+  ) {
+
+    errors.push(
+      "Adaptive execution state lastSuccessfulRunAt is invalid."
+    );
+
+  }
+
+  if (
+    !isPlainObject(
+      state.sourceHashes
+    )
+  ) {
+
+    errors.push(
+      "Adaptive execution state sourceHashes must be a JSON object."
+    );
+
+  }
+
+  if (
+    !isPlainObject(
+      state.counters
+    )
+  ) {
+
+    errors.push(
+      "Adaptive execution state counters must be a JSON object."
+    );
+
+  } else {
+
+    const counterNames =
+      [
+        "runs",
+        "successfulRuns",
+        "failedRuns",
+        "updatedRuns",
+        "unchangedRuns",
+        "resolvedContextsObserved",
+        "noChangeContextsObserved",
+        "blockedContextsObserved",
+        "noRecommendationContextsObserved",
+        "positiveAdjustmentsObserved",
+        "negativeAdjustmentsObserved",
+        "zeroAdjustmentsObserved",
+        "liveAppliedContextsObserved"
+      ];
+
+    for (
+      const counterName of
+      counterNames
+    ) {
+
+      if (
+        toNonNegativeInteger(
+          state.counters[
+            counterName
+          ]
+        ) ===
+          null
+      ) {
+
+        errors.push(
+          `Adaptive execution state counters.${counterName} is invalid.`
+        );
+
+      }
+
+    }
+
+  }
+
+  if (
+    !isPlainObject(
+      state.lastRun
+    )
+  ) {
+
+    errors.push(
+      "Adaptive execution state lastRun must be a JSON object."
+    );
+
+  }
+
+  return {
+    valid:
+      errors.length === 0,
+
+    errors:
+      uniqueSortedStrings(
+        errors
+      )
+  };
+
+}
+
+/* =====================================================================
+   Execution State Loading
+   ===================================================================== */
+
+function loadExecutionState(
+  runAt
+) {
+
+  const stateRead =
+    readJSONFile(
+      EXECUTION_STATE_PATH,
+      null
+    );
+
+  if (
+    !stateRead.ok ||
+    !isPlainObject(
+      stateRead.value
+    )
+  ) {
+
+    return {
+      state:
+        createEmptyExecutionState(
+          runAt
+        ),
+
+      recovered:
+        stateRead.exists ===
+          true,
+
+      warning:
+        stateRead.error
+    };
+
+  }
+
+  const validation =
+    validateExecutionState(
+      stateRead.value
+    );
+
+  if (
+    !validation.valid
+  ) {
+
+    return {
+      state:
+        createEmptyExecutionState(
+          runAt
+        ),
+
+      recovered:
+        true,
+
+      warning:
+        validation.errors.join(
+          " "
+        )
+    };
+
+  }
+
+  return {
+    state:
+      cloneJSONCompatible(
+        stateRead.value
+      ),
+
+    recovered:
+      false,
+
+    warning:
+      null
+  };
+
+}
+
+/* =====================================================================
+   Existing Output Loading
+   ===================================================================== */
+
+function readExistingExecutionOutput() {
+
+  const outputRead =
+    readJSONFile(
+      EXECUTION_OUTPUT_PATH,
+      null
+    );
+
+  if (
+    !outputRead.ok ||
+    !isPlainObject(
+      outputRead.value
+    )
+  ) {
+
+    return {
+      exists:
+        outputRead.exists,
+
+      valid:
+        false,
+
+      value:
+        null,
+
+      error:
+        outputRead.error
+    };
+
+  }
+
+  const validation =
+    validateExecutionDocument(
+      outputRead.value
+    );
+
+  return {
+    exists:
+      true,
+
+    valid:
+      validation.valid,
+
+    value:
+      validation.valid
+        ? outputRead.value
+        : null,
+
+    error:
+      validation.valid
+        ? null
+        : validation.errors.join(
+            " "
+          )
+  };
+
+}
+
+/* =====================================================================
+   Deterministic Change Detection
+   ===================================================================== */
+
+function haveExecutionSourcesChanged({
+  state,
+  optimizationHash,
+  optimizationStateHash
+}) {
+
+  if (
+    !isPlainObject(
+      state?.sourceHashes
+    )
+  ) {
+
+    return true;
+
+  }
+
+  return (
+    state.sourceHashes.optimization !==
+      optimizationHash ||
+    state.sourceHashes.optimizationState !==
+      optimizationStateHash
+  );
+
+}
+
+function hasExecutionOutputChanged({
+  existingOutput,
+  generatedOutput
+}) {
+
+  if (
+    !existingOutput.exists ||
+    !existingOutput.valid ||
+    !isPlainObject(
+      existingOutput.value
+    )
+  ) {
+
+    return true;
+
+  }
+
+  const existingComparable =
+    cloneJSONCompatible(
+      existingOutput.value
+    );
+
+  const generatedComparable =
+    cloneJSONCompatible(
+      generatedOutput
+    );
+
+  /*
+   * generatedAt changes on every execution and must not create a false
+   * output change when all resolved recommendations remain identical.
+   */
+  existingComparable.generatedAt =
+    null;
+
+  generatedComparable.generatedAt =
+    null;
+
+  return (
+    createHash(
+      existingComparable
+    ) !==
+    createHash(
+      generatedComparable
+    )
+  );
+
+}
+
+/* =====================================================================
+   Execution Run Lifecycle
+   ===================================================================== */
+
+function beginExecutionRun({
+  state,
+  runAt
+}) {
+
+  const nextState =
+    cloneJSONCompatible(
+      state
+    );
+
+  nextState.updatedAt =
+    runAt;
+
+  nextState.lastRunAt =
+    runAt;
+
+  nextState.counters.runs +=
+    1;
+
+  nextState.lastRun = {
+    status:
+      "RUNNING",
+
+    startedAt:
+      runAt,
+
+    completedAt:
+      null,
+
+    sourceChanged:
+      false,
+
+    outputChanged:
+      false,
+
+    outputWritten:
+      false,
+
+    stateWritten:
+      false,
+
+    totalContexts:
+      0,
+
+    resolvedContexts:
+      0,
+
+    noChangeContexts:
+      0,
+
+    blockedContexts:
+      0,
+
+    noRecommendationContexts:
+      0,
+
+    invalidContexts:
+      0,
+
+    positiveAdjustments:
+      0,
+
+    negativeAdjustments:
+      0,
+
+    zeroAdjustments:
+      0,
+
+    liveAppliedContexts:
+      0,
+
+    warnings:
+      [],
+
+    error:
+      null
+  };
+
+  return nextState;
+
+}
+
+function completeExecutionRun({
+  state,
+  runAt,
+  status,
+  sourceChanged,
+  outputChanged,
+  outputWritten,
+  optimizationHash,
+  optimizationStateHash,
+  outputHash,
+  summary,
+  warnings
+}) {
+
+  const nextState =
+    cloneJSONCompatible(
+      state
+    );
+
+  nextState.updatedAt =
+    runAt;
+
+  nextState.lastRunAt =
+    runAt;
+
+  nextState.lastSuccessfulRunAt =
+    runAt;
+
+  nextState.sourceHashes = {
+    optimization:
+      optimizationHash,
+
+    optimizationState:
+      optimizationStateHash
+  };
+
+  nextState.outputHash =
+    outputHash;
+
+  nextState.counters.successfulRuns +=
+    1;
+
+  if (
+    status ===
+      "UPDATED"
+  ) {
+
+    nextState.counters.updatedRuns +=
+      1;
+
+  } else {
+
+    nextState.counters.unchangedRuns +=
+      1;
+
+  }
+
+  nextState
+    .counters
+    .resolvedContextsObserved +=
+      summary.resolvedContexts;
+
+  nextState
+    .counters
+    .noChangeContextsObserved +=
+      summary.noChangeContexts;
+
+  nextState
+    .counters
+    .blockedContextsObserved +=
+      summary.blockedContexts;
+
+  nextState
+    .counters
+    .noRecommendationContextsObserved +=
+      summary.noRecommendationContexts;
+
+  nextState
+    .counters
+    .positiveAdjustmentsObserved +=
+      summary.positiveAdjustments;
+
+  nextState
+    .counters
+    .negativeAdjustmentsObserved +=
+      summary.negativeAdjustments;
+
+  nextState
+    .counters
+    .zeroAdjustmentsObserved +=
+      summary.zeroAdjustments;
+
+  nextState
+    .counters
+    .liveAppliedContextsObserved +=
+      summary.liveAppliedContexts;
+
+  nextState.lastRun = {
+    status,
+
+    startedAt:
+      state.lastRun?.startedAt ||
+      runAt,
+
+    completedAt:
+      runAt,
+
+    sourceChanged:
+      sourceChanged ===
+        true,
+
+    outputChanged:
+      outputChanged ===
+        true,
+
+    outputWritten:
+      outputWritten ===
+        true,
+
+    stateWritten:
+      true,
+
+    totalContexts:
+      summary.totalContexts,
+
+    resolvedContexts:
+      summary.resolvedContexts,
+
+    noChangeContexts:
+      summary.noChangeContexts,
+
+    blockedContexts:
+      summary.blockedContexts,
+
+    noRecommendationContexts:
+      summary.noRecommendationContexts,
+
+    invalidContexts:
+      summary.invalidContexts,
+
+    positiveAdjustments:
+      summary.positiveAdjustments,
+
+    negativeAdjustments:
+      summary.negativeAdjustments,
+
+    zeroAdjustments:
+      summary.zeroAdjustments,
+
+    liveAppliedContexts:
+      summary.liveAppliedContexts,
+
+    warnings:
+      uniqueSortedStrings(
+        warnings
+      ),
+
+    error:
+      null
+  };
+
+  return nextState;
+
+}
+
+function failExecutionRun({
+  state,
+  runAt,
+  error,
+  warnings = []
+}) {
+
+  const nextState =
+    cloneJSONCompatible(
+      state
+    );
+
+  nextState.updatedAt =
+    runAt;
+
+  nextState.lastRunAt =
+    runAt;
+
+  nextState.counters.failedRuns +=
+    1;
+
+  nextState.lastRun = {
+    status:
+      "FAILED",
+
+    startedAt:
+      state.lastRun?.startedAt ||
+      runAt,
+
+    completedAt:
+      runAt,
+
+    sourceChanged:
+      false,
+
+    outputChanged:
+      false,
+
+    outputWritten:
+      false,
+
+    stateWritten:
+      true,
+
+    totalContexts:
+      0,
+
+    resolvedContexts:
+      0,
+
+    noChangeContexts:
+      0,
+
+    blockedContexts:
+      0,
+
+    noRecommendationContexts:
+      0,
+
+    invalidContexts:
+      0,
+
+    positiveAdjustments:
+      0,
+
+    negativeAdjustments:
+      0,
+
+    zeroAdjustments:
+      0,
+
+    liveAppliedContexts:
+      0,
+
+    warnings:
+      uniqueSortedStrings(
+        warnings
+      ),
+
+    error:
+      error instanceof
+        Error
+        ? error.message
+        : String(
+            error
+          )
+  };
+
+  return nextState;
+
+}
+
+/* =====================================================================
+   Run Result
+   ===================================================================== */
+
+function createExecutionRunResult({
+  status,
+  runAt,
+  sourceChanged,
+  outputChanged,
+  outputWritten,
+  stateWritten,
+  summary,
+  warnings
+}) {
+
+  return {
+    engineName:
+      ENGINE_NAME,
+
+    engineVersion:
+      ENGINE_VERSION,
+
+    mode:
+      EXECUTION_MODE,
+
+    targetEngine:
+      TARGET_ENGINE,
+
+    status,
+
+    runAt,
+
+    sourceChanged:
+      sourceChanged ===
+        true,
+
+    outputChanged:
+      outputChanged ===
+        true,
+
+    outputWritten:
+      outputWritten ===
+        true,
+
+    stateWritten:
+      stateWritten ===
+        true,
+
+    liveApplicationEnabled:
+      LIVE_APPLICATION_ENABLED,
+
+    summary:
+      cloneJSONCompatible(
+        summary
+      ),
+
+    warnings:
+      uniqueSortedStrings(
+        warnings
+      )
+  };
+
+}
+
+/* =====================================================================
+   Main Adaptive Execution Worker
+   ===================================================================== */
+
+function runAdaptiveExecution() {
+
+  const runAt =
+    new Date().toISOString();
+
+  const runtimeWarnings =
+    [];
+
+  let outputWritten =
+    false;
+
+  let stateWritten =
+    false;
+
+  const stateLoad =
+    loadExecutionState(
+      runAt
+    );
+
+  let state =
+    beginExecutionRun({
+      state:
+        stateLoad.state,
+
+      runAt
+    });
+
+  if (
+    stateLoad.warning
+  ) {
+
+    runtimeWarnings.push(
+      `Execution state recovery: ${stateLoad.warning}`
+    );
+
+  }
+
+  try {
+
+    if (
+      LIVE_APPLICATION_ENABLED !==
+        false
+    ) {
+
+      throw new Error(
+        "Phase B1 live application safety lock is not disabled."
+      );
+
+    }
+
+    const sourceBundle =
+      loadOptimizationSources();
+
+    runtimeWarnings.push(
+      ...sourceBundle.warnings
+    );
+
+    if (
+      !sourceBundle.valid
+    ) {
+
+      throw new Error(
+        sourceBundle.errors.join(
+          " "
+        ) ||
+        "Adaptive optimization source validation failed."
+      );
+
+    }
+
+    const generatedOutput =
+      buildExecutionDocument({
+        sourceBundle,
+        generatedAt:
+          runAt
+      });
+
+    if (
+      generatedOutput
+        ?.validation
+        ?.valid !==
+        true
+    ) {
+
+      throw new Error(
+        generatedOutput
+          ?.validation
+          ?.errors
+          ?.join(
+            " "
+          ) ||
+        "Generated adaptive execution output failed validation."
+      );
+
+    }
+
+    runtimeWarnings.push(
+      ...(
+        generatedOutput
+          .validation
+          .warnings ||
+        []
+      )
+    );
+
+    if (
+      generatedOutput
+        .summary
+        .liveAppliedContexts !==
+        0
+    ) {
+
+      throw new Error(
+        "Dry-run output unexpectedly contains live-applied contexts."
+      );
+
+    }
+
+    const existingOutput =
+      readExistingExecutionOutput();
+
+    if (
+      existingOutput.exists &&
+      !existingOutput.valid &&
+      existingOutput.error
+    ) {
+
+      runtimeWarnings.push(
+        `Existing execution output will be replaced: ${existingOutput.error}`
+      );
+
+    }
+
+    const sourceChanged =
+      haveExecutionSourcesChanged({
+        state,
+        optimizationHash:
+          sourceBundle
+            .sourceHashes
+            .optimization,
+
+        optimizationStateHash:
+          sourceBundle
+            .sourceHashes
+            .optimizationState
+      });
+
+    const outputChanged =
+      hasExecutionOutputChanged({
+        existingOutput,
+        generatedOutput
+      });
+
+    const mustWriteOutput =
+      (
+        !existingOutput.exists ||
+        !existingOutput.valid ||
+        outputChanged
+      );
+
+    let status =
+      "UNCHANGED";
+
+    if (
+      mustWriteOutput
+    ) {
+
+      atomicWriteJSON(
+        EXECUTION_OUTPUT_PATH,
+        generatedOutput
+      );
+
+      outputWritten =
+        true;
+
+      status =
+        "UPDATED";
+
+    }
+
+    const outputHash =
+      createFileContentHash(
+        EXECUTION_OUTPUT_PATH
+      );
+
+    if (
+      !outputHash
+    ) {
+
+      throw new Error(
+        "Unable to calculate adaptive execution output hash."
+      );
+
+    }
+
+    state =
+      completeExecutionRun({
+        state,
+        runAt,
+        status,
+        sourceChanged,
+        outputChanged,
+        outputWritten,
+
+        optimizationHash:
+          sourceBundle
+            .sourceHashes
+            .optimization,
+
+        optimizationStateHash:
+          sourceBundle
+            .sourceHashes
+            .optimizationState,
+
+        outputHash,
+
+        summary:
+          generatedOutput.summary,
+
+        warnings:
+          runtimeWarnings
+      });
+
+    const stateValidation =
+      validateExecutionState(
+        state
+      );
+
+    if (
+      !stateValidation.valid
+    ) {
+
+      throw new Error(
+        stateValidation.errors.join(
+          " "
+        ) ||
+        "Generated adaptive execution state is invalid."
+      );
+
+    }
+
+    atomicWriteJSON(
+      EXECUTION_STATE_PATH,
+      state
+    );
+
+    stateWritten =
+      true;
+
+    const result =
+      createExecutionRunResult({
+        status,
+        runAt,
+        sourceChanged,
+        outputChanged,
+        outputWritten,
+        stateWritten,
+
+        summary:
+          generatedOutput.summary,
+
+        warnings:
+          runtimeWarnings
+      });
+
+    console.log(
+      `[adaptive-execution] ${result.status}`
+    );
+
+    console.log(
+      `[adaptive-execution] Mode: ${result.mode}`
+    );
+
+    console.log(
+      `[adaptive-execution] Target engine: ${result.targetEngine}`
+    );
+
+    console.log(
+      `[adaptive-execution] Total contexts: ${result.summary.totalContexts}`
+    );
+
+    console.log(
+      `[adaptive-execution] Resolved contexts: ${result.summary.resolvedContexts}`
+    );
+
+    console.log(
+      `[adaptive-execution] Blocked contexts: ${result.summary.blockedContexts}`
+    );
+
+    console.log(
+      `[adaptive-execution] No-change contexts: ${result.summary.noChangeContexts}`
+    );
+
+    console.log(
+      `[adaptive-execution] Positive adjustments: ${result.summary.positiveAdjustments}`
+    );
+
+    console.log(
+      `[adaptive-execution] Negative adjustments: ${result.summary.negativeAdjustments}`
+    );
+
+    console.log(
+      `[adaptive-execution] Zero adjustments: ${result.summary.zeroAdjustments}`
+    );
+
+    console.log(
+      `[adaptive-execution] Live-applied contexts: ${result.summary.liveAppliedContexts}`
+    );
+
+    console.log(
+      `[adaptive-execution] Output written: ${result.outputWritten}`
+    );
+
+    console.log(
+      `[adaptive-execution] State written: ${result.stateWritten}`
+    );
+
+    if (
+      result.warnings.length >
+        0
+    ) {
+
+      console.warn(
+        `[adaptive-execution] Completed with ${result.warnings.length} warning(s).`
+      );
+
+    }
+
+    return result;
+
+  } catch (
+    error
+  ) {
+
+    state =
+      failExecutionRun({
+        state,
+        runAt,
+        error,
+        warnings:
+          runtimeWarnings
+      });
+
+    try {
+
+      const failedStateValidation =
+        validateExecutionState(
+          state
+        );
+
+      if (
+        !failedStateValidation.valid
+      ) {
+
+        throw new Error(
+          failedStateValidation.errors.join(
+            " "
+          )
+        );
+
+      }
+
+      atomicWriteJSON(
+        EXECUTION_STATE_PATH,
+        state
+      );
+
+      stateWritten =
+        true;
+
+    } catch (
+      stateWriteError
+    ) {
+
+      console.error(
+        "[adaptive-execution] Unable to persist failed-run state:",
+        stateWriteError.message
+      );
+
+    }
+
+    console.error(
+      "[adaptive-execution] FAILED"
+    );
+
+    console.error(
+      `[adaptive-execution] ${error.message}`
+    );
+
+    throw error;
+
+  }
+
+}
+
+/* =====================================================================
+   Command-Line Execution
+   ===================================================================== */
+
+if (
+  require.main ===
+    module
+) {
+
+  try {
+
+    runAdaptiveExecution();
+
+  } catch (
+    error
+  ) {
+
+    process.exitCode =
+      1;
+
+  }
+
+}
+
+/* =====================================================================
+   Public Exports
+   ===================================================================== */
+
+module.exports = {
+  ENGINE_NAME,
+  ENGINE_VERSION,
+  EXECUTION_MODE,
+  TARGET_ENGINE,
+  LIVE_APPLICATION_ENABLED,
+  REQUIRED_MINIMUM_TRADES,
+  MAX_FINAL_ADJUSTMENT,
+
+  validateOptimizationSafety,
+  buildRecommendationIndex,
+  validateOptimizationState,
+  loadOptimizationSources,
+
+  buildScalpCandidateIds,
+  evaluateExecutionCandidate,
+  resolveScalpContext,
+  buildSupportedScalpContexts,
+  resolveAllScalpContexts,
+  summarizeScalpResolutions,
+
+  createEmptyExecutionDocument,
+  validateExecutionDocument,
+  buildExecutionDocument,
+
+  createEmptyExecutionState,
+  validateExecutionState,
+  runAdaptiveExecution
+};

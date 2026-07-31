@@ -1087,10 +1087,23 @@ function buildProviderUrl(symbol) {
   url.search =
     new URLSearchParams({
       symbol,
+
       interval:
         INTERVAL,
+
       outputsize:
         String(OUTPUT_SIZE),
+
+      /*
+       * Force provider timestamps to UTC.
+       *
+       * Without this parameter, Twelve Data may return timestamps in
+       * an instrument/provider timezone while the downstream parser
+       * correctly treats the stored integration format as UTC.
+       */
+      timezone:
+        "UTC",
+
       apikey:
         API_KEY
     }).toString();

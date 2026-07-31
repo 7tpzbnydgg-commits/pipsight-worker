@@ -15028,7 +15028,14 @@ function updateScalpTracker(
           outcome.closePrice,
 
         closedAt:
-          candle.time,
+          new Date(
+            candleTimeMs(
+              candle
+            ) +
+            timeframeMilliseconds(
+              5
+            )
+          ).toISOString(),
 
         resolutionReason:
           outcome.reason

@@ -16655,6 +16655,126 @@ async function loadPairAnalysisData(
   pair,
   mode
 ){
+  const pairKey =
+    pairKeyOf(
+      pair
+    );
+
+  if(!pairKey){
+    throw new Error(
+      "Unsupported dashboard pair"
+    );
+  }
+
+  /*
+   * Repository-owned worker data is authoritative.
+   *
+   * External reference feeds are only used when the required
+   * repository timeframe is unavailable.
+   */
+  if(mode === "weekly"){
+    const dailyOHLC =
+      await getDailyOHLC(
+        pairKey
+      );
+
+    if(dailyOHLC.length){
+      const dailyCloseRows =
+        dailyOHLC.map(
+          candle=>({
+            date:
+              candle.time.slice(0,10),
+
+            close:
+              candle.close
+          })
+        );
+
+      return {
+        rows:
+          resampleWeekly(
+            dailyCloseRows
+          ),
+
+        higherRows:
+          null,
+
+        ohlcRows:
+          dailyOHLC,
+
+        status:
+          `${dailyOHLC.length} D1 candles`,
+
+        freshness:
+          dailyFreshnessFor(
+            pairKey
+          )
+      };
+    }
+  }else{
+    const h1OHLC =
+      await getIntradayH1(
+        pairKey
+      );
+
+    if(h1OHLC.length){
+      const h1Rows =
+        h1OHLC.map(
+          candle=>({
+            date:
+              candle.time.slice(0,10),
+
+            close:
+              candle.close
+          })
+        );
+
+      const h4Candles =
+        aggregateCandlesAligned(
+          h1OHLC,
+          60,
+          240,
+          {
+            closedOnly:true,
+            requireCompleteBuckets:true
+          }
+        );
+
+      const h4Rows =
+        h4Candles.map(
+          candle=>({
+            date:
+              candle.time.slice(0,10),
+
+            close:
+              candle.close
+          })
+        );
+
+      return {
+        rows:
+          h1Rows,
+
+        higherRows:
+          h4Rows,
+
+        ohlcRows:
+          h1OHLC,
+
+        status:
+          `${h1OHLC.length} H1 candles`,
+
+        freshness:
+          intradayFreshnessFor(
+            pairKey
+          )
+      };
+    }
+  }
+
+  /*
+   * Safe legacy fallback only when worker data is unavailable.
+   */
   let referenceRows =
     [];
 
@@ -16685,108 +16805,33 @@ async function loadPairAnalysisData(
       result.statusLabel;
   }
 
-  const dailyOHLC =
-    await getDailyOHLC(
-      pair.key
-    );
-
-  const h1OHLC =
-    await getIntradayH1(
-      pair.key
-    );
-
   if(mode === "weekly"){
-    const dailyCloseRows =
-      dailyOHLC.length
-        ? dailyOHLC.map(
-            candle=>({
-              date:
-                candle.time.slice(0,10),
-
-              close:
-                candle.close
-            })
-          )
-        : referenceRows;
-
-    const weeklyRows =
-      resampleWeekly(
-        dailyCloseRows
-      );
-
     return {
       rows:
-        weeklyRows,
+        resampleWeekly(
+          referenceRows
+        ),
 
       higherRows:
         null,
 
       ohlcRows:
-        dailyOHLC,
+        [],
 
       status:
         referenceStatus,
 
       freshness:
         dailyFreshnessFor(
-          pair.key
+          pairKey
         )
     };
   }
 
-  if(h1OHLC.length){
-    const h1Rows =
-      h1OHLC.map(
-        candle=>({
-          date:
-            candle.time.slice(0,10),
-
-          close:
-            candle.close
-        })
-      );
-
-    const h4Candles =
-      aggregateCandlesAligned(
-        h1OHLC,
-        60,
-        240,
-        {
-          closedOnly:true,
-          requireCompleteBuckets:true
-        }
-      );
-
-    const h4Rows =
-      h4Candles.map(
-        candle=>({
-          date:
-            candle.time.slice(0,10),
-
-          close:
-            candle.close
-        })
-      );
-
-    return {
-      rows:
-        h1Rows,
-
-      higherRows:
-        h4Rows,
-
-      ohlcRows:
-        h1OHLC,
-
-      status:
-        `${h1OHLC.length} H1 candles`,
-
-      freshness:
-        intradayFreshnessFor(
-          pair.key
-        )
-    };
-  }
+  const dailyOHLC =
+    await getDailyOHLC(
+      pairKey
+    );
 
   return {
     rows:
@@ -16805,7 +16850,7 @@ async function loadPairAnalysisData(
 
     freshness:
       dailyFreshnessFor(
-        pair.key
+        pairKey
       )
   };
 }

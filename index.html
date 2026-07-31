@@ -13133,6 +13133,338 @@ function normalizeScalpPerTF(
   );
 }
 
+// ════════════════════════════════════════════════════════════════
+// CONFIDENCE EXPLAINABILITY
+// ════════════════════════════════════════════════════════════════
+
+function normalizeConfidenceExplainability(
+  value
+){
+  if(
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value)
+  ){
+    return null;
+  }
+
+  const cleanText =
+    candidate=>
+      typeof candidate === "string" &&
+      candidate.trim()
+        ? candidate.trim()
+        : null;
+
+  const confidenceValue =
+    candidate=>{
+      const normalized =
+        safeNumber(
+          candidate,
+          null
+        );
+
+      return normalized != null &&
+        normalized >= 0 &&
+        normalized <= 100
+          ? normalized
+          : null;
+    };
+
+  const adjustmentValue =
+    safeNumber(
+      value.aiAdjustment,
+      null
+    );
+
+  const sampleSizeValue =
+    safeInteger(
+      value.sampleSize,
+      null
+    );
+
+  const winRateValue =
+    confidenceValue(
+      value.winRate
+    );
+
+  const profitFactorValue =
+    safeNumber(
+      value.profitFactor,
+      null
+    );
+
+  const reliabilityValue =
+    safeNumber(
+      value.reliability,
+      null
+    );
+
+  const normalized = {
+    baseConfidence:
+      confidenceValue(
+        value.baseConfidence
+      ),
+
+    aiAdjustment:
+      adjustmentValue != null &&
+      adjustmentValue >= -100 &&
+      adjustmentValue <= 100
+        ? adjustmentValue
+        : null,
+
+    finalConfidence:
+      confidenceValue(
+        value.finalConfidence
+      ),
+
+    status:
+      cleanText(
+        value.status
+      ),
+
+    adjustmentOwner:
+      cleanText(
+        value.adjustmentOwner
+      ),
+
+    sampleSize:
+      sampleSizeValue != null &&
+      sampleSizeValue >= 0
+        ? sampleSizeValue
+        : null,
+
+    winRate:
+      winRateValue,
+
+    profitFactor:
+      profitFactorValue != null &&
+      profitFactorValue >= 0
+        ? profitFactorValue
+        : null,
+
+    reliability:
+      reliabilityValue != null &&
+      reliabilityValue >= 0
+        ? reliabilityValue
+        : null,
+
+    reason:
+      cleanText(
+        value.reason
+      )
+  };
+
+  const available =
+    Object.values(
+      normalized
+    ).some(
+      item=>
+        item !== null
+    );
+
+  return available
+    ? normalized
+    : null;
+}
+
+function renderConfidenceExplainability(
+  value
+){
+  const explanation =
+    normalizeConfidenceExplainability(
+      value
+    );
+
+  if(!explanation){
+    return "";
+  }
+
+  const metrics = [];
+
+  const addMetric = (
+    label,
+    displayValue
+  )=>{
+    if(
+      displayValue == null ||
+      displayValue === ""
+    ){
+      return;
+    }
+
+    metrics.push(`
+      <div class="metric">
+        <div class="metric-label">
+          ${escapeHTML(label)}
+        </div>
+
+        <div class="metric-value">
+          ${escapeHTML(displayValue)}
+        </div>
+      </div>
+    `);
+  };
+
+  if(
+    explanation.baseConfidence != null
+  ){
+    addMetric(
+      "Base Confidence",
+      `${safeFixed(
+        explanation.baseConfidence,
+        0
+      )}%`
+    );
+  }
+
+  if(
+    explanation.aiAdjustment != null
+  ){
+    addMetric(
+      "AI Adjustment",
+      `${
+        explanation.aiAdjustment > 0
+          ? "+"
+          : ""
+      }${safeFixed(
+        explanation.aiAdjustment,
+        0
+      )}`
+    );
+  }
+
+  if(
+    explanation.finalConfidence != null
+  ){
+    addMetric(
+      "Final Confidence",
+      `${safeFixed(
+        explanation.finalConfidence,
+        0
+      )}%`
+    );
+  }
+
+  if(explanation.status){
+    addMetric(
+      "Status",
+      explanation.status.replace(
+        /_/g,
+        " "
+      )
+    );
+  }
+
+  if(explanation.adjustmentOwner){
+    addMetric(
+      "Adjustment Owner",
+      explanation.adjustmentOwner
+    );
+  }
+
+  if(
+    explanation.sampleSize != null
+  ){
+    addMetric(
+      "Sample Size",
+      String(
+        explanation.sampleSize
+      )
+    );
+  }
+
+  if(
+    explanation.winRate != null
+  ){
+    addMetric(
+      "Win Rate",
+      `${safeFixed(
+        explanation.winRate,
+        2
+      )}%`
+    );
+  }
+
+  if(
+    explanation.profitFactor != null
+  ){
+    addMetric(
+      "Profit Factor",
+      safeFixed(
+        explanation.profitFactor,
+        2
+      )
+    );
+  }
+
+  if(
+    explanation.reliability != null
+  ){
+    addMetric(
+      "Reliability",
+      safeFixed(
+        explanation.reliability,
+        2
+      )
+    );
+  }
+
+  if(
+    !metrics.length &&
+    !explanation.reason
+  ){
+    return "";
+  }
+
+  return `
+    <div
+      style="
+        margin-top:14px;
+        padding-top:14px;
+        border-top:1px solid var(--border);
+      "
+    >
+      <div class="label">
+        Confidence Explainability
+      </div>
+
+      ${
+        metrics.length
+          ? `
+            <div class="metric-grid">
+              ${metrics.join("")}
+            </div>
+          `
+          : ""
+      }
+
+      ${
+        explanation.reason
+          ? `
+            <div
+              class="watch-box"
+              style="margin-top:10px;"
+            >
+              <span
+                class="mono"
+                style="color:var(--muted);"
+              >
+                Reason
+              </span>
+
+              <br />
+
+              ${escapeHTML(
+                explanation.reason
+              )}
+            </div>
+          `
+          : ""
+      }
+    </div>
+  `;
+}
+
 function normalizeBackendScalpTradePlan(
   entry,
   decimals

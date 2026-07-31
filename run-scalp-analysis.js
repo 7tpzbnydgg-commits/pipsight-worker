@@ -3849,7 +3849,13 @@ function analyze(
 
   result.confidence =
     80;
-
+   
+ if (
+    qualifiedPartialAlignment
+  ) {
+    result.confidence -= 10;
+  }
+   
   if (
     market.direction === direction
   ) {

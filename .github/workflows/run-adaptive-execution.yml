@@ -1,0 +1,652 @@
+name: PipSight Pro — adaptive execution dry-run verification
+
+on:
+  workflow_run:
+    workflows:
+      - "PipSight Pro — adaptive optimizer shadow verification"
+    types:
+      - completed
+
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pipsight-adaptive-execution-${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  execute:
+    name: Run and verify adaptive execution
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    # Automatic execution is allowed only when:
+    # - The optimizer workflow succeeded.
+    # - The run belongs to this same repository.
+    # - The optimizer ran on the repository default branch.
+    #
+    # Manual workflow_dispatch remains available.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        github.event.workflow_run.head_branch == github.event.repository.default_branch
+      )
+
+    env:
+      TARGET_BRANCH: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.ref_name }}
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout target branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Verify required source files
+        run: |
+          set -euo pipefail
+
+          required_files=(
+            "adaptive-execution.js"
+            "data/adaptive-optimization.json"
+            "data/adaptive-optimization-state.json"
+          )
+
+          for file in "${required_files[@]}"; do
+            if [[ ! -f "$file" ]]; then
+              echo "::error file=$file::Required adaptive execution source is missing: $file"
+              exit 1
+            fi
+
+            if [[ ! -s "$file" ]]; then
+              echo "::error file=$file::Required adaptive execution source is empty: $file"
+              exit 1
+            fi
+          done
+
+          echo "All adaptive execution source files are available."
+
+      - name: Validate JavaScript syntax
+        run: |
+          set -euo pipefail
+
+          node --check adaptive-execution.js
+
+          echo "adaptive-execution.js syntax is valid."
+
+      - name: Verify optimizer source safety
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          "use strict";
+
+          const fs =
+            require("fs");
+
+          const optimization =
+            JSON.parse(
+              fs.readFileSync(
+                "data/adaptive-optimization.json",
+                "utf8"
+              )
+            );
+
+          const optimizationState =
+            JSON.parse(
+              fs.readFileSync(
+                "data/adaptive-optimization-state.json",
+                "utf8"
+              )
+            );
+
+          if (optimization.mode !== "shadow") {
+            throw new Error(
+              "Adaptive optimization must remain in shadow mode."
+            );
+          }
+
+          if (
+            optimization.activeParameters?.applied !==
+            false
+          ) {
+            throw new Error(
+              "Optimizer active parameters must not be applied."
+            );
+          }
+
+          if (
+            optimization.safety?.shadowOnly !==
+            true
+          ) {
+            throw new Error(
+              "Optimizer shadow-only safety flag is missing."
+            );
+          }
+
+          if (
+            optimization.safety?.minimumResolvedTrades !==
+            50
+          ) {
+            throw new Error(
+              "Optimizer minimum resolved-trade gate must remain 50."
+            );
+          }
+
+          if (
+            optimization.safety?.maximumSingleStepChange !==
+            1
+          ) {
+            throw new Error(
+              "Optimizer maximum single-step change must remain 1."
+            );
+          }
+
+          if (
+            optimization.safety?.decisionModification !==
+              false ||
+            optimization.safety?.tradePlanModification !==
+              false ||
+            optimization.safety?.telegramModification !==
+              false
+          ) {
+            throw new Error(
+              "Optimizer production safety flags are invalid."
+            );
+          }
+
+          if (
+            optimization.validation?.valid !==
+            true
+          ) {
+            throw new Error(
+              "Optimizer output failed its internal validation."
+            );
+          }
+
+          const successfulStatuses =
+            new Set([
+              "UPDATED",
+              "UNCHANGED"
+            ]);
+
+          if (
+            !successfulStatuses.has(
+              optimizationState.lastRun?.status
+            )
+          ) {
+            throw new Error(
+              "Optimizer state does not contain a successful last run."
+            );
+          }
+
+          if (
+            optimizationState.lastRun?.stateWritten !==
+            true
+          ) {
+            throw new Error(
+              "Optimizer state was not persisted successfully."
+            );
+          }
+
+          if (
+            optimizationState.lastRun?.error !==
+            null
+          ) {
+            throw new Error(
+              "Optimizer state contains a last-run error."
+            );
+          }
+
+          console.log(
+            "Optimizer source safety verification passed."
+          );
+          NODE
+
+      - name: Run adaptive execution dry-run
+        run: |
+          set -euo pipefail
+
+          node adaptive-execution.js
+
+      - name: Validate adaptive execution outputs
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          "use strict";
+
+          const fs =
+            require("fs");
+
+          const outputPath =
+            "data/adaptive-execution.json";
+
+          const statePath =
+            "data/adaptive-execution-state.json";
+
+          for (
+            const filePath of [
+              outputPath,
+              statePath
+            ]
+          ) {
+            if (!fs.existsSync(filePath)) {
+              throw new Error(
+                `Required adaptive execution output was not created: ${filePath}`
+              );
+            }
+
+            const raw =
+              fs.readFileSync(
+                filePath,
+                "utf8"
+              ).trim();
+
+            if (!raw) {
+              throw new Error(
+                `Adaptive execution output is empty: ${filePath}`
+              );
+            }
+
+            const parsed =
+              JSON.parse(raw);
+
+            if (
+              parsed === null ||
+              typeof parsed !== "object" ||
+              Array.isArray(parsed)
+            ) {
+              throw new Error(
+                `${filePath} must contain a JSON object.`
+              );
+            }
+
+            console.log(
+              `Validated JSON object: ${filePath}`
+            );
+          }
+
+          const execution =
+            JSON.parse(
+              fs.readFileSync(
+                outputPath,
+                "utf8"
+              )
+            );
+
+          const state =
+            JSON.parse(
+              fs.readFileSync(
+                statePath,
+                "utf8"
+              )
+            );
+
+          if (execution.mode !== "dry-run") {
+            throw new Error(
+              "Adaptive execution must remain in dry-run mode."
+            );
+          }
+
+          if (execution.targetEngine !== "scalp") {
+            throw new Error(
+              "Adaptive execution target engine must remain scalp."
+            );
+          }
+
+          if (
+            execution.activeExecution?.enabled !==
+            false
+          ) {
+            throw new Error(
+              "Adaptive execution must not be live-enabled."
+            );
+          }
+
+          if (
+            execution.activeExecution?.liveApplied !==
+            false
+          ) {
+            throw new Error(
+              "Adaptive execution must not apply live adjustments."
+            );
+          }
+
+          if (
+            execution.activeExecution
+              ?.confidenceAdjustments === null ||
+            typeof execution.activeExecution
+              ?.confidenceAdjustments !== "object" ||
+            Array.isArray(
+              execution.activeExecution
+                ?.confidenceAdjustments
+            ) ||
+            Object.keys(
+              execution.activeExecution
+                ?.confidenceAdjustments || {}
+            ).length !== 0
+          ) {
+            throw new Error(
+              "Dry-run confidence adjustments must remain empty."
+            );
+          }
+
+          if (
+            execution.safety?.dryRunOnly !==
+            true ||
+            execution.safety?.liveApplicationEnabled !==
+            false
+          ) {
+            throw new Error(
+              "Adaptive execution dry-run safety lock is invalid."
+            );
+          }
+
+          if (
+            execution.safety?.decisionModification !==
+              false ||
+            execution.safety?.tradePlanModification !==
+              false ||
+            execution.safety?.telegramModification !==
+              false ||
+            execution.safety?.recommendationStacking !==
+              false
+          ) {
+            throw new Error(
+              "Adaptive execution safety guarantees are invalid."
+            );
+          }
+
+          if (
+            execution.safety?.minimumResolvedTrades !==
+            50
+          ) {
+            throw new Error(
+              "Adaptive execution minimum resolved-trade gate must remain 50."
+            );
+          }
+
+          if (
+            execution.safety?.maximumFinalAdjustment !==
+            1
+          ) {
+            throw new Error(
+              "Adaptive execution maximum final adjustment must remain 1."
+            );
+          }
+
+          if (
+            execution.validation?.valid !==
+            true
+          ) {
+            throw new Error(
+              "Adaptive execution output failed internal validation."
+            );
+          }
+
+          if (
+            execution.summary?.totalContexts !==
+            12
+          ) {
+            throw new Error(
+              "Adaptive execution must contain exactly 12 supported Scalp contexts."
+            );
+          }
+
+          if (
+            execution.summary?.liveAppliedContexts !==
+            0
+          ) {
+            throw new Error(
+              "Dry-run output contains an unexpected live-applied context."
+            );
+          }
+
+          if (
+            !Array.isArray(
+              execution.resolutions
+            ) ||
+            execution.resolutions.length !==
+              12
+          ) {
+            throw new Error(
+              "Adaptive execution resolutions must contain exactly 12 entries."
+            );
+          }
+
+          for (
+            const [
+              index,
+              resolution
+            ] of execution.resolutions.entries()
+          ) {
+            const adjustment =
+              Number(
+                resolution.proposedAdjustment
+              );
+
+            if (
+              !Number.isFinite(adjustment) ||
+              Math.abs(adjustment) > 1
+            ) {
+              throw new Error(
+                `Resolution ${index} exceeds the maximum dry-run adjustment.`
+              );
+            }
+
+            if (
+              resolution.liveApplied !==
+              false
+            ) {
+              throw new Error(
+                `Resolution ${index} unexpectedly applied a live adjustment.`
+              );
+            }
+          }
+
+          const acceptedStateStatuses =
+            new Set([
+              "UPDATED",
+              "UNCHANGED"
+            ]);
+
+          if (
+            !acceptedStateStatuses.has(
+              state.lastRun?.status
+            )
+          ) {
+            throw new Error(
+              "Adaptive execution state does not contain a successful run."
+            );
+          }
+
+          if (
+            state.lastRun?.stateWritten !==
+            true
+          ) {
+            throw new Error(
+              "Adaptive execution state was not persisted successfully."
+            );
+          }
+
+          if (
+            state.lastRun?.error !==
+            null
+          ) {
+            throw new Error(
+              "Adaptive execution state contains an error."
+            );
+          }
+
+          console.log(
+            "Adaptive execution dry-run safety validation passed."
+          );
+
+          console.log(
+            `Total contexts: ${execution.summary.totalContexts}`
+          );
+
+          console.log(
+            `Resolved contexts: ${execution.summary.resolvedContexts}`
+          );
+
+          console.log(
+            `Blocked contexts: ${execution.summary.blockedContexts}`
+          );
+
+          console.log(
+            `Positive adjustments: ${execution.summary.positiveAdjustments}`
+          );
+
+          console.log(
+            `Negative adjustments: ${execution.summary.negativeAdjustments}`
+          );
+
+          console.log(
+            `Zero adjustments: ${execution.summary.zeroAdjustments}`
+          );
+
+          console.log(
+            `Live-applied contexts: ${execution.summary.liveAppliedContexts}`
+          );
+          NODE
+
+      - name: Verify protected files were not modified
+        run: |
+          set -euo pipefail
+
+          protected_files=(
+            "data/scalp-signals.json"
+            "data/scalp-signal-log.json"
+            "data/analysis-history.json"
+            "data/live-analysis.json"
+            "data/notify-state.json"
+            "data/ai-memory.json"
+            "data/ai-memory-state.json"
+            "data/adaptive-optimization.json"
+            "data/adaptive-optimization-state.json"
+          )
+
+          for file in "${protected_files[@]}"; do
+            if [[ -e "$file" ]] && ! git diff --quiet -- "$file"; then
+              echo "::error file=$file::Adaptive execution unexpectedly modified protected file: $file"
+              exit 1
+            fi
+          done
+
+          echo "All existing production-owned files remain unchanged."
+
+      - name: Show adaptive execution changes
+        run: |
+          set -euo pipefail
+
+          echo "Files changed by adaptive execution:"
+          git status --short
+
+      - name: Commit and push adaptive execution outputs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "pipsight-adaptive-execution-robot"
+          git config user.email "actions@users.noreply.github.com"
+
+          # Strict output ownership:
+          # Only the two new adaptive execution files may be staged.
+          git add -- \
+            data/adaptive-execution.json \
+            data/adaptive-execution-state.json
+
+          if git diff --cached --quiet; then
+            echo "No adaptive execution changes to commit."
+            exit 0
+          fi
+
+          staged_files="$(
+            git diff \
+              --cached \
+              --name-only
+          )"
+
+          unexpected_files="$(
+            printf '%s\n' "$staged_files" |
+            grep -v -E \
+              '^(data/adaptive-execution\.json|data/adaptive-execution-state\.json)$' ||
+            true
+          )"
+
+          if [[ -n "$unexpected_files" ]]; then
+            echo "::error::Unexpected files were staged:"
+            printf '%s\n' "$unexpected_files"
+            exit 1
+          fi
+
+          git commit \
+            -m "robot: refresh adaptive execution dry-run state"
+
+          push_succeeded=false
+
+          for attempt in 1 2 3 4 5; do
+            echo "Push attempt ${attempt} of 5..."
+
+            if git push \
+              origin \
+              "HEAD:${TARGET_BRANCH}"; then
+              push_succeeded=true
+              break
+            fi
+
+            if [[ "$attempt" -eq 5 ]]; then
+              break
+            fi
+
+            echo "Push rejected. Fetching and rebasing latest branch..."
+
+            git fetch \
+              origin \
+              "${TARGET_BRANCH}"
+
+            if ! git rebase \
+              "origin/${TARGET_BRANCH}"; then
+              echo "::error::Rebase failed while synchronizing adaptive execution outputs."
+              git rebase --abort || true
+              exit 1
+            fi
+
+            sleep $((attempt * 2))
+          done
+
+          if [[ "$push_succeeded" != "true" ]]; then
+            echo "::error::Unable to push adaptive execution state after 5 attempts."
+            exit 1
+          fi
+
+          echo "Adaptive execution dry-run outputs committed successfully."
+
+      - name: Log execution
+        if: always()
+        run: |
+          echo "PipSight adaptive execution workflow finished."
+          echo "Status: ${{ job.status }}"
+          echo "Event: ${{ github.event_name }}"
+          echo "Repository: ${{ github.repository }}"
+          echo "Branch: ${TARGET_BRANCH}"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "Completed at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"

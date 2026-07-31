@@ -18706,50 +18706,56 @@ async function renderMasterSignal(){
       );
 
     container.innerHTML = `
-      <div
-        class="signal-summary"
-        style="
-          display:flex;
-          justify-content:space-between;
-          align-items:center;
-          gap:12px;
-        "
-      >
-        <div>
-          <div class="label">
-            Master Signal · ${escapeHTML(pair.label)}
-          </div>
-
-          <span
-            class="badge ${signalBadgeClass(decision)}"
-          >
-            ${escapeHTML(decision)}
-          </span>
-        </div>
-
+      <div class="signal-summary">
         <div
-          class="mono"
           style="
-            color:var(--muted);
-            font-size:11px;
-            text-align:right;
+            display:flex;
+            justify-content:space-between;
+            align-items:center;
+            gap:12px;
           "
         >
-          ${
-            safeNumber(
-              result.confidence,
-              null
-            ) == null
-              ? escapeHTML(
-                  result.reason ||
-                  "No confidence score"
-                )
-              : `${safeFixed(
-                  result.confidence,
-                  0
-                )}% confidence`
-          }
+          <div>
+            <div class="label">
+              Master Signal · ${escapeHTML(pair.label)}
+            </div>
+
+            <span
+              class="badge ${signalBadgeClass(decision)}"
+            >
+              ${escapeHTML(decision)}
+            </span>
+          </div>
+
+          <div
+            class="mono"
+            style="
+              color:var(--muted);
+              font-size:11px;
+              text-align:right;
+            "
+          >
+            ${
+              safeNumber(
+                result.confidence,
+                null
+              ) == null
+                ? escapeHTML(
+                    result.reason ||
+                    "No confidence score"
+                  )
+                : `${safeFixed(
+                    result.confidence,
+                    0
+                  )}% confidence`
+            }
+          </div>
         </div>
+
+        ${renderConfidenceExplainability(
+          result &&
+          result.confidenceExplainability
+        )}
       </div>
     `;
   }catch(error){

@@ -15896,19 +15896,61 @@ function renderScalpHistory(
       pair
     );
 
+  /*
+   * Dashboard-only visibility window.
+   *
+   * Historical records remain permanently stored for:
+   * - Tracker statistics
+   * - Win-rate calculations
+   * - Learner
+   * - AI Memory
+   *
+   * Only resolved trades closed within the latest 48 hours
+   * are displayed in this card.
+   */
+  const nowMs =
+    Date.now();
+
+  const displayWindowMs =
+    48 *
+    60 *
+    60 *
+    1000;
+
+  const cutoffMs =
+    nowMs -
+    displayWindowMs;
+
   const rows =
     sortByTimestampDescending(
       safeArray(history)
-        .filter(
-          entry=>
-            entry &&
-            entry.pairKey ===
+        .filter(entry=>{
+          if(
+            !entry ||
+            entry.pairKey !==
               pair.key
-        ),
+          ){
+            return false;
+          }
+
+          const closedAtMs =
+            Date.parse(
+              entry.closedAt
+            );
+
+          return (
+            Number.isFinite(
+              closedAtMs
+            ) &&
+            closedAtMs <=
+              nowMs &&
+            closedAtMs >=
+              cutoffMs
+          );
+        }),
 
       entry=>
-        entry.closedAt ||
-        entry.openedAt
+        entry.closedAt
     )
       .slice(
         0,
@@ -15924,7 +15966,7 @@ function renderScalpHistory(
   if(!rows.length){
     return `
       <div class="empty-note">
-        No resolved scalp trades have been recorded for ${escapeHTML(pair.label)} yet.
+        No resolved scalp trades in the last 48 hours for ${escapeHTML(pair.label)}.
       </div>
     `;
   }

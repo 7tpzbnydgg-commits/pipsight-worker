@@ -18302,11 +18302,26 @@ async function renderMasterSignal(){
     return;
   }
 
+  const pair =
+    currentPair;
+
+  const mode =
+    currentMode;
+
   try{
     const result =
       await getDecisionForEngine(
-        currentPair
+        pair
       );
+
+    if(
+      currentPair.key !==
+        pair.key ||
+      currentMode !==
+        mode
+    ){
+      return null;
+    }
 
     const decision =
       normalizeSignalDecision(

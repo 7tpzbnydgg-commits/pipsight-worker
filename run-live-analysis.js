@@ -13125,3 +13125,196 @@ async function sendTelegramMessage(
 // ---------------------------------------------------------------------------
 // Telegram processing for one engine
 // ---------------------------------------------------------------------------
+async function processTelegramNotification(
+  rawNotifyState,
+  engineResult,
+  options = {}
+) {
+  const eligibility =
+    shouldSendTelegramNotification(
+      rawNotifyState,
+      engineResult,
+      options
+    );
+
+  if (!eligibility.shouldSend) {
+    return {
+      sent: false,
+      skipped: true,
+
+      reason: eligibility.reason,
+
+      notifyState:
+        eligibility.state,
+
+      engine:
+        eligibility.canonical,
+    };
+  }
+
+  const message =
+    options.message ||
+    formatTelegramSignalMessage(
+      eligibility.canonical,
+      options
+    );
+
+  const sendResult =
+    await sendTelegramMessage(
+      message,
+      options
+    );
+
+  if (!sendResult.ok) {
+    return {
+      sent: false,
+      skipped:
+        sendResult.skipped === true,
+
+      reason:
+        sendResult.reason ||
+        "Telegram send failed",
+
+      sendResult,
+
+      notifyState:
+        eligibility.state,
+
+      engine:
+        eligibility.canonical,
+    };
+  }
+
+  const notifyState =
+    updateNotifyStateAfterSend(
+      eligibility.state,
+      eligibility.canonical,
+      {
+        ...options,
+
+        messageId:
+          sendResult.messageId,
+      }
+    );
+
+  return {
+    sent: true,
+    skipped: false,
+
+    reason:
+      "Telegram notification sent",
+
+    sendResult,
+    notifyState,
+
+    engine:
+      eligibility.canonical,
+
+    message,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Telegram processing for complete live output
+// ---------------------------------------------------------------------------
+
+async function processLiveOutputNotifications(
+  liveOutput,
+  rawNotifyState,
+  options = {}
+) {
+  let notifyState =
+    normalizeNotifyState(rawNotifyState);
+
+  const results = [];
+
+  const modes = Array.isArray(options.modes)
+    ? options.modes.map((mode) =>
+        liveNormalizeMode(mode)
+      )
+    : ["master"];
+
+  const pairRecords =
+    liveIsPlainObject(liveOutput?.pairs)
+      ? Object.values(liveOutput.pairs)
+      : liveAsArray(liveOutput?.results);
+
+  for (const pairRecord of pairRecords) {
+    if (!liveIsPlainObject(pairRecord)) {
+      continue;
+    }
+
+    const pair =
+      liveNormalizePairLabel(
+        pairRecord.pair ||
+          pairRecord.symbol
+      );
+
+    for (const mode of modes) {
+      const engineResult =
+        pairRecord[mode] ||
+        pairRecord.engines?.[mode] ||
+        pairRecord.modes?.[mode];
+
+      if (!liveIsPlainObject(engineResult)) {
+        continue;
+      }
+
+      const result =
+        await processTelegramNotification(
+          notifyState,
+          engineResult,
+          {
+            ...options,
+            pair,
+            mode,
+          }
+        );
+
+      notifyState =
+        result.notifyState ||
+        notifyState;
+
+      results.push({
+        pair,
+        mode,
+        sent: result.sent,
+        skipped: result.skipped,
+        reason: result.reason,
+
+        messageId:
+          result.sendResult?.messageId ||
+          null,
+      });
+    }
+  }
+
+  return {
+    notifyState: {
+      ...notifyState,
+      updatedAt: liveNowIso(),
+    },
+
+    results,
+
+    sentCount: results.filter(
+      (result) => result.sent
+    ).length,
+
+    skippedCount: results.filter(
+      (result) => result.skipped
+    ).length,
+
+    failedCount: results.filter(
+      (result) =>
+        !result.sent &&
+        !result.skipped
+    ).length,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Complete output/history/notification assembly
+// ---------------------------------------------------------------------------

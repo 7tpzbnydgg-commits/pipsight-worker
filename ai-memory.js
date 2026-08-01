@@ -1951,3 +1951,699 @@ function createEmptyMemoryState(
 // -----------------------------------------------------------------------------
 // Existing document normalization
 // -----------------------------------------------------------------------------
+function normalizeExistingMemoryState(
+  value
+) {
+
+  const now =
+    new Date().toISOString();
+
+  const fallback =
+    createEmptyMemoryState(
+      now
+    );
+
+  if (
+    !isPlainObject(
+      value
+    )
+  ) {
+
+    return fallback;
+
+  }
+
+  const normalized =
+    {
+      ...fallback,
+      ...value
+    };
+
+  normalized.version =
+    STATE_SCHEMA_VERSION;
+
+  normalized.engineName =
+    ENGINE_NAME;
+
+  normalized.engineVersion =
+    ENGINE_VERSION;
+
+  normalized.createdAt =
+    toISOStringOrNull(
+      value.createdAt
+    ) ||
+    fallback.createdAt;
+
+  normalized.updatedAt =
+    toISOStringOrNull(
+      value.updatedAt
+    ) ||
+    normalized.createdAt;
+
+  normalized.lastRunAt =
+    toISOStringOrNull(
+      value.lastRunAt
+    );
+
+  normalized.lastSuccessfulRunAt =
+    toISOStringOrNull(
+      value.lastSuccessfulRunAt
+    );
+
+  normalized.sourceHashes =
+    {
+      learningData:
+        toNonEmptyStringOrNull(
+          getNestedValue(
+            value,
+            [
+              "sourceHashes",
+              "learningData"
+            ]
+          )
+        ),
+
+      confidenceData:
+        toNonEmptyStringOrNull(
+          getNestedValue(
+            value,
+            [
+              "sourceHashes",
+              "confidenceData"
+            ]
+          )
+        ),
+
+      learningEnrichment:
+        toNonEmptyStringOrNull(
+          getNestedValue(
+            value,
+            [
+              "sourceHashes",
+              "learningEnrichment"
+            ]
+          )
+        )
+    };
+
+  normalized.sourceModifiedAt =
+    {
+      learningData:
+        toISOStringOrNull(
+          getNestedValue(
+            value,
+            [
+              "sourceModifiedAt",
+              "learningData"
+            ]
+          )
+        ),
+
+      confidenceData:
+        toISOStringOrNull(
+          getNestedValue(
+            value,
+            [
+              "sourceModifiedAt",
+              "confidenceData"
+            ]
+          )
+        ),
+
+      learningEnrichment:
+        toISOStringOrNull(
+          getNestedValue(
+            value,
+            [
+              "sourceModifiedAt",
+              "learningEnrichment"
+            ]
+          )
+        )
+    };
+
+  normalized.processedTradeKeys =
+    uniqueSortedStrings(
+      Array.isArray(
+        value.processedTradeKeys
+      )
+        ? value.processedTradeKeys
+        : []
+    ).slice(
+      -MAX_PROCESSED_KEYS
+    );
+
+  normalized.counters =
+    normalizeStateCounters(
+      value.counters
+    );
+
+  normalized.lastRun =
+    normalizeLastRunState(
+      value.lastRun
+    );
+
+  return normalized;
+
+}
+
+function normalizeStateCounters(
+  value
+) {
+
+  const source =
+    isPlainObject(
+      value
+    )
+      ? value
+      : {};
+
+  return {
+    runs:
+      normalizeNonNegativeInteger(
+        source.runs
+      ),
+
+    successfulRuns:
+      normalizeNonNegativeInteger(
+        source.successfulRuns
+      ),
+
+    unchangedRuns:
+      normalizeNonNegativeInteger(
+        source.unchangedRuns
+      ),
+
+    sourceSignals:
+      normalizeNonNegativeInteger(
+        source.sourceSignals
+      ),
+
+    acceptedTrades:
+      normalizeNonNegativeInteger(
+        source.acceptedTrades
+      ),
+
+    rejectedTrades:
+      normalizeNonNegativeInteger(
+        source.rejectedTrades
+      ),
+
+    newTradeKeys:
+      normalizeNonNegativeInteger(
+        source.newTradeKeys
+      ),
+
+    duplicateTradeKeys:
+      normalizeNonNegativeInteger(
+        source.duplicateTradeKeys
+      )
+  };
+
+}
+
+function normalizeLastRunState(
+  value
+) {
+
+  const source =
+    isPlainObject(
+      value
+    )
+      ? value
+      : {};
+
+  return {
+    status:
+      toNonEmptyStringOrNull(
+        source.status
+      ),
+
+    sourceSignals:
+      normalizeNonNegativeInteger(
+        source.sourceSignals
+      ),
+
+    acceptedTrades:
+      normalizeNonNegativeInteger(
+        source.acceptedTrades
+      ),
+
+    rejectedTrades:
+      normalizeNonNegativeInteger(
+        source.rejectedTrades
+      ),
+
+    newTradeKeys:
+      normalizeNonNegativeInteger(
+        source.newTradeKeys
+      ),
+
+    duplicateTradeKeys:
+      normalizeNonNegativeInteger(
+        source.duplicateTradeKeys
+      ),
+
+    memoryWritten:
+      Boolean(
+        source.memoryWritten
+      ),
+
+    stateWritten:
+      Boolean(
+        source.stateWritten
+      ),
+
+    error:
+      toNonEmptyStringOrNull(
+        source.error
+      )
+  };
+
+}
+
+function normalizeNonNegativeInteger(
+  value
+) {
+
+  const number =
+    toFiniteNumber(
+      value
+    );
+
+  if (
+    number === null ||
+    number < 0
+  ) {
+
+    return 0;
+
+  }
+
+  return Math.floor(
+    number
+  );
+
+}
+
+// -----------------------------------------------------------------------------
+// Learning-data schema extraction
+// -----------------------------------------------------------------------------
+
+function extractLearningRoot(
+  document
+) {
+
+  if (
+    !isPlainObject(
+      document
+    )
+  ) {
+
+    return null;
+
+  }
+
+  if (
+    isPlainObject(
+      document.learning
+    )
+  ) {
+
+    return document.learning;
+
+  }
+
+  if (
+    Array.isArray(
+      document.signals
+    ) ||
+    Array.isArray(
+      document.outcomes
+    )
+  ) {
+
+    return document;
+
+  }
+
+  return null;
+
+}
+
+function extractLearningSignals(
+  document
+) {
+
+  const learningRoot =
+    extractLearningRoot(
+      document
+    );
+
+  if (
+    !learningRoot
+  ) {
+
+    return [];
+
+  }
+
+  if (
+    Array.isArray(
+      learningRoot.signals
+    )
+  ) {
+
+    return learningRoot.signals;
+
+  }
+
+  return [];
+
+}
+
+function extractLearningOutcomes(
+  document
+) {
+
+  const learningRoot =
+    extractLearningRoot(
+      document
+    );
+
+  if (
+    !learningRoot
+  ) {
+
+    return [];
+
+  }
+
+  if (
+    Array.isArray(
+      learningRoot.outcomes
+    )
+  ) {
+
+    return learningRoot.outcomes;
+
+  }
+
+  return [];
+
+}
+
+function extractLearningUpdatedAt(
+  document
+) {
+
+  const candidate =
+    getFirstDefinedValue(
+      document,
+      [
+        ["updatedAt"],
+        ["learning", "updatedAt"],
+        ["metadata", "updatedAt"],
+        ["learning", "metadata", "updatedAt"]
+      ]
+    );
+
+  return toISOStringOrNull(
+    candidate
+  );
+
+}
+
+// -----------------------------------------------------------------------------
+// Confidence-data schema extraction
+// -----------------------------------------------------------------------------
+
+function extractConfidenceRoot(
+  document
+) {
+
+  if (
+    !isPlainObject(
+      document
+    )
+  ) {
+
+    return null;
+
+  }
+
+  if (
+    isPlainObject(
+      document.confidence
+    )
+  ) {
+
+    return document.confidence;
+
+  }
+
+  if (
+    isPlainObject(
+      document.strategies
+    ) ||
+    isPlainObject(
+      document.pairs
+    ) ||
+    isPlainObject(
+      document.timeframes
+    )
+  ) {
+
+    return document;
+
+  }
+
+  return null;
+
+}
+
+function extractConfidenceUpdatedAt(
+  document
+) {
+
+  const candidate =
+    getFirstDefinedValue(
+      document,
+      [
+        ["updatedAt"],
+        ["confidence", "updatedAt"],
+        ["metadata", "updatedAt"],
+        ["confidence", "metadata", "updatedAt"]
+      ]
+    );
+
+  return toISOStringOrNull(
+    candidate
+  );
+
+}
+
+// -----------------------------------------------------------------------------
+// Source document validation
+// -----------------------------------------------------------------------------
+
+function validateLearningDocument(
+  document
+) {
+
+  const errors =
+    [];
+
+  const warnings =
+    [];
+
+  if (
+    !isPlainObject(
+      document
+    )
+  ) {
+
+    errors.push(
+      "learning-data.json root must be a JSON object."
+    );
+
+    return createValidationResult(
+      false,
+      errors,
+      warnings
+    );
+
+  }
+
+  const learningRoot =
+    extractLearningRoot(
+      document
+    );
+
+  if (
+    !learningRoot
+  ) {
+
+    errors.push(
+      "learning-data.json does not contain a supported learning root."
+    );
+
+    return createValidationResult(
+      false,
+      errors,
+      warnings
+    );
+
+  }
+
+  if (
+    !Array.isArray(
+      learningRoot.signals
+    )
+  ) {
+
+    errors.push(
+      "learning-data.json learning.signals must be an array."
+    );
+
+  }
+
+  if (
+    learningRoot.outcomes !== undefined &&
+    !Array.isArray(
+      learningRoot.outcomes
+    )
+  ) {
+
+    warnings.push(
+      "learning-data.json learning.outcomes is present but is not an array."
+    );
+
+  }
+
+  if (
+    Array.isArray(
+      learningRoot.signals
+    ) &&
+    learningRoot.signals.length === 0
+  ) {
+
+    warnings.push(
+      "learning-data.json currently contains no learned signals."
+    );
+
+  }
+
+  return createValidationResult(
+    errors.length === 0,
+    errors,
+    warnings
+  );
+
+}
+
+function validateConfidenceDocument(
+  document
+) {
+
+  const errors =
+    [];
+
+  const warnings =
+    [];
+
+  if (
+    document === null ||
+    document === undefined
+  ) {
+
+    warnings.push(
+      "confidence-data.json is missing; memory will continue without confidence overlays."
+    );
+
+    return createValidationResult(
+      true,
+      errors,
+      warnings
+    );
+
+  }
+
+  if (
+    !isPlainObject(
+      document
+    )
+  ) {
+
+    warnings.push(
+      "confidence-data.json root is invalid; confidence overlays will be skipped."
+    );
+
+    return createValidationResult(
+      true,
+      errors,
+      warnings
+    );
+
+  }
+
+  const confidenceRoot =
+    extractConfidenceRoot(
+      document
+    );
+
+  if (
+    !confidenceRoot
+  ) {
+
+    warnings.push(
+      "confidence-data.json does not contain a supported confidence root."
+    );
+
+    return createValidationResult(
+      true,
+      errors,
+      warnings
+    );
+
+  }
+
+  const knownSections =
+    [
+      "strategies",
+      "indicators",
+      "pairs",
+      "timeframes",
+      "overall"
+    ];
+
+  const availableSections =
+    knownSections.filter(
+      sectionName =>
+        Object.prototype.hasOwnProperty.call(
+          confidenceRoot,
+          sectionName
+        )
+    );
+
+  if (
+    availableSections.length === 0
+  ) {
+
+    warnings.push(
+      "confidence-data.json contains no recognized confidence sections."
+    );
+
+  }
+
+  return createValidationResult(
+    true,
+    errors,
+    warnings
+  );
+
+}
+
+// -----------------------------------------------------------------------------
+// Learned trade field extraction
+// -----------------------------------------------------------------------------

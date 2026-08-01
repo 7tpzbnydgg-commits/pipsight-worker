@@ -2647,3 +2647,915 @@ function validateConfidenceDocument(
 // -----------------------------------------------------------------------------
 // Learned trade field extraction
 // -----------------------------------------------------------------------------
+function extractTradeId(
+  record
+) {
+
+  return toNonEmptyStringOrNull(
+    getFirstDefinedValue(
+      record,
+      [
+        ["id"],
+        ["signalId"],
+        ["tradeId"],
+        ["evaluationId"],
+        ["metadata", "id"],
+        ["metadata", "signalId"],
+        ["metadata", "tradeId"]
+      ]
+    )
+  );
+
+}
+
+function extractTradePair(
+  record
+) {
+
+  const value =
+    getFirstDefinedValue(
+      record,
+      [
+        ["pair"],
+        ["symbol"],
+        ["instrument"],
+        ["metadata", "pair"],
+        ["metadata", "symbol"]
+      ]
+    );
+
+  return normalizePair(
+    value
+  );
+
+}
+
+function extractTradeEngine(
+  record
+) {
+
+  const value =
+    getFirstDefinedValue(
+      record,
+      [
+        ["strategy"],
+        ["engine"],
+        ["mode"],
+        ["sourceEngine"],
+        ["metadata", "strategy"],
+        ["metadata", "engine"],
+        ["metadata", "mode"]
+      ]
+    );
+
+  return normalizeEngine(
+    value
+  );
+
+}
+
+function extractTradeDirection(
+  record
+) {
+
+  const value =
+    getFirstDefinedValue(
+      record,
+      [
+        ["direction"],
+        ["side"],
+        ["signal"],
+        ["action"],
+        ["metadata", "direction"],
+        ["metadata", "side"]
+      ]
+    );
+
+  return normalizeDirection(
+    value
+  );
+
+}
+
+function extractTradeTimeframe(
+  record
+) {
+
+  const value =
+    getFirstDefinedValue(
+      record,
+      [
+        ["timeframe"],
+        ["interval"],
+        ["period"],
+        ["metadata", "timeframe"],
+        ["metadata", "interval"]
+      ]
+    );
+
+  return normalizeTimeframe(
+    value
+  );
+
+}
+
+function extractTradeOutcome(
+  record
+) {
+
+  const value =
+    getFirstDefinedValue(
+      record,
+      [
+        ["outcome"],
+        ["result"],
+        ["status"],
+        ["resolution"],
+        ["metadata", "outcome"],
+        ["metadata", "result"]
+      ]
+    );
+
+  return normalizeOutcome(
+    value
+  );
+
+}
+
+function extractTradeEntry(
+  record
+) {
+
+  return toFiniteNumber(
+    getFirstDefinedValue(
+      record,
+      [
+        ["entry"],
+        ["entryPrice"],
+        ["price"],
+        ["metadata", "entry"],
+        ["metadata", "entryPrice"]
+      ]
+    )
+  );
+
+}
+
+function extractTradeStopLoss(
+  record
+) {
+
+  return toFiniteNumber(
+    getFirstDefinedValue(
+      record,
+      [
+        ["stopLoss"],
+        ["stop"],
+        ["initialStopLoss"],
+        ["metadata", "stopLoss"],
+        ["metadata", "stop"]
+      ]
+    )
+  );
+
+}
+
+function extractTradeTakeProfit(
+  record
+) {
+
+  return toFiniteNumber(
+    getFirstDefinedValue(
+      record,
+      [
+        ["takeProfit"],
+        ["target"],
+        ["takeProfit1"],
+        ["metadata", "takeProfit"],
+        ["metadata", "target"]
+      ]
+    )
+  );
+
+}
+
+function extractTradeClosePrice(
+  record
+) {
+
+  return toFiniteNumber(
+    getFirstDefinedValue(
+      record,
+      [
+        ["closePrice"],
+        ["exitPrice"],
+        ["resolvedPrice"],
+        ["metadata", "closePrice"],
+        ["metadata", "exitPrice"]
+      ]
+    )
+  );
+
+}
+
+function extractTradeProfitPoints(
+  record
+) {
+
+  return toFiniteNumber(
+    getFirstDefinedValue(
+      record,
+      [
+        ["profitPoints"],
+        ["points"],
+        ["pips"],
+        ["profit"],
+        ["metadata", "profitPoints"],
+        ["metrics", "profitPoints"]
+      ]
+    )
+  );
+
+}
+
+function extractTradeResultPercentage(
+  record
+) {
+
+  return toFiniteNumber(
+    getFirstDefinedValue(
+      record,
+      [
+        ["resultPercentage"],
+        ["returnPercentage"],
+        ["profitPercentage"],
+        ["percentage"],
+        ["metadata", "resultPercentage"],
+        ["metrics", "resultPercentage"]
+      ]
+    )
+  );
+
+}
+
+function extractTradeConfidence(
+  record
+) {
+
+  const value =
+    toFiniteNumber(
+      getFirstDefinedValue(
+        record,
+        [
+          ["confidence"],
+          ["adaptiveConfidence"],
+          ["legacyConfidence"],
+          ["metadata", "confidence"],
+          ["metadata", "adaptiveConfidence"]
+        ]
+      )
+    );
+
+  if (
+    value === null
+  ) {
+
+    return null;
+
+  }
+
+  return clamp(
+    value,
+    0,
+    100
+  );
+
+}
+
+function extractTradeOpenedAt(
+  record
+) {
+
+  const value =
+    getFirstDefinedValue(
+      record,
+      [
+        ["openedAt"],
+        ["timestamp"],
+        ["createdAt"],
+        ["signalTime"],
+        ["metadata", "openedAt"],
+        ["metadata", "timestamp"]
+      ]
+    );
+
+  return toISOStringOrNull(
+    value
+  );
+
+}
+
+function extractTradeClosedAt(
+  record
+) {
+
+  const value =
+    getFirstDefinedValue(
+      record,
+      [
+        ["closedAt"],
+        ["resolvedAt"],
+        ["completedAt"],
+        ["exitTime"],
+        ["metadata", "closedAt"],
+        ["metadata", "resolvedAt"]
+      ]
+    );
+
+  return toISOStringOrNull(
+    value
+  );
+
+}
+
+// -----------------------------------------------------------------------------
+// Trade calculations
+// -----------------------------------------------------------------------------
+
+function calculateDurationMinutes(
+  openedAt,
+  closedAt
+) {
+
+  const normalizedOpenedAt =
+    toISOStringOrNull(
+      openedAt
+    );
+
+  const normalizedClosedAt =
+    toISOStringOrNull(
+      closedAt
+    );
+
+  if (
+    !normalizedOpenedAt ||
+    !normalizedClosedAt
+  ) {
+
+    return null;
+
+  }
+
+  const openedTime =
+    new Date(
+      normalizedOpenedAt
+    ).getTime();
+
+  const closedTime =
+    new Date(
+      normalizedClosedAt
+    ).getTime();
+
+  if (
+    !Number.isFinite(
+      openedTime
+    ) ||
+    !Number.isFinite(
+      closedTime
+    ) ||
+    closedTime < openedTime
+  ) {
+
+    return null;
+
+  }
+
+  return round(
+    (
+      closedTime -
+      openedTime
+    ) /
+    60000,
+    4
+  );
+
+}
+
+function calculateProfitPoints(
+  {
+    direction,
+    outcome,
+    entry,
+    stopLoss,
+    takeProfit,
+    closePrice
+  }
+) {
+
+  if (
+    direction !== "BUY" &&
+    direction !== "SELL"
+  ) {
+
+    return null;
+
+  }
+
+  if (
+    entry === null
+  ) {
+
+    return null;
+
+  }
+
+  let resolvedPrice =
+    closePrice;
+
+  if (
+    resolvedPrice === null
+  ) {
+
+    if (
+      outcome === "WIN"
+    ) {
+
+      resolvedPrice =
+        takeProfit;
+
+    } else if (
+      outcome === "LOSS"
+    ) {
+
+      resolvedPrice =
+        stopLoss;
+
+    } else if (
+      outcome === "BREAKEVEN"
+    ) {
+
+      resolvedPrice =
+        entry;
+
+    }
+
+  }
+
+  if (
+    resolvedPrice === null
+  ) {
+
+    return null;
+
+  }
+
+  const difference =
+    direction === "BUY"
+      ? resolvedPrice - entry
+      : entry - resolvedPrice;
+
+  return round(
+    difference,
+    8
+  );
+
+}
+
+function calculateResultPercentage(
+  entry,
+  profitPoints
+) {
+
+  if (
+    entry === null ||
+    profitPoints === null ||
+    entry === 0
+  ) {
+
+    return null;
+
+  }
+
+  return round(
+    (
+      profitPoints /
+      entry
+    ) *
+    100,
+    8
+  );
+
+}
+
+// -----------------------------------------------------------------------------
+// Learned trade normalization
+// -----------------------------------------------------------------------------
+
+function normalizeLearnedTrade(
+  record,
+  sourceIndex
+) {
+
+  if (
+    !isPlainObject(
+      record
+    )
+  ) {
+
+    return {
+      valid: false,
+      trade: null,
+      errors: [
+        `Signal at index ${sourceIndex} is not a JSON object.`
+      ],
+      warnings: []
+    };
+
+  }
+
+  const errors =
+    [];
+
+  const warnings =
+    [];
+
+  const pair =
+    extractTradePair(
+      record
+    );
+
+  const engine =
+    extractTradeEngine(
+      record
+    );
+
+  const direction =
+    extractTradeDirection(
+      record
+    );
+
+  const timeframe =
+    extractTradeTimeframe(
+      record
+    );
+
+  const outcome =
+    extractTradeOutcome(
+      record
+    );
+
+  const entry =
+    extractTradeEntry(
+      record
+    );
+
+  const stopLoss =
+    extractTradeStopLoss(
+      record
+    );
+
+  const takeProfit =
+    extractTradeTakeProfit(
+      record
+    );
+
+  const closePrice =
+    extractTradeClosePrice(
+      record
+    );
+
+  const openedAt =
+    extractTradeOpenedAt(
+      record
+    );
+
+  const closedAt =
+    extractTradeClosedAt(
+      record
+    );
+
+  const confidence =
+    extractTradeConfidence(
+      record
+    );
+
+  const session =
+    extractSession(
+      record
+    );
+
+  const pattern =
+    extractPattern(
+      record
+    );
+
+  const marketRegime =
+    extractMarketRegime(
+      record
+    );
+
+  if (
+    !pair
+  ) {
+
+    errors.push(
+      `Signal at index ${sourceIndex} is missing a valid pair.`
+    );
+
+  }
+
+  if (
+    !engine
+  ) {
+
+    errors.push(
+      `Signal at index ${sourceIndex} is missing a valid strategy or engine.`
+    );
+
+  }
+
+  if (
+    !direction
+  ) {
+
+    errors.push(
+      `Signal at index ${sourceIndex} is missing a supported direction.`
+    );
+
+  }
+
+  if (
+    !outcome
+  ) {
+
+    errors.push(
+      `Signal at index ${sourceIndex} is missing a verified outcome.`
+    );
+
+  }
+
+  if (
+    entry === null ||
+    entry <= 0
+  ) {
+
+    errors.push(
+      `Signal at index ${sourceIndex} has an invalid entry price.`
+    );
+
+  }
+
+  if (
+    !openedAt
+  ) {
+
+    errors.push(
+      `Signal at index ${sourceIndex} is missing a valid opened timestamp.`
+    );
+
+  }
+
+  if (
+    !closedAt
+  ) {
+
+    errors.push(
+      `Signal at index ${sourceIndex} is missing a valid closed timestamp.`
+    );
+
+  }
+
+  if (
+    pair &&
+    !SUPPORTED_PAIRS.has(
+      pair
+    )
+  ) {
+
+    warnings.push(
+      `Signal at index ${sourceIndex} uses unsupported pair ${pair}; it will be preserved as source metadata but excluded from canonical memory.`
+    );
+
+  }
+
+  if (
+    engine &&
+    !SUPPORTED_ENGINES.has(
+      engine
+    )
+  ) {
+
+    warnings.push(
+      `Signal at index ${sourceIndex} uses unsupported engine ${engine}; it will be preserved as source metadata but excluded from canonical memory.`
+    );
+
+  }
+
+  if (
+    timeframe &&
+    !SUPPORTED_TIMEFRAMES.has(
+      timeframe
+    )
+  ) {
+
+    warnings.push(
+      `Signal at index ${sourceIndex} uses unrecognized timeframe ${timeframe}.`
+    );
+
+  }
+
+  if (
+    errors.length > 0
+  ) {
+
+    return {
+      valid: false,
+      trade: null,
+      errors,
+      warnings
+    };
+
+  }
+
+  let profitPoints =
+    extractTradeProfitPoints(
+      record
+    );
+
+  if (
+    profitPoints === null
+  ) {
+
+    profitPoints =
+      calculateProfitPoints({
+        direction,
+        outcome,
+        entry,
+        stopLoss,
+        takeProfit,
+        closePrice
+      });
+
+  }
+
+  let resultPercentage =
+    extractTradeResultPercentage(
+      record
+    );
+
+  if (
+    resultPercentage === null
+  ) {
+
+    resultPercentage =
+      calculateResultPercentage(
+        entry,
+        profitPoints
+      );
+
+  }
+
+  const durationMinutes =
+    calculateDurationMinutes(
+      openedAt,
+      closedAt
+    );
+
+  const trade =
+    {
+      sourceIndex,
+
+      id:
+        extractTradeId(
+          record
+        ),
+
+      pair,
+      engine,
+      direction,
+      timeframe,
+      outcome,
+
+      entry:
+        round(
+          entry,
+          8
+        ),
+
+      stopLoss:
+        round(
+          stopLoss,
+          8
+        ),
+
+      takeProfit:
+        round(
+          takeProfit,
+          8
+        ),
+
+      closePrice:
+        round(
+          closePrice,
+          8
+        ),
+
+      profitPoints:
+        round(
+          profitPoints,
+          8
+        ),
+
+      resultPercentage:
+        round(
+          resultPercentage,
+          8
+        ),
+
+      confidence:
+        round(
+          confidence,
+          4
+        ),
+
+      openedAt,
+      closedAt,
+      durationMinutes,
+
+      session,
+      pattern,
+      marketRegime
+    };
+
+  return {
+    valid: true,
+    trade,
+    errors,
+    warnings
+  };
+
+}
+
+// -----------------------------------------------------------------------------
+// Trade-key generation
+// -----------------------------------------------------------------------------
+
+function createTradeIdentityPayload(
+  trade
+) {
+
+  return {
+    id:
+      trade.id || null,
+
+    pair:
+      trade.pair || null,
+
+    engine:
+      trade.engine || null,
+
+    direction:
+      trade.direction || null,
+
+    timeframe:
+      trade.timeframe || null,
+
+    outcome:
+      trade.outcome || null,
+
+    entry:
+      trade.entry ?? null,
+
+    stopLoss:
+      trade.stopLoss ?? null,
+
+    takeProfit:
+      trade.takeProfit ?? null,
+
+    closePrice:
+      trade.closePrice ?? null,
+
+    openedAt:
+      trade.openedAt || null,
+
+    closedAt:
+      trade.closedAt || null
+  };
+
+}
+
+function createTradeKey(
+  trade
+) {
+
+  return createHash(
+    createTradeIdentityPayload(
+      trade
+    )
+  );
+
+}
+
+// -----------------------------------------------------------------------------
+// Trade collection normalization
+// -----------------------------------------------------------------------------

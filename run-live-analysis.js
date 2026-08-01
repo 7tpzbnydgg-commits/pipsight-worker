@@ -13458,6 +13458,7 @@ async function assembleLiveAnalysisArtifacts(
 // ---------------------------------------------------------------------------
 // Legacy-compatible aliases
 // ---------------------------------------------------------------------------
+
 function selectScalpResult(input = {}) {
   return selectScalpEngineResult(input);
 }
@@ -13551,4 +13552,1321 @@ async function notifyTelegram(
 
 // ---------------------------------------------------------------------------
 // Final runtime configuration
+// ---------------------------------------------------------------------------
+
+const P6_DATA_DIRECTORY =
+  typeof DATA_DIR !== "undefined"
+    ? DATA_DIR
+    : path.join(__dirname, "data");
+
+const P6_SCALP_SIGNALS_PATH =
+  typeof SCALP_SIGNALS_PATH !== "undefined"
+    ? SCALP_SIGNALS_PATH
+    : path.join(
+        P6_DATA_DIRECTORY,
+        "scalp-signals.json"
+      );
+
+const P6_SCALP_CANDLES_PATH =
+  typeof SCALP_CANDLES_PATH !== "undefined"
+    ? SCALP_CANDLES_PATH
+    : path.join(
+        P6_DATA_DIRECTORY,
+        "scalp-candles.json"
+      );
+
+const P6_INTRADAY_H1_PATH =
+  typeof INTRADAY_H1_PATH !== "undefined"
+    ? INTRADAY_H1_PATH
+    : path.join(
+        P6_DATA_DIRECTORY,
+        "intraday-h1.json"
+      );
+
+const P6_DAILY_OHLC_PATH =
+  typeof DAILY_OHLC_PATH !== "undefined"
+    ? DAILY_OHLC_PATH
+    : path.join(
+        P6_DATA_DIRECTORY,
+        "daily-ohlc.json"
+      );
+
+const P6_LIVE_ANALYSIS_PATH =
+  typeof LIVE_ANALYSIS_PATH !== "undefined"
+    ? LIVE_ANALYSIS_PATH
+    : path.join(
+        P6_DATA_DIRECTORY,
+        "live-analysis.json"
+      );
+
+const P6_ANALYSIS_HISTORY_PATH =
+  typeof HISTORY_PATH !== "undefined"
+    ? HISTORY_PATH
+    : path.join(
+        P6_DATA_DIRECTORY,
+        "analysis-history.json"
+      );
+
+const P6_NOTIFY_STATE_PATH =
+  typeof NOTIFY_STATE_PATH !== "undefined"
+    ? NOTIFY_STATE_PATH
+    : path.join(
+        P6_DATA_DIRECTORY,
+        "notify-state.json"
+      );
+
+const P6_RUNTIME_PAIRS = [
+  {
+    key: "XAUUSD",
+    label: "XAU/USD",
+    aliases: [
+      "XAUUSD",
+      "XAU/USD",
+      "XAU_USD",
+      "XAU-USD",
+      "GOLD",
+    ],
+  },
+  {
+    key: "GBPJPY",
+    label: "GBP/JPY",
+    aliases: [
+      "GBPJPY",
+      "GBP/JPY",
+      "GBP_JPY",
+      "GBP-JPY",
+    ],
+  },
+];
+
+const P6_DEFAULT_OPTIONS =
+  Object.freeze({
+    includeActiveCandle: true,
+
+    includeHoldHistory: false,
+
+    historyModes: [
+      "master",
+      "swing",
+      "intraday",
+      "scalp",
+    ],
+
+    telegramModes: [
+      "master",
+    ],
+
+    telegramMinimumConfidence: 0,
+
+    telegramNotifyHold: false,
+
+    maximumHistoryRecords: 5000,
+
+    historyDedupeWindowMs:
+      30 * 60 * 1000,
+
+    telegramCooldownMs:
+      4 * 60 * 60 * 1000,
+
+    createBackups: false,
+  });
+
+
+// ---------------------------------------------------------------------------
+// Runtime logging
+// ---------------------------------------------------------------------------
+
+function p6Log(
+  level,
+  message,
+  details
+) {
+  const timestamp =
+    new Date().toISOString();
+
+  const prefix =
+    `[${timestamp}] [${level}]`;
+
+  if (
+    details === undefined
+  ) {
+    console.log(
+      prefix,
+      message
+    );
+
+    return;
+  }
+
+  console.log(
+    prefix,
+    message,
+    details
+  );
+}
+
+function p6ErrorMessage(
+  error
+) {
+  if (!error) {
+    return "Unknown error";
+  }
+
+  if (
+    typeof error === "string"
+  ) {
+    return error;
+  }
+
+  if (
+    typeof error.message ===
+    "string"
+  ) {
+    return error.message;
+  }
+
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Path and file helpers
+// ---------------------------------------------------------------------------
+
+function p6EnsureDirectory(
+  directoryPath
+) {
+  fs.mkdirSync(
+    directoryPath,
+    {
+      recursive: true,
+    }
+  );
+}
+
+function p6ResolvePath(
+  value,
+  fallbackPath
+) {
+  if (
+    typeof value !== "string" ||
+    !value.trim()
+  ) {
+    return fallbackPath;
+  }
+
+  const trimmed =
+    value.trim();
+
+  return path.isAbsolute(trimmed)
+    ? trimmed
+    : path.resolve(
+        __dirname,
+        trimmed
+      );
+}
+
+function p6PathExists(
+  filePath
+) {
+  try {
+    return fs.existsSync(
+      filePath
+    );
+  } catch {
+    return false;
+  }
+}
+
+function p6ReadJsonFile(
+  filePath,
+  fallbackValue = null,
+  options = {}
+) {
+  const required =
+    options.required === true;
+
+  if (!p6PathExists(filePath)) {
+    if (required) {
+      throw new Error(
+        `Required JSON file is missing: ${filePath}`
+      );
+    }
+
+    return fallbackValue;
+  }
+
+  let raw;
+
+  try {
+    raw =
+      fs.readFileSync(
+        filePath,
+        "utf8"
+      );
+  } catch (error) {
+    if (required) {
+      throw new Error(
+        `Unable to read required JSON file ${filePath}: ` +
+        p6ErrorMessage(error)
+      );
+    }
+
+    p6Log(
+      "WARN",
+      `Unable to read optional JSON file ${filePath}`,
+      p6ErrorMessage(error)
+    );
+
+    return fallbackValue;
+  }
+
+  if (!raw.trim()) {
+    if (required) {
+      throw new Error(
+        `Required JSON file is empty: ${filePath}`
+      );
+    }
+
+    return fallbackValue;
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    if (required) {
+      throw new Error(
+        `Required JSON file contains invalid JSON ${filePath}: ` +
+        p6ErrorMessage(error)
+      );
+    }
+
+    p6Log(
+      "WARN",
+      `Optional JSON file contains invalid JSON ${filePath}`,
+      p6ErrorMessage(error)
+    );
+
+    return fallbackValue;
+  }
+}
+
+function p6AtomicWriteJson(
+  filePath,
+  value
+) {
+  p6EnsureDirectory(
+    path.dirname(filePath)
+  );
+
+  const temporaryPath =
+    `${filePath}.${process.pid}.${Date.now()}.tmp`;
+
+  let written = false;
+
+  try {
+    fs.writeFileSync(
+      temporaryPath,
+      JSON.stringify(
+        value,
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    written = true;
+
+    fs.renameSync(
+      temporaryPath,
+      filePath
+    );
+  } finally {
+    if (
+      written &&
+      p6PathExists(
+        temporaryPath
+      )
+    ) {
+      try {
+        fs.unlinkSync(
+          temporaryPath
+        );
+      } catch {
+        // Ignore temporary-file cleanup failure.
+      }
+    }
+  }
+}
+
+function p6CreateBackupIfRequested(
+  filePath,
+  enabled
+) {
+  if (
+    enabled !== true ||
+    !p6PathExists(filePath)
+  ) {
+    return null;
+  }
+
+  const backupPath =
+    `${filePath}.backup-${Date.now()}`;
+
+  fs.copyFileSync(
+    filePath,
+    backupPath
+  );
+
+  return backupPath;
+}
+
+
+// ---------------------------------------------------------------------------
+// Generic runtime object helpers
+// ---------------------------------------------------------------------------
+
+function p6IsObject(
+  value
+) {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value)
+  );
+}
+
+function p6AsArray(
+  value
+) {
+  if (Array.isArray(value)) {
+    return value;
+  }
+
+  if (
+    value === null ||
+    value === undefined
+  ) {
+    return [];
+  }
+
+  return [value];
+}
+
+function p6FirstString(
+  ...values
+) {
+  for (const value of values) {
+    if (
+      typeof value === "string" &&
+      value.trim()
+    ) {
+      return value.trim();
+    }
+  }
+
+  return null;
+}
+
+function p6FirstFinite(
+  ...values
+) {
+  for (const value of values) {
+    if (
+      value === null ||
+      value === undefined ||
+      value === ""
+    ) {
+      continue;
+    }
+
+    const numeric =
+      Number(value);
+
+    if (
+      Number.isFinite(numeric)
+    ) {
+      return numeric;
+    }
+  }
+
+  return null;
+}
+
+function p6NormalizeToken(
+  value
+) {
+  if (
+    typeof value !== "string"
+  ) {
+    return "";
+  }
+
+  return value
+    .trim()
+    .toUpperCase()
+    .replace(
+      /[^A-Z0-9]/g,
+      ""
+    );
+}
+
+function p6NormalizePairLabel(
+  value
+) {
+  if (
+    typeof liveNormalizePairLabel ===
+    "function"
+  ) {
+    return liveNormalizePairLabel(
+      value
+    );
+  }
+
+  const token =
+    p6NormalizeToken(value);
+
+  if (token === "XAUUSD") {
+    return "XAU/USD";
+  }
+
+  if (token === "GBPJPY") {
+    return "GBP/JPY";
+  }
+
+  return value || "UNKNOWN";
+}
+
+function p6NormalizePairKey(
+  value
+) {
+  const token =
+    p6NormalizeToken(value);
+
+  if (
+    token === "XAUUSD" ||
+    token === "GOLD"
+  ) {
+    return "XAUUSD";
+  }
+
+  if (token === "GBPJPY") {
+    return "GBPJPY";
+  }
+
+  return null;
+}
+
+function p6Clone(
+  value
+) {
+  if (
+    typeof structuredClone ===
+    "function"
+  ) {
+    try {
+      return structuredClone(value);
+    } catch {
+      // Continue to JSON fallback.
+    }
+  }
+
+  try {
+    return JSON.parse(
+      JSON.stringify(value)
+    );
+  } catch {
+    return value;
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Runtime option normalization
+// ---------------------------------------------------------------------------
+
+function p6BuildRuntimeOptions(
+  options = {}
+) {
+  const merged = {
+    ...P6_DEFAULT_OPTIONS,
+    ...options,
+  };
+
+  return {
+    ...merged,
+
+    scalpSignalsPath:
+      p6ResolvePath(
+        merged.scalpSignalsPath,
+        P6_SCALP_SIGNALS_PATH
+      ),
+
+    scalpCandlesPath:
+      p6ResolvePath(
+        merged.scalpCandlesPath,
+        P6_SCALP_CANDLES_PATH
+      ),
+
+    intradayH1Path:
+      p6ResolvePath(
+        merged.intradayH1Path,
+        P6_INTRADAY_H1_PATH
+      ),
+
+    dailyOhlcPath:
+      p6ResolvePath(
+        merged.dailyOhlcPath,
+        P6_DAILY_OHLC_PATH
+      ),
+
+    liveAnalysisPath:
+      p6ResolvePath(
+        merged.liveAnalysisPath,
+        P6_LIVE_ANALYSIS_PATH
+      ),
+
+    analysisHistoryPath:
+      p6ResolvePath(
+        merged.analysisHistoryPath,
+        P6_ANALYSIS_HISTORY_PATH
+      ),
+
+    notifyStatePath:
+      p6ResolvePath(
+        merged.notifyStatePath,
+        P6_NOTIFY_STATE_PATH
+      ),
+
+    includeActiveCandle:
+      merged.includeActiveCandle !== false,
+
+    includeHoldHistory:
+      merged.includeHoldHistory === true,
+
+    processTelegram:
+      merged.processTelegram !== false,
+
+    createBackups:
+      merged.createBackups === true,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Input structure discovery
+// ---------------------------------------------------------------------------
+
+function p6FindPairValue(
+  raw,
+  pairConfig
+) {
+  if (
+    raw === null ||
+    raw === undefined
+  ) {
+    return null;
+  }
+
+  const aliases =
+    new Set(
+      pairConfig.aliases.map(
+        p6NormalizeToken
+      )
+    );
+
+  const visited =
+    new Set();
+
+  function search(
+    value,
+    depth
+  ) {
+    if (
+      value === null ||
+      value === undefined ||
+      depth > 8
+    ) {
+      return null;
+    }
+
+    if (
+      typeof value === "object"
+    ) {
+      if (visited.has(value)) {
+        return null;
+      }
+
+      visited.add(value);
+    }
+
+    if (Array.isArray(value)) {
+      for (
+        const item of value
+      ) {
+        if (
+          p6IsObject(item)
+        ) {
+          const declaredPair =
+            p6FirstString(
+              item.pair,
+              item.symbol,
+              item.pairLabel,
+              item.instrument,
+              item.market
+            );
+
+          if (
+            declaredPair &&
+            aliases.has(
+              p6NormalizeToken(
+                declaredPair
+              )
+            )
+          ) {
+            return item;
+          }
+        }
+      }
+
+      for (
+        const item of value
+      ) {
+        const nested =
+          search(
+            item,
+            depth + 1
+          );
+
+        if (
+          nested !== null &&
+          nested !== undefined
+        ) {
+          return nested;
+        }
+      }
+
+      return null;
+    }
+
+    if (!p6IsObject(value)) {
+      return null;
+    }
+
+    for (
+      const [
+        key,
+        nestedValue,
+      ] of Object.entries(value)
+    ) {
+      if (
+        aliases.has(
+          p6NormalizeToken(key)
+        )
+      ) {
+        return nestedValue;
+      }
+    }
+
+    const declaredPair =
+      p6FirstString(
+        value.pair,
+        value.symbol,
+        value.pairLabel,
+        value.instrument,
+        value.market
+      );
+
+    if (
+      declaredPair &&
+      aliases.has(
+        p6NormalizeToken(
+          declaredPair
+        )
+      )
+    ) {
+      return value;
+    }
+
+    const preferredContainers = [
+      value.pairs,
+      value.results,
+      value.data,
+      value.signals,
+      value.records,
+      value.items,
+      value.analyses,
+      value.markets,
+      value.instruments,
+      value.payload,
+    ];
+
+    for (
+      const container of
+      preferredContainers
+    ) {
+      const nested =
+        search(
+          container,
+          depth + 1
+        );
+
+      if (
+        nested !== null &&
+        nested !== undefined
+      ) {
+        return nested;
+      }
+    }
+
+    return null;
+  }
+
+  return search(raw, 0);
+}
+
+function p6ExtractArrayCandidate(
+  raw,
+  preferredKeys = []
+) {
+  if (Array.isArray(raw)) {
+    return raw;
+  }
+
+  if (!p6IsObject(raw)) {
+    return [];
+  }
+
+  for (
+    const key of preferredKeys
+  ) {
+    if (
+      Array.isArray(raw[key])
+    ) {
+      return raw[key];
+    }
+  }
+
+  const commonKeys = [
+    "candles",
+    "rows",
+    "data",
+    "records",
+    "items",
+    "prices",
+    "ohlc",
+    "history",
+  ];
+
+  for (
+    const key of commonKeys
+  ) {
+    if (
+      Array.isArray(raw[key])
+    ) {
+      return raw[key];
+    }
+  }
+
+  return [];
+}
+
+function p6ExtractPairCandles(
+  raw,
+  pairConfig,
+  preferredKeys = []
+) {
+  const pairValue =
+    p6FindPairValue(
+      raw,
+      pairConfig
+    );
+
+  const fromPair =
+    p6ExtractArrayCandidate(
+      pairValue,
+      preferredKeys
+    );
+
+  if (fromPair.length > 0) {
+    return fromPair;
+  }
+
+  const direct =
+    p6ExtractArrayCandidate(
+      raw,
+      preferredKeys
+    );
+
+  if (
+    direct.length > 0 &&
+    P6_RUNTIME_PAIRS.length === 1
+  ) {
+    return direct;
+  }
+
+  return [];
+}
+
+function p6ExtractPairSignal(
+  raw,
+  pairConfig
+) {
+  const pairValue =
+    p6FindPairValue(
+      raw,
+      pairConfig
+    );
+
+  if (
+    p6IsObject(pairValue)
+  ) {
+    return pairValue;
+  }
+
+  if (
+    Array.isArray(pairValue)
+  ) {
+    return (
+      pairValue.find(
+        p6IsObject
+      ) ||
+      null
+    );
+  }
+
+  return null;
+}
+
+
+// ---------------------------------------------------------------------------
+// Runtime source loading
+// ---------------------------------------------------------------------------
+
+function p6LoadRuntimeSources(
+  runtimeOptions
+) {
+  const scalpSignals =
+    p6ReadJsonFile(
+      runtimeOptions.scalpSignalsPath,
+      {},
+      {
+        required: false,
+      }
+    );
+
+  const scalpCandles =
+    p6ReadJsonFile(
+      runtimeOptions.scalpCandlesPath,
+      {},
+      {
+        required: false,
+      }
+    );
+
+  const intradayH1 =
+    p6ReadJsonFile(
+      runtimeOptions.intradayH1Path,
+      {},
+      {
+        required: false,
+      }
+    );
+
+  const dailyOhlc =
+    p6ReadJsonFile(
+      runtimeOptions.dailyOhlcPath,
+      {},
+      {
+        required: false,
+      }
+    );
+
+  const analysisHistory =
+    p6ReadJsonFile(
+      runtimeOptions.analysisHistoryPath,
+      {},
+      {
+        required: false,
+      }
+    );
+
+  const notifyState =
+    p6ReadJsonFile(
+      runtimeOptions.notifyStatePath,
+      {},
+      {
+        required: false,
+      }
+    );
+
+  return {
+    scalpSignals,
+    scalpCandles,
+    intradayH1,
+    dailyOhlc,
+    analysisHistory,
+    notifyState,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Pair input assembly
+// ---------------------------------------------------------------------------
+
+function p6BuildPairInput(
+  pairConfig,
+  sources,
+  runtimeOptions
+) {
+  const dedicatedScalp =
+    p6ExtractPairSignal(
+      sources.scalpSignals,
+      pairConfig
+    );
+
+  const scalpRows =
+    p6ExtractPairCandles(
+      sources.scalpCandles,
+      pairConfig,
+      [
+        "candles",
+        "rows",
+        "data",
+      ]
+    );
+
+  const h1Rows =
+    p6ExtractPairCandles(
+      sources.intradayH1,
+      pairConfig,
+      [
+        "candles",
+        "rows",
+        "data",
+      ]
+    );
+
+  const dailyRows =
+    p6ExtractPairCandles(
+      sources.dailyOhlc,
+      pairConfig,
+      [
+        "candles",
+        "rows",
+        "data",
+        "ohlc",
+      ]
+    );
+
+  return {
+    pair:
+      pairConfig.label,
+
+    symbol:
+      pairConfig.label,
+
+    pairKey:
+      pairConfig.key,
+
+    scalpSignals:
+      sources.scalpSignals,
+
+    dedicatedScalp,
+
+    scalpRows,
+    m5Rows: scalpRows,
+    lowerTimeframeRows: scalpRows,
+
+    h1Rows,
+    intradayRows: h1Rows,
+
+    dailyRows,
+    dailyCandles: dailyRows,
+
+    includeActiveCandle:
+      runtimeOptions
+        .includeActiveCandle,
+
+    timestamp:
+      Date.now(),
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Runtime pair validation
+// ---------------------------------------------------------------------------
+
+function p6ValidatePairInput(
+  pairInput
+) {
+  const warnings = [];
+
+  if (
+    !Array.isArray(
+      pairInput.scalpRows
+    ) ||
+    pairInput.scalpRows.length === 0
+  ) {
+    warnings.push(
+      "Scalp candle source is empty"
+    );
+  }
+
+  if (
+    !Array.isArray(
+      pairInput.h1Rows
+    ) ||
+    pairInput.h1Rows.length === 0
+  ) {
+    warnings.push(
+      "H1 candle source is empty"
+    );
+  }
+
+  if (
+    !Array.isArray(
+      pairInput.dailyRows
+    ) ||
+    pairInput.dailyRows.length === 0
+  ) {
+    warnings.push(
+      "Daily candle source is empty"
+    );
+  }
+
+  if (
+    !pairInput.dedicatedScalp
+  ) {
+    warnings.push(
+      "Dedicated Scalp signal is unavailable; candle fallback may be used"
+    );
+  }
+
+  return {
+    valid: true,
+    warnings,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Pair pipeline execution
+// ---------------------------------------------------------------------------
+
+function p6RunPairPipeline(
+  pairInput,
+  runtimeOptions
+) {
+  const validation =
+    p6ValidatePairInput(
+      pairInput
+    );
+
+  for (
+    const warning of
+    validation.warnings
+  ) {
+    p6Log(
+      "WARN",
+      `${pairInput.pair}: ${warning}`
+    );
+  }
+
+  const bundle =
+    buildPairEngineBundle({
+      ...pairInput,
+
+      includeActiveCandle:
+        runtimeOptions
+          .includeActiveCandle,
+    });
+
+  return {
+    ...bundle,
+
+    runtime: {
+      validation,
+
+      sourceCounts: {
+        scalp:
+          pairInput.scalpRows.length,
+
+        h1:
+          pairInput.h1Rows.length,
+
+        daily:
+          pairInput.dailyRows.length,
+      },
+
+      dedicatedScalpAvailable:
+        Boolean(
+          pairInput.dedicatedScalp
+        ),
+    },
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Runtime summary
+// ---------------------------------------------------------------------------
+
+function p6BuildRuntimeSummary(
+  output,
+  telegramResult,
+  appendedHistoryCount
+) {
+  const pairs =
+    p6IsObject(output?.pairs)
+      ? Object.values(
+          output.pairs
+        )
+      : [];
+
+  return {
+    generatedAt:
+      output?.generatedAt ||
+      new Date().toISOString(),
+
+    pairCount:
+      pairs.length,
+
+    decisions:
+      pairs.map(
+        (pairRecord) => ({
+          pair:
+            pairRecord.pair,
+
+          swing:
+            pairRecord.swing
+              ?.decision ||
+            "HOLD",
+
+          intraday:
+            pairRecord.intraday
+              ?.decision ||
+            "HOLD",
+
+          scalp:
+            pairRecord.scalp
+              ?.decision ||
+            "HOLD",
+
+          master:
+            pairRecord.master
+              ?.decision ||
+            "HOLD",
+        })
+      ),
+
+    historyAppended:
+      appendedHistoryCount,
+
+    telegram: {
+      sent:
+        telegramResult.sentCount,
+
+      skipped:
+        telegramResult.skippedCount,
+
+      failed:
+        telegramResult.failedCount,
+    },
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Startup validation
+// ---------------------------------------------------------------------------
+
+function p6ValidateStartup(
+  runtimeOptions
+) {
+  const errors = [];
+
+  if (
+    typeof fs === "undefined" ||
+    typeof path === "undefined"
+  ) {
+    errors.push(
+      "Node.js fs/path modules are unavailable"
+    );
+  }
+
+  if (
+    typeof buildPairEngineBundle !==
+    "function"
+  ) {
+    errors.push(
+      "buildPairEngineBundle() is unavailable"
+    );
+  }
+
+  if (
+    typeof buildLiveAnalysisOutput !==
+    "function"
+  ) {
+    errors.push(
+      "buildLiveAnalysisOutput() is unavailable"
+    );
+  }
+
+  if (
+    typeof appendAnalysisHistoryRecords !==
+    "function"
+  ) {
+    errors.push(
+      "appendAnalysisHistoryRecords() is unavailable"
+    );
+  }
+
+  if (
+    typeof processLiveOutputNotifications !==
+    "function"
+  ) {
+    errors.push(
+      "processLiveOutputNotifications() is unavailable"
+    );
+  }
+
+  const outputPaths = [
+    runtimeOptions.liveAnalysisPath,
+    runtimeOptions.analysisHistoryPath,
+    runtimeOptions.notifyStatePath,
+  ];
+
+  for (
+    const outputPath of outputPaths
+  ) {
+    if (
+      typeof outputPath !== "string" ||
+      !outputPath.trim()
+    ) {
+      errors.push(
+        "One or more output paths are invalid"
+      );
+
+      break;
+    }
+  }
+
+  return {
+    valid:
+      errors.length === 0,
+
+    errors,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Final live-analysis runtime
 // ---------------------------------------------------------------------------

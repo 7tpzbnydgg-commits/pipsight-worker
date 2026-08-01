@@ -18,6 +18,10 @@
    - Only closed candles are analyzed.
    - OHLC features remain enabled when valid OHLC exists.
    - No additional market-data API request is made.
+   - Existing AI Memory confidence ownership remains unchanged.
+   - Learning Enrichment is consumed as advisory context only.
+   - Learning Enrichment never changes signal direction, eligibility,
+     confidence, ATR, entry, stop loss or take-profit calculations.
    ===================================================================== */
 
 const fs = require("fs");
@@ -61,7 +65,19 @@ const AI_MEMORY_PATH = path.join(
   "ai-memory.json"
 );
 
+/*
+ * Phase 4 advisory source.
+ *
+ * This file is read-only. Missing, malformed or incompatible enrichment
+ * must never block Scalp Analysis or change its existing behavior.
+ */
+const LEARNING_ENRICHMENT_PATH = path.join(
+  DATA_DIR,
+  "learning-enrichment.json"
+);
+
 const MAX_SIGNAL_LOG = 5000;
+
 /*
  * Duplicate suppression:
  *
@@ -88,6 +104,25 @@ const MIN_H1_ROWS = 20;
  */
 const AI_MEMORY_MIN_TRADES = 20;
 const AI_MEMORY_MAX_ADJUSTMENT = 6;
+
+/*
+ * Phase 4 Learning Enrichment compatibility lock.
+ *
+ * These values validate the optional advisory source only.
+ * They do not modify the existing AI Memory adjustment calculation.
+ */
+const LEARNING_ENRICHMENT_SCHEMA_VERSION = 1;
+
+const LEARNING_ENRICHMENT_ENGINE_NAME =
+  "PipSight Pro Learning Enrichment Engine";
+
+const LEARNING_ENRICHMENT_ENGINE_VERSION =
+  "1.0.0";
+
+const LEARNING_ENRICHMENT_MODE =
+  "advisory";
+
+const LEARNING_ENRICHMENT_MIN_TRADES = 20;
 
 const PAIRS = Object.freeze([
   {
@@ -1548,7 +1583,6 @@ function normalizeNewsItem(item) {
       "",
 
     raw: item
-
   };
 
 }
@@ -3668,7 +3702,6 @@ function analyze(
       );
 
       return result;
-
     } else {
 
       result.steps.push({
@@ -3830,7 +3863,6 @@ function analyze(
     );
 
     return result;
-
   }
 
   result.steps.push({
@@ -3849,13 +3881,13 @@ function analyze(
 
   result.confidence =
     80;
-   
- if (
+
+  if (
     qualifiedPartialAlignment
   ) {
     result.confidence -= 10;
   }
-   
+
   if (
     market.direction === direction
   ) {
@@ -4559,6 +4591,7 @@ function normalizeMemoryEngine(
   ) {
 
     return "scalp";
+
   }
 
   return normalized || null;
@@ -4583,6 +4616,7 @@ function normalizeMemoryDirection(
   ) {
 
     return "BUY";
+
   }
 
   if (
@@ -4592,6 +4626,7 @@ function normalizeMemoryDirection(
   ) {
 
     return "SELL";
+
   }
 
   return null;
@@ -4605,6 +4640,7 @@ function normalizeMemoryPair(
   return normalizePairKey(
     value
   );
+
 }
 
 
@@ -4619,6 +4655,7 @@ function validMemoryStatistic(
   ) {
 
     return false;
+
   }
 
   const totalTrades =
@@ -4655,6 +4692,7 @@ function validMemoryStatistic(
   ) {
 
     return false;
+
   }
 
   if (
@@ -4671,9 +4709,11 @@ function validMemoryStatistic(
   ) {
 
     return false;
+
   }
 
   return true;
+
 }
 
 
@@ -4694,6 +4734,7 @@ function getAiMemoryCandidate(
   ) {
 
     return null;
+
   }
 
   const normalizedPair =
@@ -4718,6 +4759,7 @@ function getAiMemoryCandidate(
   ) {
 
     return null;
+
   }
 
   const candidates = [
@@ -4762,6 +4804,7 @@ function getAiMemoryCandidate(
     ) {
 
       continue;
+
     }
 
     const statistic =
@@ -4776,6 +4819,7 @@ function getAiMemoryCandidate(
     ) {
 
       continue;
+
     }
 
     return {
@@ -4787,9 +4831,11 @@ function getAiMemoryCandidate(
 
       statistic
     };
+
   }
 
   return null;
+
 }
 
 
@@ -4802,6 +4848,7 @@ function memorySampleWeight(
   ) {
 
     return 0;
+
   }
 
   if (
@@ -4809,6 +4856,7 @@ function memorySampleWeight(
   ) {
 
     return 0.5;
+
   }
 
   if (
@@ -4816,9 +4864,11 @@ function memorySampleWeight(
   ) {
 
     return 0.75;
+
   }
 
   return 1;
+
 }
 
 
@@ -4833,6 +4883,7 @@ function calculateAiMemoryAdjustment(
   ) {
 
     return 0;
+
   }
 
   const totalTrades =
@@ -4863,6 +4914,7 @@ function calculateAiMemoryAdjustment(
   if (sampleWeight === 0) {
 
     return 0;
+
   }
 
   let score = 0;
@@ -4903,6 +4955,7 @@ function calculateAiMemoryAdjustment(
   ) {
 
     score -= 1;
+
   }
 
   /*
@@ -4930,6 +4983,7 @@ function calculateAiMemoryAdjustment(
   ) {
 
     score -= 2;
+
   }
 
   /*
@@ -4950,7 +5004,9 @@ function calculateAiMemoryAdjustment(
     ) {
 
       score -= 1;
+
     }
+
   }
 
   const weightedScore =
@@ -4964,6 +5020,7 @@ function calculateAiMemoryAdjustment(
     -AI_MEMORY_MAX_ADJUSTMENT,
     AI_MEMORY_MAX_ADJUSTMENT
   );
+
 }
 
 
@@ -4982,6 +5039,7 @@ function buildNoAiMemoryAdjustment(
     adjustment: 0,
     reason
   };
+
 }
 
 
@@ -5001,6 +5059,7 @@ function evaluateAiMemoryConfidence(
     return buildNoAiMemoryAdjustment(
       "Signal is not actionable"
     );
+
   }
 
   const candidate =
@@ -5016,6 +5075,7 @@ function evaluateAiMemoryConfidence(
     return buildNoAiMemoryAdjustment(
       "No valid matching AI Memory statistic"
     );
+
   }
 
   const totalTrades =
@@ -5031,24 +5091,32 @@ function evaluateAiMemoryConfidence(
     return {
       matched: true,
       applied: false,
+
       source:
         candidate.source,
+
       key:
         candidate.key,
+
       samples:
         totalTrades,
+
       winRate:
         numericValue(
           candidate.statistic.winRate
         ),
+
       profitFactor:
         numericValue(
           candidate.statistic.profitFactor
         ),
+
       adjustment: 0,
+
       reason:
         `Insufficient samples: ${totalTrades}/${AI_MEMORY_MIN_TRADES}`
     };
+
   }
 
   const adjustment =
@@ -5058,28 +5126,37 @@ function evaluateAiMemoryConfidence(
 
   return {
     matched: true,
+
     applied:
       adjustment !== 0,
+
     source:
       candidate.source,
+
     key:
       candidate.key,
+
     samples:
       totalTrades,
+
     winRate:
       numericValue(
         candidate.statistic.winRate
       ),
+
     profitFactor:
       numericValue(
         candidate.statistic.profitFactor
       ),
+
     adjustment,
+
     reason:
       adjustment === 0
         ? "Qualified memory produced a neutral adjustment"
         : "Qualified historical profitability adjustment"
   };
+
 }
 
 
@@ -5095,6 +5172,7 @@ function applyAiMemoryConfidenceAdjustment(
   ) {
 
     return analysis;
+
   }
 
   const direction =
@@ -5110,6 +5188,7 @@ function applyAiMemoryConfidenceAdjustment(
   if (baseConfidence === null) {
 
     return analysis;
+
   }
 
   const hasActionableTradePlan =
@@ -5140,24 +5219,17 @@ function applyAiMemoryConfidenceAdjustment(
         baseConfidence,
 
       evaluated: true,
-
       matched: false,
-
       applied: false,
 
       status:
         "NOT_APPLICABLE",
 
       source: null,
-
       key: null,
-
       sampleSize: 0,
-
       winRate: null,
-
       profitFactor: null,
-
       reliability: null,
 
       reason:
@@ -5167,6 +5239,7 @@ function applyAiMemoryConfidenceAdjustment(
     };
 
     return analysis;
+
   }
 
   const memoryResult =
@@ -5298,9 +5371,1087 @@ function applyAiMemoryConfidenceAdjustment(
               memoryResult.reason
             )
     });
+
   }
 
   return analysis;
+
+}
+
+/* =====================================================================
+   Phase 4 Learning Enrichment Advisory Context
+   ===================================================================== */
+
+function createUnavailableEnrichmentContext(
+  reason
+) {
+
+  return {
+    version: 1,
+
+    advisoryOnly: true,
+
+    available: false,
+
+    compatible: false,
+
+    evaluated: true,
+
+    status:
+      "UNAVAILABLE",
+
+    source: null,
+
+    key: null,
+
+    sampleSize: 0,
+
+    sampleSufficient: false,
+
+    learningTrend:
+      "unknown",
+
+    recentPerformance: {
+      window: null,
+      availableTrades: 0,
+      complete: false,
+      winRate: null,
+      profitFactor: null,
+      averageProfitPoints: null
+    },
+
+    recencyWeighted: {
+      available: false,
+      winRate: null,
+      profitFactor: null,
+      averageProfitPoints: null
+    },
+
+    overallPerformance: {
+      winRate: null,
+      profitFactor: null,
+      averageProfitPoints: null
+    },
+
+    calibration: null,
+
+    advisorySignal:
+      "NEUTRAL",
+
+    reason:
+      String(
+        reason ||
+        "Learning Enrichment is unavailable."
+      )
+  };
+
+}
+
+
+function isPlainObjectValue(
+  value
+) {
+
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value)
+  );
+
+}
+
+
+function validIsoDateString(
+  value
+) {
+
+  if (
+    typeof value !== "string" ||
+    !value.trim()
+  ) {
+
+    return false;
+
+  }
+
+  const parsed =
+    new Date(value);
+
+  return !Number.isNaN(
+    parsed.getTime()
+  );
+
+}
+
+
+function validateLearningEnrichmentDocument(
+  document
+) {
+
+  if (
+    !isPlainObjectValue(
+      document
+    )
+  ) {
+
+    return {
+      valid: false,
+      reason:
+        "Learning Enrichment document is missing or malformed."
+    };
+
+  }
+
+  if (
+    document.version !==
+    LEARNING_ENRICHMENT_SCHEMA_VERSION
+  ) {
+
+    return {
+      valid: false,
+      reason:
+        `Unsupported Learning Enrichment schema version: ${
+          document.version ??
+          "missing"
+        }.`
+    };
+
+  }
+
+  if (
+    document.engineName !==
+    LEARNING_ENRICHMENT_ENGINE_NAME
+  ) {
+
+    return {
+      valid: false,
+      reason:
+        "Learning Enrichment engine name is incompatible."
+    };
+
+  }
+
+  if (
+    document.engineVersion !==
+    LEARNING_ENRICHMENT_ENGINE_VERSION
+  ) {
+
+    return {
+      valid: false,
+      reason:
+        "Learning Enrichment engine version is incompatible."
+    };
+
+  }
+
+  if (
+    document.mode !==
+    LEARNING_ENRICHMENT_MODE
+  ) {
+
+    return {
+      valid: false,
+      reason:
+        "Learning Enrichment is not in advisory mode."
+    };
+
+  }
+
+  if (
+    !validIsoDateString(
+      document.generatedAt
+    )
+  ) {
+
+    return {
+      valid: false,
+      reason:
+        "Learning Enrichment generatedAt timestamp is invalid."
+    };
+
+  }
+
+  if (
+    document.validation?.valid !==
+    true
+  ) {
+
+    return {
+      valid: false,
+      reason:
+        "Learning Enrichment source validation did not pass."
+    };
+
+  }
+
+  if (
+    !isPlainObjectValue(
+      document.intelligence
+    ) ||
+    !isPlainObjectValue(
+      document.intelligence.overall
+    ) ||
+    !isPlainObjectValue(
+      document.intelligence.contexts
+    )
+  ) {
+
+    return {
+      valid: false,
+      reason:
+        "Learning Enrichment intelligence section is incomplete."
+    };
+
+  }
+
+  return {
+    valid: true,
+    reason: null
+  };
+
+}
+
+
+function normalizeEnrichmentStrategy(
+  value
+) {
+
+  const normalized =
+    String(
+      value ?? ""
+    )
+      .trim()
+      .toLowerCase();
+
+  if (
+    normalized === "scalp" ||
+    normalized === "scalping" ||
+    normalized.startsWith(
+      "scalp-"
+    )
+  ) {
+
+    return "scalp";
+
+  }
+
+  return normalized || null;
+
+}
+
+
+function getEnrichmentPerformanceMaps(
+  enrichment
+) {
+
+  const performance =
+    enrichment
+      ?.intelligence
+      ?.contexts
+      ?.performance;
+
+  if (
+    !isPlainObjectValue(
+      performance
+    )
+  ) {
+
+    return {
+      dimensions: {},
+      combinations: {}
+    };
+
+  }
+
+  return {
+    dimensions:
+      isPlainObjectValue(
+        performance.dimensions
+      )
+        ? performance.dimensions
+        : {},
+
+    combinations:
+      isPlainObjectValue(
+        performance.combinations
+      )
+        ? performance.combinations
+        : {}
+  };
+
+}
+
+
+function validEnrichmentPerformance(
+  value
+) {
+
+  if (
+    !isPlainObjectValue(
+      value
+    )
+  ) {
+
+    return false;
+
+  }
+
+  const totalTrades =
+    numericValue(
+      value.totalTrades
+    );
+
+  if (
+    totalTrades === null ||
+    !Number.isInteger(
+      totalTrades
+    ) ||
+    totalTrades < 0
+  ) {
+
+    return false;
+
+  }
+
+  if (
+    !isPlainObjectValue(
+      value.overall
+    )
+  ) {
+
+    return false;
+
+  }
+
+  return true;
+
+}
+
+
+function getLearningEnrichmentCandidate(
+  enrichment,
+  pair,
+  strategy,
+  direction
+) {
+
+  const normalizedPair =
+    normalizePairKey(
+      pair
+    );
+
+  const normalizedStrategy =
+    normalizeEnrichmentStrategy(
+      strategy
+    );
+
+  const normalizedDirection =
+    normalizeMemoryDirection(
+      direction
+    );
+
+  if (
+    !normalizedPair ||
+    !normalizedStrategy ||
+    !normalizedDirection
+  ) {
+
+    return null;
+
+  }
+
+  const maps =
+    getEnrichmentPerformanceMaps(
+      enrichment
+    );
+
+  const candidates = [
+    {
+      source:
+        "pairStrategyDirection",
+
+      container:
+        maps.combinations
+          .pairStrategyDirection,
+
+      key:
+        `${normalizedPair}::` +
+        `${normalizedStrategy}::` +
+        `${normalizedDirection}`
+    },
+    {
+      source:
+        "strategyDirection",
+
+      container:
+        maps.combinations
+          .strategyDirection,
+
+      key:
+        `${normalizedStrategy}::` +
+        `${normalizedDirection}`
+    },
+    {
+      source:
+        "pairDirection",
+
+      container:
+        maps.combinations
+          .pairDirection,
+
+      key:
+        `${normalizedPair}::` +
+        `${normalizedDirection}`
+    },
+    {
+      source:
+        "pairStrategy",
+
+      container:
+        maps.combinations
+          .pairStrategy,
+
+      key:
+        `${normalizedPair}::` +
+        `${normalizedStrategy}`
+    },
+    {
+      source:
+        "strategies",
+
+      container:
+        maps.dimensions
+          .strategies,
+
+      key:
+        normalizedStrategy
+    },
+    {
+      source:
+        "pairs",
+
+      container:
+        maps.dimensions
+          .pairs,
+
+      key:
+        normalizedPair
+    },
+    {
+      source:
+        "directions",
+
+      container:
+        maps.dimensions
+          .directions,
+
+      key:
+        normalizedDirection
+    }
+  ];
+
+  for (
+    const candidate of candidates
+  ) {
+
+    if (
+      !isPlainObjectValue(
+        candidate.container
+      )
+    ) {
+
+      continue;
+
+    }
+
+    const statistic =
+      candidate.container[
+        candidate.key
+      ];
+
+    if (
+      !validEnrichmentPerformance(
+        statistic
+      )
+    ) {
+
+      continue;
+
+    }
+
+    return {
+      source:
+        candidate.source,
+
+      key:
+        candidate.key,
+
+      statistic
+    };
+
+  }
+
+  const overall =
+    enrichment
+      ?.intelligence
+      ?.overall;
+
+  if (
+    validEnrichmentPerformance(
+      overall
+    )
+  ) {
+
+    return {
+      source:
+        "overall",
+
+      key:
+        "overall",
+
+      statistic:
+        overall
+    };
+
+  }
+
+  return null;
+
+}
+
+
+function readPerformanceNumber(
+  object,
+  key
+) {
+
+  if (
+    !isPlainObjectValue(
+      object
+    )
+  ) {
+
+    return null;
+
+  }
+
+  return numericValue(
+    object[key]
+  );
+
+}
+
+
+function selectRecentRollingWindow(
+  statistic
+) {
+
+  const rollingWindows =
+    statistic?.rollingWindows;
+
+  if (
+    !isPlainObjectValue(
+      rollingWindows
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const preferredWindows = [
+    20,
+    50,
+    100,
+    200
+  ];
+
+  for (
+    const windowSize of
+    preferredWindows
+  ) {
+
+    const window =
+      rollingWindows[
+        String(windowSize)
+      ] ??
+      rollingWindows[
+        windowSize
+      ];
+
+    if (
+      !isPlainObjectValue(
+        window
+      )
+    ) {
+
+      continue;
+
+    }
+
+    const availableTrades =
+      numericValue(
+        window.availableTrades ??
+        window.actualTrades ??
+        window.totalTrades ??
+        window.available
+      );
+
+    const metrics =
+      isPlainObjectValue(
+        window.metrics
+      )
+        ? window.metrics
+        : isPlainObjectValue(
+            window.performance
+          )
+          ? window.performance
+          : window;
+
+    if (
+      availableTrades === null &&
+      !isPlainObjectValue(
+        metrics
+      )
+    ) {
+
+      continue;
+
+    }
+
+    return {
+      window:
+        windowSize,
+
+      availableTrades:
+        availableTrades ??
+        0,
+
+      complete:
+        window.complete ===
+        true,
+
+      winRate:
+        readPerformanceNumber(
+          metrics,
+          "winRate"
+        ),
+
+      profitFactor:
+        readPerformanceNumber(
+          metrics,
+          "profitFactor"
+        ),
+
+      averageProfitPoints:
+        readPerformanceNumber(
+          metrics,
+          "averageProfitPoints"
+        )
+    };
+
+  }
+
+  return null;
+
+}
+
+
+function summarizeRecencyWeightedPerformance(
+  statistic
+) {
+
+  const recencyWeighted =
+    statistic?.recencyWeighted;
+
+  if (
+    !isPlainObjectValue(
+      recencyWeighted
+    )
+  ) {
+
+    return {
+      available: false,
+      winRate: null,
+      profitFactor: null,
+      averageProfitPoints: null
+    };
+
+  }
+
+  return {
+    available: true,
+
+    winRate:
+      readPerformanceNumber(
+        recencyWeighted,
+        "winRate"
+      ),
+
+    profitFactor:
+      readPerformanceNumber(
+        recencyWeighted,
+        "profitFactor"
+      ),
+
+    averageProfitPoints:
+      readPerformanceNumber(
+        recencyWeighted,
+        "averageProfitPoints"
+      )
+  };
+
+}
+
+
+function classifyEnrichmentAdvisorySignal({
+  sampleSize,
+  learningTrend,
+  recentPerformance,
+  overallPerformance
+}) {
+
+  if (
+    sampleSize <
+    LEARNING_ENRICHMENT_MIN_TRADES
+  ) {
+
+    return {
+      status:
+        "INSUFFICIENT_DATA",
+
+      reason:
+        `Learning Enrichment has ${sampleSize}/${LEARNING_ENRICHMENT_MIN_TRADES} required trades.`
+    };
+
+  }
+
+  const recentProfitFactor =
+    numericValue(
+      recentPerformance
+        ?.profitFactor
+    );
+
+  const recentWinRate =
+    numericValue(
+      recentPerformance
+        ?.winRate
+    );
+
+  const overallProfitFactor =
+    numericValue(
+      overallPerformance
+        ?.profitFactor
+    );
+
+  if (
+    learningTrend ===
+      "declining" ||
+    (
+      recentProfitFactor !== null &&
+      recentProfitFactor < 0.8
+    ) ||
+    (
+      recentWinRate !== null &&
+      recentWinRate < 20
+    )
+  ) {
+
+    return {
+      status:
+        "CAUTION",
+
+      reason:
+        "Recent enriched performance indicates declining or weak historical conditions."
+    };
+
+  }
+
+  if (
+    learningTrend ===
+      "improving" &&
+    recentProfitFactor !== null &&
+    recentProfitFactor >= 1.05
+  ) {
+
+    return {
+      status:
+        "SUPPORTIVE",
+
+      reason:
+        "Recent enriched performance is improving with a profitable recent window."
+    };
+
+  }
+
+  if (
+    overallProfitFactor !== null &&
+    overallProfitFactor < 1
+  ) {
+
+    return {
+      status:
+        "CAUTION",
+
+      reason:
+        "Long-term enriched profit factor remains below 1."
+    };
+
+  }
+
+  return {
+    status:
+      "NEUTRAL",
+
+    reason:
+      "Learning Enrichment produced no sufficiently strong supportive or cautionary condition."
+  };
+
+}
+
+
+function buildLearningEnrichmentContext(
+  enrichment,
+  pair,
+  direction
+) {
+
+  const validation =
+    validateLearningEnrichmentDocument(
+      enrichment
+    );
+
+  if (
+    !validation.valid
+  ) {
+
+    return createUnavailableEnrichmentContext(
+      validation.reason
+    );
+
+  }
+
+  const candidate =
+    getLearningEnrichmentCandidate(
+      enrichment,
+      pair,
+      "scalp",
+      direction
+    );
+
+  if (!candidate) {
+
+    return {
+      ...createUnavailableEnrichmentContext(
+        "No matching Learning Enrichment performance context was found."
+      ),
+
+      compatible: true,
+
+      status:
+        "NO_MATCH"
+    };
+
+  }
+
+  const statistic =
+    candidate.statistic;
+
+  const sampleSize =
+    numericValue(
+      statistic.totalTrades
+    ) ?? 0;
+
+  const overall =
+    statistic.overall;
+
+  const trend =
+    isPlainObjectValue(
+      statistic.trend
+    )
+      ? statistic.trend
+      : {};
+
+  const learningTrend =
+    typeof trend.status ===
+    "string"
+      ? trend.status
+      : "unknown";
+
+  const recentPerformance =
+    selectRecentRollingWindow(
+      statistic
+    ) || {
+      window: null,
+      availableTrades: 0,
+      complete: false,
+      winRate: null,
+      profitFactor: null,
+      averageProfitPoints: null
+    };
+
+  const recencyWeighted =
+    summarizeRecencyWeightedPerformance(
+      statistic
+    );
+
+  const overallPerformance = {
+    winRate:
+      readPerformanceNumber(
+        overall,
+        "winRate"
+      ),
+
+    profitFactor:
+      readPerformanceNumber(
+        overall,
+        "profitFactor"
+      ),
+
+    averageProfitPoints:
+      readPerformanceNumber(
+        overall,
+        "averageProfitPoints"
+      )
+  };
+
+  const advisory =
+    classifyEnrichmentAdvisorySignal({
+      sampleSize,
+      learningTrend,
+      recentPerformance,
+      overallPerformance
+    });
+
+  return {
+    version: 1,
+
+    advisoryOnly: true,
+
+    available: true,
+
+    compatible: true,
+
+    evaluated: true,
+
+    generatedAt:
+      enrichment.generatedAt,
+
+    status:
+      advisory.status,
+
+    source:
+      candidate.source,
+
+    key:
+      candidate.key,
+
+    sampleSize,
+
+    sampleSufficient:
+      sampleSize >=
+      LEARNING_ENRICHMENT_MIN_TRADES,
+
+    learningTrend,
+
+    trendAvailable:
+      trend.available ===
+      true,
+
+    trendReasons:
+      Array.isArray(
+        trend.reasons
+      )
+        ? trend.reasons
+            .filter(
+              reason =>
+                typeof reason ===
+                "string"
+            )
+            .slice(
+              0,
+              5
+            )
+        : [],
+
+    recentPerformance,
+
+    recencyWeighted,
+
+    overallPerformance,
+
+    /*
+     * Calibration is not invented. It can be attached in a later
+     * controlled revision when an exact matching calibration context
+     * is verified in the production output.
+     */
+    calibration: null,
+
+    advisorySignal:
+      advisory.status,
+
+    reason:
+      advisory.reason
+  };
+
+}
+
+
+function attachLearningEnrichmentContext(
+  analysis,
+  enrichment,
+  pair
+) {
+
+  if (
+    !analysis ||
+    typeof analysis !==
+      "object"
+  ) {
+
+    return analysis;
+
+  }
+
+  const context =
+    buildLearningEnrichmentContext(
+      enrichment,
+      pair,
+      analysis.signal
+    );
+
+  /*
+   * Preserve the existing confidence explainability object and add one
+   * independent advisory section. No existing value is overwritten.
+   */
+  analysis.confidenceExplainability = {
+    ...(
+      isPlainObjectValue(
+        analysis.confidenceExplainability
+      )
+        ? analysis.confidenceExplainability
+        : {}
+    ),
+
+    enrichmentContext:
+      context
+  };
+
+  /*
+   * Additive top-level alias for dashboard/debug consumers.
+   * Existing consumers can safely ignore this new property.
+   */
+  analysis.enrichmentContext =
+    context;
+
+  /*
+   * Do not append this advisory item to the decision-gate steps array.
+   * This prevents the enrichment context from appearing as a new
+   * eligibility requirement.
+   */
+
+  return analysis;
+
 }
 
 /* =====================================================================
@@ -5333,6 +6484,37 @@ function run() {
       "[Scalp Engine] AI Memory unavailable or malformed; " +
       "confidence adjustment disabled for this run."
     );
+
+  }
+
+  /*
+   * Phase 4 optional advisory source.
+   *
+   * Missing or malformed enrichment never blocks analysis. The safe
+   * context builder will report UNAVAILABLE while all existing signal,
+   * confidence, ATR and trade-plan behavior continues normally.
+   */
+  const learningEnrichment =
+    readJsonFile(
+      LEARNING_ENRICHMENT_PATH,
+      null
+    );
+
+  const enrichmentValidation =
+    validateLearningEnrichmentDocument(
+      learningEnrichment
+    );
+
+  if (
+    !enrichmentValidation.valid
+  ) {
+
+    console.warn(
+      "[Scalp Engine] Learning Enrichment unavailable or incompatible; " +
+      "advisory context will report UNAVAILABLE. " +
+      enrichmentValidation.reason
+    );
+
   }
 
   const news =
@@ -5494,7 +6676,7 @@ function run() {
               higherRows,
               pairNews
             );
-       
+
       /*
        * Apply additive ATR Dynamic TP/SL extension.
        *
@@ -5509,9 +6691,27 @@ function run() {
         pair.label
       );
 
+      /*
+       * Existing scalp-owned AI Memory confidence adjustment.
+       *
+       * This remains the only confidence-adjustment owner.
+       */
       applyAiMemoryConfidenceAdjustment(
         analysis,
         aiMemory,
+        pair.label
+      );
+
+      /*
+       * Phase 4 advisory-only enrichment attachment.
+       *
+       * This executes after the existing AI Memory adapter so it can
+       * extend confidenceExplainability without replacing any existing
+       * provenance or applying a second confidence adjustment.
+       */
+      attachLearningEnrichmentContext(
+        analysis,
+        learningEnrichment,
         pair.label
       );
 
@@ -5560,10 +6760,13 @@ function run() {
     SIGNALS_OUT_PATH,
     {
       generatedAt,
+
       engineVersion:
         ENGINE_VERSION,
+
       strategyVersion:
         STRATEGY_VERSION,
+
       signals
     }
   );
@@ -5648,12 +6851,36 @@ function run() {
     log
   );
 
+  const availableEnrichmentContexts =
+    signals.filter(
+      signal =>
+        signal
+          ?.enrichmentContext
+          ?.available ===
+        true
+    ).length;
+
+  const cautionEnrichmentContexts =
+    signals.filter(
+      signal =>
+        signal
+          ?.enrichmentContext
+          ?.advisorySignal ===
+        "CAUTION"
+    ).length;
+
   console.log(
     `[Scalp Engine] ${signals.length} analyses completed; ` +
     `${appendedLogEntries} signal log entr` +
     `${appendedLogEntries === 1 ? "y" : "ies"} added; ` +
     `${suppressedLogEntries} duplicate` +
     `${suppressedLogEntries === 1 ? "" : "s"} suppressed.`
+  );
+
+  console.log(
+    `[Scalp Engine] Phase 4 enrichment contexts: ` +
+    `${availableEnrichmentContexts}/${signals.length} available; ` +
+    `${cautionEnrichmentContexts} caution.`
   );
 
 }
@@ -5676,3 +6903,81 @@ if (require.main === module) {
   }
 
 }
+
+module.exports = {
+  ENGINE_VERSION,
+  STRATEGY_VERSION,
+  PAIRS,
+  MODES,
+  readScalpRows,
+  readH1Rows,
+  candleDataQuality,
+  normalizeCandle,
+  normalizeRows,
+  atomicWriteJson,
+  readJsonFile,
+  aggregateCandles,
+  floorToBucket,
+  buildM15Rows,
+  buildM30Rows,
+  rowsForMode,
+  higherTimeframeRows,
+  latestRow,
+  closeSeries,
+  highSeries,
+  lowSeries,
+  readNewsFeed,
+  newsForPair,
+  newsScoreForPair,
+  conflictingHighImpactNews,
+  hasEnoughRows,
+  lastClose,
+  cloneRows,
+  emaSeries,
+  rsiSeries,
+  trueRange,
+  atrSeries,
+  computeVolatility,
+  getAdaptivePeriods,
+  computeMACD,
+  getEMAState,
+  trendDirectionOf,
+  computeMarketStructure,
+  computeSupportResistance,
+  detectCandlePattern,
+  calculateRiskReward,
+  ATR_DYNAMIC_TRADE_PLAN_CONFIG,
+  atrDynamicConfigFor,
+  latestFiniteValue,
+  applyAtrDynamicTradePlan,
+  appendSkippedPipelineSteps,
+  describeUnsafeDataSource,
+  buildModeDataSafetyIssues,
+  createDataSafetyBlockedAnalysis,
+  analyze,
+  normalizeSignalDirection,
+  isActionableSignal,
+  findPairConfiguration,
+  minimumPriceIncrement,
+  numericValue,
+  tradePlanRisk,
+  tradePlanPriceTolerance,
+  numbersMateriallyEqual,
+  tradePlansMateriallyEqual,
+  confidenceMateriallyEqual,
+  findPreviousSnapshotSignal,
+  findLatestSignalLogEntry,
+  shouldAppendSignalLogEntry,
+  createSignalLogEntry,
+  buildPreparedMarketData,
+  normalizeMemoryEngine,
+  normalizeMemoryDirection,
+  normalizeMemoryPair,
+  validMemoryStatistic,
+  getAiMemoryCandidate,
+  memorySampleWeight,
+  calculateAiMemoryAdjustment,
+  buildNoAiMemoryAdjustment,
+  evaluateAiMemoryConfidence,
+  applyAiMemoryConfidenceAdjustment
+};

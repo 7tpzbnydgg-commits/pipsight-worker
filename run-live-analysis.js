@@ -12303,3 +12303,94 @@ function appendAnalysisHistoryRecords(
 // ---------------------------------------------------------------------------
 // History collection from current output
 // ---------------------------------------------------------------------------
+function collectHistoryRecordsFromOutput(
+  liveOutput,
+  options = {}
+) {
+  const records = [];
+
+  const pairRecords = liveIsPlainObject(
+    liveOutput?.pairs
+  )
+    ? Object.values(
+        liveOutput.pairs
+      )
+    : liveAsArray(
+        liveOutput?.results
+      );
+
+  const modes =
+    Array.isArray(options.modes)
+      ? options.modes.map(
+          (mode) =>
+            liveNormalizeMode(mode)
+        )
+      : [
+          "master",
+          "swing",
+          "intraday",
+          "scalp",
+        ];
+
+  for (
+    const pairRecord of pairRecords
+  ) {
+    if (
+      !liveIsPlainObject(
+        pairRecord
+      )
+    ) {
+      continue;
+    }
+
+    const pair =
+      liveNormalizePairLabel(
+        pairRecord.pair ||
+          pairRecord.symbol
+      );
+
+    for (const mode of modes) {
+      const engineResult =
+        pairRecord[mode] ||
+        pairRecord.engines?.[mode] ||
+        pairRecord.modes?.[mode];
+
+      if (
+        !liveIsPlainObject(
+          engineResult
+        )
+      ) {
+        continue;
+      }
+
+      const decision =
+        liveExtractDecision(
+          engineResult
+        );
+
+      if (
+        decision === "HOLD" &&
+        options.includeHold !== true
+      ) {
+        continue;
+      }
+
+      records.push(
+        liveHistoryRecordFromEngine(
+          engineResult,
+          {
+            pair,
+            mode,
+          }
+        )
+      );
+    }
+  }
+
+  return records;
+}
+
+
+// ---------------------------------------------------------------------------
+// Notify-state normalization
+// ---------------------------------------------------------------------------

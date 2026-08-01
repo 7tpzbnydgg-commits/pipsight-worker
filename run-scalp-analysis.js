@@ -3081,23 +3081,31 @@ function applyAtrDynamicTradePlan(
 
   }
 
-  const dynamicRiskReward =
-    calculateRiskReward(
-      roundedEntry,
-      roundedStopLoss,
-      roundedTarget1
-    );
+const dynamicRiskReward =
+  calculateRiskReward(
+    roundedEntry,
+    roundedStopLoss,
+    roundedTarget1
+  );
 
-  if (
-    !isFiniteNumber(
-      dynamicRiskReward
-    ) ||
-    dynamicRiskReward < 2
-  ) {
+/*
+ * Floating-point safety:
+ * A mathematically valid 2.00R trade can evaluate as
+ * 1.999999999 due to IEEE-754 precision.
+ * Use a tiny tolerance so genuine 2R ATR plans are not rejected.
+ */
+const MIN_DYNAMIC_RISK_REWARD = 2.0;
+const RISK_REWARD_EPSILON = 1e-9;
 
-    return analysis;
+if (
+  !isFiniteNumber(dynamicRiskReward) ||
+  dynamicRiskReward <
+    (MIN_DYNAMIC_RISK_REWARD - RISK_REWARD_EPSILON)
+) {
 
-  }
+  return analysis;
+
+}
 
   /*
    * Preserve the existing tradePlan schema.

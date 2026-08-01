@@ -6107,3 +6107,2653 @@ function buildContextIntelligence(
   };
 
 }
+
+/* =====================================================================
+   Empty Output Structures
+   ===================================================================== */
+
+function createEmptyEnrichmentDocument(
+  generatedAt =
+    new Date().toISOString()
+) {
+
+  return {
+    version:
+      ENRICHMENT_SCHEMA_VERSION,
+
+    engineName:
+      ENGINE_NAME,
+
+    engineVersion:
+      ENGINE_VERSION,
+
+    mode:
+      ENGINE_MODE,
+
+    generatedAt,
+
+    sourceUpdatedAt: {
+      learningData:
+        null,
+
+      confidenceData:
+        null
+    },
+
+    summary: {
+      sourceTrades:
+        0,
+
+      acceptedTrades:
+        0,
+
+      rejectedTrades:
+        0,
+
+      duplicateTrades:
+        0,
+
+      pairs:
+        0,
+
+      strategies:
+        0,
+
+      directions:
+        0,
+
+      timeframes:
+        0
+    },
+
+    intelligence: {
+      overall:
+        buildPerformanceEnrichment(
+          []
+        ),
+
+      contexts:
+        buildContextIntelligence(
+          []
+        ),
+
+      sourceConfidenceSnapshot: {
+        strategies: {},
+        pairs: {},
+        timeframes: {},
+        indicators: {},
+        overall:
+          null
+      }
+    },
+
+    source: {
+      learningDataPath:
+        path.relative(
+          ROOT_DIR,
+          LEARNING_DATA_PATH
+        ),
+
+      confidenceDataPath:
+        path.relative(
+          ROOT_DIR,
+          CONFIDENCE_DATA_PATH
+        ),
+
+      learningDataHash:
+        null,
+
+      confidenceDataHash:
+        null
+    },
+
+    rejectedRecords:
+      [],
+
+    duplicateRecords:
+      [],
+
+    safety:
+      cloneJSONCompatible(
+        SAFETY_POLICY
+      ),
+
+    configuration: {
+      rollingWindows:
+        cloneJSONCompatible(
+          ROLLING_WINDOWS
+        ),
+
+      recencyHalfLifeTrades:
+        RECENCY_HALF_LIFE_TRADES,
+
+      confidenceBucketSize:
+        CONFIDENCE_BUCKET_SIZE,
+
+      minimumTrendSampleSize:
+        MIN_TREND_SAMPLE_SIZE,
+
+      trendSegmentSize:
+        TREND_SEGMENT_SIZE,
+
+      winRateTrendThreshold:
+        WIN_RATE_TREND_THRESHOLD,
+
+      profitFactorTrendThreshold:
+        PROFIT_FACTOR_TREND_THRESHOLD,
+
+      maximumSourceTrades:
+        MAX_SOURCE_TRADES
+    },
+
+    validation: {
+      valid:
+        true,
+
+      errors:
+        [],
+
+      warnings:
+        []
+    },
+
+    metadata: {
+      deterministic:
+        true,
+
+      duplicateSafe:
+        true,
+
+      atomicWrites:
+        true,
+
+      localProcessingOnly:
+        true,
+
+      externalApiCalls:
+        false,
+
+      packageInstallRequired:
+        false,
+
+      productionConsumerEnabled:
+        false,
+
+      existingOutputsModified:
+        false
+    }
+  };
+
+}
+
+function createEmptyEnrichmentState(
+  createdAt =
+    new Date().toISOString()
+) {
+
+  return {
+    version:
+      STATE_SCHEMA_VERSION,
+
+    engineName:
+      ENGINE_NAME,
+
+    engineVersion:
+      ENGINE_VERSION,
+
+    mode:
+      ENGINE_MODE,
+
+    createdAt,
+
+    updatedAt:
+      createdAt,
+
+    lastRunAt:
+      null,
+
+    lastSuccessfulRunAt:
+      null,
+
+    sourceHashes: {
+      learningData:
+        null,
+
+      confidenceData:
+        null
+    },
+
+    outputHash:
+      null,
+
+    counters: {
+      runs:
+        0,
+
+      successfulRuns:
+        0,
+
+      failedRuns:
+        0,
+
+      updatedRuns:
+        0,
+
+      unchangedRuns:
+        0,
+
+      sourceTradesObserved:
+        0,
+
+      acceptedTradesObserved:
+        0,
+
+      rejectedTradesObserved:
+        0,
+
+      duplicateTradesObserved:
+        0
+    },
+
+    lastRun: {
+      status:
+        "NEVER_RUN",
+
+      startedAt:
+        null,
+
+      completedAt:
+        null,
+
+      sourceChanged:
+        false,
+
+      outputChanged:
+        false,
+
+      outputWritten:
+        false,
+
+      stateWritten:
+        false,
+
+      sourceTrades:
+        0,
+
+      acceptedTrades:
+        0,
+
+      rejectedTrades:
+        0,
+
+      duplicateTrades:
+        0,
+
+      warnings:
+        [],
+
+      error:
+        null
+    }
+  };
+
+}
+
+/* =====================================================================
+   Output Validation Helpers
+   ===================================================================== */
+
+function validatePerformanceMetric(
+  metric,
+  label
+) {
+
+  const errors =
+    [];
+
+  if (
+    !isPlainObject(
+      metric
+    )
+  ) {
+
+    return {
+      valid: false,
+
+      errors: [
+        `${label} must be a JSON object.`
+      ]
+    };
+
+  }
+
+  const requiredCounts =
+    [
+      "totalTrades",
+      "wins",
+      "losses",
+      "breakevens"
+    ];
+
+  for (
+    const field of
+    requiredCounts
+  ) {
+
+    if (
+      toNonNegativeInteger(
+        metric[field]
+      ) ===
+        null
+    ) {
+
+      errors.push(
+        `${label}.${field} is invalid.`
+      );
+
+    }
+
+  }
+
+  const totalTrades =
+    toNonNegativeInteger(
+      metric.totalTrades
+    );
+
+  const wins =
+    toNonNegativeInteger(
+      metric.wins
+    );
+
+  const losses =
+    toNonNegativeInteger(
+      metric.losses
+    );
+
+  const breakevens =
+    toNonNegativeInteger(
+      metric.breakevens
+    );
+
+  if (
+    totalTrades !==
+      null &&
+    wins !==
+      null &&
+    losses !==
+      null &&
+    breakevens !==
+      null &&
+    wins +
+      losses +
+      breakevens !==
+      totalTrades
+  ) {
+
+    errors.push(
+      `${label} outcome counts do not equal totalTrades.`
+    );
+
+  }
+
+  const rateFields =
+    [
+      "winRate",
+      "lossRate",
+      "breakevenRate"
+    ];
+
+  for (
+    const field of
+    rateFields
+  ) {
+
+    const value =
+      toFiniteNumber(
+        metric[field]
+      );
+
+    if (
+      value ===
+        null ||
+      value <
+        0 ||
+      value >
+        100
+    ) {
+
+      errors.push(
+        `${label}.${field} is outside 0–100.`
+      );
+
+    }
+
+  }
+
+  if (
+    !isPlainObject(
+      metric.profitPoints
+    )
+  ) {
+
+    errors.push(
+      `${label}.profitPoints must be a JSON object.`
+    );
+
+  }
+
+  if (
+    !isPlainObject(
+      metric.resultPercentage
+    )
+  ) {
+
+    errors.push(
+      `${label}.resultPercentage must be a JSON object.`
+    );
+
+  }
+
+  if (
+    !isPlainObject(
+      metric.durationMinutes
+    )
+  ) {
+
+    errors.push(
+      `${label}.durationMinutes must be a JSON object.`
+    );
+
+  }
+
+  if (
+    !isPlainObject(
+      metric.confidence
+    )
+  ) {
+
+    errors.push(
+      `${label}.confidence must be a JSON object.`
+    );
+
+  }
+
+  return {
+    valid:
+      errors.length ===
+      0,
+
+    errors:
+      uniqueSortedStrings(
+        errors
+      )
+  };
+
+}
+
+function validateRollingWindows(
+  rollingWindows,
+  label
+) {
+
+  const errors =
+    [];
+
+  if (
+    !isPlainObject(
+      rollingWindows
+    )
+  ) {
+
+    return {
+      valid: false,
+
+      errors: [
+        `${label} must be a JSON object.`
+      ]
+    };
+
+  }
+
+  for (
+    const windowSize of
+    ROLLING_WINDOWS
+  ) {
+
+    const key =
+      String(
+        windowSize
+      );
+
+    const window =
+      rollingWindows[key];
+
+    if (
+      !isPlainObject(
+        window
+      )
+    ) {
+
+      errors.push(
+        `${label}.${key} is missing.`
+      );
+
+      continue;
+
+    }
+
+    if (
+      window.requestedSize !==
+        windowSize
+    ) {
+
+      errors.push(
+        `${label}.${key}.requestedSize is inconsistent.`
+      );
+
+    }
+
+    const actualSize =
+      toNonNegativeInteger(
+        window.actualSize
+      );
+
+    if (
+      actualSize ===
+        null ||
+      actualSize >
+        windowSize
+    ) {
+
+      errors.push(
+        `${label}.${key}.actualSize is invalid.`
+      );
+
+    }
+
+    if (
+      typeof window.complete !==
+        "boolean" ||
+      typeof window.available !==
+        "boolean"
+    ) {
+
+      errors.push(
+        `${label}.${key} availability flags are invalid.`
+      );
+
+    }
+
+    const metricValidation =
+      validatePerformanceMetric(
+        window.metrics,
+        `${label}.${key}.metrics`
+      );
+
+    errors.push(
+      ...metricValidation.errors
+    );
+
+  }
+
+  return {
+    valid:
+      errors.length ===
+      0,
+
+    errors:
+      uniqueSortedStrings(
+        errors
+      )
+  };
+
+}
+
+function validatePerformanceEnrichment(
+  enrichment,
+  label
+) {
+
+  const errors =
+    [];
+
+  if (
+    !isPlainObject(
+      enrichment
+    )
+  ) {
+
+    return {
+      valid: false,
+
+      errors: [
+        `${label} must be a JSON object.`
+      ]
+    };
+
+  }
+
+  if (
+    toNonNegativeInteger(
+      enrichment.totalTrades
+    ) ===
+      null
+  ) {
+
+    errors.push(
+      `${label}.totalTrades is invalid.`
+    );
+
+  }
+
+  const overallValidation =
+    validatePerformanceMetric(
+      enrichment.overall,
+      `${label}.overall`
+    );
+
+  errors.push(
+    ...overallValidation.errors
+  );
+
+  const rollingValidation =
+    validateRollingWindows(
+      enrichment.rollingWindows,
+      `${label}.rollingWindows`
+    );
+
+  errors.push(
+    ...rollingValidation.errors
+  );
+
+  if (
+    !isPlainObject(
+      enrichment.recencyWeighted
+    )
+  ) {
+
+    errors.push(
+      `${label}.recencyWeighted must be a JSON object.`
+    );
+
+  } else {
+
+    if (
+      enrichment
+        .recencyWeighted
+        .halfLifeTrades !==
+        RECENCY_HALF_LIFE_TRADES
+    ) {
+
+      errors.push(
+        `${label}.recencyWeighted half-life is inconsistent.`
+      );
+
+    }
+
+    const weightedRates =
+      [
+        "weightedWinRate",
+        "weightedLossRate",
+        "weightedBreakevenRate"
+      ];
+
+    for (
+      const field of
+      weightedRates
+    ) {
+
+      const value =
+        toFiniteNumber(
+          enrichment
+            .recencyWeighted[
+              field
+            ]
+        );
+
+      if (
+        value ===
+          null ||
+        value <
+          0 ||
+        value >
+          100
+      ) {
+
+        errors.push(
+          `${label}.recencyWeighted.${field} is invalid.`
+        );
+
+      }
+
+    }
+
+  }
+
+  if (
+    !isPlainObject(
+      enrichment.trend
+    )
+  ) {
+
+    errors.push(
+      `${label}.trend must be a JSON object.`
+    );
+
+  } else {
+
+    const acceptedTrendStatuses =
+      new Set([
+        "improving",
+        "stable",
+        "declining",
+        "insufficient-data"
+      ]);
+
+    if (
+      !acceptedTrendStatuses.has(
+        enrichment.trend.status
+      )
+    ) {
+
+      errors.push(
+        `${label}.trend.status is invalid.`
+      );
+
+    }
+
+  }
+
+  return {
+    valid:
+      errors.length ===
+      0,
+
+    errors:
+      uniqueSortedStrings(
+        errors
+      )
+  };
+
+}
+
+function validateEnrichmentMap(
+  map,
+  label
+) {
+
+  const errors =
+    [];
+
+  if (
+    !isPlainObject(
+      map
+    )
+  ) {
+
+    return {
+      valid: false,
+
+      errors: [
+        `${label} must be a JSON object.`
+      ]
+    };
+
+  }
+
+  for (
+    const key of Object.keys(
+      map
+    )
+  ) {
+
+    const entry =
+      map[key];
+
+    const enrichmentValidation =
+      validatePerformanceEnrichment(
+        entry,
+        `${label}.${key}`
+      );
+
+    errors.push(
+      ...enrichmentValidation.errors
+    );
+
+    if (
+      !isPlainObject(
+        entry?.sampleSufficiency
+      )
+    ) {
+
+      errors.push(
+        `${label}.${key}.sampleSufficiency is missing.`
+      );
+
+    }
+
+  }
+
+  return {
+    valid:
+      errors.length ===
+      0,
+
+    errors:
+      uniqueSortedStrings(
+        errors
+      )
+  };
+
+}
+
+/* =====================================================================
+   Final Document Validation
+   ===================================================================== */
+
+function validateEnrichmentDocument(
+  document
+) {
+
+  const errors =
+    [];
+
+  const warnings =
+    [];
+
+  if (
+    !isPlainObject(
+      document
+    )
+  ) {
+
+    return {
+      valid: false,
+
+      errors: [
+        "Learning enrichment document must be a JSON object."
+      ],
+
+      warnings
+    };
+
+  }
+
+  if (
+    document.version !==
+      ENRICHMENT_SCHEMA_VERSION
+  ) {
+
+    errors.push(
+      "Learning enrichment schema version is invalid."
+    );
+
+  }
+
+  if (
+    document.engineName !==
+      ENGINE_NAME
+  ) {
+
+    errors.push(
+      "Learning enrichment engine name is invalid."
+    );
+
+  }
+
+  if (
+    document.engineVersion !==
+      ENGINE_VERSION
+  ) {
+
+    errors.push(
+      "Learning enrichment engine version is invalid."
+    );
+
+  }
+
+  if (
+    document.mode !==
+      ENGINE_MODE
+  ) {
+
+    errors.push(
+      "Learning enrichment mode must remain advisory."
+    );
+
+  }
+
+  if (
+    !toISOStringOrNull(
+      document.generatedAt
+    )
+  ) {
+
+    errors.push(
+      "Learning enrichment generatedAt is invalid."
+    );
+
+  }
+
+  if (
+    !isPlainObject(
+      document.summary
+    )
+  ) {
+
+    errors.push(
+      "Learning enrichment summary is missing."
+    );
+
+  } else {
+
+    const countFields =
+      [
+        "sourceTrades",
+        "acceptedTrades",
+        "rejectedTrades",
+        "duplicateTrades",
+        "pairs",
+        "strategies",
+        "directions",
+        "timeframes"
+      ];
+
+    for (
+      const field of
+      countFields
+    ) {
+
+      if (
+        toNonNegativeInteger(
+          document.summary[
+            field
+          ]
+        ) ===
+          null
+      ) {
+
+        errors.push(
+          `Learning enrichment summary.${field} is invalid.`
+        );
+
+      }
+
+    }
+
+    if (
+      document.summary
+        .acceptedTrades +
+        document.summary
+          .rejectedTrades +
+        document.summary
+          .duplicateTrades !==
+        document.summary
+          .sourceTrades
+    ) {
+
+      errors.push(
+        "Learning enrichment source trade counts are inconsistent."
+      );
+
+    }
+
+  }
+
+  if (
+    !isPlainObject(
+      document.intelligence
+    )
+  ) {
+
+    errors.push(
+      "Learning enrichment intelligence section is missing."
+    );
+
+  } else {
+
+    const overallValidation =
+      validatePerformanceEnrichment(
+        document.intelligence.overall,
+        "intelligence.overall"
+      );
+
+    errors.push(
+      ...overallValidation.errors
+    );
+
+    const performance =
+      document.intelligence
+        ?.contexts
+        ?.performance;
+
+    const dimensionNames =
+      [
+        "pairs",
+        "strategies",
+        "directions",
+        "timeframes"
+      ];
+
+    for (
+      const dimensionName of
+      dimensionNames
+    ) {
+
+      const result =
+        validateEnrichmentMap(
+          performance
+            ?.dimensions
+            ?.[dimensionName],
+          (
+            "intelligence.contexts.performance." +
+            `dimensions.${dimensionName}`
+          )
+        );
+
+      errors.push(
+        ...result.errors
+      );
+
+    }
+
+    const combinationNames =
+      [
+        "pairStrategy",
+        "pairDirection",
+        "strategyDirection",
+        "pairStrategyDirection",
+        "pairTimeframe",
+        "strategyTimeframe"
+      ];
+
+    for (
+      const combinationName of
+      combinationNames
+    ) {
+
+      const result =
+        validateEnrichmentMap(
+          performance
+            ?.combinations
+            ?.[combinationName],
+          (
+            "intelligence.contexts.performance." +
+            `combinations.${combinationName}`
+          )
+        );
+
+      errors.push(
+        ...result.errors
+      );
+
+    }
+
+    if (
+      !isPlainObject(
+        document.intelligence
+          ?.contexts
+          ?.calibration
+      )
+    ) {
+
+      errors.push(
+        "Learning enrichment context calibration is missing."
+      );
+
+    }
+
+  }
+
+  if (
+    !isPlainObject(
+      document.source
+    )
+  ) {
+
+    errors.push(
+      "Learning enrichment source section is missing."
+    );
+
+  } else {
+
+    if (
+      !toTrimmedString(
+        document.source
+          .learningDataHash
+      )
+    ) {
+
+      errors.push(
+        "Learning enrichment learningDataHash is missing."
+      );
+
+    }
+
+    if (
+      !toTrimmedString(
+        document.source
+          .confidenceDataHash
+      )
+    ) {
+
+      errors.push(
+        "Learning enrichment confidenceDataHash is missing."
+      );
+
+    }
+
+  }
+
+  if (
+    !isPlainObject(
+      document.safety
+    )
+  ) {
+
+    errors.push(
+      "Learning enrichment safety section is missing."
+    );
+
+  } else {
+
+    const requiredTrueFlags =
+      [
+        "advisoryOnly"
+      ];
+
+    for (
+      const flag of
+      requiredTrueFlags
+    ) {
+
+      if (
+        document.safety[
+          flag
+        ] !==
+          true
+      ) {
+
+        errors.push(
+          `Learning enrichment safety.${flag} must be true.`
+        );
+
+      }
+
+    }
+
+    const requiredFalseFlags =
+      [
+        "liveSignalModification",
+        "confidenceModification",
+        "decisionModification",
+        "tradePlanModification",
+        "telegramModification",
+        "sourceCodeModification",
+        "externalApiCalls",
+        "existingSchemaModification",
+        "existingLearningOutputModification",
+        "existingMemoryOutputModification"
+      ];
+
+    for (
+      const flag of
+      requiredFalseFlags
+    ) {
+
+      if (
+        document.safety[
+          flag
+        ] !==
+          false
+      ) {
+
+        errors.push(
+          `Learning enrichment safety.${flag} must be false.`
+        );
+
+      }
+
+    }
+
+  }
+
+  if (
+    !isPlainObject(
+      document.configuration
+    )
+  ) {
+
+    errors.push(
+      "Learning enrichment configuration section is missing."
+    );
+
+  } else {
+
+    if (
+      createHash(
+        document.configuration
+          .rollingWindows
+      ) !==
+      createHash(
+        ROLLING_WINDOWS
+      )
+    ) {
+
+      errors.push(
+        "Learning enrichment rolling-window configuration is inconsistent."
+      );
+
+    }
+
+    if (
+      document.configuration
+        .recencyHalfLifeTrades !==
+        RECENCY_HALF_LIFE_TRADES
+    ) {
+
+      errors.push(
+        "Learning enrichment recency half-life is inconsistent."
+      );
+
+    }
+
+    if (
+      document.configuration
+        .maximumSourceTrades !==
+        MAX_SOURCE_TRADES
+    ) {
+
+      errors.push(
+        "Learning enrichment maximum source-trade limit is inconsistent."
+      );
+
+    }
+
+  }
+
+  if (
+    !Array.isArray(
+      document.rejectedRecords
+    )
+  ) {
+
+    errors.push(
+      "Learning enrichment rejectedRecords must be an array."
+    );
+
+  }
+
+  if (
+    !Array.isArray(
+      document.duplicateRecords
+    )
+  ) {
+
+    errors.push(
+      "Learning enrichment duplicateRecords must be an array."
+    );
+
+  }
+
+  return {
+    valid:
+      errors.length ===
+      0,
+
+    errors:
+      uniqueSortedStrings(
+        errors
+      ),
+
+    warnings:
+      uniqueSortedStrings(
+        warnings
+      )
+  };
+
+}
+
+/* =====================================================================
+   Final Document Construction
+   ===================================================================== */
+
+function buildEnrichmentDocument({
+  sourceBundle,
+  generatedAt =
+    new Date().toISOString()
+}) {
+
+  const document =
+    createEmptyEnrichmentDocument(
+      generatedAt
+    );
+
+  if (
+    !isPlainObject(
+      sourceBundle
+    ) ||
+    sourceBundle.valid !==
+      true
+  ) {
+
+    document.validation = {
+      valid:
+        false,
+
+      errors:
+        uniqueSortedStrings(
+          sourceBundle?.errors || [
+            "Valid enrichment source bundle is required."
+          ]
+        ),
+
+      warnings:
+        uniqueSortedStrings(
+          sourceBundle?.warnings ||
+          []
+        )
+    };
+
+    return document;
+
+  }
+
+  const trades =
+    sourceBundle.trades;
+
+  const contexts =
+    buildContextIntelligence(
+      trades
+    );
+
+  document.sourceUpdatedAt =
+    cloneJSONCompatible(
+      sourceBundle.sourceUpdatedAt
+    );
+
+  document.summary = {
+    sourceTrades:
+      sourceBundle.counts
+        .sourceTrades,
+
+    acceptedTrades:
+      sourceBundle.counts
+        .acceptedTrades,
+
+    rejectedTrades:
+      sourceBundle.counts
+        .rejectedTrades,
+
+    duplicateTrades:
+      sourceBundle.counts
+        .duplicateTrades,
+
+    pairs:
+      Object.keys(
+        contexts
+          .performance
+          .dimensions
+          .pairs
+      ).length,
+
+    strategies:
+      Object.keys(
+        contexts
+          .performance
+          .dimensions
+          .strategies
+      ).length,
+
+    directions:
+      Object.keys(
+        contexts
+          .performance
+          .dimensions
+          .directions
+      ).length,
+
+    timeframes:
+      Object.keys(
+        contexts
+          .performance
+          .dimensions
+          .timeframes
+      ).length
+  };
+
+  document.intelligence = {
+    overall:
+      buildPerformanceEnrichment(
+        trades
+      ),
+
+    contexts,
+
+    sourceConfidenceSnapshot:
+      cloneJSONCompatible(
+        sourceBundle.confidence
+      )
+  };
+
+  document.source = {
+    learningDataPath:
+      path.relative(
+        ROOT_DIR,
+        LEARNING_DATA_PATH
+      ),
+
+    confidenceDataPath:
+      path.relative(
+        ROOT_DIR,
+        CONFIDENCE_DATA_PATH
+      ),
+
+    learningDataHash:
+      sourceBundle
+        .sourceHashes
+        .learningData,
+
+    confidenceDataHash:
+      sourceBundle
+        .sourceHashes
+        .confidenceData
+  };
+
+  /*
+   * Bound diagnostic detail to avoid uncontrolled output growth.
+   */
+  document.rejectedRecords =
+    cloneJSONCompatible(
+      sourceBundle.rejected.slice(
+        0,
+        1000
+      )
+    );
+
+  document.duplicateRecords =
+    cloneJSONCompatible(
+      sourceBundle.duplicates.slice(
+        0,
+        1000
+      )
+    );
+
+  if (
+    sourceBundle.rejected.length >
+      1000
+  ) {
+
+    document.validation.warnings.push(
+      "Rejected-record diagnostics were truncated to 1000 entries."
+    );
+
+  }
+
+  if (
+    sourceBundle.duplicates.length >
+      1000
+  ) {
+
+    document.validation.warnings.push(
+      "Duplicate-record diagnostics were truncated to 1000 entries."
+    );
+
+  }
+
+  document.validation = {
+    valid:
+      true,
+
+    errors:
+      [],
+
+    warnings:
+      uniqueSortedStrings([
+        ...document.validation.warnings,
+        ...sourceBundle.warnings
+      ])
+  };
+
+  const validation =
+    validateEnrichmentDocument(
+      document
+    );
+
+  document.validation = {
+    valid:
+      validation.valid,
+
+    errors:
+      validation.errors,
+
+    warnings:
+      uniqueSortedStrings([
+        ...document.validation.warnings,
+        ...validation.warnings
+      ])
+  };
+
+  return document;
+
+}
+
+/* =====================================================================
+   State Validation
+   ===================================================================== */
+
+function validateEnrichmentState(
+  state
+) {
+
+  const errors =
+    [];
+
+  if (
+    !isPlainObject(
+      state
+    )
+  ) {
+
+    return {
+      valid: false,
+
+      errors: [
+        "Learning enrichment state must be a JSON object."
+      ]
+    };
+
+  }
+
+  if (
+    state.version !==
+      STATE_SCHEMA_VERSION
+  ) {
+
+    errors.push(
+      "Learning enrichment state schema version is invalid."
+    );
+
+  }
+
+  if (
+    state.engineName !==
+      ENGINE_NAME
+  ) {
+
+    errors.push(
+      "Learning enrichment state engine name is invalid."
+    );
+
+  }
+
+  if (
+    state.engineVersion !==
+      ENGINE_VERSION
+  ) {
+
+    errors.push(
+      "Learning enrichment state engine version is invalid."
+    );
+
+  }
+
+  if (
+    state.mode !==
+      ENGINE_MODE
+  ) {
+
+    errors.push(
+      "Learning enrichment state mode is invalid."
+    );
+
+  }
+
+  if (
+    !toISOStringOrNull(
+      state.createdAt
+    )
+  ) {
+
+    errors.push(
+      "Learning enrichment state createdAt is invalid."
+    );
+
+  }
+
+  if (
+    !toISOStringOrNull(
+      state.updatedAt
+    )
+  ) {
+
+    errors.push(
+      "Learning enrichment state updatedAt is invalid."
+    );
+
+  }
+
+  if (
+    !isPlainObject(
+      state.sourceHashes
+    )
+  ) {
+
+    errors.push(
+      "Learning enrichment state sourceHashes is invalid."
+    );
+
+  }
+
+  if (
+    !isPlainObject(
+      state.counters
+    )
+  ) {
+
+    errors.push(
+      "Learning enrichment state counters is invalid."
+    );
+
+  } else {
+
+    const counterFields =
+      [
+        "runs",
+        "successfulRuns",
+        "failedRuns",
+        "updatedRuns",
+        "unchangedRuns",
+        "sourceTradesObserved",
+        "acceptedTradesObserved",
+        "rejectedTradesObserved",
+        "duplicateTradesObserved"
+      ];
+
+    for (
+      const field of
+      counterFields
+    ) {
+
+      if (
+        toNonNegativeInteger(
+          state.counters[
+            field
+          ]
+        ) ===
+          null
+      ) {
+
+        errors.push(
+          `Learning enrichment state counters.${field} is invalid.`
+        );
+
+      }
+
+    }
+
+  }
+
+  if (
+    !isPlainObject(
+      state.lastRun
+    )
+  ) {
+
+    errors.push(
+      "Learning enrichment state lastRun is invalid."
+    );
+
+  }
+
+  return {
+    valid:
+      errors.length ===
+      0,
+
+    errors:
+      uniqueSortedStrings(
+        errors
+      )
+  };
+
+}
+
+/* =====================================================================
+   State Loading and Existing Output
+   ===================================================================== */
+
+function loadEnrichmentState(
+  runAt
+) {
+
+  const read =
+    readJSONFile(
+      ENRICHMENT_STATE_PATH,
+      null
+    );
+
+  if (
+    !read.ok ||
+    !isPlainObject(
+      read.value
+    )
+  ) {
+
+    return {
+      state:
+        createEmptyEnrichmentState(
+          runAt
+        ),
+
+      recovered:
+        read.exists ===
+          true,
+
+      warning:
+        read.error
+    };
+
+  }
+
+  const validation =
+    validateEnrichmentState(
+      read.value
+    );
+
+  if (
+    !validation.valid
+  ) {
+
+    return {
+      state:
+        createEmptyEnrichmentState(
+          runAt
+        ),
+
+      recovered:
+        true,
+
+      warning:
+        validation.errors.join(
+          " "
+        )
+    };
+
+  }
+
+  return {
+    state:
+      cloneJSONCompatible(
+        read.value
+      ),
+
+    recovered:
+      false,
+
+    warning:
+      null
+  };
+
+}
+
+function readExistingEnrichmentOutput() {
+
+  const read =
+    readJSONFile(
+      ENRICHMENT_OUTPUT_PATH,
+      null
+    );
+
+  if (
+    !read.ok ||
+    !isPlainObject(
+      read.value
+    )
+  ) {
+
+    return {
+      exists:
+        read.exists,
+
+      valid:
+        false,
+
+      value:
+        null,
+
+      error:
+        read.error
+    };
+
+  }
+
+  const validation =
+    validateEnrichmentDocument(
+      read.value
+    );
+
+  return {
+    exists:
+      true,
+
+    valid:
+      validation.valid,
+
+    value:
+      validation.valid
+        ? read.value
+        : null,
+
+    error:
+      validation.valid
+        ? null
+        : validation.errors.join(
+            " "
+          )
+  };
+
+}
+
+/* =====================================================================
+   Deterministic Change Detection
+   ===================================================================== */
+
+function haveEnrichmentSourcesChanged({
+  state,
+  learningDataHash,
+  confidenceDataHash
+}) {
+
+  if (
+    !isPlainObject(
+      state?.sourceHashes
+    )
+  ) {
+
+    return true;
+
+  }
+
+  return (
+    state.sourceHashes
+      .learningData !==
+        learningDataHash ||
+    state.sourceHashes
+      .confidenceData !==
+        confidenceDataHash
+  );
+
+}
+
+function hasEnrichmentOutputChanged({
+  existingOutput,
+  generatedOutput
+}) {
+
+  if (
+    !existingOutput.exists ||
+    !existingOutput.valid ||
+    !isPlainObject(
+      existingOutput.value
+    )
+  ) {
+
+    return true;
+
+  }
+
+  const existingComparable =
+    cloneJSONCompatible(
+      existingOutput.value
+    );
+
+  const generatedComparable =
+    cloneJSONCompatible(
+      generatedOutput
+    );
+
+  /*
+   * generatedAt is operational metadata and must not cause a false
+   * semantic output change.
+   */
+  existingComparable.generatedAt =
+    null;
+
+  generatedComparable.generatedAt =
+    null;
+
+  return (
+    createHash(
+      existingComparable
+    ) !==
+    createHash(
+      generatedComparable
+    )
+  );
+
+}
+
+/* =====================================================================
+   Run State Lifecycle
+   ===================================================================== */
+
+function beginEnrichmentRun({
+  state,
+  runAt
+}) {
+
+  const nextState =
+    cloneJSONCompatible(
+      state
+    );
+
+  nextState.updatedAt =
+    runAt;
+
+  nextState.lastRunAt =
+    runAt;
+
+  nextState.counters.runs +=
+    1;
+
+  nextState.lastRun = {
+    status:
+      "RUNNING",
+
+    startedAt:
+      runAt,
+
+    completedAt:
+      null,
+
+    sourceChanged:
+      false,
+
+    outputChanged:
+      false,
+
+    outputWritten:
+      false,
+
+    stateWritten:
+      false,
+
+    sourceTrades:
+      0,
+
+    acceptedTrades:
+      0,
+
+    rejectedTrades:
+      0,
+
+    duplicateTrades:
+      0,
+
+    warnings:
+      [],
+
+    error:
+      null
+  };
+
+  return nextState;
+
+}
+
+function completeEnrichmentRun({
+  state,
+  runAt,
+  status,
+  sourceChanged,
+  outputChanged,
+  outputWritten,
+  sourceBundle,
+  outputHash,
+  warnings
+}) {
+
+  const nextState =
+    cloneJSONCompatible(
+      state
+    );
+
+  nextState.updatedAt =
+    runAt;
+
+  nextState.lastRunAt =
+    runAt;
+
+  nextState.lastSuccessfulRunAt =
+    runAt;
+
+  nextState.sourceHashes = {
+    learningData:
+      sourceBundle
+        .sourceHashes
+        .learningData,
+
+    confidenceData:
+      sourceBundle
+        .sourceHashes
+        .confidenceData
+  };
+
+  nextState.outputHash =
+    outputHash;
+
+  nextState.counters
+    .successfulRuns +=
+      1;
+
+  if (
+    status ===
+      "UPDATED"
+  ) {
+
+    nextState.counters
+      .updatedRuns +=
+        1;
+
+  } else {
+
+    nextState.counters
+      .unchangedRuns +=
+        1;
+
+  }
+
+  nextState.counters
+    .sourceTradesObserved +=
+      sourceBundle.counts
+        .sourceTrades;
+
+  nextState.counters
+    .acceptedTradesObserved +=
+      sourceBundle.counts
+        .acceptedTrades;
+
+  nextState.counters
+    .rejectedTradesObserved +=
+      sourceBundle.counts
+        .rejectedTrades;
+
+  nextState.counters
+    .duplicateTradesObserved +=
+      sourceBundle.counts
+        .duplicateTrades;
+
+  nextState.lastRun = {
+    status,
+
+    startedAt:
+      state.lastRun
+        ?.startedAt ||
+      runAt,
+
+    completedAt:
+      runAt,
+
+    sourceChanged:
+      sourceChanged ===
+        true,
+
+    outputChanged:
+      outputChanged ===
+        true,
+
+    outputWritten:
+      outputWritten ===
+        true,
+
+    stateWritten:
+      true,
+
+    sourceTrades:
+      sourceBundle.counts
+        .sourceTrades,
+
+    acceptedTrades:
+      sourceBundle.counts
+        .acceptedTrades,
+
+    rejectedTrades:
+      sourceBundle.counts
+        .rejectedTrades,
+
+    duplicateTrades:
+      sourceBundle.counts
+        .duplicateTrades,
+
+    warnings:
+      uniqueSortedStrings(
+        warnings
+      ),
+
+    error:
+      null
+  };
+
+  return nextState;
+
+}
+
+function failEnrichmentRun({
+  state,
+  runAt,
+  error,
+  warnings = []
+}) {
+
+  const nextState =
+    cloneJSONCompatible(
+      state
+    );
+
+  nextState.updatedAt =
+    runAt;
+
+  nextState.lastRunAt =
+    runAt;
+
+  nextState.counters
+    .failedRuns +=
+      1;
+
+  nextState.lastRun = {
+    status:
+      "FAILED",
+
+    startedAt:
+      state.lastRun
+        ?.startedAt ||
+      runAt,
+
+    completedAt:
+      runAt,
+
+    sourceChanged:
+      false,
+
+    outputChanged:
+      false,
+
+    outputWritten:
+      false,
+
+    stateWritten:
+      true,
+
+    sourceTrades:
+      0,
+
+    acceptedTrades:
+      0,
+
+    rejectedTrades:
+      0,
+
+    duplicateTrades:
+      0,
+
+    warnings:
+      uniqueSortedStrings(
+        warnings
+      ),
+
+    error:
+      error instanceof
+        Error
+        ? error.message
+        : String(
+            error
+          )
+  };
+
+  return nextState;
+
+}
+
+/* =====================================================================
+   Main Learning Enrichment Worker
+   ===================================================================== */
+
+function runLearningEnrichment() {
+
+  const runAt =
+    new Date().toISOString();
+
+  const runtimeWarnings =
+    [];
+
+  let outputWritten =
+    false;
+
+  let stateWritten =
+    false;
+
+  const stateLoad =
+    loadEnrichmentState(
+      runAt
+    );
+
+  let state =
+    beginEnrichmentRun({
+      state:
+        stateLoad.state,
+
+      runAt
+    });
+
+  if (
+    stateLoad.warning
+  ) {
+
+    runtimeWarnings.push(
+      `Enrichment state recovery: ${stateLoad.warning}`
+    );
+
+  }
+
+  try {
+
+    const sourceBundle =
+      loadEnrichmentSources();
+
+    runtimeWarnings.push(
+      ...sourceBundle.warnings
+    );
+
+    if (
+      !sourceBundle.valid
+    ) {
+
+      throw new Error(
+        sourceBundle.errors.join(
+          " "
+        ) ||
+        "Learning enrichment source validation failed."
+      );
+
+    }
+
+    const generatedOutput =
+      buildEnrichmentDocument({
+        sourceBundle,
+        generatedAt:
+          runAt
+      });
+
+    if (
+      generatedOutput
+        ?.validation
+        ?.valid !==
+        true
+    ) {
+
+      throw new Error(
+        generatedOutput
+          ?.validation
+          ?.errors
+          ?.join(
+            " "
+          ) ||
+        "Generated learning enrichment output failed validation."
+      );
+
+    }
+
+    runtimeWarnings.push(
+      ...(
+        generatedOutput
+          .validation
+          .warnings ||
+        []
+      )
+    );
+
+    const existingOutput =
+      readExistingEnrichmentOutput();
+
+    if (
+      existingOutput.exists &&
+      !existingOutput.valid &&
+      existingOutput.error
+    ) {
+
+      runtimeWarnings.push(
+        (
+          "Existing enrichment output will be replaced: " +
+          existingOutput.error
+        )
+      );
+
+    }
+
+    const sourceChanged =
+      haveEnrichmentSourcesChanged({
+        state,
+
+        learningDataHash:
+          sourceBundle
+            .sourceHashes
+            .learningData,
+
+        confidenceDataHash:
+          sourceBundle
+            .sourceHashes
+            .confidenceData
+      });
+
+    const outputChanged =
+      hasEnrichmentOutputChanged({
+        existingOutput,
+        generatedOutput
+      });
+
+    const mustWriteOutput =
+      (
+        !existingOutput.exists ||
+        !existingOutput.valid ||
+        outputChanged
+      );
+
+    let status =
+      "UNCHANGED";
+
+    if (
+      mustWriteOutput
+    ) {
+
+      atomicWriteJSON(
+        ENRICHMENT_OUTPUT_PATH,
+        generatedOutput
+      );
+
+      outputWritten =
+        true;
+
+      status =
+        "UPDATED";
+
+    }
+
+    const outputHash =
+      createFileContentHash(
+        ENRICHMENT_OUTPUT_PATH
+      );
+
+    if (
+      !outputHash
+    ) {
+
+      throw new Error(
+        "Unable to calculate learning enrichment output hash."
+      );
+
+    }
+
+    state =
+      completeEnrichmentRun({
+        state,
+        runAt,
+        status,
+        sourceChanged,
+        outputChanged,
+        outputWritten,
+        sourceBundle,
+        outputHash,
+        warnings:
+          runtimeWarnings
+      });
+
+    const stateValidation =
+      validateEnrichmentState(
+        state
+      );
+
+    if (
+      !stateValidation.valid
+    ) {
+
+      throw new Error(
+        stateValidation.errors.join(
+          " "
+        ) ||
+        "Generated learning enrichment state is invalid."
+      );
+
+    }
+
+    atomicWriteJSON(
+      ENRICHMENT_STATE_PATH,
+      state
+    );
+
+    stateWritten =
+      true;
+
+    const result = {
+      engineName:
+        ENGINE_NAME,
+
+      engineVersion:
+        ENGINE_VERSION,
+
+      mode:
+        ENGINE_MODE,
+
+      status,
+
+      runAt,
+
+      sourceChanged,
+
+      outputChanged,
+
+      outputWritten,
+
+      stateWritten,
+
+      summary:
+        cloneJSONCompatible(
+          generatedOutput.summary
+        ),
+
+      warnings:
+        uniqueSortedStrings(
+          runtimeWarnings
+        )
+    };
+
+    console.log(
+      `[learning-enrichment] ${result.status}`
+    );
+
+    console.log(
+      `[learning-enrichment] Mode: ${result.mode}`
+    );
+
+    console.log(
+      `[learning-enrichment] Source trades: ${result.summary.sourceTrades}`
+    );
+
+    console.log(
+      `[learning-enrichment] Accepted trades: ${result.summary.acceptedTrades}`
+    );
+
+    console.log(
+      `[learning-enrichment] Rejected trades: ${result.summary.rejectedTrades}`
+    );
+
+    console.log(
+      `[learning-enrichment] Duplicate trades: ${result.summary.duplicateTrades}`
+    );
+
+    console.log(
+      `[learning-enrichment] Output written: ${result.outputWritten}`
+    );
+
+    console.log(
+      `[learning-enrichment] State written: ${result.stateWritten}`
+    );
+
+    if (
+      result.warnings.length >
+        0
+    ) {
+
+      console.warn(
+        `[learning-enrichment] Completed with ${result.warnings.length} warning(s).`
+      );
+
+    }
+
+    return result;
+
+  } catch (
+    error
+  ) {
+
+    state =
+      failEnrichmentRun({
+        state,
+        runAt,
+        error,
+        warnings:
+          runtimeWarnings
+      });
+
+    try {
+
+      const failedStateValidation =
+        validateEnrichmentState(
+          state
+        );
+
+      if (
+        !failedStateValidation.valid
+      ) {
+
+        throw new Error(
+          failedStateValidation
+            .errors
+            .join(
+              " "
+            )
+        );
+
+      }
+
+      atomicWriteJSON(
+        ENRICHMENT_STATE_PATH,
+        state
+      );
+
+      stateWritten =
+        true;
+
+    } catch (
+      stateError
+    ) {
+
+      console.error(
+        "[learning-enrichment] Unable to persist failed-run state:",
+        stateError instanceof
+          Error
+          ? stateError.message
+          : String(
+              stateError
+            )
+      );
+
+    }
+
+    console.error(
+      "[learning-enrichment] FAILED"
+    );
+
+    console.error(
+      `[learning-enrichment] ${
+        error instanceof
+          Error
+          ? error.message
+          : String(
+              error
+            )
+      }`
+    );
+
+    throw error;
+
+  }
+
+}
+
+/* =====================================================================
+   Command-Line Execution
+   ===================================================================== */
+
+if (
+  require.main ===
+    module
+) {
+
+  try {
+
+    runLearningEnrichment();
+
+  } catch (
+    error
+  ) {
+
+    process.exitCode =
+      1;
+
+  }
+
+}
+
+/* =====================================================================
+   Public Exports
+   ===================================================================== */
+
+module.exports = {
+  ENGINE_NAME,
+  ENGINE_VERSION,
+  ENGINE_MODE,
+
+  ROLLING_WINDOWS,
+  RECENCY_HALF_LIFE_TRADES,
+  CONFIDENCE_BUCKET_SIZE,
+  MIN_TREND_SAMPLE_SIZE,
+  TREND_SEGMENT_SIZE,
+  MAX_SOURCE_TRADES,
+
+  validateLearningSourceDocument,
+  validateConfidenceSourceDocument,
+  normalizeLearningTrade,
+  normalizeLearningTrades,
+  normalizeConfidenceSnapshot,
+  loadEnrichmentSources,
+
+  calculatePerformanceMetrics,
+  buildRollingWindows,
+  buildRecencyWeightedMetrics,
+  classifyPerformanceTrend,
+  buildPerformanceEnrichment,
+
+  buildContextEnrichment,
+  buildConfidenceCalibration,
+  buildContextCalibration,
+  buildContextIntelligence,
+
+  createEmptyEnrichmentDocument,
+  validateEnrichmentDocument,
+  buildEnrichmentDocument,
+
+  createEmptyEnrichmentState,
+  validateEnrichmentState,
+  runLearningEnrichment
+};

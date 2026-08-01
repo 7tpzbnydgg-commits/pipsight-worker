@@ -3559,3 +3559,1079 @@ function createTradeKey(
 // -----------------------------------------------------------------------------
 // Trade collection normalization
 // -----------------------------------------------------------------------------
+function normalizeLearningTrades(
+  learningDocument
+) {
+
+  const sourceSignals =
+    extractLearningSignals(
+      learningDocument
+    );
+
+  const acceptedTrades =
+    [];
+
+  const rejectedTrades =
+    [];
+
+  const warnings =
+    [];
+
+  const seenTradeKeys =
+    new Set();
+
+  let duplicateTradeKeys =
+    0;
+
+  for (
+    let index = 0;
+    index < sourceSignals.length;
+    index += 1
+  ) {
+
+    const result =
+      normalizeLearnedTrade(
+        sourceSignals[index],
+        index
+      );
+
+    if (
+      Array.isArray(
+        result.warnings
+      )
+    ) {
+
+      warnings.push(
+        ...result.warnings
+      );
+
+    }
+
+    if (
+      !result.valid ||
+      !result.trade
+    ) {
+
+      rejectedTrades.push({
+        sourceIndex: index,
+        errors:
+          uniqueSortedStrings(
+            result.errors
+          )
+      });
+
+      continue;
+
+    }
+
+    const tradeKey =
+      createTradeKey(
+        result.trade
+      );
+
+    if (
+      seenTradeKeys.has(
+        tradeKey
+      )
+    ) {
+
+      duplicateTradeKeys +=
+        1;
+
+      continue;
+
+    }
+
+    seenTradeKeys.add(
+      tradeKey
+    );
+
+    acceptedTrades.push({
+      ...result.trade,
+      tradeKey
+    });
+
+  }
+
+  acceptedTrades.sort(
+    (
+      left,
+      right
+    ) => {
+
+      const leftOpenedTime =
+        new Date(
+          left.openedAt
+        ).getTime();
+
+      const rightOpenedTime =
+        new Date(
+          right.openedAt
+        ).getTime();
+
+      if (
+        leftOpenedTime !==
+        rightOpenedTime
+      ) {
+
+        return (
+          leftOpenedTime -
+          rightOpenedTime
+        );
+
+      }
+
+      const leftClosedTime =
+        new Date(
+          left.closedAt
+        ).getTime();
+
+      const rightClosedTime =
+        new Date(
+          right.closedAt
+        ).getTime();
+
+      if (
+        leftClosedTime !==
+        rightClosedTime
+      ) {
+
+        return (
+          leftClosedTime -
+          rightClosedTime
+        );
+
+      }
+
+      return left.tradeKey.localeCompare(
+        right.tradeKey
+      );
+
+    }
+  );
+
+  return {
+    sourceSignals:
+      sourceSignals.length,
+
+    acceptedTrades,
+
+    rejectedTrades,
+
+    duplicateTradeKeys,
+
+    warnings:
+      uniqueSortedStrings(
+        warnings
+      )
+  };
+
+}
+
+// -----------------------------------------------------------------------------
+// Internal aggregation accumulator
+// -----------------------------------------------------------------------------
+
+function createPerformanceAccumulator() {
+
+  return {
+    totalTrades: 0,
+    wins: 0,
+    losses: 0,
+    breakevens: 0,
+
+    totalProfitPoints: 0,
+    profitPointSamples: 0,
+    grossProfitPoints: 0,
+    grossLossPoints: 0,
+
+    totalResultPercentage: 0,
+    resultPercentageSamples: 0,
+
+    totalDurationMinutes: 0,
+    durationSamples: 0,
+
+    firstTradeAt: null,
+    lastTradeAt: null,
+
+    confidenceSamples: 0,
+    confidenceTotal: 0,
+    confidenceMinimum: null,
+    confidenceMaximum: null
+  };
+
+}
+
+function updateTimestampRange(
+  accumulator,
+  trade
+) {
+
+  const candidateFirst =
+    trade.openedAt ||
+    trade.closedAt ||
+    null;
+
+  const candidateLast =
+    trade.closedAt ||
+    trade.openedAt ||
+    null;
+
+  if (
+    candidateFirst
+  ) {
+
+    if (
+      !accumulator.firstTradeAt ||
+      new Date(
+        candidateFirst
+      ).getTime() <
+      new Date(
+        accumulator.firstTradeAt
+      ).getTime()
+    ) {
+
+      accumulator.firstTradeAt =
+        candidateFirst;
+
+    }
+
+  }
+
+  if (
+    candidateLast
+  ) {
+
+    if (
+      !accumulator.lastTradeAt ||
+      new Date(
+        candidateLast
+      ).getTime() >
+      new Date(
+        accumulator.lastTradeAt
+      ).getTime()
+    ) {
+
+      accumulator.lastTradeAt =
+        candidateLast;
+
+    }
+
+  }
+
+}
+
+function addTradeToAccumulator(
+  accumulator,
+  trade
+) {
+
+  accumulator.totalTrades +=
+    1;
+
+  if (
+    trade.outcome === "WIN"
+  ) {
+
+    accumulator.wins +=
+      1;
+
+  } else if (
+    trade.outcome === "LOSS"
+  ) {
+
+    accumulator.losses +=
+      1;
+
+  } else if (
+    trade.outcome === "BREAKEVEN"
+  ) {
+
+    accumulator.breakevens +=
+      1;
+
+  }
+
+  if (
+    trade.profitPoints !== null
+  ) {
+
+    accumulator.totalProfitPoints +=
+      trade.profitPoints;
+
+    accumulator.profitPointSamples +=
+      1;
+
+    if (
+      trade.profitPoints > 0
+    ) {
+
+      accumulator.grossProfitPoints +=
+        trade.profitPoints;
+
+    } else if (
+      trade.profitPoints < 0
+    ) {
+
+      accumulator.grossLossPoints +=
+        Math.abs(
+          trade.profitPoints
+        );
+
+    }
+
+  }
+
+  if (
+    trade.resultPercentage !== null
+  ) {
+
+    accumulator.totalResultPercentage +=
+      trade.resultPercentage;
+
+    accumulator.resultPercentageSamples +=
+      1;
+
+  }
+
+  if (
+    trade.durationMinutes !== null
+  ) {
+
+    accumulator.totalDurationMinutes +=
+      trade.durationMinutes;
+
+    accumulator.durationSamples +=
+      1;
+
+  }
+
+  if (
+    trade.confidence !== null
+  ) {
+
+    accumulator.confidenceSamples +=
+      1;
+
+    accumulator.confidenceTotal +=
+      trade.confidence;
+
+    if (
+      accumulator.confidenceMinimum === null ||
+      trade.confidence <
+      accumulator.confidenceMinimum
+    ) {
+
+      accumulator.confidenceMinimum =
+        trade.confidence;
+
+    }
+
+    if (
+      accumulator.confidenceMaximum === null ||
+      trade.confidence >
+      accumulator.confidenceMaximum
+    ) {
+
+      accumulator.confidenceMaximum =
+        trade.confidence;
+
+    }
+
+  }
+
+  updateTimestampRange(
+    accumulator,
+    trade
+  );
+
+}
+
+// -----------------------------------------------------------------------------
+// Performance-stat finalization
+// -----------------------------------------------------------------------------
+
+function calculateRate(
+  count,
+  total
+) {
+
+  if (
+    total <= 0
+  ) {
+
+    return 0;
+
+  }
+
+  return round(
+    (
+      count /
+      total
+    ) *
+    100,
+    2
+  );
+
+}
+
+function finalizePerformanceAccumulator(
+  accumulator
+) {
+
+  const totalTrades =
+    normalizeNonNegativeInteger(
+      accumulator.totalTrades
+    );
+
+  const totalProfitPoints =
+    round(
+      accumulator.totalProfitPoints,
+      8
+    ) || 0;
+
+  const grossProfitPoints =
+    round(
+      accumulator.grossProfitPoints,
+      8
+    ) || 0;
+
+  const grossLossPoints =
+    round(
+      accumulator.grossLossPoints,
+      8
+    ) || 0;
+
+  let profitFactor =
+    null;
+
+  if (
+    grossLossPoints > 0
+  ) {
+
+    profitFactor =
+      round(
+        grossProfitPoints /
+        grossLossPoints,
+        4
+      );
+
+  } else if (
+    grossProfitPoints > 0
+  ) {
+
+    profitFactor =
+      null;
+
+  } else if (
+    totalTrades > 0
+  ) {
+
+    profitFactor =
+      0;
+
+  }
+
+  const averageProfitPoints =
+    accumulator.profitPointSamples > 0
+      ? round(
+          accumulator.totalProfitPoints /
+          accumulator.profitPointSamples,
+          8
+        )
+      : 0;
+
+  const totalResultPercentage =
+    round(
+      accumulator.totalResultPercentage,
+      8
+    ) || 0;
+
+  const averageResultPercentage =
+    accumulator.resultPercentageSamples > 0
+      ? round(
+          accumulator.totalResultPercentage /
+          accumulator.resultPercentageSamples,
+          8
+        )
+      : 0;
+
+  const totalDurationMinutes =
+    round(
+      accumulator.totalDurationMinutes,
+      4
+    ) || 0;
+
+  const averageDurationMinutes =
+    accumulator.durationSamples > 0
+      ? round(
+          accumulator.totalDurationMinutes /
+          accumulator.durationSamples,
+          4
+        )
+      : null;
+
+  const confidenceAverage =
+    accumulator.confidenceSamples > 0
+      ? round(
+          accumulator.confidenceTotal /
+          accumulator.confidenceSamples,
+          4
+        )
+      : null;
+
+  return {
+    totalTrades,
+
+    wins:
+      normalizeNonNegativeInteger(
+        accumulator.wins
+      ),
+
+    losses:
+      normalizeNonNegativeInteger(
+        accumulator.losses
+      ),
+
+    breakevens:
+      normalizeNonNegativeInteger(
+        accumulator.breakevens
+      ),
+
+    winRate:
+      calculateRate(
+        accumulator.wins,
+        totalTrades
+      ),
+
+    lossRate:
+      calculateRate(
+        accumulator.losses,
+        totalTrades
+      ),
+
+    breakevenRate:
+      calculateRate(
+        accumulator.breakevens,
+        totalTrades
+      ),
+
+    totalProfitPoints,
+    averageProfitPoints,
+    grossProfitPoints,
+    grossLossPoints,
+    profitFactor,
+
+    totalResultPercentage,
+    averageResultPercentage,
+
+    totalDurationMinutes,
+    averageDurationMinutes,
+
+    firstTradeAt:
+      accumulator.firstTradeAt,
+
+    lastTradeAt:
+      accumulator.lastTradeAt,
+
+    confidence: {
+      samples:
+        normalizeNonNegativeInteger(
+          accumulator.confidenceSamples
+        ),
+
+      total:
+        round(
+          accumulator.confidenceTotal,
+          4
+        ) || 0,
+
+      average:
+        confidenceAverage,
+
+      minimum:
+        round(
+          accumulator.confidenceMinimum,
+          4
+        ),
+
+      maximum:
+        round(
+          accumulator.confidenceMaximum,
+          4
+        )
+    }
+  };
+
+}
+
+// -----------------------------------------------------------------------------
+// Dimension-map aggregation
+// -----------------------------------------------------------------------------
+
+function ensureAccumulator(
+  accumulatorMap,
+  key
+) {
+
+  if (
+    !key
+  ) {
+
+    return null;
+
+  }
+
+  if (
+    !Object.prototype.hasOwnProperty.call(
+      accumulatorMap,
+      key
+    )
+  ) {
+
+    accumulatorMap[key] =
+      createPerformanceAccumulator();
+
+  }
+
+  return accumulatorMap[key];
+
+}
+
+function addTradeToDimension(
+  accumulatorMap,
+  key,
+  trade
+) {
+
+  const accumulator =
+    ensureAccumulator(
+      accumulatorMap,
+      key
+    );
+
+  if (
+    !accumulator
+  ) {
+
+    return false;
+
+  }
+
+  addTradeToAccumulator(
+    accumulator,
+    trade
+  );
+
+  return true;
+
+}
+
+function finalizeDimensionMap(
+  accumulatorMap
+) {
+
+  const finalized =
+    {};
+
+  for (
+    const key of Object.keys(
+      accumulatorMap
+    ).sort(
+      (
+        left,
+        right
+      ) =>
+        left.localeCompare(
+          right
+        )
+    )
+  ) {
+
+    finalized[key] =
+      finalizePerformanceAccumulator(
+        accumulatorMap[key]
+      );
+
+  }
+
+  return finalized;
+
+}
+
+// -----------------------------------------------------------------------------
+// Combination-key helpers
+// -----------------------------------------------------------------------------
+
+function createCombinationKey(
+  values
+) {
+
+  if (
+    !Array.isArray(
+      values
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const normalized =
+    values.map(
+      value =>
+        toNonEmptyStringOrNull(
+          value
+        )
+    );
+
+  if (
+    normalized.some(
+      value =>
+        value === null
+    )
+  ) {
+
+    return null;
+
+  }
+
+  return normalized.join(
+    "::"
+  );
+
+}
+
+// -----------------------------------------------------------------------------
+// Coverage tracking
+// -----------------------------------------------------------------------------
+
+function updateCoverageDimension(
+  coverage,
+  dimensionName,
+  value
+) {
+
+  if (
+    !isPlainObject(
+      coverage[dimensionName]
+    )
+  ) {
+
+    return;
+
+  }
+
+  if (
+    value !== null &&
+    value !== undefined &&
+    value !== ""
+  ) {
+
+    coverage[dimensionName].available +=
+      1;
+
+  } else {
+
+    coverage[dimensionName].missing +=
+      1;
+
+  }
+
+}
+
+function updateCoverage(
+  coverage,
+  trade
+) {
+
+  coverage.totalAcceptedTrades +=
+    1;
+
+  updateCoverageDimension(
+    coverage,
+    "pairs",
+    trade.pair
+  );
+
+  updateCoverageDimension(
+    coverage,
+    "engines",
+    trade.engine
+  );
+
+  updateCoverageDimension(
+    coverage,
+    "directions",
+    trade.direction
+  );
+
+  updateCoverageDimension(
+    coverage,
+    "timeframes",
+    trade.timeframe
+  );
+
+  updateCoverageDimension(
+    coverage,
+    "sessions",
+    trade.session
+  );
+
+  updateCoverageDimension(
+    coverage,
+    "patterns",
+    trade.pattern
+  );
+
+  updateCoverageDimension(
+    coverage,
+    "marketRegimes",
+    trade.marketRegime
+  );
+
+}
+
+// -----------------------------------------------------------------------------
+// Confidence overlay normalization
+// -----------------------------------------------------------------------------
+
+function normalizeConfidenceMetric(
+  value
+) {
+
+  if (
+    !isPlainObject(
+      value
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const confidence =
+    clamp(
+      getFirstDefinedValue(
+        value,
+        [
+          ["confidence"],
+          ["score"],
+          ["value"]
+        ]
+      ),
+      0,
+      100
+    );
+
+  const total =
+    normalizeNonNegativeInteger(
+      getFirstDefinedValue(
+        value,
+        [
+          ["total"],
+          ["totalSignals"],
+          ["resolved"]
+        ]
+      )
+    );
+
+  const resolved =
+    normalizeNonNegativeInteger(
+      getFirstDefinedValue(
+        value,
+        [
+          ["resolved"],
+          ["resolvedSignals"],
+          ["total"]
+        ]
+      )
+    );
+
+  const wins =
+    normalizeNonNegativeInteger(
+      value.wins
+    );
+
+  const losses =
+    normalizeNonNegativeInteger(
+      value.losses
+    );
+
+  const breakevens =
+    normalizeNonNegativeInteger(
+      value.breakevens
+    );
+
+  const winRate =
+    toFiniteNumber(
+      value.winRate
+    );
+
+  const averageProfitPoints =
+    toFiniteNumber(
+      getFirstDefinedValue(
+        value,
+        [
+          ["avgProfitPoints"],
+          ["averageProfitPoints"]
+        ]
+      )
+    );
+
+  const profitFactor =
+    toFiniteNumber(
+      value.profitFactor
+    );
+
+  return {
+    confidence:
+      round(
+        confidence,
+        4
+      ),
+
+    total,
+    resolved,
+    wins,
+    losses,
+    breakevens,
+
+    winRate:
+      round(
+        winRate,
+        4
+      ),
+
+    averageProfitPoints:
+      round(
+        averageProfitPoints,
+        8
+      ),
+
+    profitFactor:
+      round(
+        profitFactor,
+        4
+      )
+  };
+
+}
+
+function normalizeConfidenceSection(
+  value,
+  keyNormalizer = null
+) {
+
+  if (
+    !isPlainObject(
+      value
+    )
+  ) {
+
+    return {};
+
+  }
+
+  const normalized =
+    {};
+
+  for (
+    const sourceKey of Object.keys(
+      value
+    )
+  ) {
+
+    const targetKey =
+      typeof keyNormalizer === "function"
+        ? keyNormalizer(
+            sourceKey
+          )
+        : toNonEmptyStringOrNull(
+            sourceKey
+          );
+
+    if (
+      !targetKey
+    ) {
+
+      continue;
+
+    }
+
+    const metric =
+      normalizeConfidenceMetric(
+        value[sourceKey]
+      );
+
+    if (
+      !metric
+    ) {
+
+      continue;
+
+    }
+
+    normalized[targetKey] =
+      metric;
+
+  }
+
+  return sortObjectKeysDeep(
+    normalized
+  );
+
+}
+
+function buildConfidenceOverlay(
+  confidenceDocument
+) {
+
+  const confidenceRoot =
+    extractConfidenceRoot(
+      confidenceDocument
+    );
+
+  if (
+    !confidenceRoot
+  ) {
+
+    return {
+      strategies: {},
+      pairs: {},
+      timeframes: {},
+      overall: null
+    };
+
+  }
+
+  return {
+    strategies:
+      normalizeConfidenceSection(
+        confidenceRoot.strategies,
+        normalizeEngine
+      ),
+
+    pairs:
+      normalizeConfidenceSection(
+        confidenceRoot.pairs,
+        normalizePair
+      ),
+
+    timeframes:
+      normalizeConfidenceSection(
+        confidenceRoot.timeframes,
+        normalizeTimeframe
+      ),
+
+    overall:
+      normalizeConfidenceMetric(
+        confidenceRoot.overall
+      )
+  };
+
+}
+
+// -----------------------------------------------------------------------------
+// Memory aggregation context
+// -----------------------------------------------------------------------------

@@ -10338,3 +10338,960 @@ function buildCanonicalEngineResult(
 // ---------------------------------------------------------------------------
 // Engine selection helpers
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Scalp signal extraction
+// ---------------------------------------------------------------------------
+
+function liveFindPairRecord(container, pair) {
+  if (!container) {
+    return null;
+  }
+
+  const normalizedPair = liveNormalizePairLabel(pair);
+  const compactPair = liveCompactPair(pair);
+
+  if (Array.isArray(container)) {
+    return (
+      container.find((item) => {
+        if (!liveIsPlainObject(item)) {
+          return false;
+        }
+
+        const itemPair = liveNormalizePairLabel(
+          item.pair ||
+            item.symbol ||
+            item.pairLabel ||
+            item.instrument
+        );
+
+        return (
+          itemPair === normalizedPair ||
+          liveCompactPair(itemPair) === compactPair
+        );
+      }) || null
+    );
+  }
+
+  if (!liveIsPlainObject(container)) {
+    return null;
+  }
+
+  const directKeys = [
+    normalizedPair,
+    compactPair,
+    normalizedPair.replace("/", "-"),
+    normalizedPair.replace("/", "_"),
+    normalizedPair.replace("/", ""),
+  ];
+
+  for (const key of directKeys) {
+    if (
+      Object.prototype.hasOwnProperty.call(container, key) &&
+      container[key] !== null &&
+      container[key] !== undefined
+    ) {
+      return container[key];
+    }
+  }
+
+  for (const [key, value] of Object.entries(container)) {
+    if (liveCompactPair(key) === compactPair) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function extractPrimaryScalpSignal(
+  scalpSignalsData,
+  pair
+) {
+  if (!scalpSignalsData) {
+    return null;
+  }
+
+  const candidateContainers = [
+    scalpSignalsData,
+    scalpSignalsData.signals,
+    scalpSignalsData.results,
+    scalpSignalsData.pairs,
+    scalpSignalsData.data,
+    scalpSignalsData.analysis,
+    scalpSignalsData.scalp,
+  ];
+
+  let record = null;
+
+  for (const container of candidateContainers) {
+    record = liveFindPairRecord(container, pair);
+
+    if (record) {
+      break;
+    }
+  }
+
+  if (!record && liveIsPlainObject(scalpSignalsData)) {
+    const recordPair = liveNormalizePairLabel(
+      scalpSignalsData.pair ||
+        scalpSignalsData.symbol ||
+        scalpSignalsData.pairLabel
+    );
+
+    if (
+      liveCompactPair(recordPair) ===
+      liveCompactPair(pair)
+    ) {
+      record = scalpSignalsData;
+    }
+  }
+
+  if (!record) {
+    return null;
+  }
+
+  const nestedSignal =
+    liveIsPlainObject(record.signal)
+      ? record.signal
+      : liveIsPlainObject(record.analysis)
+        ? record.analysis
+        : liveIsPlainObject(record.result)
+          ? record.result
+          : record;
+
+  return liveIsPlainObject(nestedSignal)
+    ? {
+        ...record,
+        ...nestedSignal,
+      }
+    : record;
+}
+
+function isUsablePrimaryScalpSignal(
+  signal,
+  options = {}
+) {
+  if (!liveIsPlainObject(signal)) {
+    return false;
+  }
+
+  const decision = liveExtractDecision(signal);
+  const timestamp = liveExtractTimestamp(signal, 0);
+
+  if (decision === "HOLD" && options.allowHold !== true) {
+    return false;
+  }
+
+  const maximumAgeMs = Math.max(
+    0,
+    liveFiniteNumber(
+      options.maximumAgeMs,
+      6 * 60 * 60 * 1000
+    )
+  );
+
+  if (
+    maximumAgeMs > 0 &&
+    timestamp > 0 &&
+    Date.now() - timestamp > maximumAgeMs
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+
+// ---------------------------------------------------------------------------
+// Scalp engine selection
+// ---------------------------------------------------------------------------
+
+function selectScalpEngineResult(input = {}) {
+  const pair = liveNormalizePairLabel(
+    input.pair ||
+      input.symbol ||
+      input.pairLabel
+  );
+
+  const primarySignal = extractPrimaryScalpSignal(
+    input.scalpSignalsData ||
+      input.scalpSignals ||
+      input.primaryScalpData,
+    pair
+  );
+
+  const allowPrimaryHold =
+    input.allowPrimaryHold === true;
+
+  if (
+    isUsablePrimaryScalpSignal(primarySignal, {
+      allowHold: allowPrimaryHold,
+      maximumAgeMs:
+        input.maximumPrimaryScalpAgeMs,
+    })
+  ) {
+    const primaryResult = buildCanonicalEngineResult(
+      primarySignal,
+      {
+        pair,
+        mode: "scalp",
+        engineName: "scalp-signals",
+        source: "data/scalp-signals.json",
+        requireTradePlan: false,
+      }
+    );
+
+    return {
+      ...primaryResult,
+
+      selection: {
+        selected: "primary-signal",
+        primaryAvailable: true,
+        fallbackAvailable: Boolean(
+          input.fallbackScalpAnalysis
+        ),
+        reason:
+          "Primary Scalp signal selected from data/scalp-signals.json",
+      },
+    };
+  }
+
+  const fallbackSource =
+    input.fallbackScalpAnalysis ||
+    input.legacyScalpAnalysis ||
+    input.candleScalpAnalysis ||
+    null;
+
+  if (liveIsPlainObject(fallbackSource)) {
+    const fallbackResult = buildCanonicalEngineResult(
+      fallbackSource,
+      {
+        pair,
+        mode: "scalp",
+        engineName: "legacy-scalp-candles",
+        source: "data/scalp-candles.json",
+        requireTradePlan: false,
+      }
+    );
+
+    return {
+      ...fallbackResult,
+
+      selection: {
+        selected: "legacy-candle-fallback",
+        primaryAvailable: Boolean(primarySignal),
+        fallbackAvailable: true,
+        reason: primarySignal
+          ? "Primary Scalp signal was stale or unusable; candle fallback selected"
+          : "Primary Scalp signal unavailable; candle fallback selected",
+      },
+    };
+  }
+
+  const holdResult = buildCanonicalEngineResult(
+    {
+      decision: "HOLD",
+      confidence: 0,
+      reason:
+        "No usable primary or fallback Scalp analysis available",
+      timestamp: Date.now(),
+    },
+    {
+      pair,
+      mode: "scalp",
+      engineName: "scalp-unavailable",
+      source: "none",
+      available: false,
+    }
+  );
+
+  return {
+    ...holdResult,
+
+    selection: {
+      selected: "none",
+      primaryAvailable: Boolean(primarySignal),
+      fallbackAvailable: false,
+      reason:
+        "No usable Scalp engine result available",
+    },
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Swing and Intraday result selection
+// ---------------------------------------------------------------------------
+
+function selectSwingEngineResult(input = {}) {
+  const pair = liveNormalizePairLabel(
+    input.pair ||
+      input.symbol ||
+      input.pairLabel
+  );
+
+  const source =
+    input.swingAnalysis ||
+    input.dailyAnalysis ||
+    input.analysisPipeline?.daily ||
+    input.pipeline?.daily ||
+    null;
+
+  if (!liveIsPlainObject(source)) {
+    return buildCanonicalEngineResult(
+      {
+        decision: "HOLD",
+        confidence: 0,
+        reason: "Swing analysis unavailable",
+      },
+      {
+        pair,
+        mode: "swing",
+        engineName: "swing",
+        source: "daily-analysis",
+        available: false,
+      }
+    );
+  }
+
+  return buildCanonicalEngineResult(
+    source,
+    {
+      pair,
+      mode: "swing",
+      engineName: "swing",
+      source: "daily-analysis",
+      requireTradePlan: false,
+    }
+  );
+}
+
+function selectIntradayEngineResult(input = {}) {
+  const pair = liveNormalizePairLabel(
+    input.pair ||
+      input.symbol ||
+      input.pairLabel
+  );
+
+  const source =
+    input.intradayAnalysis ||
+    input.h1Analysis ||
+    input.analysisPipeline?.intraday ||
+    input.pipeline?.intraday ||
+    null;
+
+  if (!liveIsPlainObject(source)) {
+    return buildCanonicalEngineResult(
+      {
+        decision: "HOLD",
+        confidence: 0,
+        reason: "Intraday analysis unavailable",
+      },
+      {
+        pair,
+        mode: "intraday",
+        engineName: "intraday",
+        source: "data/intraday-h1.json",
+        available: false,
+      }
+    );
+  }
+
+  return buildCanonicalEngineResult(
+    source,
+    {
+      pair,
+      mode: "intraday",
+      engineName: "intraday",
+      source: "data/intraday-h1.json",
+      requireTradePlan: false,
+    }
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Consensus weighting
+// ---------------------------------------------------------------------------
+
+const DEFAULT_MASTER_ENGINE_WEIGHTS = Object.freeze({
+  swing: 0.40,
+  intraday: 0.35,
+  scalp: 0.25,
+});
+
+function normalizeMasterWeights(rawWeights = {}) {
+  const weights = {
+    swing: Math.max(
+      0,
+      liveFiniteNumber(
+        rawWeights.swing,
+        DEFAULT_MASTER_ENGINE_WEIGHTS.swing
+      )
+    ),
+
+    intraday: Math.max(
+      0,
+      liveFiniteNumber(
+        rawWeights.intraday,
+        DEFAULT_MASTER_ENGINE_WEIGHTS.intraday
+      )
+    ),
+
+    scalp: Math.max(
+      0,
+      liveFiniteNumber(
+        rawWeights.scalp,
+        DEFAULT_MASTER_ENGINE_WEIGHTS.scalp
+      )
+    ),
+  };
+
+  const total =
+    weights.swing +
+    weights.intraday +
+    weights.scalp;
+
+  if (total <= 0) {
+    return {
+      ...DEFAULT_MASTER_ENGINE_WEIGHTS,
+    };
+  }
+
+  return {
+    swing: weights.swing / total,
+    intraday: weights.intraday / total,
+    scalp: weights.scalp / total,
+  };
+}
+
+function masterEngineContribution(
+  engineResult,
+  weight
+) {
+  const result = liveIsPlainObject(engineResult)
+    ? engineResult
+    : {};
+
+  const decision = liveExtractDecision(result);
+  const confidence = liveExtractConfidence(result, 0);
+  const availability =
+    result.available === false ? 0 : 1;
+
+  const directionalValue =
+    liveDecisionScore(decision);
+
+  const contribution =
+    directionalValue *
+    (confidence / 100) *
+    weight *
+    availability;
+
+  return {
+    decision,
+    confidence,
+    weight,
+    available: availability === 1,
+    contribution,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Master trade-plan selection
+// ---------------------------------------------------------------------------
+
+function selectMasterTradePlan(
+  finalDecision,
+  engines
+) {
+  const normalizedDecision =
+    normalizeLiveDecision(finalDecision);
+
+  if (normalizedDecision === "HOLD") {
+    return null;
+  }
+
+  const candidates = [
+    {
+      name: "swing",
+      priority: 3,
+      result: engines.swing,
+    },
+    {
+      name: "intraday",
+      priority: 2,
+      result: engines.intraday,
+    },
+    {
+      name: "scalp",
+      priority: 1,
+      result: engines.scalp,
+    },
+  ]
+    .filter((candidate) => {
+      const result = candidate.result;
+
+      return (
+        liveIsPlainObject(result) &&
+        liveExtractDecision(result) ===
+          normalizedDecision &&
+        liveIsPlainObject(result.tradePlan)
+      );
+    })
+    .map((candidate) => ({
+      ...candidate,
+      confidence: liveExtractConfidence(
+        candidate.result,
+        0
+      ),
+    }))
+    .sort((left, right) => {
+      if (right.priority !== left.priority) {
+        return right.priority - left.priority;
+      }
+
+      return right.confidence - left.confidence;
+    });
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  const selected = candidates[0];
+
+  return {
+    ...liveCloneValue(selected.result.tradePlan),
+
+    sourceEngine: selected.name,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Master consensus
+// ---------------------------------------------------------------------------
+
+function buildMasterConsensus(input = {}) {
+  const pair = liveNormalizePairLabel(
+    input.pair ||
+      input.symbol ||
+      input.pairLabel ||
+      input.swing?.pair ||
+      input.intraday?.pair ||
+      input.scalp?.pair
+  );
+
+  const engines = {
+    swing: buildCanonicalEngineResult(
+      input.swing || {},
+      {
+        pair,
+        mode: "swing",
+        engineName: "swing",
+        available:
+          input.swing?.available !== false,
+      }
+    ),
+
+    intraday: buildCanonicalEngineResult(
+      input.intraday || {},
+      {
+        pair,
+        mode: "intraday",
+        engineName: "intraday",
+        available:
+          input.intraday?.available !== false,
+      }
+    ),
+
+    scalp: buildCanonicalEngineResult(
+      input.scalp || {},
+      {
+        pair,
+        mode: "scalp",
+        engineName: "scalp",
+        available:
+          input.scalp?.available !== false,
+      }
+    ),
+  };
+
+  const weights = normalizeMasterWeights(
+    input.weights ||
+      input.engineWeights ||
+      {}
+  );
+
+  const contributions = {
+    swing: masterEngineContribution(
+      engines.swing,
+      weights.swing
+    ),
+
+    intraday: masterEngineContribution(
+      engines.intraday,
+      weights.intraday
+    ),
+
+    scalp: masterEngineContribution(
+      engines.scalp,
+      weights.scalp
+    ),
+  };
+
+  const netContribution =
+    contributions.swing.contribution +
+    contributions.intraday.contribution +
+    contributions.scalp.contribution;
+
+  const activeDirectionalEngines = Object.values(
+    contributions
+  ).filter(
+    (item) =>
+      item.available &&
+      item.decision !== "HOLD"
+  );
+
+  const buyEngines = activeDirectionalEngines.filter(
+    (item) => item.decision === "BUY"
+  );
+
+  const sellEngines = activeDirectionalEngines.filter(
+    (item) => item.decision === "SELL"
+  );
+
+  const directionalAgreement =
+    buyEngines.length >= 2
+      ? "BUY"
+      : sellEngines.length >= 2
+        ? "SELL"
+        : "HOLD";
+
+  const minimumNetContribution = liveBoundNumber(
+    input.minimumNetContribution,
+    0,
+    1,
+    0.18
+  );
+
+  const minimumDirectionalEngines = Math.max(
+    1,
+    Math.trunc(
+      liveFiniteNumber(
+        input.minimumDirectionalEngines,
+        2
+      )
+    )
+  );
+
+  let decision = "HOLD";
+
+  if (
+    directionalAgreement === "BUY" &&
+    buyEngines.length >= minimumDirectionalEngines &&
+    netContribution >= minimumNetContribution
+  ) {
+    decision = "BUY";
+  } else if (
+    directionalAgreement === "SELL" &&
+    sellEngines.length >= minimumDirectionalEngines &&
+    netContribution <= -minimumNetContribution
+  ) {
+    decision = "SELL";
+  }
+
+  const directionalWeight = Math.abs(netContribution);
+  const agreementCount =
+    decision === "BUY"
+      ? buyEngines.length
+      : decision === "SELL"
+        ? sellEngines.length
+        : Math.max(
+            buyEngines.length,
+            sellEngines.length
+          );
+
+  const activeCount =
+    activeDirectionalEngines.length;
+
+  const agreementRatio =
+    activeCount > 0
+      ? agreementCount / activeCount
+      : 0;
+
+  const directionEngines =
+    decision === "BUY"
+      ? buyEngines
+      : decision === "SELL"
+        ? sellEngines
+        : [];
+
+  const directionConfidenceAverage =
+    directionEngines.length > 0
+      ? directionEngines.reduce(
+          (sum, item) => sum + item.confidence,
+          0
+        ) / directionEngines.length
+      : 0;
+
+  let confidence;
+
+  if (decision === "HOLD") {
+    confidence = Math.round(
+      Math.min(
+        69,
+        Math.abs(netContribution) * 100 +
+          agreementRatio * 15
+      )
+    );
+  } else {
+    confidence = Math.round(
+      Math.min(
+        99,
+        45 +
+          directionalWeight * 35 +
+          agreementRatio * 15 +
+          directionConfidenceAverage * 0.15
+      )
+    );
+  }
+
+  const masterTradePlan = selectMasterTradePlan(
+    decision,
+    engines
+  );
+
+  // Without a valid source plan, retain the directional consensus but expose
+  // no fabricated entry, stop or targets.
+  const priceCandidates = [
+    engines.intraday.price,
+    engines.scalp.price,
+    engines.swing.price,
+  ].filter(Number.isFinite);
+
+  const price =
+    priceCandidates.length > 0
+      ? priceCandidates[0]
+      : null;
+
+  const reasons = [];
+
+  if (decision === "HOLD") {
+    if (activeCount === 0) {
+      reasons.push(
+        "No directional engine produced an active setup"
+      );
+    } else if (
+      buyEngines.length > 0 &&
+      sellEngines.length > 0
+    ) {
+      reasons.push(
+        "Directional engines are conflicting"
+      );
+    } else if (
+      Math.abs(netContribution) <
+      minimumNetContribution
+    ) {
+      reasons.push(
+        "Weighted consensus is below the required threshold"
+      );
+    } else {
+      reasons.push(
+        "Insufficient multi-engine agreement"
+      );
+    }
+  } else {
+    reasons.push(
+      `${agreementCount} engine(s) confirm ${decision}`
+    );
+
+    reasons.push(
+      `Weighted consensus ${netContribution.toFixed(3)}`
+    );
+  }
+
+  const timestamp = Date.now();
+
+  return {
+    pair,
+    symbol: pair,
+    pairLabel: pair,
+
+    mode: "master",
+    engine: "master-consensus",
+    engineName: "master-consensus",
+
+    decision,
+    signal: decision,
+    action: decision,
+    direction: decision,
+
+    confidence,
+    confidencePct: confidence,
+
+    score: Number(
+      (netContribution * 100).toFixed(2)
+    ),
+
+    weightedScore: Number(
+      (netContribution * 100).toFixed(2)
+    ),
+
+    netContribution: Number(
+      netContribution.toFixed(6)
+    ),
+
+    price,
+    currentPrice: price,
+    lastPrice: price,
+
+    timestamp,
+    time: new Date(timestamp).toISOString(),
+    generatedAt: new Date(timestamp).toISOString(),
+
+    reason: reasons.join("; "),
+    reasons,
+
+    status:
+      decision === "HOLD"
+        ? "HOLD"
+        : "ACTIVE",
+
+    available: true,
+
+    tradePlan:
+      decision === "HOLD"
+        ? null
+        : masterTradePlan,
+
+    plan:
+      decision === "HOLD"
+        ? null
+        : masterTradePlan,
+
+    entry:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.entry
+        : null,
+
+    entryPrice:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.entryPrice
+        : null,
+
+    stop:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.stop
+        : null,
+
+    stopLoss:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.stopLoss
+        : null,
+
+    sl:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.sl
+        : null,
+
+    target1:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.target1
+        : null,
+
+    target2:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.target2
+        : null,
+
+    target3:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.target3
+        : null,
+
+    takeProfit1:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.takeProfit1
+        : null,
+
+    takeProfit2:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.takeProfit2
+        : null,
+
+    takeProfit3:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.takeProfit3
+        : null,
+
+    tp1:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.tp1
+        : null,
+
+    tp2:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.tp2
+        : null,
+
+    tp3:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.tp3
+        : null,
+
+    riskReward:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.riskReward
+        : null,
+
+    rr:
+      decision !== "HOLD" && masterTradePlan
+        ? masterTradePlan.rr
+        : null,
+
+    weights,
+
+    contributions,
+
+    agreement: {
+      direction: directionalAgreement,
+      activeDirectionalEngines: activeCount,
+      buyEngines: buyEngines.length,
+      sellEngines: sellEngines.length,
+      agreementCount,
+      agreementRatio: Number(
+        agreementRatio.toFixed(4)
+      ),
+    },
+
+    engines: {
+      swing: {
+        decision: engines.swing.decision,
+        confidence: engines.swing.confidence,
+        score: engines.swing.score,
+        available: engines.swing.available,
+      },
+
+      intraday: {
+        decision: engines.intraday.decision,
+        confidence: engines.intraday.confidence,
+        score: engines.intraday.score,
+        available: engines.intraday.available,
+      },
+
+      scalp: {
+        decision: engines.scalp.decision,
+        confidence: engines.scalp.confidence,
+        score: engines.scalp.score,
+        available: engines.scalp.available,
+        source: engines.scalp.source,
+      },
+    },
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Per-pair engine bundle
+// ---------------------------------------------------------------------------

@@ -11295,3 +11295,325 @@ function buildMasterConsensus(input = {}) {
 // ---------------------------------------------------------------------------
 // Per-pair engine bundle
 // ---------------------------------------------------------------------------
+function attachAIMemoryAssessment(
+  engineResult,
+  aiMemoryState,
+  context = {}
+) {
+  if (
+    !engineResult ||
+    typeof engineResult !== "object" ||
+    Array.isArray(engineResult)
+  ) {
+    return engineResult;
+  }
+
+  const assessment =
+    createAIMemoryAssessment(
+      aiMemoryState,
+      {
+        ...context,
+
+        pair:
+          context.pair ||
+          engineResult.pair ||
+          engineResult.symbol ||
+          engineResult.pairLabel,
+
+        engine:
+          context.engine ||
+          context.mode ||
+          engineResult.engineName ||
+          engineResult.engine ||
+          engineResult.mode,
+
+        direction:
+          engineResult.decision ||
+          engineResult.signal ||
+          engineResult.action ||
+          engineResult.direction,
+
+        timeframe:
+          context.timeframe ||
+          engineResult.timeframe ||
+          engineResult.tf ||
+          engineResult.interval,
+      }
+    );
+
+  return applyAIMemoryConfidenceAdjustment(
+    engineResult,
+    assessment
+  );
+}
+
+function buildPairEngineBundle(
+  input = {}
+) {
+  const pair =
+    liveNormalizePairLabel(
+      input.pair ||
+      input.symbol ||
+      input.pairLabel
+    );
+
+  const aiMemoryState =
+    input.aiMemoryState ||
+    input.aiMemory ||
+    createUnavailableAIMemoryState(
+      "AI Memory was not supplied to the pair analysis pipeline"
+    );
+
+  const pipeline =
+    liveIsPlainObject(
+      input.analysisPipeline
+    )
+      ? input.analysisPipeline
+      : liveIsPlainObject(
+          input.pipeline
+        )
+        ? input.pipeline
+        : typeof runLegacyCompatibleAnalysisPipeline ===
+            "function"
+          ? runLegacyCompatibleAnalysisPipeline({
+              ...input,
+              pair,
+            })
+          : {};
+
+  // --------------------------------------------------------
+  // Build original engine results first.
+  //
+  // These unadjusted results are used by Master consensus so
+  // Phase 4 does not change the established engine weighting.
+  // --------------------------------------------------------
+
+  const baseSwing =
+    selectSwingEngineResult({
+      pair,
+
+      swingAnalysis:
+        input.swingAnalysis ||
+        pipeline.daily,
+
+      analysisPipeline:
+        pipeline,
+    });
+
+  const baseIntraday =
+    selectIntradayEngineResult({
+      pair,
+
+      intradayAnalysis:
+        input.intradayAnalysis ||
+        pipeline.intraday,
+
+      analysisPipeline:
+        pipeline,
+    });
+
+  const baseScalp =
+    selectScalpEngineResult({
+      pair,
+
+      scalpSignalsData:
+        input.scalpSignalsData ||
+        input.scalpSignals,
+
+      fallbackScalpAnalysis:
+        input.fallbackScalpAnalysis ||
+        input.legacyScalpAnalysis ||
+        pipeline.scalp,
+
+      allowPrimaryHold:
+        input.allowPrimaryScalpHold,
+
+      maximumPrimaryScalpAgeMs:
+        input.maximumPrimaryScalpAgeMs,
+    });
+
+  // --------------------------------------------------------
+  // Master consensus intentionally uses original confidence.
+  // --------------------------------------------------------
+
+  const baseMaster =
+    buildMasterConsensus({
+      pair,
+
+      swing:
+        baseSwing,
+
+      intraday:
+        baseIntraday,
+
+      scalp:
+        baseScalp,
+
+      weights:
+        input.masterWeights ||
+        input.engineWeights,
+
+      minimumNetContribution:
+        input.minimumNetContribution,
+
+      minimumDirectionalEngines:
+        input.minimumDirectionalEngines,
+    });
+
+  // --------------------------------------------------------
+  // Apply controlled AI Memory adjustment only after the
+  // original Master consensus has already been calculated.
+  // --------------------------------------------------------
+
+  const swing =
+    attachAIMemoryAssessment(
+      baseSwing,
+      aiMemoryState,
+      {
+        pair,
+        engine: "weekly",
+        mode: "swing",
+        timeframe: "D1",
+      }
+    );
+
+  const intraday =
+    attachAIMemoryAssessment(
+      baseIntraday,
+      aiMemoryState,
+      {
+        pair,
+        engine: "daily",
+        mode: "intraday",
+        timeframe: "1H",
+      }
+    );
+
+  const scalpTimeframe =
+    normalizeAIMemoryTimeframe(
+      firstString(
+        baseScalp.timeframe,
+        baseScalp.tf,
+        baseScalp.interval,
+
+        baseScalp.sourceData &&
+          baseScalp.sourceData.timeframe,
+
+        baseScalp.raw &&
+          baseScalp.raw.timeframe
+      )
+    ) ||
+    "15m";
+
+  const scalp =
+    attachAIMemoryAssessment(
+      baseScalp,
+      aiMemoryState,
+      {
+        pair,
+        engine: "scalp",
+        mode: "scalp",
+        timeframe:
+          scalpTimeframe,
+      }
+    );
+
+  const master =
+    attachAIMemoryAssessment(
+      baseMaster,
+      aiMemoryState,
+      {
+        pair,
+        engine: "master",
+        mode: "master",
+        timeframe: null,
+      }
+    );
+
+  return {
+    pair,
+    symbol: pair,
+    pairLabel: pair,
+
+    generatedAt:
+      liveNowIso(),
+
+    timestamp:
+      Date.now(),
+
+    swing,
+    intraday,
+    scalp,
+    master,
+
+    engines: {
+      swing,
+      intraday,
+      scalp,
+      master,
+    },
+
+    aiMemory: {
+      enabled:
+        AI_MEMORY_INTEGRATION.enabled,
+
+      available:
+        Boolean(
+          aiMemoryState.available
+        ),
+
+      valid:
+        Boolean(
+          aiMemoryState.valid
+        ),
+
+      mode:
+        AI_MEMORY_INTEGRATION.mode,
+
+      applyConfidenceAdjustment:
+        AI_MEMORY_INTEGRATION
+          .applyConfidenceAdjustment ===
+        true,
+
+      maximumAppliedAdjustment:
+        AI_MEMORY_INTEGRATION
+          .maximumAppliedAdjustment,
+
+      minimumSamplesToApply:
+        AI_MEMORY_INTEGRATION
+          .minimumSamplesToApply,
+
+      minimumReliabilityToApply:
+        AI_MEMORY_INTEGRATION
+          .minimumReliabilityToApply,
+
+      generatedAt:
+        aiMemoryState.generatedAt ||
+        null,
+
+      engineName:
+        aiMemoryState.engineName ||
+        null,
+
+      engineVersion:
+        aiMemoryState.engineVersion ||
+        null,
+
+      reason:
+        aiMemoryState.reason ||
+        null,
+    },
+
+    pipelineMetadata:
+      liveCloneValue(
+        pipeline.frameMetadata ||
+        pipeline.metadata ||
+        null
+      ),
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Live-analysis output schema
+// ---------------------------------------------------------------------------

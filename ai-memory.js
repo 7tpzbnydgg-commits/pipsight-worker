@@ -5789,3 +5789,714 @@ function validateMemoryDocument(
 // -----------------------------------------------------------------------------
 // Memory document builder
 // -----------------------------------------------------------------------------
+function buildMemoryDocument({
+  learningDocument,
+  confidenceDocument,
+  normalizedTrades,
+  enrichmentMemory,
+  enrichmentHash,
+  enrichmentModifiedAt,
+  generatedAt
+}) {
+
+  const memoryDocument =
+    createEmptyMemoryDocument(
+      generatedAt
+    );
+
+  const aggregationContext =
+    createAggregationContext();
+
+  const canonicalTrades =
+    [];
+
+  const skippedNonCanonicalTrades =
+    [];
+
+  for (
+    const trade of
+    normalizedTrades.acceptedTrades
+  ) {
+
+    if (
+      addTradeToMemoryContext(
+        aggregationContext,
+        trade
+      )
+    ) {
+
+      canonicalTrades.push(
+        trade
+      );
+
+    } else {
+
+      skippedNonCanonicalTrades.push(
+        trade.tradeKey
+      );
+
+    }
+
+  }
+
+  const finalizedAggregation =
+    finalizeMemoryContext(
+      aggregationContext
+    );
+
+  const confidenceOverlay =
+    buildConfidenceOverlay(
+      confidenceDocument
+    );
+
+  const memoryWithConfidence =
+    applyConfidenceOverlay(
+      finalizedAggregation,
+      confidenceOverlay
+    );
+
+  memoryDocument.summary =
+    memoryWithConfidence.summary;
+
+  memoryDocument.memory =
+    memoryWithConfidence.memory;
+
+  memoryDocument.combinations =
+    memoryWithConfidence.combinations;
+
+  memoryDocument.coverage =
+    memoryWithConfidence.coverage;
+
+  memoryDocument.enrichment =
+    isPlainObject(
+      enrichmentMemory
+    )
+      ? cloneJSONCompatible(
+          enrichmentMemory
+        )
+      : createUnavailableEnrichmentMemory();
+
+  const learningModifiedAt =
+    getFileModifiedAt(
+      LEARNING_DATA_PATH
+    );
+
+  const confidenceModifiedAt =
+    getFileModifiedAt(
+      CONFIDENCE_DATA_PATH
+    );
+
+  const learningUpdatedAt =
+    extractLearningUpdatedAt(
+      learningDocument
+    );
+
+  const confidenceUpdatedAt =
+    extractConfidenceUpdatedAt(
+      confidenceDocument
+    );
+
+  memoryDocument.sourceUpdatedAt =
+    learningUpdatedAt ||
+    learningModifiedAt ||
+    null;
+
+  memoryDocument.source = {
+    learningDataPath:
+      path.relative(
+        ROOT_DIR,
+        LEARNING_DATA_PATH
+      ),
+
+    confidenceDataPath:
+      path.relative(
+        ROOT_DIR,
+        CONFIDENCE_DATA_PATH
+      ),
+
+    learningEnrichmentPath:
+      path.relative(
+        ROOT_DIR,
+        LEARNING_ENRICHMENT_PATH
+      ),
+
+    learningEnrichmentStatePath:
+      path.relative(
+        ROOT_DIR,
+        LEARNING_ENRICHMENT_STATE_PATH
+      ),
+
+    learningDataModifiedAt:
+      learningModifiedAt,
+
+    confidenceDataModifiedAt:
+      confidenceModifiedAt,
+
+    learningEnrichmentModifiedAt:
+      enrichmentModifiedAt ||
+      null,
+
+    learningDataUpdatedAt:
+      learningUpdatedAt,
+
+    confidenceDataUpdatedAt:
+      confidenceUpdatedAt,
+
+    learningEnrichmentUpdatedAt:
+      memoryDocument.enrichment
+        .available
+        ? memoryDocument.enrichment
+            .generatedAt
+        : null,
+
+    learningDataHash:
+      createHash(
+        learningDocument
+      ),
+
+    confidenceDataHash:
+      confidenceDocument
+        ? createHash(
+            confidenceDocument
+          )
+        : null,
+
+    learningEnrichmentHash:
+      enrichmentHash ||
+      null,
+
+    sourceSignalCount:
+      normalizedTrades.sourceSignals,
+
+    acceptedTradeCount:
+      canonicalTrades.length,
+
+    normalizedTradeCount:
+      normalizedTrades.acceptedTrades.length,
+
+    rejectedTradeCount:
+      normalizedTrades.rejectedTrades.length,
+
+    duplicateTradeCount:
+      normalizedTrades.duplicateTradeKeys,
+
+    skippedNonCanonicalTradeCount:
+      skippedNonCanonicalTrades.length
+  };
+
+  const validationWarnings =
+    [
+      ...normalizedTrades.warnings
+    ];
+
+  if (
+    normalizedTrades.duplicateTradeKeys >
+    0
+  ) {
+
+    validationWarnings.push(
+      `${normalizedTrades.duplicateTradeKeys} duplicate learned trade record(s) were skipped.`
+    );
+
+  }
+
+  if (
+    skippedNonCanonicalTrades.length >
+    0
+  ) {
+
+    validationWarnings.push(
+      `${skippedNonCanonicalTrades.length} normalized trade record(s) were excluded because their pair, engine, direction or outcome was not canonical.`
+    );
+
+  }
+
+  if (
+    memoryDocument.coverage.sessions.available ===
+    0
+  ) {
+
+    validationWarnings.push(
+      "No explicit session metadata was available; session memory remains empty."
+    );
+
+  }
+
+  if (
+    memoryDocument.coverage.patterns.available ===
+    0
+  ) {
+
+    validationWarnings.push(
+      "No explicit pattern metadata was available; pattern memory remains empty."
+    );
+
+  }
+
+  if (
+    memoryDocument.coverage.marketRegimes.available ===
+    0
+  ) {
+
+    validationWarnings.push(
+      "No explicit market-regime metadata was available; market-regime memory remains empty."
+    );
+
+  }
+
+  if (
+    memoryDocument.enrichment.available !==
+    true
+  ) {
+
+    validationWarnings.push(
+      memoryDocument.enrichment.reason ||
+      "Optional Learning Enrichment was unavailable."
+    );
+
+  }
+
+  const documentValidation =
+    validateMemoryDocument(
+      memoryDocument
+    );
+
+  memoryDocument.validation = {
+    valid:
+      documentValidation.valid,
+
+    errors:
+      uniqueSortedStrings(
+        documentValidation.errors
+      ),
+
+    warnings:
+      uniqueSortedStrings([
+        ...documentValidation.warnings,
+        ...validationWarnings
+      ])
+  };
+
+  memoryDocument.metadata = {
+    ...memoryDocument.metadata,
+
+    enrichmentAvailable:
+      memoryDocument.enrichment
+        .available ===
+      true,
+
+    canonicalTradeKeys:
+      canonicalTrades
+        .map(
+          trade =>
+            trade.tradeKey
+        )
+        .sort(
+          (
+            left,
+            right
+          ) =>
+            left.localeCompare(
+              right
+            )
+        ),
+
+    skippedNonCanonicalTradeKeys:
+      uniqueSortedStrings(
+        skippedNonCanonicalTrades
+      )
+  };
+
+  return {
+    memoryDocument:
+      sortObjectKeysDeep(
+        memoryDocument
+      ),
+
+    canonicalTrades,
+
+    skippedNonCanonicalTrades
+  };
+
+}
+
+// -----------------------------------------------------------------------------
+// Source-change detection
+// -----------------------------------------------------------------------------
+
+function haveSourceHashesChanged(
+  state,
+  learningHash,
+  confidenceHash,
+  enrichmentHash
+) {
+
+  const previousLearningHash =
+    getNestedValue(
+      state,
+      [
+        "sourceHashes",
+        "learningData"
+      ]
+    ) || null;
+
+  const previousConfidenceHash =
+    getNestedValue(
+      state,
+      [
+        "sourceHashes",
+        "confidenceData"
+      ]
+    ) || null;
+
+  const previousEnrichmentHash =
+    getNestedValue(
+      state,
+      [
+        "sourceHashes",
+        "learningEnrichment"
+      ]
+    ) || null;
+
+  return (
+    previousLearningHash !==
+      learningHash ||
+    previousConfidenceHash !==
+      confidenceHash ||
+    previousEnrichmentHash !==
+      enrichmentHash
+  );
+
+}
+
+function haveSourceModifiedTimesChanged(
+  state,
+  learningModifiedAt,
+  confidenceModifiedAt,
+  enrichmentModifiedAt
+) {
+
+  const previousLearningModifiedAt =
+    getNestedValue(
+      state,
+      [
+        "sourceModifiedAt",
+        "learningData"
+      ]
+    ) || null;
+
+  const previousConfidenceModifiedAt =
+    getNestedValue(
+      state,
+      [
+        "sourceModifiedAt",
+        "confidenceData"
+      ]
+    ) || null;
+
+  const previousEnrichmentModifiedAt =
+    getNestedValue(
+      state,
+      [
+        "sourceModifiedAt",
+        "learningEnrichment"
+      ]
+    ) || null;
+
+  return (
+    previousLearningModifiedAt !==
+      learningModifiedAt ||
+    previousConfidenceModifiedAt !==
+      confidenceModifiedAt ||
+    previousEnrichmentModifiedAt !==
+      enrichmentModifiedAt
+  );
+
+}
+
+// -----------------------------------------------------------------------------
+// Processed trade-key reconciliation
+// -----------------------------------------------------------------------------
+
+function reconcileProcessedTradeKeys(
+  previousKeys,
+  canonicalTrades
+) {
+
+  const previousKeySet =
+    new Set(
+      uniqueSortedStrings(
+        previousKeys
+      )
+    );
+
+  const currentKeys =
+    canonicalTrades
+      .map(
+        trade =>
+          trade.tradeKey
+      )
+      .filter(
+        Boolean
+      );
+
+  let newTradeKeys =
+    0;
+
+  let duplicateTradeKeys =
+    0;
+
+  for (
+    const tradeKey of currentKeys
+  ) {
+
+    if (
+      previousKeySet.has(
+        tradeKey
+      )
+    ) {
+
+      duplicateTradeKeys +=
+        1;
+
+    } else {
+
+      newTradeKeys +=
+        1;
+
+    }
+
+  }
+
+  const processedTradeKeys =
+    uniqueSortedStrings([
+      ...previousKeySet,
+      ...currentKeys
+    ]).slice(
+      -MAX_PROCESSED_KEYS
+    );
+
+  return {
+    processedTradeKeys,
+    newTradeKeys,
+    duplicateTradeKeys
+  };
+
+}
+
+// -----------------------------------------------------------------------------
+// State mutation helpers
+// -----------------------------------------------------------------------------
+
+function beginMemoryRun(
+  previousState,
+  runAt
+) {
+
+  const state =
+    normalizeExistingMemoryState(
+      previousState
+    );
+
+  state.updatedAt =
+    runAt;
+
+  state.lastRunAt =
+    runAt;
+
+  state.counters.runs +=
+    1;
+
+  state.lastRun = {
+    status:
+      "RUNNING",
+
+    sourceSignals:
+      0,
+
+    acceptedTrades:
+      0,
+
+    rejectedTrades:
+      0,
+
+    newTradeKeys:
+      0,
+
+    duplicateTradeKeys:
+      0,
+
+    memoryWritten:
+      false,
+
+    stateWritten:
+      false,
+
+    error:
+      null
+  };
+
+  return state;
+
+}
+
+function completeMemoryRun({
+  state,
+  runAt,
+  status,
+  learningHash,
+  confidenceHash,
+  enrichmentHash,
+  learningModifiedAt,
+  confidenceModifiedAt,
+  enrichmentModifiedAt,
+  normalizedTrades,
+  canonicalTrades,
+  keyReconciliation,
+  memoryWritten
+}) {
+
+  state.updatedAt =
+    runAt;
+
+  state.lastRunAt =
+    runAt;
+
+  state.lastSuccessfulRunAt =
+    runAt;
+
+  state.sourceHashes = {
+    learningData:
+      learningHash,
+
+    confidenceData:
+      confidenceHash,
+
+    learningEnrichment:
+      enrichmentHash ||
+      null
+  };
+
+  state.sourceModifiedAt = {
+    learningData:
+      learningModifiedAt,
+
+    confidenceData:
+      confidenceModifiedAt,
+
+    learningEnrichment:
+      enrichmentModifiedAt ||
+      null
+  };
+
+  state.processedTradeKeys =
+    keyReconciliation.processedTradeKeys;
+
+  state.counters.successfulRuns +=
+    1;
+
+  if (
+    status === "UNCHANGED"
+  ) {
+
+    state.counters.unchangedRuns +=
+      1;
+
+  }
+
+  state.counters.sourceSignals +=
+    normalizedTrades.sourceSignals;
+
+  state.counters.acceptedTrades +=
+    canonicalTrades.length;
+
+  state.counters.rejectedTrades +=
+    normalizedTrades.rejectedTrades.length;
+
+  state.counters.newTradeKeys +=
+    keyReconciliation.newTradeKeys;
+
+  state.counters.duplicateTradeKeys +=
+    (
+      normalizedTrades.duplicateTradeKeys +
+      keyReconciliation.duplicateTradeKeys
+    );
+
+  state.lastRun = {
+    status,
+
+    sourceSignals:
+      normalizedTrades.sourceSignals,
+
+    acceptedTrades:
+      canonicalTrades.length,
+
+    rejectedTrades:
+      normalizedTrades.rejectedTrades.length,
+
+    newTradeKeys:
+      keyReconciliation.newTradeKeys,
+
+    duplicateTradeKeys:
+      (
+        normalizedTrades.duplicateTradeKeys +
+        keyReconciliation.duplicateTradeKeys
+      ),
+
+    memoryWritten:
+      Boolean(
+        memoryWritten
+      ),
+
+    stateWritten:
+      true,
+
+    error:
+      null
+  };
+
+  return state;
+
+}
+
+function failMemoryRun(
+  state,
+  runAt,
+  error
+) {
+
+  const message =
+    error instanceof Error
+      ? error.message
+      : toTrimmedString(
+          error
+        ) || "Unknown AI Memory error.";
+
+  state.updatedAt =
+    runAt;
+
+  state.lastRunAt =
+    runAt;
+
+  state.lastRun = {
+    ...normalizeLastRunState(
+      state.lastRun
+    ),
+
+    status:
+      "FAILED",
+
+    stateWritten:
+      true,
+
+    error:
+      message
+  };
+
+  return state;
+
+}
+
+// -----------------------------------------------------------------------------
+// Existing memory validation
+// -----------------------------------------------------------------------------

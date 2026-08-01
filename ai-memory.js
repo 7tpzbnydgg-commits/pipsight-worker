@@ -4635,3 +4635,1157 @@ function buildConfidenceOverlay(
 // -----------------------------------------------------------------------------
 // Memory aggregation context
 // -----------------------------------------------------------------------------
+function createAggregationContext() {
+
+  return {
+    summary:
+      createPerformanceAccumulator(),
+
+    memory: {
+      pairs: {},
+      engines: {},
+      directions: {},
+      timeframes: {},
+      sessions: {},
+      patterns: {},
+      marketRegimes: {}
+    },
+
+    combinations: {
+      pairEngine: {},
+      pairDirection: {},
+      engineDirection: {},
+      pairEngineDirection: {},
+      pairSession: {},
+      pairPattern: {},
+      pairMarketRegime: {}
+    },
+
+    coverage:
+      createEmptyCoverage()
+  };
+
+}
+
+// -----------------------------------------------------------------------------
+// Canonical trade eligibility
+// -----------------------------------------------------------------------------
+
+function isCanonicalPair(
+  pair
+) {
+
+  return (
+    typeof pair === "string" &&
+    SUPPORTED_PAIRS.has(
+      pair
+    )
+  );
+
+}
+
+function isCanonicalEngine(
+  engine
+) {
+
+  return (
+    typeof engine === "string" &&
+    SUPPORTED_ENGINES.has(
+      engine
+    )
+  );
+
+}
+
+function isCanonicalDirection(
+  direction
+) {
+
+  return (
+    typeof direction === "string" &&
+    SUPPORTED_DIRECTIONS.has(
+      direction
+    )
+  );
+
+}
+
+function isCanonicalOutcome(
+  outcome
+) {
+
+  return (
+    typeof outcome === "string" &&
+    SUPPORTED_OUTCOMES.has(
+      outcome
+    )
+  );
+
+}
+
+function isCanonicalTrade(
+  trade
+) {
+
+  if (
+    !isPlainObject(
+      trade
+    )
+  ) {
+
+    return false;
+
+  }
+
+  return (
+    isCanonicalPair(
+      trade.pair
+    ) &&
+    isCanonicalEngine(
+      trade.engine
+    ) &&
+    isCanonicalDirection(
+      trade.direction
+    ) &&
+    isCanonicalOutcome(
+      trade.outcome
+    )
+  );
+
+}
+
+// -----------------------------------------------------------------------------
+// Single-trade memory aggregation
+// -----------------------------------------------------------------------------
+
+function addTradeToPrimaryDimensions(
+  context,
+  trade
+) {
+
+  addTradeToDimension(
+    context.memory.pairs,
+    trade.pair,
+    trade
+  );
+
+  addTradeToDimension(
+    context.memory.engines,
+    trade.engine,
+    trade
+  );
+
+  addTradeToDimension(
+    context.memory.directions,
+    trade.direction,
+    trade
+  );
+
+  if (
+    trade.timeframe
+  ) {
+
+    addTradeToDimension(
+      context.memory.timeframes,
+      trade.timeframe,
+      trade
+    );
+
+  }
+
+  if (
+    trade.session
+  ) {
+
+    addTradeToDimension(
+      context.memory.sessions,
+      trade.session,
+      trade
+    );
+
+  }
+
+  if (
+    trade.pattern
+  ) {
+
+    addTradeToDimension(
+      context.memory.patterns,
+      trade.pattern,
+      trade
+    );
+
+  }
+
+  if (
+    trade.marketRegime
+  ) {
+
+    addTradeToDimension(
+      context.memory.marketRegimes,
+      trade.marketRegime,
+      trade
+    );
+
+  }
+
+}
+
+function addTradeToCombinationDimensions(
+  context,
+  trade
+) {
+
+  const pairEngineKey =
+    createCombinationKey([
+      trade.pair,
+      trade.engine
+    ]);
+
+  const pairDirectionKey =
+    createCombinationKey([
+      trade.pair,
+      trade.direction
+    ]);
+
+  const engineDirectionKey =
+    createCombinationKey([
+      trade.engine,
+      trade.direction
+    ]);
+
+  const pairEngineDirectionKey =
+    createCombinationKey([
+      trade.pair,
+      trade.engine,
+      trade.direction
+    ]);
+
+  const pairSessionKey =
+    createCombinationKey([
+      trade.pair,
+      trade.session
+    ]);
+
+  const pairPatternKey =
+    createCombinationKey([
+      trade.pair,
+      trade.pattern
+    ]);
+
+  const pairMarketRegimeKey =
+    createCombinationKey([
+      trade.pair,
+      trade.marketRegime
+    ]);
+
+  if (
+    pairEngineKey
+  ) {
+
+    addTradeToDimension(
+      context.combinations.pairEngine,
+      pairEngineKey,
+      trade
+    );
+
+  }
+
+  if (
+    pairDirectionKey
+  ) {
+
+    addTradeToDimension(
+      context.combinations.pairDirection,
+      pairDirectionKey,
+      trade
+    );
+
+  }
+
+  if (
+    engineDirectionKey
+  ) {
+
+    addTradeToDimension(
+      context.combinations.engineDirection,
+      engineDirectionKey,
+      trade
+    );
+
+  }
+
+  if (
+    pairEngineDirectionKey
+  ) {
+
+    addTradeToDimension(
+      context.combinations.pairEngineDirection,
+      pairEngineDirectionKey,
+      trade
+    );
+
+  }
+
+  if (
+    pairSessionKey
+  ) {
+
+    addTradeToDimension(
+      context.combinations.pairSession,
+      pairSessionKey,
+      trade
+    );
+
+  }
+
+  if (
+    pairPatternKey
+  ) {
+
+    addTradeToDimension(
+      context.combinations.pairPattern,
+      pairPatternKey,
+      trade
+    );
+
+  }
+
+  if (
+    pairMarketRegimeKey
+  ) {
+
+    addTradeToDimension(
+      context.combinations.pairMarketRegime,
+      pairMarketRegimeKey,
+      trade
+    );
+
+  }
+
+}
+
+function addTradeToMemoryContext(
+  context,
+  trade
+) {
+
+  if (
+    !isCanonicalTrade(
+      trade
+    )
+  ) {
+
+    return false;
+
+  }
+
+  addTradeToAccumulator(
+    context.summary,
+    trade
+  );
+
+  addTradeToPrimaryDimensions(
+    context,
+    trade
+  );
+
+  addTradeToCombinationDimensions(
+    context,
+    trade
+  );
+
+  updateCoverage(
+    context.coverage,
+    trade
+  );
+
+  return true;
+
+}
+
+// -----------------------------------------------------------------------------
+// Aggregation finalization
+// -----------------------------------------------------------------------------
+
+function finalizeMemoryContext(
+  context
+) {
+
+  return {
+    summary:
+      finalizePerformanceAccumulator(
+        context.summary
+      ),
+
+    memory: {
+      pairs:
+        finalizeDimensionMap(
+          context.memory.pairs
+        ),
+
+      engines:
+        finalizeDimensionMap(
+          context.memory.engines
+        ),
+
+      directions:
+        finalizeDimensionMap(
+          context.memory.directions
+        ),
+
+      timeframes:
+        finalizeDimensionMap(
+          context.memory.timeframes
+        ),
+
+      sessions:
+        finalizeDimensionMap(
+          context.memory.sessions
+        ),
+
+      patterns:
+        finalizeDimensionMap(
+          context.memory.patterns
+        ),
+
+      marketRegimes:
+        finalizeDimensionMap(
+          context.memory.marketRegimes
+        )
+    },
+
+    combinations: {
+      pairEngine:
+        finalizeDimensionMap(
+          context.combinations.pairEngine
+        ),
+
+      pairDirection:
+        finalizeDimensionMap(
+          context.combinations.pairDirection
+        ),
+
+      engineDirection:
+        finalizeDimensionMap(
+          context.combinations.engineDirection
+        ),
+
+      pairEngineDirection:
+        finalizeDimensionMap(
+          context.combinations.pairEngineDirection
+        ),
+
+      pairSession:
+        finalizeDimensionMap(
+          context.combinations.pairSession
+        ),
+
+      pairPattern:
+        finalizeDimensionMap(
+          context.combinations.pairPattern
+        ),
+
+      pairMarketRegime:
+        finalizeDimensionMap(
+          context.combinations.pairMarketRegime
+        )
+    },
+
+    coverage:
+      cloneJSONCompatible(
+        context.coverage
+      )
+  };
+
+}
+
+// -----------------------------------------------------------------------------
+// Confidence overlay attachment
+// -----------------------------------------------------------------------------
+
+function attachConfidenceToMetric(
+  metric,
+  confidenceMetric
+) {
+
+  if (
+    !isPlainObject(
+      metric
+    )
+  ) {
+
+    return metric;
+
+  }
+
+  const result =
+    {
+      ...metric
+    };
+
+  if (
+    isPlainObject(
+      confidenceMetric
+    )
+  ) {
+
+    result.learningConfidence =
+      cloneJSONCompatible(
+        confidenceMetric
+      );
+
+  } else {
+
+    result.learningConfidence =
+      null;
+
+  }
+
+  return result;
+
+}
+
+function attachConfidenceToDimensionMap(
+  dimensionMap,
+  confidenceMap
+) {
+
+  const result =
+    {};
+
+  const sourceDimensions =
+    isPlainObject(
+      dimensionMap
+    )
+      ? dimensionMap
+      : {};
+
+  const sourceConfidence =
+    isPlainObject(
+      confidenceMap
+    )
+      ? confidenceMap
+      : {};
+
+  for (
+    const key of Object.keys(
+      sourceDimensions
+    ).sort(
+      (
+        left,
+        right
+      ) =>
+        left.localeCompare(
+          right
+        )
+    )
+  ) {
+
+    result[key] =
+      attachConfidenceToMetric(
+        sourceDimensions[key],
+        sourceConfidence[key]
+      );
+
+  }
+
+  return result;
+
+}
+
+function applyConfidenceOverlay(
+  aggregatedMemory,
+  confidenceOverlay
+) {
+
+  const memory =
+    cloneJSONCompatible(
+      aggregatedMemory
+    );
+
+  const overlay =
+    isPlainObject(
+      confidenceOverlay
+    )
+      ? confidenceOverlay
+      : {
+          strategies: {},
+          pairs: {},
+          timeframes: {},
+          overall: null
+        };
+
+  memory.summary =
+    attachConfidenceToMetric(
+      memory.summary,
+      overlay.overall
+    );
+
+  memory.memory.pairs =
+    attachConfidenceToDimensionMap(
+      memory.memory.pairs,
+      overlay.pairs
+    );
+
+  memory.memory.engines =
+    attachConfidenceToDimensionMap(
+      memory.memory.engines,
+      overlay.strategies
+    );
+
+  memory.memory.timeframes =
+    attachConfidenceToDimensionMap(
+      memory.memory.timeframes,
+      overlay.timeframes
+    );
+
+  return memory;
+
+}
+
+// -----------------------------------------------------------------------------
+// Memory document validation
+// -----------------------------------------------------------------------------
+
+function validatePerformanceStats(
+  stats,
+  label
+) {
+
+  const errors =
+    [];
+
+  const warnings =
+    [];
+
+  if (
+    !isPlainObject(
+      stats
+    )
+  ) {
+
+    errors.push(
+      `${label} must be a JSON object.`
+    );
+
+    return createValidationResult(
+      false,
+      errors,
+      warnings
+    );
+
+  }
+
+  const totalTrades =
+    normalizeNonNegativeInteger(
+      stats.totalTrades
+    );
+
+  const wins =
+    normalizeNonNegativeInteger(
+      stats.wins
+    );
+
+  const losses =
+    normalizeNonNegativeInteger(
+      stats.losses
+    );
+
+  const breakevens =
+    normalizeNonNegativeInteger(
+      stats.breakevens
+    );
+
+  const outcomeTotal =
+    wins +
+    losses +
+    breakevens;
+
+  if (
+    outcomeTotal !== totalTrades
+  ) {
+
+    errors.push(
+      `${label} outcome counts do not equal totalTrades.`
+    );
+
+  }
+
+  const rateTotal =
+    (
+      toFiniteNumber(
+        stats.winRate
+      ) || 0
+    ) +
+    (
+      toFiniteNumber(
+        stats.lossRate
+      ) || 0
+    ) +
+    (
+      toFiniteNumber(
+        stats.breakevenRate
+      ) || 0
+    );
+
+  if (
+    totalTrades > 0 &&
+    Math.abs(
+      rateTotal -
+      100
+    ) > 0.1
+  ) {
+
+    warnings.push(
+      `${label} outcome rates do not total approximately 100%.`
+    );
+
+  }
+
+  if (
+    !isPlainObject(
+      stats.confidence
+    )
+  ) {
+
+    errors.push(
+      `${label}.confidence must be a JSON object.`
+    );
+
+  }
+
+  return createValidationResult(
+    errors.length === 0,
+    errors,
+    warnings
+  );
+
+}
+
+function validateDimensionMap(
+  dimensionMap,
+  label
+) {
+
+  const results =
+    [];
+
+  if (
+    !isPlainObject(
+      dimensionMap
+    )
+  ) {
+
+    return createValidationResult(
+      false,
+      [
+        `${label} must be a JSON object.`
+      ],
+      []
+    );
+
+  }
+
+  for (
+    const key of Object.keys(
+      dimensionMap
+    )
+  ) {
+
+    results.push(
+      validatePerformanceStats(
+        dimensionMap[key],
+        `${label}.${key}`
+      )
+    );
+
+  }
+
+  return mergeValidationResults(
+    results
+  );
+
+}
+
+function validateMemoryEnrichmentSection(
+  enrichment
+) {
+
+  const errors =
+    [];
+
+  const warnings =
+    [];
+
+  if (
+    !isPlainObject(
+      enrichment
+    )
+  ) {
+
+    errors.push(
+      "AI memory enrichment section must be a JSON object."
+    );
+
+    return createValidationResult(
+      false,
+      errors,
+      warnings
+    );
+
+  }
+
+  if (
+    typeof enrichment.available !==
+      "boolean"
+  ) {
+
+    errors.push(
+      "AI memory enrichment.available must be a boolean."
+    );
+
+  }
+
+  if (
+    enrichment.advisoryOnly !==
+      true
+  ) {
+
+    errors.push(
+      "AI memory enrichment must remain advisory-only."
+    );
+
+  }
+
+  if (
+    typeof enrichment.compatible !==
+      "boolean"
+  ) {
+
+    errors.push(
+      "AI memory enrichment.compatible must be a boolean."
+    );
+
+  }
+
+  if (
+    enrichment.available ===
+      true
+  ) {
+
+    if (
+      enrichment.compatible !==
+        true
+    ) {
+
+      errors.push(
+        "Available AI memory enrichment must be compatible."
+      );
+
+    }
+
+    if (
+      !toISOStringOrNull(
+        enrichment.generatedAt
+      )
+    ) {
+
+      errors.push(
+        "Available AI memory enrichment generatedAt is invalid."
+      );
+
+    }
+
+    if (
+      !isPlainObject(
+        enrichment.summary
+      )
+    ) {
+
+      errors.push(
+        "Available AI memory enrichment summary is missing."
+      );
+
+    }
+
+    if (
+      !isPlainObject(
+        enrichment.intelligence
+      )
+    ) {
+
+      errors.push(
+        "Available AI memory enrichment intelligence is missing."
+      );
+
+    }
+
+  } else {
+
+    if (
+      enrichment.compatible !==
+        false
+    ) {
+
+      errors.push(
+        "Unavailable AI memory enrichment must not be marked compatible."
+      );
+
+    }
+
+    if (
+      !toNonEmptyStringOrNull(
+        enrichment.reason
+      )
+    ) {
+
+      warnings.push(
+        "Unavailable AI memory enrichment does not contain a reason."
+      );
+
+    }
+
+  }
+
+  return createValidationResult(
+    errors.length === 0,
+    errors,
+    warnings
+  );
+
+}
+
+function validateMemoryDocument(
+  document
+) {
+
+  const results =
+    [];
+
+  const errors =
+    [];
+
+  const warnings =
+    [];
+
+  if (
+    !isPlainObject(
+      document
+    )
+  ) {
+
+    return createValidationResult(
+      false,
+      [
+        "AI memory document must be a JSON object."
+      ],
+      []
+    );
+
+  }
+
+  if (
+    document.version !==
+      MEMORY_SCHEMA_VERSION
+  ) {
+
+    errors.push(
+      "AI memory document schema version is invalid."
+    );
+
+  }
+
+  if (
+    document.engineName !==
+      ENGINE_NAME
+  ) {
+
+    errors.push(
+      "AI memory document engine name is invalid."
+    );
+
+  }
+
+  if (
+    !toISOStringOrNull(
+      document.generatedAt
+    )
+  ) {
+
+    errors.push(
+      "AI memory document generatedAt timestamp is invalid."
+    );
+
+  }
+
+  results.push(
+    validatePerformanceStats(
+      document.summary,
+      "summary"
+    )
+  );
+
+  if (
+    !isPlainObject(
+      document.memory
+    )
+  ) {
+
+    errors.push(
+      "AI memory document memory section must be a JSON object."
+    );
+
+  } else {
+
+    for (
+      const dimensionName of DIMENSION_NAMES
+    ) {
+
+      results.push(
+        validateDimensionMap(
+          document.memory[dimensionName],
+          `memory.${dimensionName}`
+        )
+      );
+
+    }
+
+  }
+
+  if (
+    !isPlainObject(
+      document.combinations
+    )
+  ) {
+
+    errors.push(
+      "AI memory document combinations section must be a JSON object."
+    );
+
+  } else {
+
+    const combinationNames =
+      [
+        "pairEngine",
+        "pairDirection",
+        "engineDirection",
+        "pairEngineDirection",
+        "pairSession",
+        "pairPattern",
+        "pairMarketRegime"
+      ];
+
+    for (
+      const combinationName of
+      combinationNames
+    ) {
+
+      results.push(
+        validateDimensionMap(
+          document.combinations[
+            combinationName
+          ],
+          `combinations.${combinationName}`
+        )
+      );
+
+    }
+
+  }
+
+  results.push(
+    validateMemoryEnrichmentSection(
+      document.enrichment
+    )
+  );
+
+  if (
+    !isPlainObject(
+      document.coverage
+    )
+  ) {
+
+    errors.push(
+      "AI memory document coverage section must be a JSON object."
+    );
+
+  }
+
+  if (
+    !isPlainObject(
+      document.source
+    )
+  ) {
+
+    errors.push(
+      "AI memory document source section must be a JSON object."
+    );
+
+  } else {
+
+    if (
+      !toNonEmptyStringOrNull(
+        document.source
+          .learningDataPath
+      )
+    ) {
+
+      errors.push(
+        "AI memory learningDataPath is missing."
+      );
+
+    }
+
+    if (
+      !toNonEmptyStringOrNull(
+        document.source
+          .confidenceDataPath
+      )
+    ) {
+
+      errors.push(
+        "AI memory confidenceDataPath is missing."
+      );
+
+    }
+
+    if (
+      !toNonEmptyStringOrNull(
+        document.source
+          .learningEnrichmentPath
+      )
+    ) {
+
+      errors.push(
+        "AI memory learningEnrichmentPath is missing."
+      );
+
+    }
+
+  }
+
+  const combined =
+    mergeValidationResults(
+      results
+    );
+
+  errors.push(
+    ...combined.errors
+  );
+
+  warnings.push(
+    ...combined.warnings
+  );
+
+  return createValidationResult(
+    errors.length === 0,
+    errors,
+    warnings
+  );
+
+}
+
+// -----------------------------------------------------------------------------
+// Memory document builder
+// -----------------------------------------------------------------------------

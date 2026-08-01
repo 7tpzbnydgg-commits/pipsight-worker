@@ -11833,3 +11833,473 @@ function buildLiveAnalysisOutput(input = {}) {
 // ---------------------------------------------------------------------------
 // History fingerprinting
 // ---------------------------------------------------------------------------
+function liveHistoryFingerprint(record) {
+  const pair = liveNormalizePairLabel(
+    record?.pair ||
+      record?.symbol ||
+      record?.pairLabel
+  );
+
+  const mode = liveNormalizeMode(
+    record?.mode ||
+      record?.engine ||
+      "master",
+    "master"
+  );
+
+  const decision = liveExtractDecision(record);
+
+  const entry = liveFiniteNumber(
+    record?.entry ??
+      record?.entryPrice ??
+      record?.tradePlan?.entry,
+    null
+  );
+
+  const stopLoss = liveFiniteNumber(
+    record?.stopLoss ??
+      record?.stop ??
+      record?.tradePlan?.stopLoss,
+    null
+  );
+
+  const target1 = liveFiniteNumber(
+    record?.target1 ??
+      record?.tp1 ??
+      record?.tradePlan?.target1,
+    null
+  );
+
+  return [
+    liveCompactPair(pair),
+    mode,
+    decision,
+    Number.isFinite(entry) ? entry : "",
+    Number.isFinite(stopLoss) ? stopLoss : "",
+    Number.isFinite(target1) ? target1 : "",
+  ].join("|");
+}
+
+function liveHistoryRecordFromEngine(
+  engineResult,
+  options = {}
+) {
+  const canonical =
+    buildCanonicalEngineResult(
+      engineResult,
+      {
+        pair:
+          options.pair ||
+          engineResult?.pair,
+
+        mode:
+          options.mode ||
+          engineResult?.mode ||
+          "master",
+
+        engineName:
+          options.engineName ||
+          engineResult?.engine ||
+          engineResult?.engineName,
+      }
+    );
+
+  const recordedAt =
+    liveNowIso();
+
+  const finalConfidence =
+    liveNormalizeConfidence(
+      canonical.confidence,
+      0
+    );
+
+  const originalConfidence =
+    liveNormalizeConfidence(
+      canonical.originalConfidence ??
+        canonical.aiMemory
+          ?.originalConfidence ??
+        finalConfidence,
+      finalConfidence
+    );
+
+  const aiMemoryAdjustedConfidence =
+    liveNormalizeConfidence(
+      canonical.aiMemoryAdjustedConfidence ??
+        canonical.aiMemory
+          ?.adjustedConfidence ??
+        finalConfidence,
+      finalConfidence
+    );
+
+  const appliedConfidenceAdjustment =
+    liveFiniteNumber(
+      canonical.aiMemory
+        ?.appliedConfidenceAdjustment ??
+        canonical.aiMemory
+          ?.confidenceAdjustment,
+      0
+    );
+
+  const aiMemoryApplied =
+    canonical.aiMemory?.applied ===
+    true;
+
+  return {
+    id:
+      options.id ||
+      `${Date.now()}-${liveCompactPair(
+        canonical.pair
+      )}-${canonical.mode}`,
+
+    recordedAt,
+    createdAt: recordedAt,
+    updatedAt: recordedAt,
+
+    pair: canonical.pair,
+    symbol: canonical.pair,
+    pairLabel: canonical.pair,
+
+    mode: canonical.mode,
+    engine: canonical.engine,
+    engineName:
+      canonical.engineName,
+
+    decision:
+      canonical.decision,
+
+    signal:
+      canonical.signal,
+
+    action:
+      canonical.action,
+
+    direction:
+      canonical.direction,
+
+    // Final confidence used by the live engine,
+    // Telegram and all existing consumers.
+    confidence:
+      finalConfidence,
+
+    confidencePct:
+      finalConfidence,
+
+    // Phase 4 audit fields.
+    originalConfidence,
+
+    aiMemoryAdjustedConfidence,
+
+    appliedConfidenceAdjustment,
+
+    aiMemoryApplied,
+
+    score:
+      canonical.score,
+
+    price:
+      canonical.price,
+
+    currentPrice:
+      canonical.currentPrice,
+
+    entry:
+      canonical.entry,
+
+    entryPrice:
+      canonical.entryPrice,
+
+    stop:
+      canonical.stop,
+
+    stopLoss:
+      canonical.stopLoss,
+
+    sl:
+      canonical.sl,
+
+    target1:
+      canonical.target1,
+
+    target2:
+      canonical.target2,
+
+    target3:
+      canonical.target3,
+
+    takeProfit1:
+      canonical.takeProfit1,
+
+    takeProfit2:
+      canonical.takeProfit2,
+
+    takeProfit3:
+      canonical.takeProfit3,
+
+    tp1:
+      canonical.tp1,
+
+    tp2:
+      canonical.tp2,
+
+    tp3:
+      canonical.tp3,
+
+    riskReward:
+      canonical.riskReward,
+
+    rr:
+      canonical.rr,
+
+    reason:
+      canonical.reason,
+
+    source:
+      canonical.source,
+
+    signalTimestamp:
+      canonical.timestamp,
+
+    signalTime:
+      canonical.time,
+
+    status:
+      canonical.decision ===
+      "HOLD"
+        ? "hold"
+        : "open",
+
+    outcome: null,
+    resolvedAt: null,
+
+    fingerprint:
+      liveHistoryFingerprint(
+        canonical
+      ),
+
+    confidenceExplainability:
+      liveCloneValue(
+        canonical.confidenceExplainability ||
+        null
+      ),
+
+    aiMemory:
+      liveCloneValue(
+        canonical.aiMemory ||
+        null
+      ),
+
+    snapshot:
+      liveCloneValue(
+        canonical
+      ),
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// History normalization
+// ---------------------------------------------------------------------------
+
+function normalizeAnalysisHistory(rawHistory) {
+  if (Array.isArray(rawHistory)) {
+    return {
+      version: 1,
+      updatedAt: liveNowIso(),
+      records: rawHistory,
+    };
+  }
+
+  if (!liveIsPlainObject(rawHistory)) {
+    return {
+      version: 1,
+      updatedAt: liveNowIso(),
+      records: [],
+    };
+  }
+
+  const records =
+    liveAsArray(rawHistory.records).length > 0
+      ? rawHistory.records
+      : liveAsArray(rawHistory.history).length > 0
+        ? rawHistory.history
+        : liveAsArray(rawHistory.items).length > 0
+          ? rawHistory.items
+          : liveAsArray(rawHistory.signals);
+
+  return {
+    ...rawHistory,
+
+    version:
+      liveFiniteNumber(rawHistory.version, 1),
+
+    updatedAt:
+      rawHistory.updatedAt ||
+      liveNowIso(),
+
+    records,
+
+    // Preserve common aliases.
+    history: records,
+    items: records,
+  };
+}
+
+function shouldAppendHistoryRecord(
+  history,
+  record,
+  options = {}
+) {
+  if (!liveIsPlainObject(record)) {
+    return false;
+  }
+
+  const decision = liveExtractDecision(record);
+
+  if (
+    decision === "HOLD" &&
+    options.includeHold !== true
+  ) {
+    return false;
+  }
+
+  const records = liveAsArray(history.records);
+
+  const fingerprint =
+    record.fingerprint ||
+    liveHistoryFingerprint(record);
+
+  const dedupeWindowMs = Math.max(
+    0,
+    liveFiniteNumber(
+      options.dedupeWindowMs,
+      30 * 60 * 1000
+    )
+  );
+
+  for (
+    let index = records.length - 1;
+    index >= 0;
+    index -= 1
+  ) {
+    const existing = records[index];
+
+    if (!liveIsPlainObject(existing)) {
+      continue;
+    }
+
+    const existingTimestamp =
+      liveExtractTimestamp(
+        existing,
+        0
+      );
+
+    if (
+      dedupeWindowMs > 0 &&
+      existingTimestamp > 0 &&
+      Date.now() - existingTimestamp >
+        dedupeWindowMs
+    ) {
+      break;
+    }
+
+    const existingFingerprint =
+      existing.fingerprint ||
+      liveHistoryFingerprint(existing);
+
+    if (
+      existingFingerprint ===
+      fingerprint
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function appendAnalysisHistoryRecords(
+  rawHistory,
+  recordsToAppend,
+  options = {}
+) {
+  const history =
+    normalizeAnalysisHistory(
+      rawHistory
+    );
+
+  const existingRecords =
+    liveAsArray(history.records);
+
+  const appended = [];
+
+  for (
+    const rawRecord of
+    liveAsArray(recordsToAppend)
+  ) {
+    const record =
+      liveIsPlainObject(rawRecord)
+        ? rawRecord
+        : null;
+
+    if (!record) {
+      continue;
+    }
+
+    if (
+      shouldAppendHistoryRecord(
+        {
+          records: [
+            ...existingRecords,
+            ...appended,
+          ],
+        },
+        record,
+        options
+      )
+    ) {
+      appended.push(record);
+    }
+  }
+
+  const maximumRecords = Math.max(
+    1,
+    Math.trunc(
+      liveFiniteNumber(
+        options.maximumRecords,
+        5000
+      )
+    )
+  );
+
+  const records = [
+    ...existingRecords,
+    ...appended,
+  ].slice(-maximumRecords);
+
+  const updatedAt =
+    liveNowIso();
+
+  return {
+    history: {
+      ...history,
+
+      updatedAt,
+      records,
+
+      // Preserve aliases used by older readers.
+      history: records,
+      items: records,
+
+      count: records.length,
+    },
+
+    appended,
+    appendedCount:
+      appended.length,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// History collection from current output
+// ---------------------------------------------------------------------------

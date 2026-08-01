@@ -11617,3 +11617,219 @@ function buildPairEngineBundle(
 // ---------------------------------------------------------------------------
 // Live-analysis output schema
 // ---------------------------------------------------------------------------
+function buildLiveAnalysisOutput(input = {}) {
+  const pairBundles = Array.isArray(input.pairs)
+    ? input.pairs
+    : liveIsPlainObject(input.pairs)
+      ? Object.values(input.pairs)
+      : [];
+
+  const generatedTimestamp =
+    liveStableTimestamp(
+      input.timestamp,
+      Date.now()
+    );
+
+  const generatedAt =
+    input.generatedAt ||
+    new Date(generatedTimestamp).toISOString();
+
+  const byPair = {};
+
+  for (const rawBundle of pairBundles) {
+    if (!liveIsPlainObject(rawBundle)) {
+      continue;
+    }
+
+    const pair = liveNormalizePairLabel(
+      rawBundle.pair ||
+        rawBundle.symbol ||
+        rawBundle.pairLabel
+    );
+
+    if (!pair || pair === "UNKNOWN") {
+      continue;
+    }
+
+    const swing = buildCanonicalEngineResult(
+      rawBundle.swing ||
+        rawBundle.engines?.swing ||
+        {},
+      {
+        pair,
+        mode: "swing",
+        engineName: "swing",
+      }
+    );
+
+    const intraday = buildCanonicalEngineResult(
+      rawBundle.intraday ||
+        rawBundle.engines?.intraday ||
+        {},
+      {
+        pair,
+        mode: "intraday",
+        engineName: "intraday",
+      }
+    );
+
+    const scalp = buildCanonicalEngineResult(
+      rawBundle.scalp ||
+        rawBundle.engines?.scalp ||
+        {},
+      {
+        pair,
+        mode: "scalp",
+        engineName: "scalp",
+      }
+    );
+
+    const master = buildCanonicalEngineResult(
+      rawBundle.master ||
+        rawBundle.engines?.master ||
+        buildMasterConsensus({
+          pair,
+          swing,
+          intraday,
+          scalp,
+        }),
+      {
+        pair,
+        mode: "master",
+        engineName: "master-consensus",
+      }
+    );
+
+    const pairRecord = {
+      pair,
+      symbol: pair,
+      pairLabel: pair,
+
+      generatedAt,
+      timestamp: generatedTimestamp,
+
+      swing,
+      intraday,
+      scalp,
+      master,
+
+      engines: {
+        swing,
+        intraday,
+        scalp,
+        master,
+      },
+
+      // Legacy-compatible mode access.
+      modes: {
+        swing,
+        intraday,
+        scalp,
+        master,
+      },
+
+      // Convenient top-level master aliases.
+      decision: master.decision,
+      signal: master.signal,
+      action: master.action,
+      direction: master.direction,
+
+      confidence: master.confidence,
+      score: master.score,
+
+      price: master.price,
+      currentPrice: master.currentPrice,
+      lastPrice: master.lastPrice,
+
+      tradePlan: master.tradePlan,
+      plan: master.plan,
+
+      entry: master.entry,
+      stop: master.stop,
+      stopLoss: master.stopLoss,
+
+      target1: master.target1,
+      target2: master.target2,
+      target3: master.target3,
+
+      tp1: master.tp1,
+      tp2: master.tp2,
+      tp3: master.tp3,
+
+      riskReward: master.riskReward,
+      rr: master.rr,
+
+      reason: master.reason,
+      status: master.status,
+    };
+
+    byPair[pair] = pairRecord;
+  }
+
+  const pairList = Object.values(byPair);
+
+  return {
+    generatedAt,
+    updatedAt: generatedAt,
+    timestamp: generatedTimestamp,
+
+    engineVersion:
+      typeof ENGINE_VERSION !== "undefined"
+        ? ENGINE_VERSION
+        : input.engineVersion ||
+          "unknown",
+
+    strategyVersion:
+      typeof STRATEGY_VERSION !== "undefined"
+        ? STRATEGY_VERSION
+        : input.strategyVersion ||
+          "unknown",
+
+    status: "ok",
+
+    pairCount: pairList.length,
+
+    // Primary current schema.
+    pairs: byPair,
+
+    // Legacy-compatible array aliases.
+    results: pairList,
+    analyses: pairList,
+    data: pairList,
+
+    // Optional direct aliases for known pairs.
+    xauUsd:
+      byPair["XAU/USD"] || null,
+
+    gbpJpy:
+      byPair["GBP/JPY"] || null,
+
+    "XAU/USD":
+      byPair["XAU/USD"] || null,
+
+    "GBP/JPY":
+      byPair["GBP/JPY"] || null,
+
+    metadata: {
+      generatedAt,
+      pairCount: pairList.length,
+
+      engineVersion:
+        typeof ENGINE_VERSION !== "undefined"
+          ? ENGINE_VERSION
+          : input.engineVersion ||
+            "unknown",
+
+      strategyVersion:
+        typeof STRATEGY_VERSION !== "undefined"
+          ? STRATEGY_VERSION
+          : input.strategyVersion ||
+            "unknown",
+    },
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// History fingerprinting
+// ---------------------------------------------------------------------------

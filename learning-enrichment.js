@@ -4699,3 +4699,1411 @@ function buildPerformanceEnrichment(
   };
 
 }
+
+/* =====================================================================
+   Deterministic Context Grouping
+   ===================================================================== */
+
+function ensureTradeGroup(
+  groupMap,
+  key
+) {
+
+  if (
+    !(groupMap instanceof Map) ||
+    !key
+  ) {
+
+    return null;
+
+  }
+
+  if (
+    !groupMap.has(
+      key
+    )
+  ) {
+
+    groupMap.set(
+      key,
+      []
+    );
+
+  }
+
+  return groupMap.get(
+    key
+  );
+
+}
+
+function addTradeToGroup(
+  groupMap,
+  key,
+  trade
+) {
+
+  const group =
+    ensureTradeGroup(
+      groupMap,
+      key
+    );
+
+  if (
+    !group
+  ) {
+
+    return false;
+
+  }
+
+  group.push(
+    trade
+  );
+
+  return true;
+
+}
+
+function finalizeTradeGroupMap(
+  groupMap
+) {
+
+  const result =
+    {};
+
+  if (
+    !(groupMap instanceof Map)
+  ) {
+
+    return result;
+
+  }
+
+  const sortedEntries =
+    Array.from(
+      groupMap.entries()
+    ).sort(
+      (
+        [leftKey],
+        [rightKey]
+      ) =>
+        leftKey.localeCompare(
+          rightKey
+        )
+    );
+
+  for (
+    const [
+      key,
+      trades
+    ] of
+    sortedEntries
+  ) {
+
+    result[key] =
+      buildPerformanceEnrichment(
+        trades
+      );
+
+  }
+
+  return result;
+
+}
+
+function createCombinationKey(
+  values
+) {
+
+  if (
+    !Array.isArray(
+      values
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const normalized =
+    values.map(
+      value =>
+        toNonEmptyStringOrNull(
+          value
+        )
+    );
+
+  if (
+    normalized.some(
+      value =>
+        value ===
+          null
+    )
+  ) {
+
+    return null;
+
+  }
+
+  return normalized.join(
+    "::"
+  );
+
+}
+
+/* =====================================================================
+   Context Enrichment Construction
+   ===================================================================== */
+
+function buildContextEnrichment(
+  trades
+) {
+
+  const normalizedTrades =
+    Array.isArray(
+      trades
+    )
+      ? trades
+      : [];
+
+  const pairs =
+    new Map();
+
+  const strategies =
+    new Map();
+
+  const directions =
+    new Map();
+
+  const timeframes =
+    new Map();
+
+  const pairStrategy =
+    new Map();
+
+  const pairDirection =
+    new Map();
+
+  const strategyDirection =
+    new Map();
+
+  const pairStrategyDirection =
+    new Map();
+
+  const pairTimeframe =
+    new Map();
+
+  const strategyTimeframe =
+    new Map();
+
+  for (
+    const trade of
+    normalizedTrades
+  ) {
+
+    addTradeToGroup(
+      pairs,
+      trade.pair,
+      trade
+    );
+
+    addTradeToGroup(
+      strategies,
+      trade.strategy,
+      trade
+    );
+
+    addTradeToGroup(
+      directions,
+      trade.direction,
+      trade
+    );
+
+    addTradeToGroup(
+      timeframes,
+      trade.timeframe,
+      trade
+    );
+
+    addTradeToGroup(
+      pairStrategy,
+      createCombinationKey([
+        trade.pair,
+        trade.strategy
+      ]),
+      trade
+    );
+
+    addTradeToGroup(
+      pairDirection,
+      createCombinationKey([
+        trade.pair,
+        trade.direction
+      ]),
+      trade
+    );
+
+    addTradeToGroup(
+      strategyDirection,
+      createCombinationKey([
+        trade.strategy,
+        trade.direction
+      ]),
+      trade
+    );
+
+    addTradeToGroup(
+      pairStrategyDirection,
+      createCombinationKey([
+        trade.pair,
+        trade.strategy,
+        trade.direction
+      ]),
+      trade
+    );
+
+    addTradeToGroup(
+      pairTimeframe,
+      createCombinationKey([
+        trade.pair,
+        trade.timeframe
+      ]),
+      trade
+    );
+
+    addTradeToGroup(
+      strategyTimeframe,
+      createCombinationKey([
+        trade.strategy,
+        trade.timeframe
+      ]),
+      trade
+    );
+
+  }
+
+  return {
+    dimensions: {
+      pairs:
+        finalizeTradeGroupMap(
+          pairs
+        ),
+
+      strategies:
+        finalizeTradeGroupMap(
+          strategies
+        ),
+
+      directions:
+        finalizeTradeGroupMap(
+          directions
+        ),
+
+      timeframes:
+        finalizeTradeGroupMap(
+          timeframes
+        )
+    },
+
+    combinations: {
+      pairStrategy:
+        finalizeTradeGroupMap(
+          pairStrategy
+        ),
+
+      pairDirection:
+        finalizeTradeGroupMap(
+          pairDirection
+        ),
+
+      strategyDirection:
+        finalizeTradeGroupMap(
+          strategyDirection
+        ),
+
+      pairStrategyDirection:
+        finalizeTradeGroupMap(
+          pairStrategyDirection
+        ),
+
+      pairTimeframe:
+        finalizeTradeGroupMap(
+          pairTimeframe
+        ),
+
+      strategyTimeframe:
+        finalizeTradeGroupMap(
+          strategyTimeframe
+        )
+    }
+  };
+
+}
+
+/* =====================================================================
+   Confidence Bucket Helpers
+   ===================================================================== */
+
+function getConfidenceBucketBounds(
+  confidence
+) {
+
+  const normalizedConfidence =
+    clamp(
+      confidence,
+      MIN_CONFIDENCE,
+      MAX_CONFIDENCE
+    );
+
+  if (
+    normalizedConfidence ===
+      null
+  ) {
+
+    return null;
+
+  }
+
+  const lower =
+    Math.floor(
+      normalizedConfidence /
+        CONFIDENCE_BUCKET_SIZE
+    ) *
+      CONFIDENCE_BUCKET_SIZE;
+
+  const boundedLower =
+    Math.min(
+      lower,
+      MAX_CONFIDENCE -
+        CONFIDENCE_BUCKET_SIZE
+    );
+
+  const upper =
+    Math.min(
+      MAX_CONFIDENCE,
+      boundedLower +
+        CONFIDENCE_BUCKET_SIZE -
+        1
+    );
+
+  return {
+    lower:
+      boundedLower,
+
+    upper,
+
+    key:
+      `${boundedLower}-${upper}`
+  };
+
+}
+
+function createCalibrationAccumulator(
+  bucket
+) {
+
+  return {
+    bucket:
+      cloneJSONCompatible(
+        bucket
+      ),
+
+    totalTrades:
+      0,
+
+    wins:
+      0,
+
+    losses:
+      0,
+
+    breakevens:
+      0,
+
+    confidenceTotal:
+      0,
+
+    confidenceSamples:
+      0,
+
+    profitPointsTotal:
+      0,
+
+    profitPointSamples:
+      0,
+
+    firstTradeAt:
+      null,
+
+    lastTradeAt:
+      null
+  };
+
+}
+
+function addTradeToCalibrationAccumulator(
+  accumulator,
+  trade
+) {
+
+  if (
+    !isPlainObject(
+      accumulator
+    ) ||
+    !isPlainObject(
+      trade
+    ) ||
+    !isFiniteNumber(
+      trade.confidence
+    )
+  ) {
+
+    return false;
+
+  }
+
+  accumulator.totalTrades +=
+    1;
+
+  if (
+    trade.outcome ===
+      "WIN"
+  ) {
+
+    accumulator.wins +=
+      1;
+
+  } else if (
+    trade.outcome ===
+      "LOSS"
+  ) {
+
+    accumulator.losses +=
+      1;
+
+  } else if (
+    trade.outcome ===
+      "BREAKEVEN"
+  ) {
+
+    accumulator.breakevens +=
+      1;
+
+  }
+
+  accumulator.confidenceTotal +=
+    trade.confidence;
+
+  accumulator.confidenceSamples +=
+    1;
+
+  if (
+    isFiniteNumber(
+      trade.profitPoints
+    )
+  ) {
+
+    accumulator.profitPointsTotal +=
+      trade.profitPoints;
+
+    accumulator.profitPointSamples +=
+      1;
+
+  }
+
+  const tradeTime =
+    trade.closedAt ||
+    trade.resolvedAt ||
+    trade.openedAt ||
+    null;
+
+  if (
+    tradeTime
+  ) {
+
+    if (
+      accumulator.firstTradeAt ===
+        null ||
+      new Date(
+        tradeTime
+      ).getTime() <
+        new Date(
+          accumulator.firstTradeAt
+        ).getTime()
+    ) {
+
+      accumulator.firstTradeAt =
+        tradeTime;
+
+    }
+
+    if (
+      accumulator.lastTradeAt ===
+        null ||
+      new Date(
+        tradeTime
+      ).getTime() >
+        new Date(
+          accumulator.lastTradeAt
+        ).getTime()
+    ) {
+
+      accumulator.lastTradeAt =
+        tradeTime;
+
+    }
+
+  }
+
+  return true;
+
+}
+
+/* =====================================================================
+   Calibration Finalization
+   ===================================================================== */
+
+function classifyCalibration(
+  averageConfidence,
+  observedWinRate,
+  totalTrades
+) {
+
+  const confidence =
+    toFiniteNumber(
+      averageConfidence
+    );
+
+  const winRate =
+    toFiniteNumber(
+      observedWinRate
+    );
+
+  const samples =
+    toNonNegativeInteger(
+      totalTrades
+    );
+
+  if (
+    confidence ===
+      null ||
+    winRate ===
+      null ||
+    samples ===
+      null ||
+    samples <
+      MIN_TREND_SAMPLE_SIZE
+  ) {
+
+    return {
+      status:
+        "insufficient-data",
+
+      gap:
+        null,
+
+      sampleSufficient:
+        false
+    };
+
+  }
+
+  const gap =
+    round(
+      winRate -
+        confidence,
+      4
+    );
+
+  let status =
+    "well-calibrated";
+
+  if (
+    gap >=
+      10
+  ) {
+
+    status =
+      "under-confident";
+
+  } else if (
+    gap <=
+      -10
+  ) {
+
+    status =
+      "over-confident";
+
+  }
+
+  return {
+    status,
+
+    gap,
+
+    sampleSufficient:
+      true
+  };
+
+}
+
+function finalizeCalibrationAccumulator(
+  accumulator
+) {
+
+  if (
+    !isPlainObject(
+      accumulator
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const totalTrades =
+    toNonNegativeInteger(
+      accumulator.totalTrades
+    ) ?? 0;
+
+  const averageConfidence =
+    accumulator.confidenceSamples >
+      0
+      ? round(
+          accumulator.confidenceTotal /
+            accumulator.confidenceSamples,
+          4
+        )
+      : null;
+
+  const observedWinRate =
+    calculateRate(
+      accumulator.wins,
+      totalTrades
+    );
+
+  const calibration =
+    classifyCalibration(
+      averageConfidence,
+      observedWinRate,
+      totalTrades
+    );
+
+  return {
+    bucket:
+      cloneJSONCompatible(
+        accumulator.bucket
+      ),
+
+    totalTrades,
+
+    wins:
+      accumulator.wins,
+
+    losses:
+      accumulator.losses,
+
+    breakevens:
+      accumulator.breakevens,
+
+    observedWinRate,
+
+    observedLossRate:
+      calculateRate(
+        accumulator.losses,
+        totalTrades
+      ),
+
+    observedBreakevenRate:
+      calculateRate(
+        accumulator.breakevens,
+        totalTrades
+      ),
+
+    averageConfidence,
+
+    calibrationGap:
+      calibration.gap,
+
+    calibrationStatus:
+      calibration.status,
+
+    sampleSufficient:
+      calibration.sampleSufficient,
+
+    minimumRecommendedSamples:
+      MIN_TREND_SAMPLE_SIZE,
+
+    averageProfitPoints:
+      accumulator.profitPointSamples >
+        0
+        ? round(
+            accumulator.profitPointsTotal /
+              accumulator.profitPointSamples,
+            8
+          )
+        : null,
+
+    firstTradeAt:
+      accumulator.firstTradeAt,
+
+    lastTradeAt:
+      accumulator.lastTradeAt
+  };
+
+}
+
+/* =====================================================================
+   Confidence Calibration
+   ===================================================================== */
+
+function buildConfidenceCalibration(
+  trades
+) {
+
+  const normalizedTrades =
+    Array.isArray(
+      trades
+    )
+      ? trades
+      : [];
+
+  const bucketMap =
+    new Map();
+
+  let missingConfidence =
+    0;
+
+  for (
+    const trade of
+    normalizedTrades
+  ) {
+
+    if (
+      !isFiniteNumber(
+        trade.confidence
+      )
+    ) {
+
+      missingConfidence +=
+        1;
+
+      continue;
+
+    }
+
+    const bucket =
+      getConfidenceBucketBounds(
+        trade.confidence
+      );
+
+    if (
+      !bucket
+    ) {
+
+      missingConfidence +=
+        1;
+
+      continue;
+
+    }
+
+    if (
+      !bucketMap.has(
+        bucket.key
+      )
+    ) {
+
+      bucketMap.set(
+        bucket.key,
+        createCalibrationAccumulator(
+          bucket
+        )
+      );
+
+    }
+
+    addTradeToCalibrationAccumulator(
+      bucketMap.get(
+        bucket.key
+      ),
+      trade
+    );
+
+  }
+
+  const buckets =
+    {};
+
+  const sortedEntries =
+    Array.from(
+      bucketMap.entries()
+    ).sort(
+      (
+        [leftKey],
+        [rightKey]
+      ) => {
+
+        const leftLower =
+          Number(
+            leftKey.split(
+              "-"
+            )[0]
+          );
+
+        const rightLower =
+          Number(
+            rightKey.split(
+              "-"
+            )[0]
+          );
+
+        return leftLower -
+          rightLower;
+
+      }
+    );
+
+  for (
+    const [
+      key,
+      accumulator
+    ] of
+    sortedEntries
+  ) {
+
+    buckets[key] =
+      finalizeCalibrationAccumulator(
+        accumulator
+      );
+
+  }
+
+  const overallAccumulator =
+    createPerformanceAccumulator();
+
+  for (
+    const trade of
+    normalizedTrades
+  ) {
+
+    if (
+      isFiniteNumber(
+        trade.confidence
+      )
+    ) {
+
+      addTradeToPerformanceAccumulator(
+        overallAccumulator,
+        trade
+      );
+
+    }
+
+  }
+
+  const overallMetrics =
+    finalizePerformanceAccumulator(
+      overallAccumulator
+    );
+
+  const overallCalibration =
+    classifyCalibration(
+      overallMetrics
+        ?.confidence
+        ?.average,
+      overallMetrics
+        ?.winRate,
+      overallMetrics
+        ?.totalTrades
+    );
+
+  return {
+    bucketSize:
+      CONFIDENCE_BUCKET_SIZE,
+
+    totalTrades:
+      normalizedTrades.length,
+
+    calibratedTrades:
+      normalizedTrades.length -
+        missingConfidence,
+
+    missingConfidence,
+
+    overall: {
+      totalTrades:
+        overallMetrics
+          ?.totalTrades ??
+        0,
+
+      averageConfidence:
+        overallMetrics
+          ?.confidence
+          ?.average ??
+        null,
+
+      observedWinRate:
+        overallMetrics
+          ?.winRate ??
+        0,
+
+      calibrationGap:
+        overallCalibration.gap,
+
+      calibrationStatus:
+        overallCalibration.status,
+
+      sampleSufficient:
+        overallCalibration
+          .sampleSufficient,
+
+      minimumRecommendedSamples:
+        MIN_TREND_SAMPLE_SIZE
+    },
+
+    buckets
+  };
+
+}
+
+/* =====================================================================
+   Context-Level Calibration
+   ===================================================================== */
+
+function buildCalibrationGroupMap(
+  trades,
+  keySelector
+) {
+
+  const grouped =
+    new Map();
+
+  if (
+    !Array.isArray(
+      trades
+    ) ||
+    typeof keySelector !==
+      "function"
+  ) {
+
+    return {};
+
+  }
+
+  for (
+    const trade of
+    trades
+  ) {
+
+    const key =
+      toNonEmptyStringOrNull(
+        keySelector(
+          trade
+        )
+      );
+
+    if (
+      !key
+    ) {
+
+      continue;
+
+    }
+
+    addTradeToGroup(
+      grouped,
+      key,
+      trade
+    );
+
+  }
+
+  const result =
+    {};
+
+  for (
+    const [
+      key,
+      groupedTrades
+    ] of
+    Array.from(
+      grouped.entries()
+    ).sort(
+      (
+        [leftKey],
+        [rightKey]
+      ) =>
+        leftKey.localeCompare(
+          rightKey
+        )
+    )
+  ) {
+
+    result[key] =
+      buildConfidenceCalibration(
+        groupedTrades
+      );
+
+  }
+
+  return result;
+
+}
+
+function buildContextCalibration(
+  trades
+) {
+
+  const normalizedTrades =
+    Array.isArray(
+      trades
+    )
+      ? trades
+      : [];
+
+  return {
+    overall:
+      buildConfidenceCalibration(
+        normalizedTrades
+      ),
+
+    dimensions: {
+      pairs:
+        buildCalibrationGroupMap(
+          normalizedTrades,
+          trade =>
+            trade.pair
+        ),
+
+      strategies:
+        buildCalibrationGroupMap(
+          normalizedTrades,
+          trade =>
+            trade.strategy
+        ),
+
+      directions:
+        buildCalibrationGroupMap(
+          normalizedTrades,
+          trade =>
+            trade.direction
+        ),
+
+      timeframes:
+        buildCalibrationGroupMap(
+          normalizedTrades,
+          trade =>
+            trade.timeframe
+        )
+    },
+
+    combinations: {
+      pairStrategy:
+        buildCalibrationGroupMap(
+          normalizedTrades,
+          trade =>
+            createCombinationKey([
+              trade.pair,
+              trade.strategy
+            ])
+        ),
+
+      pairDirection:
+        buildCalibrationGroupMap(
+          normalizedTrades,
+          trade =>
+            createCombinationKey([
+              trade.pair,
+              trade.direction
+            ])
+        ),
+
+      strategyDirection:
+        buildCalibrationGroupMap(
+          normalizedTrades,
+          trade =>
+            createCombinationKey([
+              trade.strategy,
+              trade.direction
+            ])
+        ),
+
+      pairStrategyDirection:
+        buildCalibrationGroupMap(
+          normalizedTrades,
+          trade =>
+            createCombinationKey([
+              trade.pair,
+              trade.strategy,
+              trade.direction
+            ])
+        )
+    }
+  };
+
+}
+
+/* =====================================================================
+   Sample Sufficiency
+   ===================================================================== */
+
+function classifySampleSize(
+  totalTrades
+) {
+
+  const total =
+    toNonNegativeInteger(
+      totalTrades
+    ) ?? 0;
+
+  if (
+    total >=
+      100
+  ) {
+
+    return "strong";
+
+  }
+
+  if (
+    total >=
+      50
+  ) {
+
+    return "moderate";
+
+  }
+
+  if (
+    total >=
+      20
+  ) {
+
+    return "limited";
+
+  }
+
+  return "insufficient";
+
+}
+
+function buildSampleSufficiencyMetric(
+  enrichment
+) {
+
+  const totalTrades =
+    toNonNegativeInteger(
+      enrichment?.totalTrades
+    ) ?? 0;
+
+  return {
+    totalTrades,
+
+    classification:
+      classifySampleSize(
+        totalTrades
+      ),
+
+    gates: {
+      minimum:
+        20,
+
+      moderate:
+        50,
+
+      strong:
+        100
+    },
+
+    trendEligible:
+      totalTrades >=
+        (
+          TREND_SEGMENT_SIZE *
+          2
+        ),
+
+    calibrationEligible:
+      totalTrades >=
+        MIN_TREND_SAMPLE_SIZE,
+
+    rollingWindowCoverage:
+      Object.fromEntries(
+        ROLLING_WINDOWS.map(
+          windowSize => [
+            String(
+              windowSize
+            ),
+            {
+              requested:
+                windowSize,
+
+              available:
+                Math.min(
+                  totalTrades,
+                  windowSize
+                ),
+
+              complete:
+                totalTrades >=
+                  windowSize
+            }
+          ]
+        )
+      )
+  };
+
+}
+
+function attachSampleSufficiencyToMap(
+  enrichmentMap
+) {
+
+  const result =
+    {};
+
+  if (
+    !isPlainObject(
+      enrichmentMap
+    )
+  ) {
+
+    return result;
+
+  }
+
+  for (
+    const key of Object.keys(
+      enrichmentMap
+    ).sort()
+  ) {
+
+    result[key] = {
+      ...cloneJSONCompatible(
+        enrichmentMap[key]
+      ),
+
+      sampleSufficiency:
+        buildSampleSufficiencyMetric(
+          enrichmentMap[key]
+        )
+    };
+
+  }
+
+  return result;
+
+}
+
+function attachContextSampleSufficiency(
+  contextEnrichment
+) {
+
+  if (
+    !isPlainObject(
+      contextEnrichment
+    )
+  ) {
+
+    return {
+      dimensions: {},
+      combinations: {}
+    };
+
+  }
+
+  const dimensions =
+    contextEnrichment.dimensions ||
+    {};
+
+  const combinations =
+    contextEnrichment.combinations ||
+    {};
+
+  return {
+    dimensions: {
+      pairs:
+        attachSampleSufficiencyToMap(
+          dimensions.pairs
+        ),
+
+      strategies:
+        attachSampleSufficiencyToMap(
+          dimensions.strategies
+        ),
+
+      directions:
+        attachSampleSufficiencyToMap(
+          dimensions.directions
+        ),
+
+      timeframes:
+        attachSampleSufficiencyToMap(
+          dimensions.timeframes
+        )
+    },
+
+    combinations: {
+      pairStrategy:
+        attachSampleSufficiencyToMap(
+          combinations.pairStrategy
+        ),
+
+      pairDirection:
+        attachSampleSufficiencyToMap(
+          combinations.pairDirection
+        ),
+
+      strategyDirection:
+        attachSampleSufficiencyToMap(
+          combinations.strategyDirection
+        ),
+
+      pairStrategyDirection:
+        attachSampleSufficiencyToMap(
+          combinations
+            .pairStrategyDirection
+        ),
+
+      pairTimeframe:
+        attachSampleSufficiencyToMap(
+          combinations.pairTimeframe
+        ),
+
+      strategyTimeframe:
+        attachSampleSufficiencyToMap(
+          combinations
+            .strategyTimeframe
+        )
+    }
+  };
+
+}
+
+/* =====================================================================
+   Complete Context Intelligence
+   ===================================================================== */
+
+function buildContextIntelligence(
+  trades
+) {
+
+  const contextEnrichment =
+    buildContextEnrichment(
+      trades
+    );
+
+  return {
+    performance:
+      attachContextSampleSufficiency(
+        contextEnrichment
+      ),
+
+    calibration:
+      buildContextCalibration(
+        trades
+      )
+  };
+
+}

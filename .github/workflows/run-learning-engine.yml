@@ -44,6 +44,7 @@ jobs:
             "resolve-analysis-history.js"
             "run-learning-engine.js"
             "learner.js"
+            "learning-enrichment.js"
             "ai-memory.js"
             "data/analysis-history.json"
           )
@@ -65,6 +66,7 @@ jobs:
             "resolve-analysis-history.js"
             "run-learning-engine.js"
             "learner.js"
+            "learning-enrichment.js"
             "ai-memory.js"
           )
 
@@ -364,6 +366,431 @@ jobs:
           }
           NODE
 
+      - name: Run Learning Enrichment safely
+        run: |
+          set -euo pipefail
+
+          learning_before="${RUNNER_TEMP}/learning-data-before-enrichment.json"
+          confidence_before="${RUNNER_TEMP}/confidence-data-before-enrichment.json"
+
+          cp \
+            "data/learning-data.json" \
+            "$learning_before"
+
+          cp \
+            "data/confidence-data.json" \
+            "$confidence_before"
+
+          node learning-enrichment.js
+
+          if ! cmp -s \
+            "$learning_before" \
+            "data/learning-data.json"; then
+            echo "::error file=data/learning-data.json::Learning Enrichment modified the protected learning-data.json source."
+            exit 1
+          fi
+
+          if ! cmp -s \
+            "$confidence_before" \
+            "data/confidence-data.json"; then
+            echo "::error file=data/confidence-data.json::Learning Enrichment modified the protected confidence-data.json source."
+            exit 1
+          fi
+
+          echo "Learning Enrichment completed without modifying its source files."
+
+      - name: Verify generated Learning Enrichment files
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          "use strict";
+
+          const fs =
+            require("fs");
+
+          const outputPath =
+            "data/learning-enrichment.json";
+
+          const statePath =
+            "data/learning-enrichment-state.json";
+
+          for (
+            const filePath of [
+              outputPath,
+              statePath
+            ]
+          ) {
+
+            if (
+              !fs.existsSync(
+                filePath
+              )
+            ) {
+
+              throw new Error(
+                `Required Learning Enrichment output was not created: ${filePath}`
+              );
+
+            }
+
+            const raw =
+              fs.readFileSync(
+                filePath,
+                "utf8"
+              ).trim();
+
+            if (
+              !raw
+            ) {
+
+              throw new Error(
+                `Learning Enrichment output is empty: ${filePath}`
+              );
+
+            }
+
+            let parsed;
+
+            try {
+
+              parsed =
+                JSON.parse(
+                  raw
+                );
+
+            } catch (
+              error
+            ) {
+
+              throw new Error(
+                `${filePath} contains invalid JSON: ${error.message}`
+              );
+
+            }
+
+            if (
+              parsed === null ||
+              typeof parsed !==
+                "object" ||
+              Array.isArray(
+                parsed
+              )
+            ) {
+
+              throw new Error(
+                `${filePath} must contain a JSON object.`
+              );
+
+            }
+
+            console.log(
+              `Validated ${filePath}`
+            );
+
+          }
+
+          const enrichment =
+            JSON.parse(
+              fs.readFileSync(
+                outputPath,
+                "utf8"
+              )
+            );
+
+          const state =
+            JSON.parse(
+              fs.readFileSync(
+                statePath,
+                "utf8"
+              )
+            );
+
+          if (
+            enrichment.version !==
+              1
+          ) {
+
+            throw new Error(
+              "Learning Enrichment schema version must remain 1."
+            );
+
+          }
+
+          if (
+            enrichment.engineName !==
+              "PipSight Pro Learning Enrichment Engine"
+          ) {
+
+            throw new Error(
+              "Learning Enrichment engine name is invalid."
+            );
+
+          }
+
+          if (
+            enrichment.engineVersion !==
+              "1.0.0"
+          ) {
+
+            throw new Error(
+              "Learning Enrichment engine version is invalid."
+            );
+
+          }
+
+          if (
+            enrichment.mode !==
+              "advisory"
+          ) {
+
+            throw new Error(
+              "Learning Enrichment must remain in advisory mode."
+            );
+
+          }
+
+          if (
+            enrichment.validation?.valid !==
+              true
+          ) {
+
+            throw new Error(
+              (
+                enrichment.validation
+                  ?.errors ||
+                [
+                  "Learning Enrichment internal validation failed."
+                ]
+              ).join(
+                " "
+              )
+            );
+
+          }
+
+          if (
+            enrichment.safety?.advisoryOnly !==
+              true
+          ) {
+
+            throw new Error(
+              "Learning Enrichment advisory-only lock is invalid."
+            );
+
+          }
+
+          const requiredFalseSafetyFlags =
+            [
+              "liveSignalModification",
+              "confidenceModification",
+              "decisionModification",
+              "tradePlanModification",
+              "telegramModification",
+              "sourceCodeModification",
+              "externalApiCalls",
+              "existingSchemaModification",
+              "existingLearningOutputModification",
+              "existingMemoryOutputModification"
+            ];
+
+          for (
+            const flag of
+            requiredFalseSafetyFlags
+          ) {
+
+            if (
+              enrichment.safety?.[
+                flag
+              ] !==
+                false
+            ) {
+
+              throw new Error(
+                `Learning Enrichment safety.${flag} must remain false.`
+              );
+
+            }
+
+          }
+
+          if (
+            enrichment.metadata
+              ?.productionConsumerEnabled !==
+              false
+          ) {
+
+            throw new Error(
+              "Learning Enrichment must not have a production consumer enabled."
+            );
+
+          }
+
+          if (
+            enrichment.metadata
+              ?.externalApiCalls !==
+              false
+          ) {
+
+            throw new Error(
+              "Learning Enrichment must not make external API calls."
+            );
+
+          }
+
+          const summary =
+            enrichment.summary;
+
+          if (
+            summary === null ||
+            typeof summary !==
+              "object" ||
+            Array.isArray(
+              summary
+            )
+          ) {
+
+            throw new Error(
+              "Learning Enrichment summary is missing."
+            );
+
+          }
+
+          const sourceTrades =
+            Number(
+              summary.sourceTrades
+            );
+
+          const acceptedTrades =
+            Number(
+              summary.acceptedTrades
+            );
+
+          const rejectedTrades =
+            Number(
+              summary.rejectedTrades
+            );
+
+          const duplicateTrades =
+            Number(
+              summary.duplicateTrades
+            );
+
+          for (
+            const [
+              name,
+              value
+            ] of [
+              [
+                "sourceTrades",
+                sourceTrades
+              ],
+              [
+                "acceptedTrades",
+                acceptedTrades
+              ],
+              [
+                "rejectedTrades",
+                rejectedTrades
+              ],
+              [
+                "duplicateTrades",
+                duplicateTrades
+              ]
+            ]
+          ) {
+
+            if (
+              !Number.isInteger(
+                value
+              ) ||
+              value <
+                0
+            ) {
+
+              throw new Error(
+                `Learning Enrichment summary.${name} is invalid.`
+              );
+
+            }
+
+          }
+
+          if (
+            acceptedTrades +
+              rejectedTrades +
+              duplicateTrades !==
+            sourceTrades
+          ) {
+
+            throw new Error(
+              "Learning Enrichment source counts are inconsistent."
+            );
+
+          }
+
+          const acceptedStatuses =
+            new Set([
+              "UPDATED",
+              "UNCHANGED"
+            ]);
+
+          if (
+            !acceptedStatuses.has(
+              state.lastRun?.status
+            )
+          ) {
+
+            throw new Error(
+              "Learning Enrichment state does not contain a successful last run."
+            );
+
+          }
+
+          if (
+            state.lastRun?.stateWritten !==
+              true
+          ) {
+
+            throw new Error(
+              "Learning Enrichment state was not persisted successfully."
+            );
+
+          }
+
+          if (
+            state.lastRun?.error !==
+              null
+          ) {
+
+            throw new Error(
+              "Learning Enrichment state contains a last-run error."
+            );
+
+          }
+
+          console.log(
+            "Learning Enrichment safety validation passed."
+          );
+
+          console.log(
+            `Source trades: ${sourceTrades}`
+          );
+
+          console.log(
+            `Accepted trades: ${acceptedTrades}`
+          );
+
+          console.log(
+            `Rejected trades: ${rejectedTrades}`
+          );
+
+          console.log(
+            `Duplicate trades: ${duplicateTrades}`
+          );
+
+          NODE
+
       - name: Run AI Memory
         run: |
           set -euo pipefail
@@ -441,6 +868,8 @@ jobs:
             data/learning-data.json \
             data/confidence-data.json \
             data/learning-engine-state.json \
+            data/learning-enrichment.json \
+            data/learning-enrichment-state.json \
             data/ai-memory.json \
             data/ai-memory-state.json
 
@@ -465,6 +894,8 @@ jobs:
             "data/learning-data.json"
             "data/confidence-data.json"
             "data/learning-engine-state.json"
+            "data/learning-enrichment.json"
+            "data/learning-enrichment-state.json"
             "data/ai-memory.json"
             "data/ai-memory-state.json"
           )

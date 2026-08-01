@@ -14870,3 +14870,612 @@ function p6ValidateStartup(
 // ---------------------------------------------------------------------------
 // Final live-analysis runtime
 // ---------------------------------------------------------------------------
+async function runLiveAnalysisRuntime(
+  options = {}
+) {
+  const runtimeOptions =
+    p6BuildRuntimeOptions(
+      options
+    );
+
+  const startupValidation =
+    p6ValidateStartup(
+      runtimeOptions
+    );
+
+  if (!startupValidation.valid) {
+    throw new Error(
+      "Live analysis startup validation failed: " +
+      startupValidation.errors.join("; ")
+    );
+  }
+
+  p6EnsureDirectory(
+    P6_DATA_DIRECTORY
+  );
+
+  const sources =
+    p6LoadRuntimeSources(
+      runtimeOptions
+    );
+
+  const aiMemoryState =
+    loadAIMemory();
+
+  const pairBundles = [];
+
+  for (
+    const pairConfig of
+    P6_RUNTIME_PAIRS
+  ) {
+    try {
+      p6Log(
+        "INFO",
+        `Starting ${pairConfig.label} analysis`
+      );
+
+      const pairInput = {
+        ...p6BuildPairInput(
+          pairConfig,
+          sources,
+          runtimeOptions
+        ),
+
+        aiMemoryState,
+
+        allowPrimaryScalpHold:
+          runtimeOptions
+            .allowPrimaryScalpHold,
+
+        maximumPrimaryScalpAgeMs:
+          runtimeOptions
+            .maximumPrimaryScalpAgeMs,
+
+        minimumNetContribution:
+          runtimeOptions
+            .minimumNetContribution,
+
+        minimumDirectionalEngines:
+          runtimeOptions
+            .minimumDirectionalEngines,
+
+        masterWeights:
+          runtimeOptions
+            .masterWeights,
+      };
+
+      const bundle =
+        p6RunPairPipeline(
+          pairInput,
+          runtimeOptions
+        );
+
+      pairBundles.push(
+        bundle
+      );
+
+      p6Log(
+        "INFO",
+        `${pairConfig.label} analysis completed`,
+        {
+          swing:
+            bundle.swing?.decision ||
+            "HOLD",
+
+          intraday:
+            bundle.intraday?.decision ||
+            "HOLD",
+
+          scalp:
+            bundle.scalp?.decision ||
+            "HOLD",
+
+          master:
+            bundle.master?.decision ||
+            "HOLD",
+        }
+      );
+    } catch (error) {
+      p6Log(
+        "ERROR",
+        `${pairConfig.label} analysis failed`,
+        p6ErrorMessage(error)
+      );
+
+      const reason =
+        `Runtime analysis failed: ${
+          p6ErrorMessage(error)
+        }`;
+
+      const failedEngine = (
+        mode,
+        engineName
+      ) =>
+        buildCanonicalEngineResult(
+          {
+            pair:
+              pairConfig.label,
+
+            decision:
+              "HOLD",
+
+            confidence: 0,
+            score: 0,
+            reason,
+
+            timestamp:
+              Date.now(),
+          },
+          {
+            pair:
+              pairConfig.label,
+
+            mode,
+            engineName,
+
+            source:
+              "runtime-error",
+
+            available:
+              false,
+          }
+        );
+
+      const swing =
+        failedEngine(
+          "swing",
+          "swing-runtime-error"
+        );
+
+      const intraday =
+        failedEngine(
+          "intraday",
+          "intraday-runtime-error"
+        );
+
+      const scalp =
+        failedEngine(
+          "scalp",
+          "scalp-runtime-error"
+        );
+
+      const master =
+        failedEngine(
+          "master",
+          "master-runtime-error"
+        );
+
+      pairBundles.push({
+        pair:
+          pairConfig.label,
+
+        symbol:
+          pairConfig.label,
+
+        pairLabel:
+          pairConfig.label,
+
+        generatedAt:
+          liveNowIso(),
+
+        timestamp:
+          Date.now(),
+
+        swing,
+        intraday,
+        scalp,
+        master,
+
+        engines: {
+          swing,
+          intraday,
+          scalp,
+          master,
+        },
+
+        runtime: {
+          failed: true,
+          error: reason,
+        },
+      });
+    }
+  }
+
+  const generatedTimestamp =
+    Date.now();
+
+  const output =
+    buildLiveAnalysisOutput({
+      pairs:
+        pairBundles,
+
+      timestamp:
+        generatedTimestamp,
+
+      generatedAt:
+        new Date(
+          generatedTimestamp
+        ).toISOString(),
+
+      engineVersion:
+        typeof ENGINE_VERSION !==
+        "undefined"
+          ? ENGINE_VERSION
+          : "unknown",
+
+      strategyVersion:
+        typeof STRATEGY_VERSION !==
+        "undefined"
+          ? STRATEGY_VERSION
+          : "unknown",
+    });
+
+  output.runtime = {
+    generatedAt:
+      output.generatedAt,
+
+    nodeVersion:
+      process.version,
+
+    aiMemory: {
+      enabled:
+        AI_MEMORY_INTEGRATION.enabled,
+
+      mode:
+        AI_MEMORY_INTEGRATION.mode,
+
+      available:
+        Boolean(
+          aiMemoryState &&
+          aiMemoryState.available
+        ),
+
+      valid:
+        Boolean(
+          aiMemoryState &&
+          aiMemoryState.valid
+        ),
+
+      generatedAt:
+        aiMemoryState &&
+        aiMemoryState.generatedAt
+          ? aiMemoryState.generatedAt
+          : null,
+
+      reason:
+        aiMemoryState &&
+        aiMemoryState.reason
+          ? aiMemoryState.reason
+          : null,
+    },
+
+    inputs: {
+      scalpSignals:
+        runtimeOptions
+          .scalpSignalsPath,
+
+      scalpCandles:
+        runtimeOptions
+          .scalpCandlesPath,
+
+      intradayH1:
+        runtimeOptions
+          .intradayH1Path,
+
+      dailyOhlc:
+        runtimeOptions
+          .dailyOhlcPath,
+    },
+
+    outputs: {
+      liveAnalysis:
+        runtimeOptions
+          .liveAnalysisPath,
+
+      analysisHistory:
+        runtimeOptions
+          .analysisHistoryPath,
+
+      notifyState:
+        runtimeOptions
+          .notifyStatePath,
+    },
+  };
+
+  const historyCandidates =
+    collectHistoryRecordsFromOutput(
+      output,
+      {
+        modes:
+          runtimeOptions
+            .historyModes,
+
+        includeHold:
+          runtimeOptions
+            .includeHoldHistory,
+      }
+    );
+
+  const historyResult =
+    appendAnalysisHistoryRecords(
+      sources.analysisHistory,
+      historyCandidates,
+      {
+        includeHold:
+          runtimeOptions
+            .includeHoldHistory,
+
+        dedupeWindowMs:
+          runtimeOptions
+            .historyDedupeWindowMs,
+
+        maximumRecords:
+          runtimeOptions
+            .maximumHistoryRecords,
+      }
+    );
+
+  let telegramResult = {
+    notifyState:
+      normalizeNotifyState(
+        sources.notifyState
+      ),
+
+    results: [],
+    sentCount: 0,
+    skippedCount: 0,
+    failedCount: 0,
+  };
+
+  if (
+    runtimeOptions.processTelegram
+  ) {
+    telegramResult =
+      await processLiveOutputNotifications(
+        output,
+        sources.notifyState,
+        {
+          modes:
+            runtimeOptions
+              .telegramModes,
+
+          minimumConfidence:
+            runtimeOptions
+              .telegramMinimumConfidence,
+
+          cooldownMs:
+            runtimeOptions
+              .telegramCooldownMs,
+
+          notifyHold:
+            runtimeOptions
+              .telegramNotifyHold,
+
+          token:
+            runtimeOptions
+              .telegramToken,
+
+          chatId:
+            runtimeOptions
+              .telegramChatId,
+
+          timeoutMs:
+            runtimeOptions
+              .telegramTimeoutMs,
+
+          disableNotification:
+            runtimeOptions
+              .telegramSilent,
+
+          title:
+            runtimeOptions
+              .telegramTitle ||
+            "PipSight Pro Signal",
+        }
+      );
+  }
+
+  p6CreateBackupIfRequested(
+    runtimeOptions
+      .liveAnalysisPath,
+    runtimeOptions
+      .createBackups
+  );
+
+  p6CreateBackupIfRequested(
+    runtimeOptions
+      .analysisHistoryPath,
+    runtimeOptions
+      .createBackups
+  );
+
+  p6CreateBackupIfRequested(
+    runtimeOptions
+      .notifyStatePath,
+    runtimeOptions
+      .createBackups
+  );
+
+  p6AtomicWriteJson(
+    runtimeOptions
+      .liveAnalysisPath,
+    output
+  );
+
+  p6AtomicWriteJson(
+    runtimeOptions
+      .analysisHistoryPath,
+    historyResult.history
+  );
+
+  p6AtomicWriteJson(
+    runtimeOptions
+      .notifyStatePath,
+    telegramResult.notifyState
+  );
+
+  const summary =
+    p6BuildRuntimeSummary(
+      output,
+      telegramResult,
+      historyResult.appendedCount
+    );
+
+  p6Log(
+    "INFO",
+    "Live analysis completed successfully",
+    summary
+  );
+
+  return {
+    ok: true,
+
+    output,
+
+    history:
+      historyResult.history,
+
+    notifyState:
+      telegramResult.notifyState,
+
+    telegram:
+      telegramResult,
+
+    summary,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Final compatibility aliases
+// ---------------------------------------------------------------------------
+
+async function runLiveAnalysis(
+  options = {}
+) {
+  return runLiveAnalysisRuntime(
+    options
+  );
+}
+
+async function executeLiveAnalysis(
+  options = {}
+) {
+  return runLiveAnalysisRuntime(
+    options
+  );
+}
+
+async function run(
+  options = {}
+) {
+  return runLiveAnalysisRuntime(
+    options
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Unhandled runtime safety
+// ---------------------------------------------------------------------------
+
+function p6InstallRuntimeSafetyHandlers() {
+  process.on(
+    "unhandledRejection",
+    (reason) => {
+      p6Log(
+        "ERROR",
+        "Unhandled promise rejection",
+        p6ErrorMessage(reason)
+      );
+
+      process.exitCode = 1;
+    }
+  );
+
+  process.on(
+    "uncaughtException",
+    (error) => {
+      p6Log(
+        "ERROR",
+        "Uncaught exception",
+        p6ErrorMessage(error)
+      );
+
+      process.exitCode = 1;
+    }
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Direct execution
+// ---------------------------------------------------------------------------
+
+async function main() {
+  p6InstallRuntimeSafetyHandlers();
+
+  try {
+    await runLiveAnalysisRuntime();
+  } catch (error) {
+    p6Log(
+      "ERROR",
+      "Live analysis runtime failed",
+      p6ErrorMessage(error)
+    );
+
+    process.exitCode = 1;
+  }
+}
+
+if (
+  typeof require !== "undefined" &&
+  typeof module !== "undefined" &&
+  require.main === module
+) {
+  void main();
+}
+
+
+// ---------------------------------------------------------------------------
+// Optional CommonJS exports
+// ---------------------------------------------------------------------------
+
+if (
+  typeof module !== "undefined" &&
+  module.exports
+) {
+  module.exports = {
+    runLiveAnalysisRuntime,
+    runLiveAnalysis,
+    executeLiveAnalysis,
+    run,
+
+    prepareLiveAnalysisFrames,
+    runLegacyCompatibleAnalysisPipeline,
+
+    selectScalpEngineResult,
+    selectSwingEngineResult,
+    selectIntradayEngineResult,
+
+    buildMasterConsensus,
+    buildPairEngineBundle,
+    buildLiveAnalysisOutput,
+
+    collectHistoryRecordsFromOutput,
+    appendAnalysisHistoryRecords,
+
+    normalizeNotifyState,
+    processTelegramNotification,
+    processLiveOutputNotifications,
+
+    formatTelegramSignalMessage,
+    sendTelegramMessage,
+  };
+}
+
+
+// ============================================================================
+// END PART 6
+// END OF FILE — run-live-analysis.js
+// ============================================================================

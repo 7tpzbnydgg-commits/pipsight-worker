@@ -13458,3 +13458,97 @@ async function assembleLiveAnalysisArtifacts(
 // ---------------------------------------------------------------------------
 // Legacy-compatible aliases
 // ---------------------------------------------------------------------------
+function selectScalpResult(input = {}) {
+  return selectScalpEngineResult(input);
+}
+
+function buildMasterAnalysis(input = {}) {
+  return buildMasterConsensus(input);
+}
+
+function buildMasterSignal(input = {}) {
+  return buildMasterConsensus(input);
+}
+
+function buildPairAnalysis(input = {}) {
+  return buildPairEngineBundle(input);
+}
+
+function assembleLiveAnalysis(input = {}) {
+  return buildLiveAnalysisOutput(input);
+}
+
+function buildAnalysisHistoryRecord(
+  engineResult,
+  options = {}
+) {
+  return liveHistoryRecordFromEngine(
+    engineResult,
+    options
+  );
+}
+
+function appendAnalysisHistory(
+  rawHistory,
+  records,
+  options = {}
+) {
+  return appendAnalysisHistoryRecords(
+    rawHistory,
+    records,
+    options
+  );
+}
+
+function formatTelegramMessage(
+  engineResult,
+  options = {}
+) {
+  return formatTelegramSignalMessage(
+    engineResult,
+    options
+  );
+}
+
+async function notifyTelegram(
+  rawNotifyState,
+  engineResult,
+  options = {}
+) {
+  return processTelegramNotification(
+    rawNotifyState,
+    engineResult,
+    options
+  );
+}
+
+// ============================================================================
+// PART 6 — FINAL RUNTIME ORCHESTRATION
+//          + INPUT LOADING
+//          + ATOMIC OUTPUT WRITES
+//          + STARTUP VALIDATION
+//          + ERROR HANDLING
+//          + MAIN EXECUTION
+// ============================================================================
+//
+// This is the final section of run-live-analysis.js.
+//
+// It:
+// - Resolves all input/output paths safely.
+// - Loads Scalp signals, Scalp candles, H1 candles and Daily OHLC.
+// - Supports pair-keyed, array-based and nested JSON structures.
+// - Runs XAU/USD and GBP/JPY through the complete pipeline.
+// - Preserves primary Scalp signals with candle-analysis fallback.
+// - Builds Swing, Intraday, Scalp and Master results.
+// - Preserves existing live-analysis.json compatibility fields.
+// - Appends analysis-history.json without duplicate active signals.
+// - Preserves notify-state.json and Telegram cooldown behavior.
+// - Writes all JSON files atomically.
+// - Keeps Telegram failures non-fatal.
+// - Provides startup validation and final execution.
+// ============================================================================
+
+
+// ---------------------------------------------------------------------------
+// Final runtime configuration
+// ---------------------------------------------------------------------------

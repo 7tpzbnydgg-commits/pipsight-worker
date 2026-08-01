@@ -12922,3 +12922,206 @@ function formatTelegramSignalMessage(
 // ---------------------------------------------------------------------------
 // Telegram transport
 // ---------------------------------------------------------------------------
+function liveTelegramConfig(options = {}) {
+  const token =
+    options.token ||
+    options.botToken ||
+    process.env.TELEGRAM_BOT_TOKEN ||
+    process.env.TELEGRAM_TOKEN ||
+    "";
+
+  const chatId =
+    options.chatId ||
+    options.chat_id ||
+    process.env.TELEGRAM_CHAT_ID ||
+    "";
+
+  return {
+    token:
+      liveNonEmptyString(token),
+
+    chatId:
+      liveNonEmptyString(chatId),
+
+    enabled:
+      Boolean(
+        liveNonEmptyString(token) &&
+        liveNonEmptyString(chatId)
+      ),
+
+    timeoutMs:
+      Math.max(
+        1000,
+        liveFiniteNumber(
+          options.timeoutMs,
+          typeof TELEGRAM_TIMEOUT_MS !==
+            "undefined"
+            ? TELEGRAM_TIMEOUT_MS
+            : 15000
+        )
+      ),
+  };
+}
+
+async function sendTelegramMessage(
+  message,
+  options = {}
+) {
+  const config =
+    liveTelegramConfig(options);
+
+  if (!config.enabled) {
+    return {
+      ok: false,
+      skipped: true,
+
+      reason:
+        "Telegram token or chat ID is not configured",
+    };
+  }
+
+  if (
+    typeof fetch !== "function"
+  ) {
+    return {
+      ok: false,
+      skipped: true,
+
+      reason:
+        "Global fetch is unavailable in this Node.js runtime",
+    };
+  }
+
+  const controller =
+    typeof AbortController ===
+    "function"
+      ? new AbortController()
+      : null;
+
+  const timeoutHandle =
+    setTimeout(() => {
+      if (controller) {
+        controller.abort();
+      }
+    }, config.timeoutMs);
+
+  try {
+    const response =
+      await fetch(
+        `https://api.telegram.org/bot${config.token}/sendMessage`,
+        {
+          method: "POST",
+
+          headers: {
+            "content-type":
+              "application/json",
+          },
+
+          body:
+            JSON.stringify({
+              chat_id:
+                config.chatId,
+
+              text:
+                String(
+                  message || ""
+                ),
+
+              parse_mode:
+                options.parseMode ||
+                "HTML",
+
+              disable_web_page_preview:
+                true,
+
+              disable_notification:
+                options
+                  .disableNotification ===
+                true,
+            }),
+
+          signal:
+            controller
+              ? controller.signal
+              : undefined,
+        }
+      );
+
+    let payload = null;
+
+    try {
+      payload =
+        await response.json();
+    } catch {
+      payload = null;
+    }
+
+    if (
+      !response.ok ||
+      payload?.ok === false
+    ) {
+      return {
+        ok: false,
+        skipped: false,
+
+        status:
+          response.status,
+
+        reason:
+          payload?.description ||
+          `Telegram HTTP ${response.status}`,
+
+        payload,
+      };
+    }
+
+    return {
+      ok: true,
+      skipped: false,
+
+      status:
+        response.status,
+
+      messageId:
+        payload?.result
+          ?.message_id ||
+        null,
+
+      payload,
+    };
+  } catch (error) {
+    const aborted =
+      error &&
+      (
+        error.name ===
+          "AbortError" ||
+        String(
+          error.message || ""
+        )
+          .toLowerCase()
+          .includes("abort")
+      );
+
+    return {
+      ok: false,
+      skipped: false,
+
+      reason:
+        aborted
+          ? `Telegram request timed out after ${config.timeoutMs}ms`
+          : `Telegram request failed: ${
+              error?.message ||
+              String(error)
+            }`,
+    };
+  } finally {
+    clearTimeout(
+      timeoutHandle
+    );
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Telegram processing for one engine
+// ---------------------------------------------------------------------------

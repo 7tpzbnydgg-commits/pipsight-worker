@@ -12462,3 +12462,463 @@ function liveNotifySignature(record) {
 // ---------------------------------------------------------------------------
 // Telegram notification eligibility
 // ---------------------------------------------------------------------------
+function shouldSendTelegramNotification(
+  rawNotifyState,
+  engineResult,
+  options = {}
+) {
+  const state =
+    normalizeNotifyState(rawNotifyState);
+
+  const canonical =
+    buildCanonicalEngineResult(
+      engineResult,
+      {
+        pair:
+          options.pair ||
+          engineResult?.pair,
+
+        mode:
+          options.mode ||
+          engineResult?.mode ||
+          "master",
+      }
+    );
+
+  const decision =
+    canonical.decision;
+
+  if (
+    decision === "HOLD" &&
+    options.notifyHold !== true
+  ) {
+    return {
+      shouldSend: false,
+      reason: "HOLD notifications are disabled",
+      state,
+      canonical,
+    };
+  }
+
+  const minimumConfidence =
+    liveNormalizeConfidence(
+      options.minimumConfidence,
+      0
+    );
+
+  if (
+    canonical.confidence <
+    minimumConfidence
+  ) {
+    return {
+      shouldSend: false,
+      reason:
+        `Confidence ${canonical.confidence}% is below ${minimumConfidence}%`,
+      state,
+      canonical,
+    };
+  }
+
+  const key =
+    liveNotifyStateKey(canonical);
+
+  const signature =
+    liveNotifySignature(canonical);
+
+  const previous =
+    liveIsPlainObject(state.signals[key])
+      ? state.signals[key]
+      : null;
+
+  const cooldownMs = Math.max(
+    0,
+    liveFiniteNumber(
+      options.cooldownMs,
+      4 * 60 * 60 * 1000
+    )
+  );
+
+  if (previous) {
+    const previousSignature =
+      liveNonEmptyString(
+        previous.signature ||
+          previous.fingerprint
+      );
+
+    const previousSentAt =
+      liveStableTimestamp(
+        previous.sentAt ||
+          previous.timestamp ||
+          previous.updatedAt,
+        0
+      );
+
+    const stillInCooldown =
+      cooldownMs > 0 &&
+      previousSentAt > 0 &&
+      Date.now() - previousSentAt <
+        cooldownMs;
+
+    if (
+      previousSignature === signature &&
+      stillInCooldown
+    ) {
+      return {
+        shouldSend: false,
+        reason:
+          "An identical signal was already notified within the cooldown window",
+        state,
+        canonical,
+        key,
+        signature,
+      };
+    }
+  }
+
+  return {
+    shouldSend: true,
+    reason: "Signal is eligible for notification",
+    state,
+    canonical,
+    key,
+    signature,
+  };
+}
+
+function updateNotifyStateAfterSend(
+  rawNotifyState,
+  engineResult,
+  options = {}
+) {
+  const eligibility =
+    shouldSendTelegramNotification(
+      rawNotifyState,
+      engineResult,
+      {
+        ...options,
+        cooldownMs: 0,
+      }
+    );
+
+  const state =
+    eligibility.state;
+
+  const canonical =
+    eligibility.canonical;
+
+  const key =
+    eligibility.key ||
+    liveNotifyStateKey(
+      canonical
+    );
+
+  const signature =
+    eligibility.signature ||
+    liveNotifySignature(
+      canonical
+    );
+
+  const sentAt =
+    liveNowIso();
+
+  const finalConfidence =
+    liveNormalizeConfidence(
+      canonical.confidence,
+      0
+    );
+
+  const originalConfidence =
+    liveNormalizeConfidence(
+      canonical.originalConfidence ??
+        canonical.aiMemory
+          ?.originalConfidence ??
+        finalConfidence,
+      finalConfidence
+    );
+
+  const appliedConfidenceAdjustment =
+    liveFiniteNumber(
+      canonical.aiMemory
+        ?.appliedConfidenceAdjustment ??
+        canonical.aiMemory
+          ?.confidenceAdjustment,
+      0
+    );
+
+  const signals = {
+    ...state.signals,
+
+    [key]: {
+      pair:
+        canonical.pair,
+
+      mode:
+        canonical.mode,
+
+      decision:
+        canonical.decision,
+
+      // Final adjusted confidence used in
+      // the Telegram eligibility check.
+      confidence:
+        finalConfidence,
+
+      // Additive Phase 4 audit fields.
+      originalConfidence,
+
+      aiMemoryAdjustedConfidence:
+        finalConfidence,
+
+      appliedConfidenceAdjustment,
+
+      aiMemoryApplied:
+        canonical.aiMemory
+          ?.applied === true,
+
+      signature,
+
+      fingerprint:
+        signature,
+
+      sentAt,
+
+      updatedAt:
+        sentAt,
+
+      timestamp:
+        Date.now(),
+
+      messageId:
+        options.messageId ||
+        null,
+    },
+  };
+
+  return {
+    ...state,
+
+    updatedAt:
+      sentAt,
+
+    signals,
+
+    notifications:
+      signals,
+
+    state:
+      signals,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Telegram formatting
+// ---------------------------------------------------------------------------
+function liveEscapeTelegramHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function liveFormatTelegramPrice(
+  value,
+  pair
+) {
+  const parsed =
+    liveFiniteNumber(value);
+
+  if (!Number.isFinite(parsed)) {
+    return "—";
+  }
+
+  const decimals =
+    typeof livePairPriceDecimals ===
+    "function"
+      ? livePairPriceDecimals(pair)
+      : liveCompactPair(pair)
+          .endsWith("JPY")
+        ? 3
+        : liveCompactPair(pair) ===
+            "XAUUSD"
+          ? 2
+          : 5;
+
+  return parsed.toFixed(decimals);
+}
+
+function liveDecisionEmoji(decision) {
+  const normalized =
+    normalizeLiveDecision(decision);
+
+  if (normalized === "BUY") {
+    return "🟢";
+  }
+
+  if (normalized === "SELL") {
+    return "🔴";
+  }
+
+  return "🟡";
+}
+
+function formatTelegramSignalMessage(
+  engineResult,
+  options = {}
+) {
+  const canonical =
+    buildCanonicalEngineResult(
+      engineResult,
+      {
+        pair:
+          options.pair ||
+          engineResult?.pair,
+
+        mode:
+          options.mode ||
+          engineResult?.mode ||
+          "master",
+      }
+    );
+
+  const emoji =
+    liveDecisionEmoji(
+      canonical.decision
+    );
+
+  const title =
+    options.title ||
+    "PipSight Pro Signal";
+
+  const lines = [
+    `<b>${liveEscapeTelegramHtml(
+      title
+    )}</b>`,
+
+    "",
+
+    `${emoji} <b>${liveEscapeTelegramHtml(
+      canonical.decision
+    )}</b>`,
+
+    `<b>Pair:</b> ${liveEscapeTelegramHtml(
+      canonical.pair
+    )}`,
+
+    `<b>Engine:</b> ${liveEscapeTelegramHtml(
+      canonical.mode.toUpperCase()
+    )}`,
+
+    `<b>Confidence:</b> ${
+      canonical.confidence
+    }%`,
+  ];
+
+  if (
+    Number.isFinite(
+      canonical.price
+    )
+  ) {
+    lines.push(
+      `<b>Market:</b> ${liveFormatTelegramPrice(
+        canonical.price,
+        canonical.pair
+      )}`
+    );
+  }
+
+  if (
+    canonical.decision !== "HOLD" &&
+    canonical.tradePlan
+  ) {
+    lines.push("");
+
+    lines.push(
+      `<b>Entry:</b> ${liveFormatTelegramPrice(
+        canonical.entry,
+        canonical.pair
+      )}`
+    );
+
+    lines.push(
+      `<b>Stop Loss:</b> ${liveFormatTelegramPrice(
+        canonical.stopLoss,
+        canonical.pair
+      )}`
+    );
+
+    lines.push(
+      `<b>TP1:</b> ${liveFormatTelegramPrice(
+        canonical.target1,
+        canonical.pair
+      )}`
+    );
+
+    if (
+      Number.isFinite(
+        canonical.target2
+      )
+    ) {
+      lines.push(
+        `<b>TP2:</b> ${liveFormatTelegramPrice(
+          canonical.target2,
+          canonical.pair
+        )}`
+      );
+    }
+
+    if (
+      Number.isFinite(
+        canonical.target3
+      )
+    ) {
+      lines.push(
+        `<b>TP3:</b> ${liveFormatTelegramPrice(
+          canonical.target3,
+          canonical.pair
+        )}`
+      );
+    }
+
+    if (
+      Number.isFinite(
+        canonical.riskReward
+      )
+    ) {
+      lines.push(
+        `<b>Risk:Reward:</b> 1:${
+          canonical.riskReward.toFixed(
+            2
+          )
+        }`
+      );
+    }
+  }
+
+  if (canonical.reason) {
+    lines.push("");
+
+    lines.push(
+      `<b>Reason:</b> ${liveEscapeTelegramHtml(
+        canonical.reason
+      )}`
+    );
+  }
+
+  lines.push("");
+
+  lines.push(
+    `<i>${liveEscapeTelegramHtml(
+      new Date(
+        canonical.timestamp
+      ).toISOString()
+    )}</i>`
+  );
+
+  return lines.join("\n");
+}
+
+
+// ---------------------------------------------------------------------------
+// Telegram transport
+// ---------------------------------------------------------------------------

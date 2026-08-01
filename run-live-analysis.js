@@ -13318,3 +13318,143 @@ async function processLiveOutputNotifications(
 // ---------------------------------------------------------------------------
 // Complete output/history/notification assembly
 // ---------------------------------------------------------------------------
+async function assembleLiveAnalysisArtifacts(
+  input = {}
+) {
+  const output =
+    buildLiveAnalysisOutput({
+      pairs:
+        input.pairBundles ||
+        input.pairs ||
+        [],
+
+      timestamp:
+        input.timestamp,
+
+      generatedAt:
+        input.generatedAt,
+
+      engineVersion:
+        input.engineVersion,
+
+      strategyVersion:
+        input.strategyVersion,
+    });
+
+  const historyCandidates =
+    collectHistoryRecordsFromOutput(
+      output,
+      {
+        modes:
+          input.historyModes ||
+          ["master", "swing", "intraday", "scalp"],
+
+        includeHold:
+          input.includeHoldHistory === true,
+      }
+    );
+
+  const historyResult =
+    appendAnalysisHistoryRecords(
+      input.analysisHistory ||
+        input.history ||
+        {},
+      historyCandidates,
+      {
+        includeHold:
+          input.includeHoldHistory === true,
+
+        dedupeWindowMs:
+          input.historyDedupeWindowMs,
+
+        maximumRecords:
+          input.maximumHistoryRecords,
+      }
+    );
+
+  let notificationResult = {
+    notifyState:
+      normalizeNotifyState(
+        input.notifyState
+      ),
+
+    results: [],
+    sentCount: 0,
+    skippedCount: 0,
+    failedCount: 0,
+  };
+
+  if (input.processTelegram !== false) {
+    notificationResult =
+      await processLiveOutputNotifications(
+        output,
+        input.notifyState,
+        {
+          modes:
+            input.telegramModes ||
+            ["master"],
+
+          minimumConfidence:
+            input.telegramMinimumConfidence,
+
+          cooldownMs:
+            input.telegramCooldownMs,
+
+          notifyHold:
+            input.telegramNotifyHold === true,
+
+          token:
+            input.telegramToken,
+
+          chatId:
+            input.telegramChatId,
+
+          timeoutMs:
+            input.telegramTimeoutMs,
+
+          disableNotification:
+            input.telegramSilent === true,
+
+          title:
+            input.telegramTitle ||
+            "PipSight Pro Signal",
+        }
+      );
+  }
+
+  return {
+    output,
+
+    history:
+      historyResult.history,
+
+    appendedHistory:
+      historyResult.appended,
+
+    appendedHistoryCount:
+      historyResult.appendedCount,
+
+    notifyState:
+      notificationResult.notifyState,
+
+    telegram:
+      {
+        results:
+          notificationResult.results,
+
+        sentCount:
+          notificationResult.sentCount,
+
+        skippedCount:
+          notificationResult.skippedCount,
+
+        failedCount:
+          notificationResult.failedCount,
+      },
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Legacy-compatible aliases
+// ---------------------------------------------------------------------------

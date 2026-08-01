@@ -2963,3 +2963,1739 @@ function loadEnrichmentSources() {
   };
 
 }
+
+/* =====================================================================
+   Performance Accumulator
+   ===================================================================== */
+
+function createPerformanceAccumulator() {
+
+  return {
+    totalTrades:
+      0,
+
+    wins:
+      0,
+
+    losses:
+      0,
+
+    breakevens:
+      0,
+
+    totalProfitPoints:
+      0,
+
+    grossProfitPoints:
+      0,
+
+    grossLossPoints:
+      0,
+
+    profitPointSamples:
+      0,
+
+    totalResultPercentage:
+      0,
+
+    resultPercentageSamples:
+      0,
+
+    totalDurationMinutes:
+      0,
+
+    durationSamples:
+      0,
+
+    totalConfidence:
+      0,
+
+    confidenceSamples:
+      0,
+
+    confidenceMinimum:
+      null,
+
+    confidenceMaximum:
+      null,
+
+    firstTradeAt:
+      null,
+
+    lastTradeAt:
+      null
+  };
+
+}
+
+function addTradeToPerformanceAccumulator(
+  accumulator,
+  trade
+) {
+
+  if (
+    !isPlainObject(
+      accumulator
+    ) ||
+    !isPlainObject(
+      trade
+    )
+  ) {
+
+    return false;
+
+  }
+
+  accumulator.totalTrades +=
+    1;
+
+  if (
+    trade.outcome ===
+      "WIN"
+  ) {
+
+    accumulator.wins +=
+      1;
+
+  } else if (
+    trade.outcome ===
+      "LOSS"
+  ) {
+
+    accumulator.losses +=
+      1;
+
+  } else if (
+    trade.outcome ===
+      "BREAKEVEN"
+  ) {
+
+    accumulator.breakevens +=
+      1;
+
+  }
+
+  if (
+    isFiniteNumber(
+      trade.profitPoints
+    )
+  ) {
+
+    accumulator
+      .totalProfitPoints +=
+        trade.profitPoints;
+
+    accumulator
+      .profitPointSamples +=
+        1;
+
+    if (
+      trade.profitPoints >
+        0
+    ) {
+
+      accumulator
+        .grossProfitPoints +=
+          trade.profitPoints;
+
+    } else if (
+      trade.profitPoints <
+        0
+    ) {
+
+      accumulator
+        .grossLossPoints +=
+          Math.abs(
+            trade.profitPoints
+          );
+
+    }
+
+  }
+
+  if (
+    isFiniteNumber(
+      trade.resultPercentage
+    )
+  ) {
+
+    accumulator
+      .totalResultPercentage +=
+        trade.resultPercentage;
+
+    accumulator
+      .resultPercentageSamples +=
+        1;
+
+  }
+
+  if (
+    isFiniteNumber(
+      trade.durationMinutes
+    )
+  ) {
+
+    accumulator
+      .totalDurationMinutes +=
+        trade.durationMinutes;
+
+    accumulator
+      .durationSamples +=
+        1;
+
+  }
+
+  if (
+    isFiniteNumber(
+      trade.confidence
+    )
+  ) {
+
+    accumulator
+      .totalConfidence +=
+        trade.confidence;
+
+    accumulator
+      .confidenceSamples +=
+        1;
+
+    accumulator.confidenceMinimum =
+      accumulator.confidenceMinimum ===
+        null
+        ? trade.confidence
+        : Math.min(
+            accumulator.confidenceMinimum,
+            trade.confidence
+          );
+
+    accumulator.confidenceMaximum =
+      accumulator.confidenceMaximum ===
+        null
+        ? trade.confidence
+        : Math.max(
+            accumulator.confidenceMaximum,
+            trade.confidence
+          );
+
+  }
+
+  const tradeTime =
+    trade.closedAt ||
+    trade.resolvedAt ||
+    trade.openedAt ||
+    null;
+
+  if (
+    tradeTime
+  ) {
+
+    if (
+      accumulator.firstTradeAt ===
+        null ||
+      new Date(
+        tradeTime
+      ).getTime() <
+        new Date(
+          accumulator.firstTradeAt
+        ).getTime()
+    ) {
+
+      accumulator.firstTradeAt =
+        tradeTime;
+
+    }
+
+    if (
+      accumulator.lastTradeAt ===
+        null ||
+      new Date(
+        tradeTime
+      ).getTime() >
+        new Date(
+          accumulator.lastTradeAt
+        ).getTime()
+    ) {
+
+      accumulator.lastTradeAt =
+        tradeTime;
+
+    }
+
+  }
+
+  return true;
+
+}
+
+/* =====================================================================
+   Performance Metric Finalization
+   ===================================================================== */
+
+function calculateRate(
+  count,
+  total
+) {
+
+  const normalizedCount =
+    toFiniteNumber(
+      count
+    );
+
+  const normalizedTotal =
+    toFiniteNumber(
+      total
+    );
+
+  if (
+    normalizedCount ===
+      null ||
+    normalizedTotal ===
+      null ||
+    normalizedTotal <=
+      0
+  ) {
+
+    return 0;
+
+  }
+
+  return round(
+    (
+      normalizedCount /
+      normalizedTotal
+    ) *
+      100,
+    4
+  );
+
+}
+
+function calculateProfitFactor(
+  grossProfitPoints,
+  grossLossPoints
+) {
+
+  const grossProfit =
+    toFiniteNumber(
+      grossProfitPoints
+    );
+
+  const grossLoss =
+    toFiniteNumber(
+      grossLossPoints
+    );
+
+  if (
+    grossProfit ===
+      null ||
+    grossLoss ===
+      null
+  ) {
+
+    return null;
+
+  }
+
+  if (
+    grossLoss ===
+      0
+  ) {
+
+    if (
+      grossProfit >
+        0
+    ) {
+
+      return null;
+
+    }
+
+    return 0;
+
+  }
+
+  return round(
+    grossProfit /
+      grossLoss,
+    4
+  );
+
+}
+
+function finalizePerformanceAccumulator(
+  accumulator
+) {
+
+  if (
+    !isPlainObject(
+      accumulator
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const totalTrades =
+    toNonNegativeInteger(
+      accumulator.totalTrades
+    ) ?? 0;
+
+  const profitPointSamples =
+    toNonNegativeInteger(
+      accumulator.profitPointSamples
+    ) ?? 0;
+
+  const resultPercentageSamples =
+    toNonNegativeInteger(
+      accumulator.resultPercentageSamples
+    ) ?? 0;
+
+  const durationSamples =
+    toNonNegativeInteger(
+      accumulator.durationSamples
+    ) ?? 0;
+
+  const confidenceSamples =
+    toNonNegativeInteger(
+      accumulator.confidenceSamples
+    ) ?? 0;
+
+  const totalProfitPoints =
+    round(
+      accumulator.totalProfitPoints,
+      8
+    ) ?? 0;
+
+  const grossProfitPoints =
+    round(
+      accumulator.grossProfitPoints,
+      8
+    ) ?? 0;
+
+  const grossLossPoints =
+    round(
+      accumulator.grossLossPoints,
+      8
+    ) ?? 0;
+
+  const totalResultPercentage =
+    round(
+      accumulator.totalResultPercentage,
+      8
+    ) ?? 0;
+
+  const totalDurationMinutes =
+    round(
+      accumulator.totalDurationMinutes,
+      4
+    ) ?? 0;
+
+  const totalConfidence =
+    round(
+      accumulator.totalConfidence,
+      4
+    ) ?? 0;
+
+  return {
+    totalTrades,
+
+    wins:
+      accumulator.wins,
+
+    losses:
+      accumulator.losses,
+
+    breakevens:
+      accumulator.breakevens,
+
+    winRate:
+      calculateRate(
+        accumulator.wins,
+        totalTrades
+      ),
+
+    lossRate:
+      calculateRate(
+        accumulator.losses,
+        totalTrades
+      ),
+
+    breakevenRate:
+      calculateRate(
+        accumulator.breakevens,
+        totalTrades
+      ),
+
+    profitPoints: {
+      samples:
+        profitPointSamples,
+
+      total:
+        totalProfitPoints,
+
+      average:
+        profitPointSamples >
+          0
+          ? round(
+              totalProfitPoints /
+                profitPointSamples,
+              8
+            )
+          : null,
+
+      grossProfit:
+        grossProfitPoints,
+
+      grossLoss:
+        grossLossPoints,
+
+      profitFactor:
+        calculateProfitFactor(
+          grossProfitPoints,
+          grossLossPoints
+        )
+    },
+
+    resultPercentage: {
+      samples:
+        resultPercentageSamples,
+
+      total:
+        totalResultPercentage,
+
+      average:
+        resultPercentageSamples >
+          0
+          ? round(
+              totalResultPercentage /
+                resultPercentageSamples,
+              8
+            )
+          : null
+    },
+
+    durationMinutes: {
+      samples:
+        durationSamples,
+
+      total:
+        totalDurationMinutes,
+
+      average:
+        durationSamples >
+          0
+          ? round(
+              totalDurationMinutes /
+                durationSamples,
+              4
+            )
+          : null
+    },
+
+    confidence: {
+      samples:
+        confidenceSamples,
+
+      total:
+        totalConfidence,
+
+      average:
+        confidenceSamples >
+          0
+          ? round(
+              totalConfidence /
+                confidenceSamples,
+              4
+            )
+          : null,
+
+      minimum:
+        confidenceSamples >
+          0
+          ? round(
+              accumulator.confidenceMinimum,
+              4
+            )
+          : null,
+
+      maximum:
+        confidenceSamples >
+          0
+          ? round(
+              accumulator.confidenceMaximum,
+              4
+            )
+          : null
+    },
+
+    firstTradeAt:
+      accumulator.firstTradeAt,
+
+    lastTradeAt:
+      accumulator.lastTradeAt
+  };
+
+}
+
+function calculatePerformanceMetrics(
+  trades
+) {
+
+  const accumulator =
+    createPerformanceAccumulator();
+
+  if (
+    !Array.isArray(
+      trades
+    )
+  ) {
+
+    return finalizePerformanceAccumulator(
+      accumulator
+    );
+
+  }
+
+  for (
+    const trade of
+    trades
+  ) {
+
+    addTradeToPerformanceAccumulator(
+      accumulator,
+      trade
+    );
+
+  }
+
+  return finalizePerformanceAccumulator(
+    accumulator
+  );
+
+}
+
+/* =====================================================================
+   Rolling Window Metrics
+   ===================================================================== */
+
+function getNewestTrades(
+  trades,
+  requestedSize
+) {
+
+  if (
+    !Array.isArray(
+      trades
+    )
+  ) {
+
+    return [];
+
+  }
+
+  const size =
+    toNonNegativeInteger(
+      requestedSize
+    );
+
+  if (
+    size ===
+      null ||
+    size ===
+      0
+  ) {
+
+    return [];
+
+  }
+
+  return trades.slice(
+    Math.max(
+      0,
+      trades.length -
+        size
+    )
+  );
+
+}
+
+function buildRollingWindowMetric(
+  trades,
+  requestedSize
+) {
+
+  const normalizedSize =
+    toNonNegativeInteger(
+      requestedSize
+    );
+
+  if (
+    normalizedSize ===
+      null ||
+    normalizedSize ===
+      0
+  ) {
+
+    return null;
+
+  }
+
+  const windowTrades =
+    getNewestTrades(
+      trades,
+      normalizedSize
+    );
+
+  const actualSize =
+    windowTrades.length;
+
+  return {
+    requestedSize:
+      normalizedSize,
+
+    actualSize,
+
+    complete:
+      actualSize >=
+        normalizedSize,
+
+    available:
+      actualSize >
+        0,
+
+    firstTradeAt:
+      actualSize >
+        0
+        ? windowTrades[0]
+            .closedAt
+        : null,
+
+    lastTradeAt:
+      actualSize >
+        0
+        ? windowTrades[
+            actualSize -
+              1
+          ].closedAt
+        : null,
+
+    metrics:
+      calculatePerformanceMetrics(
+        windowTrades
+      )
+  };
+
+}
+
+function buildRollingWindows(
+  trades
+) {
+
+  const result =
+    {};
+
+  for (
+    const windowSize of
+    ROLLING_WINDOWS
+  ) {
+
+    result[
+      String(
+        windowSize
+      )
+    ] =
+      buildRollingWindowMetric(
+        trades,
+        windowSize
+      );
+
+  }
+
+  return result;
+
+}
+
+/* =====================================================================
+   Recency Weighting
+   ===================================================================== */
+
+/*
+ * Exponential half-life:
+ *
+ * weight(age) = 0.5 ^ (age / halfLife)
+ *
+ * age = 0 for newest trade.
+ *
+ * This weighting is deterministic because it depends only on trade
+ * ordering and not the workflow's current clock time.
+ */
+function calculateRecencyWeight(
+  ageIndex,
+  halfLifeTrades =
+    RECENCY_HALF_LIFE_TRADES
+) {
+
+  const age =
+    toNonNegativeInteger(
+      ageIndex
+    );
+
+  const halfLife =
+    toFiniteNumber(
+      halfLifeTrades
+    );
+
+  if (
+    age ===
+      null ||
+    halfLife ===
+      null ||
+    halfLife <=
+      0
+  ) {
+
+    return null;
+
+  }
+
+  return round(
+    0.5 **
+      (
+        age /
+        halfLife
+      ),
+    12
+  );
+
+}
+
+function createWeightedAccumulator() {
+
+  return {
+    totalWeight:
+      0,
+
+    winWeight:
+      0,
+
+    lossWeight:
+      0,
+
+    breakevenWeight:
+      0,
+
+    weightedProfitPoints:
+      0,
+
+    profitWeight:
+      0,
+
+    weightedResultPercentage:
+      0,
+
+    resultPercentageWeight:
+      0,
+
+    weightedDurationMinutes:
+      0,
+
+    durationWeight:
+      0,
+
+    weightedConfidence:
+      0,
+
+    confidenceWeight:
+      0,
+
+    tradeCount:
+      0
+  };
+
+}
+
+function addWeightedTrade(
+  accumulator,
+  trade,
+  weight
+) {
+
+  if (
+    !isPlainObject(
+      accumulator
+    ) ||
+    !isPlainObject(
+      trade
+    ) ||
+    !isFiniteNumber(
+      weight
+    ) ||
+    weight <=
+      0
+  ) {
+
+    return false;
+
+  }
+
+  accumulator.tradeCount +=
+    1;
+
+  accumulator.totalWeight +=
+    weight;
+
+  if (
+    trade.outcome ===
+      "WIN"
+  ) {
+
+    accumulator.winWeight +=
+      weight;
+
+  } else if (
+    trade.outcome ===
+      "LOSS"
+  ) {
+
+    accumulator.lossWeight +=
+      weight;
+
+  } else if (
+    trade.outcome ===
+      "BREAKEVEN"
+  ) {
+
+    accumulator.breakevenWeight +=
+      weight;
+
+  }
+
+  if (
+    isFiniteNumber(
+      trade.profitPoints
+    )
+  ) {
+
+    accumulator
+      .weightedProfitPoints +=
+        trade.profitPoints *
+        weight;
+
+    accumulator
+      .profitWeight +=
+        weight;
+
+  }
+
+  if (
+    isFiniteNumber(
+      trade.resultPercentage
+    )
+  ) {
+
+    accumulator
+      .weightedResultPercentage +=
+        trade.resultPercentage *
+        weight;
+
+    accumulator
+      .resultPercentageWeight +=
+        weight;
+
+  }
+
+  if (
+    isFiniteNumber(
+      trade.durationMinutes
+    )
+  ) {
+
+    accumulator
+      .weightedDurationMinutes +=
+        trade.durationMinutes *
+        weight;
+
+    accumulator
+      .durationWeight +=
+        weight;
+
+  }
+
+  if (
+    isFiniteNumber(
+      trade.confidence
+    )
+  ) {
+
+    accumulator
+      .weightedConfidence +=
+        trade.confidence *
+        weight;
+
+    accumulator
+      .confidenceWeight +=
+        weight;
+
+  }
+
+  return true;
+
+}
+
+function calculateWeightedPercentage(
+  weightedValue,
+  totalWeight
+) {
+
+  if (
+    !isFiniteNumber(
+      weightedValue
+    ) ||
+    !isFiniteNumber(
+      totalWeight
+    ) ||
+    totalWeight <=
+      0
+  ) {
+
+    return 0;
+
+  }
+
+  return round(
+    (
+      weightedValue /
+      totalWeight
+    ) *
+      100,
+    4
+  );
+
+}
+
+function finalizeWeightedAccumulator(
+  accumulator
+) {
+
+  if (
+    !isPlainObject(
+      accumulator
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const totalWeight =
+    round(
+      accumulator.totalWeight,
+      12
+    ) ?? 0;
+
+  return {
+    tradeCount:
+      accumulator.tradeCount,
+
+    halfLifeTrades:
+      RECENCY_HALF_LIFE_TRADES,
+
+    totalWeight,
+
+    weightedWinRate:
+      calculateWeightedPercentage(
+        accumulator.winWeight,
+        totalWeight
+      ),
+
+    weightedLossRate:
+      calculateWeightedPercentage(
+        accumulator.lossWeight,
+        totalWeight
+      ),
+
+    weightedBreakevenRate:
+      calculateWeightedPercentage(
+        accumulator.breakevenWeight,
+        totalWeight
+      ),
+
+    weightedAverageProfitPoints:
+      accumulator.profitWeight >
+        0
+        ? round(
+            accumulator
+              .weightedProfitPoints /
+              accumulator
+                .profitWeight,
+            8
+          )
+        : null,
+
+    weightedAverageResultPercentage:
+      accumulator
+        .resultPercentageWeight >
+        0
+        ? round(
+            accumulator
+              .weightedResultPercentage /
+              accumulator
+                .resultPercentageWeight,
+            8
+          )
+        : null,
+
+    weightedAverageDurationMinutes:
+      accumulator.durationWeight >
+        0
+        ? round(
+            accumulator
+              .weightedDurationMinutes /
+              accumulator
+                .durationWeight,
+            4
+          )
+        : null,
+
+    weightedAverageConfidence:
+      accumulator.confidenceWeight >
+        0
+        ? round(
+            accumulator
+              .weightedConfidence /
+              accumulator
+                .confidenceWeight,
+            4
+          )
+        : null
+  };
+
+}
+
+function buildRecencyWeightedMetrics(
+  trades
+) {
+
+  const accumulator =
+    createWeightedAccumulator();
+
+  if (
+    !Array.isArray(
+      trades
+    ) ||
+    trades.length ===
+      0
+  ) {
+
+    return finalizeWeightedAccumulator(
+      accumulator
+    );
+
+  }
+
+  const newestIndex =
+    trades.length -
+      1;
+
+  for (
+    let index = 0;
+    index <
+      trades.length;
+    index++
+  ) {
+
+    const ageIndex =
+      newestIndex -
+      index;
+
+    const weight =
+      calculateRecencyWeight(
+        ageIndex
+      );
+
+    if (
+      weight ===
+        null
+    ) {
+
+      continue;
+
+    }
+
+    addWeightedTrade(
+      accumulator,
+      trades[index],
+      weight
+    );
+
+  }
+
+  return finalizeWeightedAccumulator(
+    accumulator
+  );
+
+}
+
+/* =====================================================================
+   Trend Segment Construction
+   ===================================================================== */
+
+function buildTrendSegments(
+  trades
+) {
+
+  if (
+    !Array.isArray(
+      trades
+    )
+  ) {
+
+    return {
+      available:
+        false,
+
+      requiredTrades:
+        TREND_SEGMENT_SIZE *
+        2,
+
+      actualTrades:
+        0,
+
+      previous:
+        null,
+
+      recent:
+        null
+    };
+
+  }
+
+  const requiredTrades =
+    TREND_SEGMENT_SIZE *
+      2;
+
+  if (
+    trades.length <
+      requiredTrades
+  ) {
+
+    return {
+      available:
+        false,
+
+      requiredTrades,
+
+      actualTrades:
+        trades.length,
+
+      previous:
+        null,
+
+      recent:
+        null
+    };
+
+  }
+
+  const recentStart =
+    trades.length -
+      TREND_SEGMENT_SIZE;
+
+  const previousStart =
+    recentStart -
+      TREND_SEGMENT_SIZE;
+
+  const previousTrades =
+    trades.slice(
+      previousStart,
+      recentStart
+    );
+
+  const recentTrades =
+    trades.slice(
+      recentStart
+    );
+
+  return {
+    available:
+      true,
+
+    requiredTrades,
+
+    actualTrades:
+      trades.length,
+
+    previous: {
+      size:
+        previousTrades.length,
+
+      firstTradeAt:
+        previousTrades[0]
+          ?.closedAt ||
+        null,
+
+      lastTradeAt:
+        previousTrades[
+          previousTrades.length -
+            1
+        ]?.closedAt ||
+        null,
+
+      metrics:
+        calculatePerformanceMetrics(
+          previousTrades
+        )
+    },
+
+    recent: {
+      size:
+        recentTrades.length,
+
+      firstTradeAt:
+        recentTrades[0]
+          ?.closedAt ||
+        null,
+
+      lastTradeAt:
+        recentTrades[
+          recentTrades.length -
+            1
+        ]?.closedAt ||
+        null,
+
+      metrics:
+        calculatePerformanceMetrics(
+          recentTrades
+        )
+    }
+  };
+
+}
+
+/* =====================================================================
+   Trend Classification
+   ===================================================================== */
+
+function compareNullableNumbers(
+  recent,
+  previous
+) {
+
+  const recentNumber =
+    toFiniteNumber(
+      recent
+    );
+
+  const previousNumber =
+    toFiniteNumber(
+      previous
+    );
+
+  if (
+    recentNumber ===
+      null ||
+    previousNumber ===
+      null
+  ) {
+
+    return null;
+
+  }
+
+  return round(
+    recentNumber -
+      previousNumber,
+    8
+  );
+
+}
+
+function classifyPerformanceTrend(
+  trades
+) {
+
+  const segments =
+    buildTrendSegments(
+      trades
+    );
+
+  if (
+    !segments.available
+  ) {
+
+    return {
+      status:
+        "insufficient-data",
+
+      available:
+        false,
+
+      requiredTrades:
+        segments.requiredTrades,
+
+      actualTrades:
+        segments.actualTrades,
+
+      segmentSize:
+        TREND_SEGMENT_SIZE,
+
+      deltas: {
+        winRate:
+          null,
+
+        averageProfitPoints:
+          null,
+
+        profitFactor:
+          null
+      },
+
+      previous:
+        null,
+
+      recent:
+        null,
+
+      reasons: [
+        (
+          `At least ${segments.requiredTrades} trades are required ` +
+          `for two ${TREND_SEGMENT_SIZE}-trade trend segments.`
+        )
+      ]
+    };
+
+  }
+
+  const previousMetrics =
+    segments.previous.metrics;
+
+  const recentMetrics =
+    segments.recent.metrics;
+
+  const winRateDelta =
+    compareNullableNumbers(
+      recentMetrics.winRate,
+      previousMetrics.winRate
+    );
+
+  const averageProfitPointsDelta =
+    compareNullableNumbers(
+      recentMetrics
+        .profitPoints
+        .average,
+      previousMetrics
+        .profitPoints
+        .average
+    );
+
+  const profitFactorDelta =
+    compareNullableNumbers(
+      recentMetrics
+        .profitPoints
+        .profitFactor,
+      previousMetrics
+        .profitPoints
+        .profitFactor
+    );
+
+  let improvingEvidence =
+    0;
+
+  let decliningEvidence =
+    0;
+
+  const reasons =
+    [];
+
+  if (
+    winRateDelta !==
+      null
+  ) {
+
+    if (
+      winRateDelta >=
+        WIN_RATE_TREND_THRESHOLD
+    ) {
+
+      improvingEvidence +=
+        1;
+
+      reasons.push(
+        `Recent win rate increased by ${round(
+          winRateDelta,
+          4
+        )} percentage points.`
+      );
+
+    } else if (
+      winRateDelta <=
+        -WIN_RATE_TREND_THRESHOLD
+    ) {
+
+      decliningEvidence +=
+        1;
+
+      reasons.push(
+        `Recent win rate decreased by ${round(
+          Math.abs(
+            winRateDelta
+          ),
+          4
+        )} percentage points.`
+      );
+
+    }
+
+  }
+
+  if (
+    averageProfitPointsDelta !==
+      null
+  ) {
+
+    if (
+      averageProfitPointsDelta >
+        0
+    ) {
+
+      improvingEvidence +=
+        1;
+
+      reasons.push(
+        "Recent average profit points improved."
+      );
+
+    } else if (
+      averageProfitPointsDelta <
+        0
+    ) {
+
+      decliningEvidence +=
+        1;
+
+      reasons.push(
+        "Recent average profit points declined."
+      );
+
+    }
+
+  }
+
+  if (
+    profitFactorDelta !==
+      null
+  ) {
+
+    if (
+      profitFactorDelta >=
+        PROFIT_FACTOR_TREND_THRESHOLD
+    ) {
+
+      improvingEvidence +=
+        1;
+
+      reasons.push(
+        `Recent profit factor increased by ${round(
+          profitFactorDelta,
+          4
+        )}.`
+      );
+
+    } else if (
+      profitFactorDelta <=
+        -PROFIT_FACTOR_TREND_THRESHOLD
+    ) {
+
+      decliningEvidence +=
+        1;
+
+      reasons.push(
+        `Recent profit factor decreased by ${round(
+          Math.abs(
+            profitFactorDelta
+          ),
+          4
+        )}.`
+      );
+
+    }
+
+  }
+
+  let status =
+    "stable";
+
+  if (
+    improvingEvidence >
+      decliningEvidence &&
+    improvingEvidence >=
+      2
+  ) {
+
+    status =
+      "improving";
+
+  } else if (
+    decliningEvidence >
+      improvingEvidence &&
+    decliningEvidence >=
+      2
+  ) {
+
+    status =
+      "declining";
+
+  }
+
+  if (
+    reasons.length ===
+      0
+  ) {
+
+    reasons.push(
+      "No material performance change crossed the configured thresholds."
+    );
+
+  }
+
+  return {
+    status,
+
+    available:
+      true,
+
+    requiredTrades:
+      segments.requiredTrades,
+
+    actualTrades:
+      segments.actualTrades,
+
+    segmentSize:
+      TREND_SEGMENT_SIZE,
+
+    evidence: {
+      improving:
+        improvingEvidence,
+
+      declining:
+        decliningEvidence
+    },
+
+    thresholds: {
+      winRatePercentagePoints:
+        WIN_RATE_TREND_THRESHOLD,
+
+      profitFactor:
+        PROFIT_FACTOR_TREND_THRESHOLD
+    },
+
+    deltas: {
+      winRate:
+        winRateDelta,
+
+      averageProfitPoints:
+        averageProfitPointsDelta,
+
+      profitFactor:
+        profitFactorDelta
+    },
+
+    previous:
+      segments.previous,
+
+    recent:
+      segments.recent,
+
+    reasons:
+      uniqueSortedStrings(
+        reasons
+      )
+  };
+
+}
+
+/* =====================================================================
+   Complete Performance Enrichment
+   ===================================================================== */
+
+function buildPerformanceEnrichment(
+  trades
+) {
+
+  const normalizedTrades =
+    Array.isArray(
+      trades
+    )
+      ? trades
+      : [];
+
+  return {
+    totalTrades:
+      normalizedTrades.length,
+
+    overall:
+      calculatePerformanceMetrics(
+        normalizedTrades
+      ),
+
+    rollingWindows:
+      buildRollingWindows(
+        normalizedTrades
+      ),
+
+    recencyWeighted:
+      buildRecencyWeightedMetrics(
+        normalizedTrades
+      ),
+
+    trend:
+      normalizedTrades.length >=
+        MIN_TREND_SAMPLE_SIZE
+        ? classifyPerformanceTrend(
+            normalizedTrades
+          )
+        : {
+            status:
+              "insufficient-data",
+
+            available:
+              false,
+
+            requiredTrades:
+              Math.max(
+                MIN_TREND_SAMPLE_SIZE,
+                TREND_SEGMENT_SIZE *
+                  2
+              ),
+
+            actualTrades:
+              normalizedTrades.length,
+
+            segmentSize:
+              TREND_SEGMENT_SIZE,
+
+            deltas: {
+              winRate:
+                null,
+
+              averageProfitPoints:
+                null,
+
+              profitFactor:
+                null
+            },
+
+            previous:
+              null,
+
+            recent:
+              null,
+
+            reasons: [
+              "Insufficient trades for reliable trend classification."
+            ]
+          }
+  };
+
+}

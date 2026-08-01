@@ -12394,3 +12394,71 @@ function collectHistoryRecordsFromOutput(
 // ---------------------------------------------------------------------------
 // Notify-state normalization
 // ---------------------------------------------------------------------------
+function normalizeNotifyState(rawState) {
+  if (!liveIsPlainObject(rawState)) {
+    return {
+      version: 1,
+      updatedAt: liveNowIso(),
+      signals: {},
+    };
+  }
+
+  const signals =
+    liveIsPlainObject(rawState.signals)
+      ? rawState.signals
+      : liveIsPlainObject(rawState.notifications)
+        ? rawState.notifications
+        : liveIsPlainObject(rawState.state)
+          ? rawState.state
+          : {};
+
+  return {
+    ...rawState,
+
+    version:
+      liveFiniteNumber(
+        rawState.version,
+        1
+      ),
+
+    updatedAt:
+      rawState.updatedAt ||
+      liveNowIso(),
+
+    signals,
+
+    // Preserve older aliases.
+    notifications: signals,
+    state: signals,
+  };
+}
+
+function liveNotifyStateKey(record) {
+  const pair =
+    liveCompactPair(
+      record?.pair ||
+        record?.symbol ||
+        record?.pairLabel
+    );
+
+  const mode =
+    liveNormalizeMode(
+      record?.mode ||
+        record?.engine ||
+        "master",
+      "master"
+    );
+
+  return `${pair}:${mode}`;
+}
+
+function liveNotifySignature(record) {
+  return liveHistoryFingerprint(
+    record
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Telegram notification eligibility
+// ---------------------------------------------------------------------------

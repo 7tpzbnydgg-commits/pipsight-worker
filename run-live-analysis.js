@@ -9510,6 +9510,830 @@ function runAnalysisPipeline(
 // ---------------------------------------------------------------------------
 // Shared compatibility helpers
 // ---------------------------------------------------------------------------
+function liveIsPlainObject(value) {
+  return Boolean(
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value)
+  );
+}
+
+function liveAsArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function liveCloneValue(value) {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return value;
+  }
+}
+
+function liveFiniteNumber(value, fallback = null) {
+  if (value === null || value === undefined || value === "") {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function liveBoundNumber(value, minimum, maximum, fallback = 0) {
+  const parsed = liveFiniteNumber(value, fallback);
+
+  return Math.max(
+    minimum,
+    Math.min(maximum, parsed)
+  );
+}
+
+function liveNonEmptyString(value, fallback = "") {
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+
+  const text = String(value).trim();
+  return text || fallback;
+}
+
+function liveFirstDefined(object, keys, fallback = undefined) {
+  if (!liveIsPlainObject(object)) {
+    return fallback;
+  }
+
+  for (const key of keys) {
+    if (
+      Object.prototype.hasOwnProperty.call(object, key) &&
+      object[key] !== undefined &&
+      object[key] !== null &&
+      object[key] !== ""
+    ) {
+      return object[key];
+    }
+  }
+
+  return fallback;
+}
+
+function liveNowIso() {
+  return new Date().toISOString();
+}
+
+function liveStableTimestamp(value, fallback = Date.now()) {
+  if (typeof normalizeTimestampMs === "function") {
+    const normalized = normalizeTimestampMs(value);
+
+    if (Number.isFinite(normalized)) {
+      return normalized;
+    }
+  }
+
+  if (value instanceof Date) {
+    const time = value.getTime();
+    return Number.isFinite(time) ? time : fallback;
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value < 10_000_000_000
+      ? Math.trunc(value * 1000)
+      : Math.trunc(value);
+  }
+
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+
+  return fallback;
+}
+
+function liveNormalizePairLabel(value, fallback = "UNKNOWN") {
+  if (typeof normalizePairLabel === "function") {
+    try {
+      const normalized = normalizePairLabel(value);
+
+      if (normalized) {
+        return normalized;
+      }
+    } catch {
+      // Continue with local fallback.
+    }
+  }
+
+  if (typeof normalizePair === "function") {
+    try {
+      const normalized = normalizePair(value);
+
+      if (normalized) {
+        return normalized;
+      }
+    } catch {
+      // Continue with local fallback.
+    }
+  }
+
+  const raw = liveNonEmptyString(value, fallback)
+    .toUpperCase()
+    .replace(/\s+/g, "");
+
+  const compact = raw.replace(/[^A-Z0-9]/g, "");
+
+  const aliases = {
+    XAUUSD: "XAU/USD",
+    GOLD: "XAU/USD",
+    GOLDUSD: "XAU/USD",
+
+    GBPJPY: "GBP/JPY",
+    GJ: "GBP/JPY",
+  };
+
+  if (aliases[compact]) {
+    return aliases[compact];
+  }
+
+  if (/^[A-Z]{6}$/.test(compact)) {
+    return `${compact.slice(0, 3)}/${compact.slice(3)}`;
+  }
+
+  return raw || fallback;
+}
+
+function liveCompactPair(value) {
+  return liveNormalizePairLabel(value)
+    .replace(/[^A-Z0-9]/g, "");
+}
+
+function liveNormalizeMode(value, fallback = "unknown") {
+  const raw = liveNonEmptyString(value, fallback)
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
+
+  const aliases = {
+    scalp: "scalp",
+    scalping: "scalp",
+
+    intraday: "intraday",
+    daytrade: "intraday",
+    daytrading: "intraday",
+    h1: "intraday",
+
+    swing: "swing",
+    daily: "swing",
+    d1: "swing",
+
+    weekly: "weekly",
+    w1: "weekly",
+
+    master: "master",
+    consensus: "master",
+  };
+
+  return aliases[raw] || fallback;
+}
+
+
+// ---------------------------------------------------------------------------
+// Universal decision normalization
+// ---------------------------------------------------------------------------
+
+function normalizeLiveDecision(value) {
+  if (typeof normalizePipelineDecision === "function") {
+    try {
+      return normalizePipelineDecision(value);
+    } catch {
+      // Continue with local compatibility rules.
+    }
+  }
+
+  const normalized = liveNonEmptyString(value)
+    .toUpperCase()
+    .replace(/[\s_-]+/g, "");
+
+  const buyValues = new Set([
+    "BUY",
+    "LONG",
+    "BULL",
+    "BULLISH",
+    "STRONGBUY",
+    "BUYSETUP",
+    "UP",
+  ]);
+
+  const sellValues = new Set([
+    "SELL",
+    "SHORT",
+    "BEAR",
+    "BEARISH",
+    "STRONGSELL",
+    "SELLSETUP",
+    "DOWN",
+  ]);
+
+  if (buyValues.has(normalized)) {
+    return "BUY";
+  }
+
+  if (sellValues.has(normalized)) {
+    return "SELL";
+  }
+
+  // WAIT, NEUTRAL, NONE, FLAT and unknown states intentionally become HOLD.
+  return "HOLD";
+}
+
+function liveDecisionScore(decision) {
+  const normalized = normalizeLiveDecision(decision);
+
+  if (normalized === "BUY") return 1;
+  if (normalized === "SELL") return -1;
+
+  return 0;
+}
+
+function liveOppositeDecision(decision) {
+  const normalized = normalizeLiveDecision(decision);
+
+  if (normalized === "BUY") return "SELL";
+  if (normalized === "SELL") return "BUY";
+
+  return "HOLD";
+}
+
+
+// ---------------------------------------------------------------------------
+// Confidence and price extraction
+// ---------------------------------------------------------------------------
+
+function liveNormalizeConfidence(value, fallback = 0) {
+  let confidence = liveFiniteNumber(value, fallback);
+
+  if (!Number.isFinite(confidence)) {
+    confidence = fallback;
+  }
+
+  // Accept 0–1 confidence ratios as well as 0–100 percentages.
+  if (confidence >= 0 && confidence <= 1) {
+    confidence *= 100;
+  }
+
+  return Math.round(
+    liveBoundNumber(confidence, 0, 100, fallback)
+  );
+}
+
+function liveExtractDecision(source) {
+  if (!liveIsPlainObject(source)) {
+    return normalizeLiveDecision(source);
+  }
+
+  return normalizeLiveDecision(
+    liveFirstDefined(source, [
+      "decision",
+      "signal",
+      "action",
+      "direction",
+      "recommendation",
+      "bias",
+      "side",
+      "trade",
+      "result",
+    ])
+  );
+}
+
+function liveExtractConfidence(source, fallback = 0) {
+  if (!liveIsPlainObject(source)) {
+    return liveNormalizeConfidence(fallback);
+  }
+
+  return liveNormalizeConfidence(
+    liveFirstDefined(source, [
+      "confidence",
+      "confidencePct",
+      "confidencePercent",
+      "probability",
+      "scorePercent",
+      "strength",
+      "quality",
+      "accuracy",
+    ]),
+    fallback
+  );
+}
+
+function liveExtractScore(source, fallback = 0) {
+  if (!liveIsPlainObject(source)) {
+    return liveFiniteNumber(fallback, 0);
+  }
+
+  const raw = liveFirstDefined(source, [
+    "score",
+    "signalScore",
+    "weightedScore",
+    "netScore",
+    "biasScore",
+  ]);
+
+  const parsed = liveFiniteNumber(raw);
+
+  if (Number.isFinite(parsed)) {
+    return liveBoundNumber(parsed, -100, 100, fallback);
+  }
+
+  const decision = liveExtractDecision(source);
+  const confidence = liveExtractConfidence(source, fallback);
+
+  return liveDecisionScore(decision) * confidence;
+}
+
+function liveExtractPrice(source, fallback = null) {
+  if (!liveIsPlainObject(source)) {
+    return liveFiniteNumber(source, fallback);
+  }
+
+  return liveFiniteNumber(
+    liveFirstDefined(source, [
+      "price",
+      "currentPrice",
+      "lastPrice",
+      "entry",
+      "entryPrice",
+      "close",
+      "marketPrice",
+    ]),
+    fallback
+  );
+}
+
+function liveExtractTimestamp(source, fallback = Date.now()) {
+  if (!liveIsPlainObject(source)) {
+    return liveStableTimestamp(source, fallback);
+  }
+
+  return liveStableTimestamp(
+    liveFirstDefined(source, [
+      "timestamp",
+      "generatedAt",
+      "updatedAt",
+      "createdAt",
+      "time",
+      "date",
+      "signalTime",
+    ]),
+    fallback
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Trade-plan normalization
+// ---------------------------------------------------------------------------
+
+function normalizeLiveTradePlan(source, pair, decision) {
+  if (!liveIsPlainObject(source)) {
+    return null;
+  }
+
+  const normalizedDecision = normalizeLiveDecision(decision);
+  const decimals =
+    typeof livePairPriceDecimals === "function"
+      ? livePairPriceDecimals(pair)
+      : liveCompactPair(pair).endsWith("JPY")
+        ? 3
+        : liveCompactPair(pair) === "XAUUSD"
+          ? 2
+          : 5;
+
+  const roundPrice = (value) => {
+    const parsed = liveFiniteNumber(value);
+
+    if (!Number.isFinite(parsed)) {
+      return null;
+    }
+
+    if (typeof liveRoundPrice === "function") {
+      return liveRoundPrice(parsed, decimals);
+    }
+
+    return Number(parsed.toFixed(decimals));
+  };
+
+  const entry = roundPrice(
+    liveFirstDefined(source, [
+      "entry",
+      "entryPrice",
+      "price",
+      "currentPrice",
+    ])
+  );
+
+  const stopLoss = roundPrice(
+    liveFirstDefined(source, [
+      "stopLoss",
+      "stop",
+      "sl",
+      "stop_price",
+    ])
+  );
+
+  const takeProfit1 = roundPrice(
+    liveFirstDefined(source, [
+      "takeProfit1",
+      "target1",
+      "tp1",
+      "take_profit_1",
+    ])
+  );
+
+  const takeProfit2 = roundPrice(
+    liveFirstDefined(source, [
+      "takeProfit2",
+      "target2",
+      "tp2",
+      "take_profit_2",
+    ])
+  );
+
+  const takeProfit3 = roundPrice(
+    liveFirstDefined(source, [
+      "takeProfit3",
+      "target3",
+      "tp3",
+      "take_profit_3",
+    ])
+  );
+
+  if (
+    normalizedDecision === "HOLD" ||
+    !Number.isFinite(entry) ||
+    !Number.isFinite(stopLoss) ||
+    !Number.isFinite(takeProfit1)
+  ) {
+    return null;
+  }
+
+  const calculatedRisk = Math.abs(entry - stopLoss);
+  const calculatedReward = Math.abs(takeProfit1 - entry);
+
+  const risk = roundPrice(
+    liveFirstDefined(source, ["risk"], calculatedRisk)
+  );
+
+  const reward = roundPrice(
+    liveFirstDefined(source, ["reward"], calculatedReward)
+  );
+
+  const suppliedRiskReward = liveFiniteNumber(
+    liveFirstDefined(source, [
+      "riskReward",
+      "risk_reward",
+      "rr",
+      "riskToReward",
+    ])
+  );
+
+  const riskReward =
+    Number.isFinite(suppliedRiskReward)
+      ? Number(suppliedRiskReward.toFixed(2))
+      : calculatedRisk > 0
+        ? Number((calculatedReward / calculatedRisk).toFixed(2))
+        : null;
+
+  return {
+    direction: normalizedDecision,
+
+    entry,
+    entryPrice: entry,
+
+    stop: stopLoss,
+    stopLoss,
+    sl: stopLoss,
+
+    target1: takeProfit1,
+    target2: takeProfit2,
+    target3: takeProfit3,
+
+    takeProfit1,
+    takeProfit2,
+    takeProfit3,
+
+    tp1: takeProfit1,
+    tp2: takeProfit2,
+    tp3: takeProfit3,
+
+    risk,
+    reward,
+
+    riskReward,
+    rr: riskReward,
+
+    atr: liveFiniteNumber(source.atr, null),
+  };
+}
+
+function liveExtractTradePlan(source, pair, decision) {
+  if (!liveIsPlainObject(source)) {
+    return null;
+  }
+
+  const directPlan =
+    liveFirstDefined(source, [
+      "tradePlan",
+      "plan",
+      "trade_plan",
+      "setup",
+    ]);
+
+  if (liveIsPlainObject(directPlan)) {
+    return normalizeLiveTradePlan(
+      directPlan,
+      pair,
+      decision
+    );
+  }
+
+  return normalizeLiveTradePlan(
+    source,
+    pair,
+    decision
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Canonical engine result
+// ---------------------------------------------------------------------------
+
+function buildCanonicalEngineResult(
+  source,
+  options = {}
+) {
+  const rawSource = liveIsPlainObject(source)
+    ? source
+    : {};
+
+  const pair = liveNormalizePairLabel(
+    options.pair ||
+      rawSource.pair ||
+      rawSource.symbol ||
+      rawSource.pairLabel
+  );
+
+  const mode = liveNormalizeMode(
+    options.mode ||
+      rawSource.mode ||
+      rawSource.engine ||
+      rawSource.timeframe,
+    options.defaultMode || "unknown"
+  );
+
+  const engineName = liveNonEmptyString(
+    options.engineName ||
+      rawSource.engineName ||
+      rawSource.engine ||
+      rawSource.source,
+    mode
+  );
+
+  let decision = liveExtractDecision(rawSource);
+  let confidence = liveExtractConfidence(
+    rawSource,
+    decision === "HOLD" ? 0 : 50
+  );
+
+  let score = liveExtractScore(
+    rawSource,
+    liveDecisionScore(decision) * confidence
+  );
+
+  const price = liveExtractPrice(
+    rawSource,
+    liveFiniteNumber(options.price, null)
+  );
+
+  const timestamp = liveExtractTimestamp(
+    rawSource,
+    options.timestamp || Date.now()
+  );
+
+  const tradePlan = liveExtractTradePlan(
+    rawSource,
+    pair,
+    decision
+  );
+
+  if (decision !== "HOLD" && !tradePlan && options.requireTradePlan) {
+    decision = "HOLD";
+    confidence = Math.min(confidence, 69);
+  }
+
+  if (decision === "HOLD") {
+    score = liveBoundNumber(score, -69, 69, 0);
+  }
+
+  const reason = liveNonEmptyString(
+    liveFirstDefined(rawSource, [
+      "reason",
+      "summary",
+      "message",
+      "explanation",
+      "note",
+    ]),
+    decision === "HOLD"
+      ? "No fully confirmed setup"
+      : `${decision} setup confirmed`
+  );
+
+  const steps = liveAsArray(
+    liveFirstDefined(rawSource, [
+      "steps",
+      "pipeline",
+      "checks",
+    ])
+  ).map((step) => liveCloneValue(step));
+
+  const canonical = {
+    pair,
+    symbol: pair,
+    pairLabel: pair,
+
+    mode,
+    engine: engineName,
+    engineName,
+
+    decision,
+    signal: decision,
+    action: decision,
+    direction: decision,
+
+    confidence,
+    confidencePct: confidence,
+
+    score: Number(
+      liveBoundNumber(score, -100, 100, 0).toFixed(2)
+    ),
+
+    price,
+    currentPrice: price,
+    lastPrice: price,
+
+    timestamp,
+    time: new Date(timestamp).toISOString(),
+    generatedAt: new Date(timestamp).toISOString(),
+
+    reason,
+
+    tradePlan:
+      decision === "HOLD" ? null : tradePlan,
+
+    plan:
+      decision === "HOLD" ? null : tradePlan,
+
+    entry:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.entry
+        : null,
+
+    entryPrice:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.entryPrice
+        : null,
+
+    stop:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.stop
+        : null,
+
+    stopLoss:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.stopLoss
+        : null,
+
+    sl:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.sl
+        : null,
+
+    target1:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.target1
+        : null,
+
+    target2:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.target2
+        : null,
+
+    target3:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.target3
+        : null,
+
+    takeProfit1:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.takeProfit1
+        : null,
+
+    takeProfit2:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.takeProfit2
+        : null,
+
+    takeProfit3:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.takeProfit3
+        : null,
+
+    tp1:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.tp1
+        : null,
+
+    tp2:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.tp2
+        : null,
+
+    tp3:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.tp3
+        : null,
+
+    riskReward:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.riskReward
+        : null,
+
+    rr:
+      decision !== "HOLD" && tradePlan
+        ? tradePlan.rr
+        : null,
+
+    steps,
+    pipeline: steps,
+
+    status:
+      decision === "HOLD"
+        ? "HOLD"
+        : "ACTIVE",
+
+    source: liveNonEmptyString(
+      options.source ||
+        rawSource.source ||
+        engineName,
+      engineName
+    ),
+
+    available:
+      options.available !== undefined
+        ? Boolean(options.available)
+        : true,
+  };
+
+  // Preserve useful fields from the source without overwriting canonical keys.
+  const passthroughKeys = [
+    "indicators",
+    "trend",
+    "trendDirection",
+    "rawDirection",
+    "marketStructure",
+    "structure",
+    "supportResistance",
+    "supports",
+    "resistances",
+    "nearestSupport",
+    "nearestResistance",
+    "higherTimeframe",
+    "mtfConfirmed",
+    "candleCount",
+    "diagnostics",
+    "metadata",
+    "version",
+    "strategyVersion",
+
+    // Phase 4 controlled-confidence compatibility.
+    "originalConfidence",
+    "aiMemoryAdjustedConfidence",
+    "aiMemory",
+    "confidenceExplainability",
+  ];
+
+  for (const key of passthroughKeys) {
+    if (
+      rawSource[key] !== undefined &&
+      canonical[key] === undefined
+    ) {
+      canonical[key] = liveCloneValue(rawSource[key]);
+    }
+  }
+
+  return canonical;
+}
 
 // ---------------------------------------------------------------------------
 // Engine selection helpers

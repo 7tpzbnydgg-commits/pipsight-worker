@@ -20203,19 +20203,96 @@ function selectPrimaryPatternPipelineEntry(
   }
 
   /*
-   * Prefer an entry that completed analyzer execution and
-   * contains an institutional sequence.
+   * Select the strongest completed institutional state.
    *
-   * If none exists, retain the first backend-supported
-   * timeframe according to the explicit priority above.
+   * Ranking order:
+   * 1. Valid institutional sequence.
+   * 2. Most completed sequence stages.
+   * 3. Highest institutional sequence score.
+   * 4. Higher timeframe when all other values are equal.
+   *
+   * Existing fallback behavior remains preserved when no
+   * completed institutional sequence is available.
    */
+  const timeframeRank = {
+    "5m": 1,
+    "15m": 2,
+    "30m": 3,
+    "1H": 4,
+    "4H": 5
+  };
+
+  const institutionalEntries =
+    safeEntries
+      .filter(
+        entry=>
+          entry.analyzerStatus ===
+            "COMPLETED" &&
+          entry.hasInstitutionalSequence
+      )
+      .slice()
+      .sort(
+        (
+          first,
+          second
+        )=>{
+          const validDifference =
+            Number(second.valid === true) -
+            Number(first.valid === true);
+
+          if(validDifference !== 0){
+            return validDifference;
+          }
+
+          const completedDifference =
+            (
+              Number(
+                second.completedStages
+              ) ||
+              0
+            ) -
+            (
+              Number(
+                first.completedStages
+              ) ||
+              0
+            );
+
+          if(completedDifference !== 0){
+            return completedDifference;
+          }
+
+          const scoreDifference =
+            (
+              Number(second.score) ||
+              0
+            ) -
+            (
+              Number(first.score) ||
+              0
+            );
+
+          if(scoreDifference !== 0){
+            return scoreDifference;
+          }
+
+          return (
+            timeframeRank[
+              second.timeframe
+            ] ||
+            0
+          ) -
+          (
+            timeframeRank[
+              first.timeframe
+            ] ||
+            0
+          );
+        }
+      );
+
   return (
-    safeEntries.find(
-      entry=>
-        entry.analyzerStatus ===
-          "COMPLETED" &&
-        entry.hasInstitutionalSequence
-    ) ||
+    institutionalEntries[0] ||
     safeEntries.find(
       entry=>
         entry.analyzerStatus ===

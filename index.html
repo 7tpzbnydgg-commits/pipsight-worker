@@ -20047,6 +20047,24 @@ function normalizePatternPipelineEntry(
         source.returnedPatterns
       ),
 
+    returnedPatternNames:
+      Array.isArray(
+        source.returnedPatternNames
+      )
+        ? Array.from(
+            new Set(
+              source.returnedPatternNames
+                .map(
+                  patternName =>
+                    String(
+                      patternName || ""
+                    ).trim()
+                )
+                .filter(Boolean)
+            )
+          )
+        : [],
+
     hasInstitutionalSequence:
       sequence !== null,
 

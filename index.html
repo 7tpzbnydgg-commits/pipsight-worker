@@ -21025,6 +21025,35 @@ const rejectionMessage =
       </div>
     `;
 
+  const tradeSignalStatusMessage =
+  primaryEntry.returnedPatterns > 0
+    ? `
+      <div class="pattern-pipeline-message">
+        <strong>
+          Pattern candidate status:
+        </strong>
+
+        A pattern candidate was returned by the analyzer.
+        A tradable signal, entry, stop and targets will appear
+        in the signal card below only after all confidence,
+        AI-score, risk, portfolio, cooldown and duplicate
+        controls approve publication.
+      </div>
+    `
+    : `
+      <div class="pattern-pipeline-message">
+        <strong>
+          Observation only:
+        </strong>
+
+        No tradable pattern signal has been returned for this
+        timeframe. The ${escapeHTML(
+          primaryEntry.direction
+        )} value above is an institutional directional bias,
+        not an entry instruction.
+      </div>
+    `;
+
   return `
     <div class="pattern-pipeline-card">
       <div class="pattern-pipeline-header">

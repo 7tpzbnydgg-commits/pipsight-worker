@@ -19455,6 +19455,775 @@ async function fetchPatternPipelineStatus({
     }
   );
 }
+
+// ════════════════════════════════════════════════════════════════
+// PROFESSIONAL DECISION PIPELINE — DEFINITIONS
+// ════════════════════════════════════════════════════════════════
+
+const PATTERN_PIPELINE_STAGE_DEFINITIONS =
+  Object.freeze({
+
+    SEARCHING_STRUCTURE:
+      Object.freeze({
+        code:
+          "SEARCHING_STRUCTURE",
+
+        label:
+          "Market Structure",
+
+        shortLabel:
+          "Structure",
+
+        statusLabel:
+          "Analyzing structure",
+
+        description:
+          "The detector is reviewing recent swing highs, swing lows and directional price behaviour to establish a reliable market structure.",
+
+        guidance:
+          "No institutional sequence can progress until a usable market structure is available."
+      }),
+
+    SEARCHING_LIQUIDITY:
+      Object.freeze({
+        code:
+          "SEARCHING_LIQUIDITY",
+
+        label:
+          "Liquidity Search",
+
+        shortLabel:
+          "Liquidity",
+
+        statusLabel:
+          "Searching liquidity",
+
+        description:
+          "Market structure is available. The detector is now looking for a meaningful sweep of prior highs, lows or clustered liquidity.",
+
+        guidance:
+          "The system is waiting for price to interact with liquidity before confirming institutional intent."
+      }),
+
+    LIQUIDITY_SWEPT:
+      Object.freeze({
+        code:
+          "LIQUIDITY_SWEPT",
+
+        label:
+          "Liquidity Sweep",
+
+        shortLabel:
+          "Sweep",
+
+        statusLabel:
+          "Liquidity swept",
+
+        description:
+          "Price has moved through a recognised liquidity area and shown evidence that resting orders may have been collected.",
+
+        guidance:
+          "A liquidity sweep alone is not an entry. Directional structure confirmation is still required."
+      }),
+
+    STRUCTURE_SHIFT_CONFIRMED:
+      Object.freeze({
+        code:
+          "STRUCTURE_SHIFT_CONFIRMED",
+
+        label:
+          "BOS / CHOCH Confirmation",
+
+        shortLabel:
+          "Structure shift",
+
+        statusLabel:
+          "Structure shift confirmed",
+
+        description:
+          "The detector has identified a Break of Structure or Change of Character that supports a possible directional transition.",
+
+        guidance:
+          "The system now requires a directionally aligned institutional origin zone before considering a retest."
+      }),
+
+    WAITING_FOR_RETEST:
+      Object.freeze({
+        code:
+          "WAITING_FOR_RETEST",
+
+        label:
+          "Order Block Retest",
+
+        shortLabel:
+          "Waiting retest",
+
+        statusLabel:
+          "Waiting for retest",
+
+        description:
+          "A relevant institutional area has been identified. The detector is waiting for price to return to that area under controlled conditions.",
+
+        guidance:
+          "No entry is confirmed while price remains away from the identified retest zone."
+      }),
+
+    RETEST_IN_PROGRESS:
+      Object.freeze({
+        code:
+          "RETEST_IN_PROGRESS",
+
+        label:
+          "Retest in Progress",
+
+        shortLabel:
+          "Retesting",
+
+        statusLabel:
+          "Retest in progress",
+
+        description:
+          "Price is interacting with the identified institutional area. The detector is assessing whether the reaction is valid or invalidates the setup.",
+
+        guidance:
+          "The setup is developing, but confirmation is not complete until the retest reaction is accepted."
+      }),
+
+    RETEST_CONFIRMED:
+      Object.freeze({
+        code:
+          "RETEST_CONFIRMED",
+
+        label:
+          "Entry Confirmation",
+
+        shortLabel:
+          "Confirmed",
+
+        statusLabel:
+          "Retest confirmed",
+
+        description:
+          "The institutional retest has been accepted and the required sequence has reached its confirmation stage.",
+
+        guidance:
+          "The setup may now proceed to the existing signal-quality, confidence and risk controls."
+      }),
+
+    INVALIDATED:
+      Object.freeze({
+        code:
+          "INVALIDATED",
+
+        label:
+          "Setup Invalidated",
+
+        shortLabel:
+          "Invalidated",
+
+        statusLabel:
+          "Setup invalidated",
+
+        description:
+          "Price action has violated a required structural or institutional condition, so the developing sequence is no longer valid.",
+
+        guidance:
+          "The detector will discard this sequence and wait for a new qualified market structure."
+      }),
+
+    UNKNOWN:
+      Object.freeze({
+        code:
+          "UNKNOWN",
+
+        label:
+          "Pipeline Observation",
+
+        shortLabel:
+          "Unknown",
+
+        statusLabel:
+          "Status unavailable",
+
+        description:
+          "The backend did not provide a recognised institutional pipeline stage for this timeframe.",
+
+        guidance:
+          "The dashboard will continue monitoring the detector without inventing a stage."
+      })
+  });
+
+
+// ════════════════════════════════════════════════════════════════
+// PROFESSIONAL DECISION PIPELINE — REJECTION DEFINITIONS
+// ════════════════════════════════════════════════════════════════
+
+const PATTERN_PIPELINE_REJECTION_DEFINITIONS =
+  Object.freeze({
+
+    INSUFFICIENT_CANDLES:
+      Object.freeze({
+        label:
+          "Insufficient candle history",
+
+        description:
+          "The selected timeframe does not currently contain enough candles for a safe pattern and institutional-sequence analysis."
+      }),
+
+    ATR_VOLATILITY_GATE:
+      Object.freeze({
+        label:
+          "Volatility below requirement",
+
+        description:
+          "Current ATR as a percentage of price is below the detector's minimum volatility requirement, so analysis was stopped before pattern qualification."
+      }),
+
+    SPREAD_VOLATILITY_FILTER:
+      Object.freeze({
+        label:
+          "Market-quality filter",
+
+        description:
+          "The current spread or candle volatility failed the existing market-quality filter, so the setup was not processed further."
+      }),
+
+    INSUFFICIENT_DATA:
+      Object.freeze({
+        label:
+          "Insufficient market data",
+
+        description:
+          "The detector could not obtain enough valid market data to complete the requested analysis."
+      }),
+
+    UNKNOWN:
+      Object.freeze({
+        label:
+          "Analysis unavailable",
+
+        description:
+          "The analyzer stopped before producing an institutional sequence. No unsupported reason has been invented by the dashboard."
+      })
+  });
+
+
+// ════════════════════════════════════════════════════════════════
+// PROFESSIONAL DECISION PIPELINE — SAFE HELPERS
+// ════════════════════════════════════════════════════════════════
+
+function normalizePatternPipelineText(
+  value,
+  fallback = ""
+){
+  const text =
+    value == null
+      ? ""
+      : String(value)
+          .trim();
+
+  return text ||
+    fallback;
+}
+
+
+function normalizePatternPipelineCode(
+  value,
+  fallback = "UNKNOWN"
+){
+  const code =
+    normalizePatternPipelineText(
+      value,
+      fallback
+    )
+      .toUpperCase()
+      .replace(
+        /[^A-Z0-9]+/g,
+        "_"
+      )
+      .replace(
+        /^_+|_+$/g,
+        ""
+      );
+
+  return code ||
+    fallback;
+}
+
+
+function getPatternPipelineStageDefinition(
+  stage
+){
+  const code =
+    normalizePatternPipelineCode(
+      stage
+    );
+
+  return (
+    PATTERN_PIPELINE_STAGE_DEFINITIONS[
+      code
+    ] ||
+    PATTERN_PIPELINE_STAGE_DEFINITIONS
+      .UNKNOWN
+  );
+}
+
+
+function getPatternPipelineRejectionDefinition(
+  rejectionStage
+){
+  const code =
+    normalizePatternPipelineCode(
+      rejectionStage
+    );
+
+  return (
+    PATTERN_PIPELINE_REJECTION_DEFINITIONS[
+      code
+    ] ||
+    PATTERN_PIPELINE_REJECTION_DEFINITIONS
+      .UNKNOWN
+  );
+}
+
+
+function normalizePatternPipelineCount(
+  value
+){
+  const number =
+    Number(value);
+
+  if(
+    !Number.isFinite(number)
+  ){
+    return 0;
+  }
+
+  return Math.max(
+    0,
+    Math.trunc(number)
+  );
+}
+
+
+function normalizePatternPipelineNumber(
+  value,
+  fallback = null
+){
+  const number =
+    Number(value);
+
+  return Number.isFinite(number)
+    ? number
+    : fallback;
+}
+
+
+function normalizePatternPipelineDirection(
+  value
+){
+  const direction =
+    normalizePatternPipelineText(
+      value,
+      "NEUTRAL"
+    ).toUpperCase();
+
+  return (
+    direction === "BUY" ||
+    direction === "SELL"
+  )
+    ? direction
+    : "NEUTRAL";
+}
+
+
+function getPatternPipelineDirectionClass(
+  direction
+){
+  if(direction === "BUY"){
+    return "buy";
+  }
+
+  if(direction === "SELL"){
+    return "sell";
+  }
+
+  return "hold";
+}
+
+
+function getPatternPipelineStatusClass(
+  entry
+){
+  if(
+    entry.analyzerStatus ===
+      "REJECTED"
+  ){
+    return "status-rejected";
+  }
+
+  if(
+    entry.valid === true ||
+    entry.stage ===
+      "RETEST_CONFIRMED"
+  ){
+    return "status-ready";
+  }
+
+  if(
+    entry.stage ===
+      "WAITING_FOR_RETEST" ||
+    entry.stage ===
+      "RETEST_IN_PROGRESS"
+  ){
+    return "status-waiting";
+  }
+
+  return "status-progress";
+}
+
+
+// ════════════════════════════════════════════════════════════════
+// PROFESSIONAL DECISION PIPELINE — ENTRY NORMALIZER
+// ════════════════════════════════════════════════════════════════
+
+function normalizePatternPipelineEntry(
+  rawEntry,
+  {
+    pairKey = "",
+    timeframe = ""
+  } = {}
+){
+  const source =
+    isPlainObject(rawEntry)
+      ? rawEntry
+      : {};
+
+  const sequence =
+    isPlainObject(
+      source.institutionalSequence
+    )
+      ? source.institutionalSequence
+      : null;
+
+  const analyzerStatus =
+    normalizePatternPipelineText(
+      source.analyzerStatus,
+      "UNKNOWN"
+    ).toUpperCase();
+
+  const rejectionStage =
+    source.rejectionStage == null
+      ? null
+      : normalizePatternPipelineCode(
+          source.rejectionStage
+        );
+
+  const stage =
+    sequence
+      ? normalizePatternPipelineCode(
+          sequence.stage
+        )
+      : rejectionStage
+        ? "UNKNOWN"
+        : "SEARCHING_STRUCTURE";
+
+  const completedStages =
+    sequence
+      ? normalizePatternPipelineCount(
+          sequence.completedStages
+        )
+      : 0;
+
+  const missingStages =
+    sequence
+      ? normalizePatternPipelineCount(
+          sequence.missingStages
+        )
+      : 0;
+
+  const totalStages =
+    completedStages +
+    missingStages;
+
+  const progressPercent =
+    totalStages > 0
+      ? clamp(
+          Math.round(
+            (
+              completedStages /
+              totalStages
+            ) * 100
+          ),
+          0,
+          100
+        )
+      : 0;
+
+  const direction =
+    normalizePatternPipelineDirection(
+      sequence?.direction
+    );
+
+  const stageDefinition =
+    getPatternPipelineStageDefinition(
+      stage
+    );
+
+  const rejectionDefinition =
+    rejectionStage
+      ? getPatternPipelineRejectionDefinition(
+          rejectionStage
+        )
+      : null;
+
+  const normalized = {
+    pairKey:
+      normalizePatternPipelineText(
+        source.pair,
+        pairKey
+      )
+        .toUpperCase()
+        .replace(
+          /[^A-Z0-9]/g,
+          ""
+        ),
+
+    timeframe:
+      normalizePatternPipelineText(
+        source.timeframe,
+        timeframe
+      ),
+
+    updatedAt:
+      safeDateMs(
+        source.updatedAt
+      ) == null
+        ? null
+        : source.updatedAt,
+
+    candleCount:
+      normalizePatternPipelineCount(
+        source.candleCount
+      ),
+
+    analyzerStatus,
+
+    rejectionStage,
+
+    rejectionReason:
+      normalizePatternPipelineText(
+        source.reason,
+        ""
+      ) || null,
+
+    atr:
+      normalizePatternPipelineNumber(
+        source.atr
+      ),
+
+    atrPercent:
+      normalizePatternPipelineNumber(
+        source.atrPercent
+      ),
+
+    minimumATRPercent:
+      normalizePatternPipelineNumber(
+        source.minimumATRPercent
+      ),
+
+    rawCandidates:
+      normalizePatternPipelineCount(
+        source.rawCandidates
+      ),
+
+    acceptedPatterns:
+      normalizePatternPipelineCount(
+        source.acceptedPatterns
+      ),
+
+    returnedPatterns:
+      normalizePatternPipelineCount(
+        source.returnedPatterns
+      ),
+
+    hasInstitutionalSequence:
+      sequence !== null,
+
+    stage,
+
+    stageDefinition,
+
+    rejectionDefinition,
+
+    score:
+      sequence
+        ? clamp(
+            normalizePatternPipelineNumber(
+              sequence.score,
+              0
+            ),
+            0,
+            100
+          )
+        : 0,
+
+    valid:
+      sequence?.valid ===
+        true,
+
+    direction,
+
+    directionClass:
+      getPatternPipelineDirectionClass(
+        direction
+      ),
+
+    completedStages,
+
+    missingStages,
+
+    totalStages,
+
+    progressPercent,
+
+    conflicts:
+      sequence
+        ? normalizePatternPipelineCount(
+            sequence.conflicts
+          )
+        : 0
+  };
+
+  normalized.statusClass =
+    getPatternPipelineStatusClass(
+      normalized
+    );
+
+  return normalized;
+}
+
+
+// ════════════════════════════════════════════════════════════════
+// PROFESSIONAL DECISION PIPELINE — PAIR RESOLUTION
+// ════════════════════════════════════════════════════════════════
+
+function getPatternPipelinePairData(
+  payload,
+  pair
+){
+  const pairs =
+    isPlainObject(
+      payload?.pairs
+    )
+      ? payload.pairs
+      : {};
+
+  const requestedPairKey =
+    pairKeyOf(pair)
+      .toUpperCase()
+      .replace(
+        /[^A-Z0-9]/g,
+        ""
+      );
+
+  const matchedEntry =
+    Object.entries(pairs)
+      .find(
+        ([candidateKey])=>
+          String(candidateKey)
+            .toUpperCase()
+            .replace(
+              /[^A-Z0-9]/g,
+              ""
+            ) ===
+          requestedPairKey
+      );
+
+  return matchedEntry &&
+    isPlainObject(
+      matchedEntry[1]
+    )
+      ? matchedEntry[1]
+      : {};
+}
+
+
+function getPatternPipelineTimeframeEntries(
+  payload,
+  pair
+){
+  const pairData =
+    getPatternPipelinePairData(
+      payload,
+      pair
+    );
+
+  const timeframePriority = [
+    "5m",
+    "15m",
+    "30m",
+    "1H",
+    "4H"
+  ];
+
+  return timeframePriority
+    .filter(
+      timeframe=>
+        Object.prototype
+          .hasOwnProperty
+          .call(
+            pairData,
+            timeframe
+          )
+    )
+    .map(
+      timeframe=>
+        normalizePatternPipelineEntry(
+          pairData[timeframe],
+          {
+            pairKey:
+              pairKeyOf(pair),
+
+            timeframe
+          }
+        )
+    );
+}
+
+
+function selectPrimaryPatternPipelineEntry(
+  entries
+){
+  const safeEntries =
+    safeArray(entries);
+
+  if(!safeEntries.length){
+    return null;
+  }
+
+  /*
+   * Prefer an entry that completed analyzer execution and
+   * contains an institutional sequence.
+   *
+   * If none exists, retain the first backend-supported
+   * timeframe according to the explicit priority above.
+   */
+  return (
+    safeEntries.find(
+      entry=>
+        entry.analyzerStatus ===
+          "COMPLETED" &&
+        entry.hasInstitutionalSequence
+    ) ||
+    safeEntries.find(
+      entry=>
+        entry.analyzerStatus ===
+          "COMPLETED"
+    ) ||
+    safeEntries[0]
+  );
+}
   
 function validatePatternPayload(payload){
   if(

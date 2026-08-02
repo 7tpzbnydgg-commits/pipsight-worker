@@ -21025,7 +21025,7 @@ const rejectionMessage =
       </div>
     `;
 
-  const tradeSignalStatusMessage =
+const tradeSignalStatusMessage =
   primaryEntry.returnedPatterns > 0
     ? `
       <div class="pattern-pipeline-message">
@@ -21054,222 +21054,253 @@ const rejectionMessage =
       </div>
     `;
 
-  return `
-    <div class="pattern-pipeline-card">
-      <div class="pattern-pipeline-header">
-        <div>
-          <p class="pattern-pipeline-eyebrow">
-            Institutional Analysis
-          </p>
+const detectedPatternMessage =
+  Array.isArray(
+    primaryEntry.returnedPatternNames
+  ) &&
+  primaryEntry.returnedPatternNames.length > 0
+    ? `
+      <div class="pattern-pipeline-message">
+        <strong>
+          ${
+            primaryEntry.returnedPatternNames.length > 1
+              ? "Detected patterns:"
+              : "Detected pattern:"
+          }
+        </strong>
 
-          <h3 class="pattern-pipeline-title">
-            Professional Decision Pipeline
-          </h3>
+        <br />
 
-          <p class="pattern-pipeline-subtitle">
-            Live observation of structure, liquidity,
-            directional shift, institutional zone and retest
-            progression for ${escapeHTML(pair.label)}.
-          </p>
+        ${primaryEntry.returnedPatternNames
+          .map(
+            patternName =>
+              `• ${escapeHTML(
+                patternName
+              )}`
+          )
+          .join("<br />")}
+      </div>
+    `
+    : "";
+
+return `
+  <div class="pattern-pipeline-card">
+    <div class="pattern-pipeline-header">
+      <div>
+        <p class="pattern-pipeline-eyebrow">
+          Institutional Analysis
+        </p>
+
+        <h3 class="pattern-pipeline-title">
+          Professional Decision Pipeline
+        </h3>
+
+        <p class="pattern-pipeline-subtitle">
+          Live observation of structure, liquidity,
+          directional shift, institutional zone and retest
+          progression for ${escapeHTML(pair.label)}.
+        </p>
+      </div>
+
+      <span
+        class="
+          pattern-pipeline-status
+          ${escapeHTML(
+            primaryEntry.statusClass
+          )}
+        "
+      >
+        ${escapeHTML(statusLabel)}
+      </span>
+    </div>
+
+    <div class="pattern-pipeline-summary">
+      <div class="pattern-pipeline-metric">
+        <div
+          class="pattern-pipeline-metric-label"
+        >
+          Timeframe
         </div>
 
-        <span
+        <div
+          class="pattern-pipeline-metric-value"
+        >
+          ${escapeHTML(
+            primaryEntry.timeframe ||
+            "—"
+          )}
+        </div>
+      </div>
+
+      <div class="pattern-pipeline-metric">
+        <div
+          class="pattern-pipeline-metric-label"
+        >
+          Current stage
+        </div>
+
+        <div
+          class="pattern-pipeline-metric-value"
+        >
+          ${escapeHTML(stageLabel)}
+        </div>
+      </div>
+
+      <div class="pattern-pipeline-metric">
+        <div
+          class="pattern-pipeline-metric-label"
+        >
+          Institutional bias
+        </div>
+
+        <div
           class="
-            pattern-pipeline-status
+            pattern-pipeline-metric-value
             ${escapeHTML(
-              primaryEntry.statusClass
+              primaryEntry
+                .directionClass
             )}
           "
         >
-          ${escapeHTML(statusLabel)}
+          ${escapeHTML(
+            primaryEntry.direction
+          )}
+        </div>
+      </div>
+
+      <div class="pattern-pipeline-metric">
+        <div
+          class="pattern-pipeline-metric-label"
+        >
+          Sequence score
+        </div>
+
+        <div
+          class="pattern-pipeline-metric-value"
+        >
+          ${safeFixed(
+            primaryEntry.score,
+            0
+          )} / 100
+        </div>
+      </div>
+    </div>
+
+    <div class="pattern-pipeline-progress">
+      <div
+        class="pattern-pipeline-progress-head"
+      >
+        <span
+          class="pattern-pipeline-progress-label"
+        >
+          Institutional progress
+        </span>
+
+        <span
+          class="pattern-pipeline-progress-value"
+        >
+          ${escapeHTML(progressText)}
+          ·
+          ${safeFixed(
+            primaryEntry
+              .progressPercent,
+            0
+          )}%
         </span>
       </div>
 
-      <div class="pattern-pipeline-summary">
-        <div class="pattern-pipeline-metric">
-          <div
-            class="pattern-pipeline-metric-label"
-          >
-            Timeframe
-          </div>
-
-          <div
-            class="pattern-pipeline-metric-value"
-          >
-            ${escapeHTML(
-              primaryEntry.timeframe ||
-              "—"
-            )}
-          </div>
-        </div>
-
-        <div class="pattern-pipeline-metric">
-          <div
-            class="pattern-pipeline-metric-label"
-          >
-            Current stage
-          </div>
-
-          <div
-            class="pattern-pipeline-metric-value"
-          >
-            ${escapeHTML(stageLabel)}
-          </div>
-        </div>
-
-        <div class="pattern-pipeline-metric">
-          <div
-            class="pattern-pipeline-metric-label"
-          >
-            Institutional bias
-          </div>
-
-          <div
-            class="
-              pattern-pipeline-metric-value
-              ${escapeHTML(
-                primaryEntry
-                  .directionClass
-              )}
-            "
-          >
-            ${escapeHTML(
-              primaryEntry.direction
-            )}
-          </div>
-        </div>
-
-        <div class="pattern-pipeline-metric">
-          <div
-            class="pattern-pipeline-metric-label"
-          >
-            Sequence score
-          </div>
-
-          <div
-            class="pattern-pipeline-metric-value"
-          >
-            ${safeFixed(
-              primaryEntry.score,
-              0
-            )} / 100
-          </div>
-        </div>
-      </div>
-
-      <div class="pattern-pipeline-progress">
-        <div
-          class="pattern-pipeline-progress-head"
-        >
-          <span
-            class="pattern-pipeline-progress-label"
-          >
-            Institutional progress
-          </span>
-
-          <span
-            class="pattern-pipeline-progress-value"
-          >
-            ${escapeHTML(progressText)}
-            ·
-            ${safeFixed(
-              primaryEntry
-                .progressPercent,
-              0
-            )}%
-          </span>
-        </div>
-
-        <div
-          class="pattern-pipeline-progress-track"
-          role="progressbar"
-          aria-valuemin="0"
-          aria-valuemax="100"
-          aria-valuenow="${escapeHTML(
-            String(
-              primaryEntry
-                .progressPercent
-            )
-          )}"
-        >
-          <div
-            class="pattern-pipeline-progress-fill"
-            style="
-              width:${escapeHTML(
-                String(
-                  primaryEntry
-                    .progressPercent
-                )
-              )}%;
-            "
-          ></div>
-        </div>
-      </div>
-
-      <div class="pattern-pipeline-steps">
-        ${visualSteps
-          .map(
-            renderPatternPipelineStep
-          )
-          .join("")}
-      </div>
-
-      ${rejectionMessage}
-
-      ${tradeSignalStatusMessage}
-
       <div
-        class="pattern-pipeline-message"
-      >
-        <strong>Analyzer evidence:</strong>
-
-        ${escapeHTML(
+        class="pattern-pipeline-progress-track"
+        role="progressbar"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        aria-valuenow="${escapeHTML(
           String(
-            primaryEntry.candleCount
-          )
-        )} candles
-
-        ·
-        ${escapeHTML(
-          String(
-            primaryEntry.rawCandidates
-          )
-        )} raw candidates
-
-        ·
-        ${escapeHTML(
-          String(
-            primaryEntry.acceptedPatterns
-          )
-        )} accepted
-
-        ·
-        ${escapeHTML(
-          String(
-            primaryEntry.returnedPatterns
-          )
-        )} returned
-
-        · ATR
-        ${escapeHTML(
-          formatPatternPipelinePercent(
-            primaryEntry.atrPercent
-          )
-        )}
-
-        · Minimum ATR
-        ${escapeHTML(
-          formatPatternPipelinePercent(
             primaryEntry
-              .minimumATRPercent
+              .progressPercent
           )
-        )}
-
-        · Updated
-        ${escapeHTML(updatedLabel)}
+        )}"
+      >
+        <div
+          class="pattern-pipeline-progress-fill"
+          style="
+            width:${escapeHTML(
+              String(
+                primaryEntry
+                  .progressPercent
+              )
+            )}%;
+          "
+        ></div>
       </div>
     </div>
-  `;
+
+    <div class="pattern-pipeline-steps">
+      ${visualSteps
+        .map(
+          renderPatternPipelineStep
+        )
+        .join("")}
+    </div>
+
+    ${rejectionMessage}
+
+    ${tradeSignalStatusMessage}
+
+    ${detectedPatternMessage}
+
+    <div
+      class="pattern-pipeline-message"
+    >
+      <strong>Analyzer evidence:</strong>
+
+      ${escapeHTML(
+        String(
+          primaryEntry.candleCount
+        )
+      )} candles
+
+      ·
+      ${escapeHTML(
+        String(
+          primaryEntry.rawCandidates
+        )
+      )} raw candidates
+
+      ·
+      ${escapeHTML(
+        String(
+          primaryEntry.acceptedPatterns
+        )
+      )} accepted
+
+      ·
+      ${escapeHTML(
+        String(
+          primaryEntry.returnedPatterns
+        )
+      )} returned
+
+      · ATR
+      ${escapeHTML(
+        formatPatternPipelinePercent(
+          primaryEntry.atrPercent
+        )
+      )}
+
+      · Minimum ATR
+      ${escapeHTML(
+        formatPatternPipelinePercent(
+          primaryEntry
+            .minimumATRPercent
+        )
+      )}
+
+      · Updated
+      ${escapeHTML(updatedLabel)}
+    </div>
+  </div>
+`;
 }
 
 

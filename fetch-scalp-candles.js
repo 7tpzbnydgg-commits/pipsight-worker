@@ -70,24 +70,30 @@ const SYMBOLS = [
 ];
 
 /*
- * Preserve existing provider usage.
+ * Preserve the existing one-request-per-symbol provider policy.
  *
- * 300 × 5-minute candles gives enough recent data for:
- * - 5-minute indicators
+ * 1500 × 5-minute candles provides enough source history for:
+ * - 5-minute analysis
  * - 15-minute aggregation
  * - 30-minute aggregation
+ * - 1-hour aggregation
+ * - At least 30 complete 4-hour candles
  * - Recent support/resistance
  * - ATR and market structure
  *
- * Higher-timeframe context should come from intraday-h1.json rather than
- * increasing requests or fetching additional intervals.
+ * 30 complete 4-hour candles require:
+ * 30 × 48 five-minute candles = 1440 source candles.
+ *
+ * The small additional buffer protects against an incomplete current
+ * aggregation bucket while keeping the request count unchanged.
  */
-const OUTPUT_SIZE = 300;
+const OUTPUT_SIZE = 1500;
 
 /*
- * Cache merge may temporarily retain a little more history.
+ * Preserve enough validated closed M5 history for all locally derived
+ * timeframes while allowing a small cache-recovery buffer.
  */
-const MAX_STORED_CANDLES = 360;
+const MAX_STORED_CANDLES = 1500;
 
 /*
  * Free-tier safety:

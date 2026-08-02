@@ -18873,7 +18873,111 @@ async function renderMasterSignal(){
 // ════════════════════════════════════════════════════════════════
 // PATTERN FEED
 // ════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════
+// PROFESSIONAL DECISION PIPELINE — DATA ACCESS
+// ════════════════════════════════════════════════════════════════
 
+function validatePatternPipelinePayload(
+  payload
+){
+  if(
+    !isPlainObject(payload)
+  ){
+    return "Pattern pipeline payload must be an object";
+  }
+
+  if(
+    payload.version != null &&
+    typeof payload.version !==
+      "string"
+  ){
+    return "Pattern pipeline version must be a string";
+  }
+
+  if(
+    payload.updatedAt != null &&
+    safeDateMs(
+      payload.updatedAt
+    ) == null
+  ){
+    return "Pattern pipeline contains an invalid updatedAt value";
+  }
+
+  if(
+    !isPlainObject(
+      payload.pairs
+    )
+  ){
+    return "Pattern pipeline pairs must be an object";
+  }
+
+  for(
+    const pairData of
+    Object.values(
+      payload.pairs
+    )
+  ){
+    if(
+      !isPlainObject(
+        pairData
+      )
+    ){
+      return "Pattern pipeline pair data must be an object";
+    }
+
+    for(
+      const timeframeData of
+      Object.values(
+        pairData
+      )
+    ){
+      if(
+        !isPlainObject(
+          timeframeData
+        )
+      ){
+        return "Pattern pipeline timeframe data must be an object";
+      }
+
+      if(
+        timeframeData
+          .institutionalSequence !=
+          null &&
+        !isPlainObject(
+          timeframeData
+            .institutionalSequence
+        )
+      ){
+        return "Institutional sequence must be an object or null";
+      }
+    }
+  }
+
+  return true;
+}
+
+async function fetchPatternPipelineStatus({
+  forceRefresh = false
+} = {}){
+  return fetchJSONCached(
+    PATTERN_PIPELINE_STATUS_URL,
+    {
+      ttlMs:
+        APP_CONFIG
+          .cacheTtlMs
+          .patternSignals,
+
+      forceRefresh,
+
+      allowLastKnownGood:
+        true,
+
+      validate:
+        validatePatternPipelinePayload
+    }
+  );
+}
+  
 function validatePatternPayload(payload){
   if(
     !payload ||

@@ -1326,9 +1326,249 @@ function getLatestClosedCandle(rows) {
 }
 
 /* =====================================================================
-   Aggregation Readiness
+   Closed-Candle Timeframe Aggregation
    ===================================================================== */
 
+/*
+ * Build true UTC-aligned OHLC candles from closed 5-minute candles.
+ *
+ * Production safeguards:
+ * - Closed source candles only.
+ * - Exact UTC timeframe boundaries.
+ * - Complete groups only.
+ * - Missing or non-contiguous source candles reject the whole group.
+ * - No synthetic prices.
+ * - No additional API requests.
+ * - Input arrays are never mutated.
+ */
+function aggregateClosedCandles(
+  rows,
+  targetMinutes,
+  referenceTimeMs = Date.now()
+) {
+  if (
+    !Array.isArray(rows) ||
+    !Number.isInteger(targetMinutes) ||
+    targetMinutes <= INTERVAL_MINUTES ||
+    targetMinutes % INTERVAL_MINUTES !== 0
+  ) {
+    return [];
+  }
+
+  const safeReferenceTimeMs =
+    Number.isFinite(referenceTimeMs)
+      ? referenceTimeMs
+      : Date.now();
+
+  const sourceRows =
+    getClosedRows(
+      rows,
+      safeReferenceTimeMs
+    )
+      .map(row => ({
+        row,
+
+        timestamp:
+          timestampToMs(
+            row?.time
+          )
+      }))
+      .filter(item =>
+        Number.isFinite(
+          item.timestamp
+        )
+      )
+      .sort(
+        (first, second) =>
+          first.timestamp -
+          second.timestamp
+      );
+
+  const expectedSourceCount =
+    targetMinutes /
+    INTERVAL_MINUTES;
+
+  const targetMs =
+    targetMinutes *
+    60_000;
+
+  const groups =
+    new Map();
+
+  for (const item of sourceRows) {
+    const bucketStart =
+      Math.floor(
+        item.timestamp /
+        targetMs
+      ) *
+      targetMs;
+
+    if (!groups.has(bucketStart)) {
+      groups.set(
+        bucketStart,
+        []
+      );
+    }
+
+    groups
+      .get(bucketStart)
+      .push(item);
+  }
+
+  const aggregated = [];
+
+  for (
+    const [
+      bucketStart,
+      items
+    ] of groups.entries()
+  ) {
+    /*
+     * Only a fully elapsed target candle may be emitted.
+     */
+    if (
+      bucketStart +
+        targetMs >
+      safeReferenceTimeMs
+    ) {
+      continue;
+    }
+
+    if (
+      items.length !==
+      expectedSourceCount
+    ) {
+      continue;
+    }
+
+    let contiguous = true;
+
+    for (
+      let index = 0;
+      index < items.length;
+      index++
+    ) {
+      const expectedTimestamp =
+        bucketStart +
+        index * INTERVAL_MS;
+
+      if (
+        items[index].timestamp !==
+        expectedTimestamp
+      ) {
+        contiguous = false;
+        break;
+      }
+    }
+
+    if (!contiguous) {
+      continue;
+    }
+
+    const candles =
+      items.map(
+        item => item.row
+      );
+
+    const open =
+      candles[0].open;
+
+    const close =
+      candles[
+        candles.length - 1
+      ].close;
+
+    const high =
+      Math.max(
+        ...candles.map(
+          candle => candle.high
+        )
+      );
+
+    const low =
+      Math.min(
+        ...candles.map(
+          candle => candle.low
+        )
+      );
+
+    if (
+      !isFiniteNumber(open) ||
+      !isFiniteNumber(high) ||
+      !isFiniteNumber(low) ||
+      !isFiniteNumber(close)
+    ) {
+      continue;
+    }
+
+    const bucketDate =
+      new Date(bucketStart);
+
+    const time =
+      `${bucketDate.getUTCFullYear()}-` +
+      `${pad2(
+        bucketDate.getUTCMonth() + 1
+      )}-` +
+      `${pad2(
+        bucketDate.getUTCDate()
+      )} ` +
+      `${pad2(
+        bucketDate.getUTCHours()
+      )}:` +
+      `${pad2(
+        bucketDate.getUTCMinutes()
+      )}:00`;
+
+    aggregated.push({
+      time,
+      open,
+      high,
+      low,
+      close
+    });
+  }
+
+  return aggregated;
+}
+
+function buildDerivedTimeframeCandles(
+  rows,
+  referenceTimeMs = Date.now()
+) {
+  return {
+    "15m":
+      aggregateClosedCandles(
+        rows,
+        15,
+        referenceTimeMs
+      ),
+
+    "30m":
+      aggregateClosedCandles(
+        rows,
+        30,
+        referenceTimeMs
+      ),
+
+    "1H":
+      aggregateClosedCandles(
+        rows,
+        60,
+        referenceTimeMs
+      ),
+
+    "4H":
+      aggregateClosedCandles(
+        rows,
+        240,
+        referenceTimeMs
+      )
+  };
+}
+
+/* =====================================================================
+   Aggregation Readiness
+   ===================================================================== */
 function calculateAggregationReadiness(rows) {
   const closedRows =
     getClosedRows(rows);

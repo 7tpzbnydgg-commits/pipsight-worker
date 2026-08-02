@@ -20677,11 +20677,6 @@ function getPatternPipelineVisualSteps(
       entry?.stage
     );
 
-  const isFullyConfirmed =
-    entry?.valid === true ||
-    entry?.stage ===
-      "RETEST_CONFIRMED";
-
   const isInvalidated =
     entry?.stage ===
       "INVALIDATED";
@@ -20695,10 +20690,7 @@ function getPatternPipelineVisualSteps(
         let state =
           "pending";
 
-        if(isFullyConfirmed){
-          state =
-            "complete";
-        }else if(
+        if(
           index <
           completedCount
         ){

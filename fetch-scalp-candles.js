@@ -1964,6 +1964,21 @@ async function main() {
       ] =
         merged.rows;
 
+      if (
+        !output.derivedCandles ||.
+        typeof output.derivedCandles !==
+          "object"
+      ) {
+        output.derivedCandles = {};
+      }
+
+      output.derivedCandles[
+        config.key
+      ] =
+        buildDerivedTimeframeCandles(
+          merged.rows
+        );
+
       output.stale[
         config.key
       ] =
@@ -2027,6 +2042,21 @@ async function main() {
         config.key
       ] =
         cached.rows;
+
+      if (
+        !output.derivedCandles ||
+        typeof output.derivedCandles !==
+          "object"
+      ) {
+        output.derivedCandles = {};
+      }
+
+      output.derivedCandles[
+        config.key
+      ] =
+        buildDerivedTimeframeCandles(
+          cached.rows
+        );
 
       output.stale[
         config.key

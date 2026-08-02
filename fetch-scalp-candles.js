@@ -1965,7 +1965,7 @@ async function main() {
         merged.rows;
 
       if (
-        !output.derivedCandles ||.
+        !output.derivedCandles ||
         typeof output.derivedCandles !==
           "object"
       ) {

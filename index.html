@@ -20444,6 +20444,777 @@ async function fetchPatternSignals({
   return PATTERN_DATA;
 }
 
+// ════════════════════════════════════════════════════════════════
+// PROFESSIONAL DECISION PIPELINE — VISUAL STAGES
+// ════════════════════════════════════════════════════════════════
+
+const PATTERN_PIPELINE_VISUAL_STEPS =
+  Object.freeze([
+    Object.freeze({
+      key:
+        "STRUCTURE",
+
+      label:
+        "Market Structure",
+
+      description:
+        "Reviews swing highs, swing lows and directional price behaviour to establish whether a usable market structure is present."
+    }),
+
+    Object.freeze({
+      key:
+        "LIQUIDITY",
+
+      label:
+        "Liquidity Sweep",
+
+      description:
+        "Checks whether price has collected liquidity around prior highs, lows or clustered resting orders."
+    }),
+
+    Object.freeze({
+      key:
+        "STRUCTURE_SHIFT",
+
+      label:
+        "BOS / CHOCH",
+
+      description:
+        "Looks for a Break of Structure or Change of Character that supports a directional transition."
+    }),
+
+    Object.freeze({
+      key:
+        "ORDER_BLOCK",
+
+      label:
+        "Order Block",
+
+      description:
+        "Identifies a directionally aligned institutional origin area that may provide a controlled retest zone."
+    }),
+
+    Object.freeze({
+      key:
+        "RETEST",
+
+      label:
+        "Retest & Entry Confirmation",
+
+      description:
+        "Waits for price to revisit the institutional area and confirms whether the reaction remains valid for the existing signal controls."
+    })
+  ]);
+
+
+// ════════════════════════════════════════════════════════════════
+// PROFESSIONAL DECISION PIPELINE — STEP RESOLUTION
+// ════════════════════════════════════════════════════════════════
+
+function getPatternPipelineCurrentStepIndex(
+  stage
+){
+  const normalizedStage =
+    normalizePatternPipelineCode(
+      stage
+    );
+
+  const stageIndexes = {
+    SEARCHING_STRUCTURE:
+      0,
+
+    SEARCHING_LIQUIDITY:
+      1,
+
+    LIQUIDITY_SWEPT:
+      2,
+
+    STRUCTURE_SHIFT_CONFIRMED:
+      3,
+
+    WAITING_FOR_RETEST:
+      4,
+
+    RETEST_IN_PROGRESS:
+      4,
+
+    RETEST_CONFIRMED:
+      4,
+
+    INVALIDATED:
+      null,
+
+    UNKNOWN:
+      null
+  };
+
+  return Object.prototype
+    .hasOwnProperty
+    .call(
+      stageIndexes,
+      normalizedStage
+    )
+      ? stageIndexes[
+          normalizedStage
+        ]
+      : null;
+}
+
+
+function getPatternPipelineVisualSteps(
+  entry
+){
+  const totalVisualSteps =
+    PATTERN_PIPELINE_VISUAL_STEPS
+      .length;
+
+  const completedCount =
+    clamp(
+      normalizePatternPipelineCount(
+        entry?.completedStages
+      ),
+      0,
+      totalVisualSteps
+    );
+
+  const currentIndex =
+    getPatternPipelineCurrentStepIndex(
+      entry?.stage
+    );
+
+  const isFullyConfirmed =
+    entry?.valid === true ||
+    entry?.stage ===
+      "RETEST_CONFIRMED";
+
+  const isInvalidated =
+    entry?.stage ===
+      "INVALIDATED";
+
+  return PATTERN_PIPELINE_VISUAL_STEPS
+    .map(
+      (
+        definition,
+        index
+      )=>{
+        let state =
+          "pending";
+
+        if(isFullyConfirmed){
+          state =
+            "complete";
+        }else if(
+          index <
+          completedCount
+        ){
+          state =
+            "complete";
+        }else if(
+          currentIndex ===
+          index
+        ){
+          state =
+            isInvalidated
+              ? "rejected"
+              : "current";
+        }
+
+        const stateLabel =
+          state === "complete"
+            ? "Completed"
+            : state === "current"
+              ? "Current"
+              : state === "rejected"
+                ? "Invalidated"
+                : "Pending";
+
+        let evidence =
+          "Waiting for earlier sequence requirements.";
+
+        if(state === "complete"){
+          evidence =
+            "Backend sequence progress confirms this requirement as completed.";
+        }else if(state === "current"){
+          evidence =
+            entry.stageDefinition
+              ?.guidance ||
+            "The detector is currently evaluating this requirement.";
+        }else if(state === "rejected"){
+          evidence =
+            "The developing sequence no longer satisfies the required conditions.";
+        }
+
+        return {
+          ...definition,
+
+          index,
+
+          state,
+
+          stateLabel,
+
+          evidence
+        };
+      }
+    );
+}
+
+
+// ════════════════════════════════════════════════════════════════
+// PROFESSIONAL DECISION PIPELINE — FORMATTERS
+// ════════════════════════════════════════════════════════════════
+
+function formatPatternPipelinePercent(
+  value,
+  decimals = 3
+){
+  const number =
+    normalizePatternPipelineNumber(
+      value
+    );
+
+  if(number == null){
+    return "—";
+  }
+
+  return `${safeFixed(
+    number * 100,
+    decimals
+  )}%`;
+}
+
+
+function getPatternPipelineStatusLabel(
+  entry
+){
+  if(
+    entry?.analyzerStatus ===
+      "REJECTED"
+  ){
+    return (
+      entry.rejectionDefinition
+        ?.label ||
+      "Analysis rejected"
+    );
+  }
+
+  return (
+    entry?.stageDefinition
+      ?.statusLabel ||
+    "Pipeline monitoring"
+  );
+}
+
+
+function renderPatternPipelineStep(
+  step
+){
+  const stateClass =
+    step.state === "complete"
+      ? "is-complete"
+      : step.state === "current"
+        ? "is-current"
+        : step.state === "rejected"
+          ? "is-rejected"
+          : "is-pending";
+
+  const dotLabel =
+    step.state === "complete"
+      ? "✓"
+      : step.state === "rejected"
+        ? "×"
+        : String(
+            step.index + 1
+          );
+
+  return `
+    <div
+      class="
+        pattern-pipeline-step
+        ${stateClass}
+      "
+    >
+      <div
+        class="pattern-pipeline-step-dot"
+        aria-hidden="true"
+      >
+        ${escapeHTML(dotLabel)}
+      </div>
+
+      <div
+        class="pattern-pipeline-step-content"
+      >
+        <div
+          class="pattern-pipeline-step-head"
+        >
+          <div
+            class="pattern-pipeline-step-name"
+          >
+            ${escapeHTML(step.label)}
+          </div>
+
+          <span
+            class="pattern-pipeline-step-state"
+          >
+            ${escapeHTML(
+              step.stateLabel
+            )}
+          </span>
+        </div>
+
+        <div
+          class="
+            pattern-pipeline-step-description
+          "
+        >
+          ${escapeHTML(
+            step.description
+          )}
+        </div>
+
+        <div
+          class="
+            pattern-pipeline-step-evidence
+          "
+        >
+          ${escapeHTML(
+            step.evidence
+          )}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+
+// ════════════════════════════════════════════════════════════════
+// PROFESSIONAL DECISION PIPELINE — MAIN RENDERER
+// ════════════════════════════════════════════════════════════════
+
+function renderPatternPipeline(
+  payload,
+  pair
+){
+  const entries =
+    getPatternPipelineTimeframeEntries(
+      payload,
+      pair
+    );
+
+  const primaryEntry =
+    selectPrimaryPatternPipelineEntry(
+      entries
+    );
+
+  if(!primaryEntry){
+    return `
+      <div class="pattern-pipeline-card">
+        <div class="pattern-pipeline-header">
+          <div>
+            <p class="pattern-pipeline-eyebrow">
+              Institutional Analysis
+            </p>
+
+            <h3 class="pattern-pipeline-title">
+              Decision Pipeline
+            </h3>
+
+            <p class="pattern-pipeline-subtitle">
+              No pipeline observation is currently available for
+              ${escapeHTML(pair.label)}.
+            </p>
+          </div>
+
+          <span
+            class="
+              pattern-pipeline-status
+              status-waiting
+            "
+          >
+            Waiting for data
+          </span>
+        </div>
+
+        <div class="pattern-pipeline-message">
+          The dashboard has not invented a market stage.
+          It will display the pipeline when the backend publishes
+          a supported timeframe observation.
+        </div>
+      </div>
+    `;
+  }
+
+  const visualSteps =
+    getPatternPipelineVisualSteps(
+      primaryEntry
+    );
+
+  const statusLabel =
+    getPatternPipelineStatusLabel(
+      primaryEntry
+    );
+
+  const stageLabel =
+    primaryEntry.analyzerStatus ===
+      "REJECTED"
+      ? (
+          primaryEntry
+            .rejectionDefinition
+            ?.label ||
+          "Analysis rejected"
+        )
+      : (
+          primaryEntry
+            .stageDefinition
+            ?.label ||
+          "Pipeline observation"
+        );
+
+  const progressText =
+    primaryEntry.totalStages > 0
+      ? `${primaryEntry.completedStages} of ${primaryEntry.totalStages}`
+      : "Not started";
+
+  const updatedLabel =
+    primaryEntry.updatedAt
+      ? getTimeAgo(
+          primaryEntry.updatedAt
+        )
+      : "Unknown";
+
+  const rejectionMessage =
+    primaryEntry.analyzerStatus ===
+      "REJECTED"
+      ? `
+        <div
+          class="
+            pattern-pipeline-message
+            pattern-pipeline-error
+          "
+        >
+          <strong>
+            ${escapeHTML(
+              primaryEntry
+                .rejectionDefinition
+                ?.label ||
+              "Analysis rejected"
+            )}
+          </strong>
+
+          <br />
+
+          ${escapeHTML(
+            primaryEntry
+              .rejectionDefinition
+              ?.description ||
+            "The analyzer stopped before producing an institutional sequence."
+          )}
+
+          ${
+            primaryEntry.rejectionReason
+              ? `
+                <br />
+                Backend reason:
+                ${escapeHTML(
+                  primaryEntry
+                    .rejectionReason
+                )}
+              `
+              : ""
+          }
+        </div>
+      `
+      : `
+        <div class="pattern-pipeline-message">
+          <strong>
+            Current interpretation:
+          </strong>
+
+          ${escapeHTML(
+            primaryEntry
+              .stageDefinition
+              ?.description ||
+            "The detector is monitoring the institutional sequence."
+          )}
+
+          <br />
+
+          ${escapeHTML(
+            primaryEntry
+              .stageDefinition
+              ?.guidance ||
+            "No unsupported trading conclusion has been added by the dashboard."
+          )}
+        </div>
+      `;
+
+  return `
+    <div class="pattern-pipeline-card">
+      <div class="pattern-pipeline-header">
+        <div>
+          <p class="pattern-pipeline-eyebrow">
+            Institutional Analysis
+          </p>
+
+          <h3 class="pattern-pipeline-title">
+            Professional Decision Pipeline
+          </h3>
+
+          <p class="pattern-pipeline-subtitle">
+            Live observation of structure, liquidity,
+            directional shift, institutional zone and retest
+            progression for ${escapeHTML(pair.label)}.
+          </p>
+        </div>
+
+        <span
+          class="
+            pattern-pipeline-status
+            ${escapeHTML(
+              primaryEntry.statusClass
+            )}
+          "
+        >
+          ${escapeHTML(statusLabel)}
+        </span>
+      </div>
+
+      <div class="pattern-pipeline-summary">
+        <div class="pattern-pipeline-metric">
+          <div
+            class="pattern-pipeline-metric-label"
+          >
+            Timeframe
+          </div>
+
+          <div
+            class="pattern-pipeline-metric-value"
+          >
+            ${escapeHTML(
+              primaryEntry.timeframe ||
+              "—"
+            )}
+          </div>
+        </div>
+
+        <div class="pattern-pipeline-metric">
+          <div
+            class="pattern-pipeline-metric-label"
+          >
+            Current stage
+          </div>
+
+          <div
+            class="pattern-pipeline-metric-value"
+          >
+            ${escapeHTML(stageLabel)}
+          </div>
+        </div>
+
+        <div class="pattern-pipeline-metric">
+          <div
+            class="pattern-pipeline-metric-label"
+          >
+            Direction
+          </div>
+
+          <div
+            class="
+              pattern-pipeline-metric-value
+              ${escapeHTML(
+                primaryEntry
+                  .directionClass
+              )}
+            "
+          >
+            ${escapeHTML(
+              primaryEntry.direction
+            )}
+          </div>
+        </div>
+
+        <div class="pattern-pipeline-metric">
+          <div
+            class="pattern-pipeline-metric-label"
+          >
+            Sequence score
+          </div>
+
+          <div
+            class="pattern-pipeline-metric-value"
+          >
+            ${safeFixed(
+              primaryEntry.score,
+              0
+            )} / 100
+          </div>
+        </div>
+      </div>
+
+      <div class="pattern-pipeline-progress">
+        <div
+          class="pattern-pipeline-progress-head"
+        >
+          <span
+            class="pattern-pipeline-progress-label"
+          >
+            Institutional progress
+          </span>
+
+          <span
+            class="pattern-pipeline-progress-value"
+          >
+            ${escapeHTML(progressText)}
+            ·
+            ${safeFixed(
+              primaryEntry
+                .progressPercent,
+              0
+            )}%
+          </span>
+        </div>
+
+        <div
+          class="pattern-pipeline-progress-track"
+          role="progressbar"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="${escapeHTML(
+            String(
+              primaryEntry
+                .progressPercent
+            )
+          )}"
+        >
+          <div
+            class="pattern-pipeline-progress-fill"
+            style="
+              width:${escapeHTML(
+                String(
+                  primaryEntry
+                    .progressPercent
+                )
+              )}%;
+            "
+          ></div>
+        </div>
+      </div>
+
+      <div class="pattern-pipeline-steps">
+        ${visualSteps
+          .map(
+            renderPatternPipelineStep
+          )
+          .join("")}
+      </div>
+
+      ${rejectionMessage}
+
+      <div
+        class="pattern-pipeline-message"
+      >
+        <strong>Analyzer evidence:</strong>
+
+        ${escapeHTML(
+          String(
+            primaryEntry.candleCount
+          )
+        )} candles
+
+        ·
+        ${escapeHTML(
+          String(
+            primaryEntry.rawCandidates
+          )
+        )} raw candidates
+
+        ·
+        ${escapeHTML(
+          String(
+            primaryEntry.acceptedPatterns
+          )
+        )} accepted
+
+        ·
+        ${escapeHTML(
+          String(
+            primaryEntry.returnedPatterns
+          )
+        )} returned
+
+        · ATR
+        ${escapeHTML(
+          formatPatternPipelinePercent(
+            primaryEntry.atrPercent
+          )
+        )}
+
+        · Minimum ATR
+        ${escapeHTML(
+          formatPatternPipelinePercent(
+            primaryEntry
+              .minimumATRPercent
+          )
+        )}
+
+        · Updated
+        ${escapeHTML(updatedLabel)}
+      </div>
+    </div>
+  `;
+}
+
+
+function renderPatternPipelineLoadError(
+  error,
+  pair
+){
+  return `
+    <div class="pattern-pipeline-card">
+      <div class="pattern-pipeline-header">
+        <div>
+          <p class="pattern-pipeline-eyebrow">
+            Institutional Analysis
+          </p>
+
+          <h3 class="pattern-pipeline-title">
+            Professional Decision Pipeline
+          </h3>
+
+          <p class="pattern-pipeline-subtitle">
+            Pipeline data for
+            ${escapeHTML(pair.label)}
+            could not be loaded safely.
+          </p>
+        </div>
+
+        <span
+          class="
+            pattern-pipeline-status
+            status-rejected
+          "
+        >
+          Data unavailable
+        </span>
+      </div>
+
+      <div
+        class="
+          pattern-pipeline-message
+          pattern-pipeline-error
+        "
+      >
+        ${escapeHTML(
+          normalizeErrorMessage(
+            error,
+            "Pattern pipeline data unavailable"
+          )
+        )}
+      </div>
+    </div>
+  `;
+}
+
 function renderPatternCard(
   pattern,
   pair
@@ -20631,144 +21402,220 @@ async function loadPatternDetector({
   patternContainer.style.display =
     "block";
 
+  const requestedPair =
+    currentPair;
+
+  const requestedPairKey =
+    pairKeyOf(
+      requestedPair
+    );
+
   patternContainer.innerHTML = `
     <div class="loading">
-      Loading chart-pattern signals…
+      Loading pattern feed and institutional pipeline…
     </div>
   `;
 
-  try{
-    const payload =
-      await fetchPatternSignals({
+  const [
+    patternResult,
+    pipelineResult
+  ] =
+    await Promise.allSettled([
+      fetchPatternSignals({
         forceRefresh
-      });
+      }),
 
-    const pair =
-      currentPair;
+      fetchPatternPipelineStatus({
+        forceRefresh
+      })
+    ]);
 
-    const patterns =
-      safeArray(payload.items)
-        .filter(
-          item=>
-            item.pairKey ===
-            pair.key
-        )
-        .sort(
-          (first,second)=>
-            (
-              safeDateMs(
-                second.detectedAt
-              ) || 0
-            ) -
-            (
-              safeDateMs(
-                first.detectedAt
-              ) || 0
-            )
-        )
-        .slice(
-          0,
-          APP_CONFIG
-            .limits
-            .maximumPatternSignalsPerPair
-        );
-
-    patternContainer.innerHTML = `
-      <div class="card">
-        <div class="hero">
-          <div>
-            <div class="label">
-              ${escapeHTML(pair.label)}
-              · AI Pattern Detector
-            </div>
-
-            <div
-              class="display"
-              style="
-                font-size:25px;
-                font-weight:600;
-              "
-            >
-              Chart Pattern Feed
-            </div>
-          </div>
-
-          <div style="text-align:right;">
-            ${freshnessBadge(
-              payload.updatedAt,
-              APP_CONFIG
-                .freshnessMinutes
-                .patternSignals
-            )}
-
-            <div style="margin-top:8px;">
-              <button
-                class="iconbtn"
-                type="button"
-                onclick="loadPatternDetector({forceRefresh:true})"
-              >
-                Refresh
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      ${
-        patterns.length
-          ? patterns.map(
-              pattern=>
-                renderPatternCard(
-                  pattern,
-                  pair
-                )
-            ).join("")
-          : `
-            <div class="empty-note">
-              No current pattern signal for ${escapeHTML(pair.label)}.
-            </div>
-          `
-      }
-
-      <div class="footer-note">
-        Pattern detections are external AI feed observations.
-        Confirm structure, liquidity and risk before trading.
-      </div>
-    `;
-
-    if(refreshMaster){
-  await renderMasterSignal();
-}
-
-    return patterns;
-  }catch(error){
-    patternContainer.innerHTML = `
-      <div class="errbox">
-        Pattern feed could not be loaded.
-
-        <div
-          style="
-            margin-top:8px;
-            color:var(--sell);
-          "
-        >
-          ${escapeHTML(
-            normalizeErrorMessage(error)
-          )}
-        </div>
-
-        <button
-          type="button"
-          class="retry"
-          onclick="loadPatternDetector({forceRefresh:true})"
-        >
-          Retry Pattern Feed
-        </button>
-      </div>
-    `;
-
+  /*
+   * Prevent an older asynchronous request from replacing
+   * the screen after the user changes pair or mode.
+   */
+  if(
+    currentMode !== "patterns" ||
+    pairKeyOf(currentPair) !==
+      requestedPairKey
+  ){
     return null;
   }
+
+  const pair =
+    requestedPair;
+
+  const patternPayload =
+    patternResult.status ===
+      "fulfilled"
+      ? patternResult.value
+      : {
+          items: [],
+          updatedAt: null
+        };
+
+  const pipelinePayload =
+    pipelineResult.status ===
+      "fulfilled"
+      ? pipelineResult.value
+      : null;
+
+  const patterns =
+    safeArray(
+      patternPayload.items
+    )
+      .filter(
+        item=>
+          item.pairKey ===
+          pair.key
+      )
+      .sort(
+        (
+          first,
+          second
+        )=>
+          (
+            safeDateMs(
+              second.detectedAt
+            ) || 0
+          ) -
+          (
+            safeDateMs(
+              first.detectedAt
+            ) || 0
+          )
+      )
+      .slice(
+        0,
+        APP_CONFIG
+          .limits
+          .maximumPatternSignalsPerPair
+      );
+
+  const pipelineHTML =
+    pipelineResult.status ===
+      "fulfilled"
+      ? renderPatternPipeline(
+          pipelinePayload,
+          pair
+        )
+      : renderPatternPipelineLoadError(
+          pipelineResult.reason,
+          pair
+        );
+
+  const patternFeedHTML =
+    patternResult.status ===
+      "fulfilled"
+      ? (
+          patterns.length
+            ? patterns
+                .map(
+                  pattern=>
+                    renderPatternCard(
+                      pattern,
+                      pair
+                    )
+                )
+                .join("")
+            : `
+                <div class="empty-note">
+                  No current pattern signal for
+                  ${escapeHTML(pair.label)}.
+                </div>
+              `
+        )
+      : `
+          <div class="errbox">
+            Pattern signal feed could not be loaded.
+
+            <div
+              style="
+                margin-top:8px;
+                color:var(--sell);
+              "
+            >
+              ${escapeHTML(
+                normalizeErrorMessage(
+                  patternResult.reason,
+                  "Pattern feed unavailable"
+                )
+              )}
+            </div>
+          </div>
+        `;
+
+  const freshnessSource =
+    patternPayload.updatedAt ||
+    pipelinePayload?.updatedAt ||
+    null;
+
+  patternContainer.innerHTML = `
+    <div class="card">
+      <div class="hero">
+        <div>
+          <div class="label">
+            ${escapeHTML(pair.label)}
+            · AI Pattern Detector
+          </div>
+
+          <div
+            class="display"
+            style="
+              font-size:25px;
+              font-weight:600;
+            "
+          >
+            Chart Pattern Feed
+          </div>
+        </div>
+
+        <div style="text-align:right;">
+          ${freshnessBadge(
+            freshnessSource,
+            APP_CONFIG
+              .freshnessMinutes
+              .patternSignals
+          )}
+
+          <div style="margin-top:8px;">
+            <button
+              class="iconbtn"
+              type="button"
+              onclick="
+                loadPatternDetector({
+                  forceRefresh:true
+                })
+              "
+            >
+              Refresh
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    ${pipelineHTML}
+
+    ${patternFeedHTML}
+
+    <div class="footer-note">
+      Pattern detections and institutional pipeline states
+      are external AI feed observations.
+      Confirm structure, liquidity and risk before trading.
+    </div>
+  `;
+
+  if(refreshMaster){
+    await renderMasterSignal();
+  }
+
+  return {
+    patterns,
+
+    pipeline:
+      pipelinePayload
+  };
 }
 
 // ════════════════════════════════════════════════════════════════

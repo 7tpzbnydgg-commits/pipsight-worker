@@ -20959,75 +20959,71 @@ function renderPatternPipeline(
         )
       : "Unknown";
 
-  const rejectionMessage =
-    primaryEntry.analyzerStatus ===
-      "REJECTED"
-      ? `
-        <div
-          class="
-            pattern-pipeline-message
-            pattern-pipeline-error
-          "
-        >
-          <strong>
-            ${escapeHTML(
-              primaryEntry
-                .rejectionDefinition
-                ?.label ||
-              "Analysis rejected"
-            )}
-          </strong>
-
-          <br />
-
+const rejectionMessage =
+  primaryEntry.analyzerStatus ===
+    "REJECTED"
+    ? `
+      <div
+        class="
+          pattern-pipeline-message
+          pattern-pipeline-error
+        "
+      >
+        <strong>
           ${escapeHTML(
             primaryEntry
               .rejectionDefinition
-              ?.description ||
-            "The analyzer stopped before producing an institutional sequence."
+              ?.label ||
+            "Analysis rejected"
           )}
+        </strong>
 
-          ${
-            primaryEntry.rejectionReason
-              ? `
-                <br />
-                Backend reason:
-                ${escapeHTML(
-                  primaryEntry
-                    .rejectionReason
-                )}
-              `
-              : ""
-          }
-        </div>
-      `
-      : `
-        ${rejectionMessage}
+        <br />
 
-        ${tradeSignalStatusMessage}
+        ${escapeHTML(
+          primaryEntry
+            .rejectionDefinition
+            ?.description ||
+          "The analyzer stopped before producing an institutional sequence."
+        )}
 
-        <div
-          class="pattern-pipeline-message"
-        >
-          <strong>Analyzer evidence:</strong>
+        ${
+          primaryEntry.rejectionReason
+            ? `
+              <br />
+              Backend reason:
+              ${escapeHTML(
+                primaryEntry
+                  .rejectionReason
+              )}
+            `
+            : ""
+        }
+      </div>
+    `
+    : `
+      <div class="pattern-pipeline-message">
+        <strong>
+          Current interpretation:
+        </strong>
 
-          ${escapeHTML(
-            primaryEntry
-              .stageDefinition
-              ?.description ||
-            "The detector is monitoring the institutional sequence."
-          )}
+        ${escapeHTML(
+          primaryEntry
+            .stageDefinition
+            ?.description ||
+          "The detector is monitoring the institutional sequence."
+        )}
 
-          <br />
+        <br />
 
-          ${escapeHTML(
-            primaryEntry
-              .stageDefinition
-              ?.guidance ||
-            "No unsupported trading conclusion has been added by the dashboard."
-          )}
-        </div>
-      `;
+        ${escapeHTML(
+          primaryEntry
+            .stageDefinition
+            ?.guidance ||
+          "No unsupported trading conclusion has been added by the dashboard."
+        )}
+      </div>
+    `;
 
   return `
     <div class="pattern-pipeline-card">

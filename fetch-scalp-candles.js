@@ -30,12 +30,17 @@
 const fs = require("fs");
 const path = require("path");
 
+const {
+  createMt5MarketDataAdapter
+} = require("./mt5/mt5-market-data-adapter");
+
 /* =====================================================================
    Configuration
    ===================================================================== */
 
 const FILE_VERSION = "2.0.0";
 const SOURCE_NAME = "Twelve Data";
+const MT5_SOURCE_NAME = "MT5_BROKER";
 
 const INTERVAL = "5min";
 const INTERVAL_MINUTES = 5;
@@ -120,6 +125,9 @@ const STALE_AFTER_MINUTES = 30;
  */
 const MAX_GAP_SAMPLES = 20;
 
+const mt5MarketDataAdapter =
+  createMt5MarketDataAdapter();
+
 let requestsMade = 0;
 
 /* =====================================================================
@@ -127,11 +135,9 @@ let requestsMade = 0;
    ===================================================================== */
 
 if (!API_KEY) {
-  console.error(
-    "Missing TWELVEDATA_API_KEY environment variable."
+  console.warn(
+    "TWELVEDATA_API_KEY is unavailable; Twelve Data fallback is disabled."
   );
-
-  process.exit(1);
 }
 
 /* =====================================================================
@@ -1117,6 +1123,12 @@ async function fetchJsonOnce(
    ===================================================================== */
 
 async function fetchCandles(symbol) {
+  if (!API_KEY) {
+    throw new Error(
+      "Missing TWELVEDATA_API_KEY environment variable."
+    );
+  }
+
   const params =
     new URLSearchParams({
       symbol,
@@ -1227,6 +1239,141 @@ async function fetchCandles(symbol) {
         payload.meta?.type ||
         null
     }
+  };
+}
+
+/* =====================================================================
+   MT5 Primary / Twelve Data Fallback
+   ===================================================================== */
+
+async function fetchPrimaryCandles(
+  config
+) {
+  const mt5Result =
+    mt5MarketDataAdapter
+      .getScalpRows(
+        config.key,
+        {
+          limit:
+            OUTPUT_SIZE,
+
+          minimumRows:
+            200
+        }
+      );
+
+  if (mt5Result.available) {
+    const normalized =
+      normalizeCandles(
+        mt5Result.data
+      );
+
+    if (
+      normalized.rows.length === 0
+    ) {
+      throw new Error(
+        `MT5 returned no valid 5-minute candles for ${config.symbol}`
+      );
+    }
+
+    return {
+      rows:
+        normalized.rows,
+
+      quality:
+        normalized.quality,
+
+      source:
+        MT5_SOURCE_NAME,
+
+      fallbackUsed:
+        false,
+
+      primaryFailure:
+        null,
+
+      providerMeta: {
+        name:
+          MT5_SOURCE_NAME,
+
+        symbol:
+          config.key,
+
+        brokerSymbol:
+          mt5Result.metadata
+            ?.brokerSymbol ||
+          null,
+
+        interval:
+          "5m",
+
+        availableRows:
+          mt5Result.metadata
+            ?.availableRows ??
+          normalized.rows.length,
+
+        storedRows:
+          mt5Result.metadata
+            ?.storedRows ??
+          normalized.rows.length,
+
+        latestOpenTimeUtc:
+          mt5Result.metadata
+            ?.latestOpenTimeUtc ||
+          null,
+
+        latestCloseTimeUtc:
+          mt5Result.metadata
+            ?.latestCloseTimeUtc ||
+          null,
+
+        ageMs:
+          mt5Result.metadata
+            ?.ageMs ??
+          null,
+
+        stale:
+          Boolean(
+            mt5Result.metadata
+              ?.stale
+          )
+      }
+    };
+  }
+
+  const primaryFailure = {
+    source:
+      MT5_SOURCE_NAME,
+
+    reason:
+      mt5Result.reason ||
+      "MT5_UNAVAILABLE",
+
+    metadata:
+      mt5Result.metadata ||
+      null
+  };
+
+  console.warn(
+    `MT5 primary unavailable for ${config.symbol}: ` +
+    `${primaryFailure.reason}. Using Twelve Data fallback.`
+  );
+
+  const fallback =
+    await fetchCandles(
+      config.symbol
+    );
+
+  return {
+    ...fallback,
+
+    source:
+      SOURCE_NAME,
+
+    fallbackUsed:
+      true,
+
+    primaryFailure
   };
 }
 
@@ -1944,13 +2091,13 @@ async function main() {
 
     try {
       console.log(
-        `Fetching ${config.symbol} 5m OHLC ` +
-        `(${requestsMade + 1}/${MAX_REQUESTS_PER_RUN})...`
+        `Loading ${config.symbol} 5m OHLC ` +
+        `(MT5 primary, Twelve Data fallback)...`
       );
 
       const fetched =
-        await fetchCandles(
-          config.symbol
+        await fetchPrimaryCandles(
+          config
         );
 
       const merged =
@@ -1994,13 +2141,13 @@ async function main() {
             merged.rows,
 
           source:
-            SOURCE_NAME,
+            fetched.source,
 
           fetchSucceeded:
             true,
 
           fallbackUsed:
-            false,
+            fetched.fallbackUsed,
 
           errorMessage:
             null,
@@ -2016,9 +2163,10 @@ async function main() {
         });
 
       console.log(
-        `Fetched ${fetched.rows.length} valid 5m candles for ` +
-        `${config.symbol}; stored ${merged.rows.length}, ` +
-        `closed ${output.metadata[config.key].closedCandleCount}.`
+        `Loaded ${fetched.rows.length} valid 5m candles from ` +
+        `${fetched.source} for ${config.symbol}; ` +
+        `stored ${merged.rows.length}, closed ` +
+        `${output.metadata[config.key].closedCandleCount}.`
       );
     } catch (error) {
       const message =
@@ -2193,7 +2341,7 @@ async function main() {
   );
 
   console.log(
-    `Twelve Data requests used: ` +
+    `Twelve Data fallback requests used: ` +
     `${requestsMade}/${MAX_REQUESTS_PER_RUN}`
   );
 

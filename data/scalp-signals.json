@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-03T23:40:51.916Z",
+  "generatedAt": "2026-08-03T23:50:53.124Z",
   "engineVersion": "1.0.0",
   "strategyVersion": "scalp-lockstep-1.0",
   "signals": [
@@ -8,49 +8,38 @@
       "signal": "WAIT",
       "confidence": 0,
       "reasons": [
-        "Market data safety block"
+        "Risk Reward below 1:2"
       ],
       "steps": [
         {
-          "name": "Market Data Safety",
-          "pass": false,
-          "detail": "M5 market data: cache fallback is active"
-        },
-        {
           "name": "EMA Trend",
-          "pass": null,
-          "status": "skip",
-          "detail": "Skipped because Market Data Safety did not pass"
+          "pass": true,
+          "detail": "BUY full EMA alignment confirmed at 4/4: price 4054.13929, EMA20 4052.377381, EMA50 4050.689083, EMA100 4049.047331, EMA200 4048.647315"
         },
         {
           "name": "MACD",
-          "pass": null,
-          "status": "skip",
-          "detail": "Skipped because Market Data Safety did not pass"
+          "pass": true,
+          "detail": "BUY confirmed: MACD 0.06794 is above signal 0.020661; histogram 0.04728"
         },
         {
           "name": "RSI",
-          "pass": null,
-          "status": "skip",
-          "detail": "Skipped because Market Data Safety did not pass"
+          "pass": true,
+          "detail": "BUY RSI confirmation passed at 57.46; required range 45–65"
         },
         {
           "name": "Higher TF",
-          "pass": null,
-          "status": "skip",
-          "detail": "Skipped because Market Data Safety did not pass"
+          "pass": true,
+          "detail": "Higher timeframe has no full EMA direction, so no conflicting trend was found"
         },
         {
           "name": "News",
-          "pass": null,
-          "status": "skip",
-          "detail": "Skipped because Market Data Safety did not pass"
+          "pass": true,
+          "detail": "No conflicting high-impact news found across 4 pair-specific item(s); net news score 55"
         },
         {
           "name": "Risk Reward",
-          "pass": null,
-          "status": "skip",
-          "detail": "Skipped because Market Data Safety did not pass"
+          "pass": false,
+          "detail": "Calculated R:R is 1:0.27 using entry 4054.13929, stop 4052.84915 and target 4054.49238; minimum required is 1:2"
         }
       ],
       "tradePlan": null,
@@ -143,8 +132,8 @@
         "reason": "No matching Learning Enrichment performance context was found."
       },
       "mode": "M5",
-      "generatedAt": "2026-08-03T23:40:51.916Z",
-      "analyzedCandleAt": "2026-08-03T23:35:00.000Z",
+      "generatedAt": "2026-08-03T23:50:53.124Z",
+      "analyzedCandleAt": "2026-08-03T23:45:00.000Z",
       "prepared": {
         "counts": {
           "m5": 1500,
@@ -157,8 +146,8 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-03T23:40:51.807Z",
-          "h1": "2026-08-03T23:30:51.878Z"
+          "m5": "2026-08-03T23:50:53.007Z",
+          "h1": "2026-08-03T23:45:56.777Z"
         },
         "quality": {
           "m5": {
@@ -168,16 +157,16 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-29T18:40:00.000Z",
-            "lastDate": "2026-08-03T23:35:00.000Z",
+            "firstDate": "2026-07-29T18:50:00.000Z",
+            "lastDate": "2026-08-03T23:45:00.000Z",
             "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
             "hasOHLC": true,
             "sourceMarkedStale": false,
-            "fallbackUsed": true,
+            "fallbackUsed": false,
             "fetchSucceeded": true,
-            "stale": true
+            "stale": false
           },
           "h1": {
             "validRows": 900,
@@ -188,7 +177,7 @@
             "timeFilteredCandlesRemoved": 0,
             "firstDate": "2026-06-27T11:00:00.000Z",
             "lastDate": "2026-08-03T22:00:00.000Z",
-            "ageMinutes": 100,
+            "ageMinutes": 110,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,
@@ -205,49 +194,43 @@
       "signal": "WAIT",
       "confidence": 0,
       "reasons": [
-        "Market data safety block"
+        "EMA alignment failed"
       ],
       "steps": [
         {
-          "name": "Market Data Safety",
-          "pass": false,
-          "detail": "M5 market data: cache fallback is active"
-        },
-        {
           "name": "EMA Trend",
-          "pass": null,
-          "status": "skip",
-          "detail": "Skipped because Market Data Safety did not pass"
+          "pass": false,
+          "detail": "EMA alignment failed; bullish checks 2/4, bearish checks 2/4; qualified 3/4 core alignment not confirmed"
         },
         {
           "name": "MACD",
           "pass": null,
           "status": "skip",
-          "detail": "Skipped because Market Data Safety did not pass"
+          "detail": "Skipped because EMA Trend did not pass"
         },
         {
           "name": "RSI",
           "pass": null,
           "status": "skip",
-          "detail": "Skipped because Market Data Safety did not pass"
+          "detail": "Skipped because EMA Trend did not pass"
         },
         {
           "name": "Higher TF",
           "pass": null,
           "status": "skip",
-          "detail": "Skipped because Market Data Safety did not pass"
+          "detail": "Skipped because EMA Trend did not pass"
         },
         {
           "name": "News",
           "pass": null,
           "status": "skip",
-          "detail": "Skipped because Market Data Safety did not pass"
+          "detail": "Skipped because EMA Trend did not pass"
         },
         {
           "name": "Risk Reward",
           "pass": null,
           "status": "skip",
-          "detail": "Skipped because Market Data Safety did not pass"
+          "detail": "Skipped because EMA Trend did not pass"
         }
       ],
       "tradePlan": null,
@@ -340,8 +323,8 @@
         "reason": "No matching Learning Enrichment performance context was found."
       },
       "mode": "M15",
-      "generatedAt": "2026-08-03T23:40:51.916Z",
-      "analyzedCandleAt": "2026-08-03T23:15:00.000Z",
+      "generatedAt": "2026-08-03T23:50:53.124Z",
+      "analyzedCandleAt": "2026-08-03T23:30:00.000Z",
       "prepared": {
         "counts": {
           "m5": 1500,
@@ -354,8 +337,8 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-03T23:40:51.807Z",
-          "h1": "2026-08-03T23:30:51.878Z"
+          "m5": "2026-08-03T23:50:53.007Z",
+          "h1": "2026-08-03T23:45:56.777Z"
         },
         "quality": {
           "m5": {
@@ -365,16 +348,16 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-29T18:40:00.000Z",
-            "lastDate": "2026-08-03T23:35:00.000Z",
+            "firstDate": "2026-07-29T18:50:00.000Z",
+            "lastDate": "2026-08-03T23:45:00.000Z",
             "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
             "hasOHLC": true,
             "sourceMarkedStale": false,
-            "fallbackUsed": true,
+            "fallbackUsed": false,
             "fetchSucceeded": true,
-            "stale": true
+            "stale": false
           },
           "h1": {
             "validRows": 900,
@@ -385,7 +368,7 @@
             "timeFilteredCandlesRemoved": 0,
             "firstDate": "2026-06-27T11:00:00.000Z",
             "lastDate": "2026-08-03T22:00:00.000Z",
-            "ageMinutes": 100,
+            "ageMinutes": 110,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,
@@ -408,7 +391,7 @@
         {
           "name": "Market Data Safety",
           "pass": false,
-          "detail": "M5 market data: cache fallback is active; H1 confirmation data: cache fallback is active"
+          "detail": "H1 confirmation data: cache fallback is active"
         },
         {
           "name": "EMA Trend",
@@ -537,7 +520,7 @@
         "reason": "No matching Learning Enrichment performance context was found."
       },
       "mode": "M30",
-      "generatedAt": "2026-08-03T23:40:51.916Z",
+      "generatedAt": "2026-08-03T23:50:53.124Z",
       "analyzedCandleAt": "2026-08-03T23:00:00.000Z",
       "prepared": {
         "counts": {
@@ -551,8 +534,8 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-03T23:40:51.807Z",
-          "h1": "2026-08-03T23:30:51.878Z"
+          "m5": "2026-08-03T23:50:53.007Z",
+          "h1": "2026-08-03T23:45:56.777Z"
         },
         "quality": {
           "m5": {
@@ -562,16 +545,16 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-29T18:40:00.000Z",
-            "lastDate": "2026-08-03T23:35:00.000Z",
+            "firstDate": "2026-07-29T18:50:00.000Z",
+            "lastDate": "2026-08-03T23:45:00.000Z",
             "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
             "hasOHLC": true,
             "sourceMarkedStale": false,
-            "fallbackUsed": true,
+            "fallbackUsed": false,
             "fetchSucceeded": true,
-            "stale": true
+            "stale": false
           },
           "h1": {
             "validRows": 900,
@@ -582,7 +565,7 @@
             "timeFilteredCandlesRemoved": 0,
             "firstDate": "2026-06-27T11:00:00.000Z",
             "lastDate": "2026-08-03T22:00:00.000Z",
-            "ageMinutes": 100,
+            "ageMinutes": 110,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,
@@ -599,49 +582,41 @@
       "signal": "WAIT",
       "confidence": 0,
       "reasons": [
-        "Market data safety block"
+        "RSI confirmation failed"
       ],
       "steps": [
         {
-          "name": "Market Data Safety",
-          "pass": false,
-          "detail": "M5 market data: cache fallback is active"
-        },
-        {
           "name": "EMA Trend",
-          "pass": null,
-          "status": "skip",
-          "detail": "Skipped because Market Data Safety did not pass"
+          "pass": true,
+          "detail": "BUY full EMA alignment confirmed at 4/4: price 211.61835, EMA20 211.302488, EMA50 211.156952, EMA100 211.059051, EMA200 211.058845"
         },
         {
           "name": "MACD",
-          "pass": null,
-          "status": "skip",
-          "detail": "Skipped because Market Data Safety did not pass"
+          "pass": true,
+          "detail": "BUY confirmed: MACD 0.090947 is above signal 0.075548; histogram 0.015398"
         },
         {
           "name": "RSI",
-          "pass": null,
-          "status": "skip",
-          "detail": "Skipped because Market Data Safety did not pass"
+          "pass": false,
+          "detail": "BUY RSI confirmation failed at 73.58; required range 45–65"
         },
         {
           "name": "Higher TF",
           "pass": null,
           "status": "skip",
-          "detail": "Skipped because Market Data Safety did not pass"
+          "detail": "Skipped because RSI did not pass"
         },
         {
           "name": "News",
           "pass": null,
           "status": "skip",
-          "detail": "Skipped because Market Data Safety did not pass"
+          "detail": "Skipped because RSI did not pass"
         },
         {
           "name": "Risk Reward",
           "pass": null,
           "status": "skip",
-          "detail": "Skipped because Market Data Safety did not pass"
+          "detail": "Skipped because RSI did not pass"
         }
       ],
       "tradePlan": null,
@@ -734,8 +709,8 @@
         "reason": "No matching Learning Enrichment performance context was found."
       },
       "mode": "M5",
-      "generatedAt": "2026-08-03T23:40:51.916Z",
-      "analyzedCandleAt": "2026-08-03T23:35:00.000Z",
+      "generatedAt": "2026-08-03T23:50:53.124Z",
+      "analyzedCandleAt": "2026-08-03T23:45:00.000Z",
       "prepared": {
         "counts": {
           "m5": 1500,
@@ -748,8 +723,8 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-03T23:40:51.807Z",
-          "h1": "2026-08-03T23:30:51.878Z"
+          "m5": "2026-08-03T23:50:53.007Z",
+          "h1": "2026-08-03T23:45:56.777Z"
         },
         "quality": {
           "m5": {
@@ -759,16 +734,16 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-29T18:40:00.000Z",
-            "lastDate": "2026-08-03T23:35:00.000Z",
+            "firstDate": "2026-07-29T18:50:00.000Z",
+            "lastDate": "2026-08-03T23:45:00.000Z",
             "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
             "hasOHLC": true,
             "sourceMarkedStale": false,
-            "fallbackUsed": true,
+            "fallbackUsed": false,
             "fetchSucceeded": true,
-            "stale": true
+            "stale": false
           },
           "h1": {
             "validRows": 900,
@@ -779,7 +754,7 @@
             "timeFilteredCandlesRemoved": 0,
             "firstDate": "2026-06-27T11:00:00.000Z",
             "lastDate": "2026-08-03T22:00:00.000Z",
-            "ageMinutes": 100,
+            "ageMinutes": 110,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,
@@ -796,49 +771,43 @@
       "signal": "WAIT",
       "confidence": 0,
       "reasons": [
-        "Market data safety block"
+        "EMA alignment failed"
       ],
       "steps": [
         {
-          "name": "Market Data Safety",
-          "pass": false,
-          "detail": "M5 market data: cache fallback is active"
-        },
-        {
           "name": "EMA Trend",
-          "pass": null,
-          "status": "skip",
-          "detail": "Skipped because Market Data Safety did not pass"
+          "pass": false,
+          "detail": "EMA alignment failed; bullish checks 2/4, bearish checks 2/4; qualified 3/4 core alignment not confirmed"
         },
         {
           "name": "MACD",
           "pass": null,
           "status": "skip",
-          "detail": "Skipped because Market Data Safety did not pass"
+          "detail": "Skipped because EMA Trend did not pass"
         },
         {
           "name": "RSI",
           "pass": null,
           "status": "skip",
-          "detail": "Skipped because Market Data Safety did not pass"
+          "detail": "Skipped because EMA Trend did not pass"
         },
         {
           "name": "Higher TF",
           "pass": null,
           "status": "skip",
-          "detail": "Skipped because Market Data Safety did not pass"
+          "detail": "Skipped because EMA Trend did not pass"
         },
         {
           "name": "News",
           "pass": null,
           "status": "skip",
-          "detail": "Skipped because Market Data Safety did not pass"
+          "detail": "Skipped because EMA Trend did not pass"
         },
         {
           "name": "Risk Reward",
           "pass": null,
           "status": "skip",
-          "detail": "Skipped because Market Data Safety did not pass"
+          "detail": "Skipped because EMA Trend did not pass"
         }
       ],
       "tradePlan": null,
@@ -931,8 +900,8 @@
         "reason": "No matching Learning Enrichment performance context was found."
       },
       "mode": "M15",
-      "generatedAt": "2026-08-03T23:40:51.916Z",
-      "analyzedCandleAt": "2026-08-03T23:15:00.000Z",
+      "generatedAt": "2026-08-03T23:50:53.124Z",
+      "analyzedCandleAt": "2026-08-03T23:30:00.000Z",
       "prepared": {
         "counts": {
           "m5": 1500,
@@ -945,8 +914,8 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-03T23:40:51.807Z",
-          "h1": "2026-08-03T23:30:51.878Z"
+          "m5": "2026-08-03T23:50:53.007Z",
+          "h1": "2026-08-03T23:45:56.777Z"
         },
         "quality": {
           "m5": {
@@ -956,16 +925,16 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-29T18:40:00.000Z",
-            "lastDate": "2026-08-03T23:35:00.000Z",
+            "firstDate": "2026-07-29T18:50:00.000Z",
+            "lastDate": "2026-08-03T23:45:00.000Z",
             "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
             "hasOHLC": true,
             "sourceMarkedStale": false,
-            "fallbackUsed": true,
+            "fallbackUsed": false,
             "fetchSucceeded": true,
-            "stale": true
+            "stale": false
           },
           "h1": {
             "validRows": 900,
@@ -976,7 +945,7 @@
             "timeFilteredCandlesRemoved": 0,
             "firstDate": "2026-06-27T11:00:00.000Z",
             "lastDate": "2026-08-03T22:00:00.000Z",
-            "ageMinutes": 100,
+            "ageMinutes": 110,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,
@@ -999,7 +968,7 @@
         {
           "name": "Market Data Safety",
           "pass": false,
-          "detail": "M5 market data: cache fallback is active; H1 confirmation data: cache fallback is active"
+          "detail": "H1 confirmation data: cache fallback is active"
         },
         {
           "name": "EMA Trend",
@@ -1128,7 +1097,7 @@
         "reason": "No matching Learning Enrichment performance context was found."
       },
       "mode": "M30",
-      "generatedAt": "2026-08-03T23:40:51.916Z",
+      "generatedAt": "2026-08-03T23:50:53.124Z",
       "analyzedCandleAt": "2026-08-03T23:00:00.000Z",
       "prepared": {
         "counts": {
@@ -1142,8 +1111,8 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-03T23:40:51.807Z",
-          "h1": "2026-08-03T23:30:51.878Z"
+          "m5": "2026-08-03T23:50:53.007Z",
+          "h1": "2026-08-03T23:45:56.777Z"
         },
         "quality": {
           "m5": {
@@ -1153,16 +1122,16 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-29T18:40:00.000Z",
-            "lastDate": "2026-08-03T23:35:00.000Z",
+            "firstDate": "2026-07-29T18:50:00.000Z",
+            "lastDate": "2026-08-03T23:45:00.000Z",
             "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
             "hasOHLC": true,
             "sourceMarkedStale": false,
-            "fallbackUsed": true,
+            "fallbackUsed": false,
             "fetchSucceeded": true,
-            "stale": true
+            "stale": false
           },
           "h1": {
             "validRows": 900,
@@ -1173,7 +1142,7 @@
             "timeFilteredCandlesRemoved": 0,
             "firstDate": "2026-06-27T11:00:00.000Z",
             "lastDate": "2026-08-03T22:00:00.000Z",
-            "ageMinutes": 100,
+            "ageMinutes": 110,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,

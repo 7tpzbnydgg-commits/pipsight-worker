@@ -42,12 +42,17 @@
 const fs = require("fs");
 const path = require("path");
 
+const {
+  createMt5MarketDataAdapter
+} = require("./mt5/mt5-market-data-adapter");
+
 /* =====================================================================
    Configuration
    ===================================================================== */
 
 const FILE_VERSION = "2.0.0";
 const SOURCE_NAME = "Twelve Data";
+const MT5_SOURCE_NAME = "MT5_BROKER";
 const INTERVAL = "1day";
 
 const API_BASE_URL =
@@ -130,6 +135,9 @@ const MAX_REQUESTS_PER_RUN =
    Runtime State
    ===================================================================== */
 
+const mt5MarketDataAdapter =
+  createMt5MarketDataAdapter();
+
 let requestsMade = 0;
 
 /* =====================================================================
@@ -138,8 +146,8 @@ let requestsMade = 0;
 
 function validateStartupConfiguration() {
   if (!API_KEY) {
-    throw new Error(
-      "Missing TWELVEDATA_API_KEY environment variable."
+    console.warn(
+      "TWELVEDATA_API_KEY is unavailable; Twelve Data fallback is disabled."
     );
   }
 
@@ -881,6 +889,12 @@ function reserveProviderRequest() {
 }
 
 function buildProviderUrl(symbol) {
+  if (!API_KEY) {
+    throw new Error(
+      "Missing TWELVEDATA_API_KEY environment variable."
+    );
+  }
+
   const url =
     new URL(API_BASE_URL);
 
@@ -1096,6 +1110,141 @@ async function fetchDaily(
 }
 
 /* =====================================================================
+   MT5 Primary / Twelve Data Fallback
+   ===================================================================== */
+
+async function fetchPrimaryDaily(
+  config
+) {
+  const mt5Result =
+    mt5MarketDataAdapter
+      .getDailyRows(
+        config.key,
+        {
+          limit:
+            OUTPUT_SIZE,
+
+          minimumRows:
+            200
+        }
+      );
+
+  if (mt5Result.available) {
+    const normalized =
+      normalizeCandles(
+        mt5Result.data
+      );
+
+    if (
+      normalized.rows.length === 0
+    ) {
+      throw new Error(
+        `MT5 returned no valid daily candles for ${config.symbol}.`
+      );
+    }
+
+    return {
+      rows:
+        normalized.rows,
+
+      quality:
+        normalized.quality,
+
+      source:
+        MT5_SOURCE_NAME,
+
+      fallbackUsed:
+        false,
+
+      primaryFailure:
+        null,
+
+      provider: {
+        name:
+          MT5_SOURCE_NAME,
+
+        symbol:
+          config.key,
+
+        brokerSymbol:
+          mt5Result.metadata
+            ?.brokerSymbol ||
+          null,
+
+        interval:
+          "D1",
+
+        availableRows:
+          mt5Result.metadata
+            ?.availableRows ??
+          normalized.rows.length,
+
+        storedRows:
+          mt5Result.metadata
+            ?.storedRows ??
+          normalized.rows.length,
+
+        latestOpenTimeUtc:
+          mt5Result.metadata
+            ?.latestOpenTimeUtc ||
+          null,
+
+        latestCloseTimeUtc:
+          mt5Result.metadata
+            ?.latestCloseTimeUtc ||
+          null,
+
+        ageMs:
+          mt5Result.metadata
+            ?.ageMs ??
+          null,
+
+        stale:
+          Boolean(
+            mt5Result.metadata
+              ?.stale
+          )
+      }
+    };
+  }
+
+  const primaryFailure = {
+    source:
+      MT5_SOURCE_NAME,
+
+    reason:
+      mt5Result.reason ||
+      "MT5_UNAVAILABLE",
+
+    metadata:
+      mt5Result.metadata ||
+      null
+  };
+
+  console.warn(
+    `MT5 primary unavailable for ${config.symbol}: ` +
+    `${primaryFailure.reason}. Using Twelve Data fallback.`
+  );
+
+  const fallback =
+    await fetchDaily(
+      config
+    );
+
+  return {
+    ...fallback,
+
+    source:
+      SOURCE_NAME,
+
+    fallbackUsed:
+      true,
+
+    primaryFailure
+  };
+}
+
+/* =====================================================================
    Symbol Metadata
    ===================================================================== */
 
@@ -1246,13 +1395,13 @@ function storeSuccessfulResult(
         merged.rows,
 
       source:
-        SOURCE_NAME,
+        fetched.source,
 
       fetchSucceeded:
         true,
 
       fallbackUsed:
-        false,
+        fetched.fallbackUsed,
 
       errorMessage:
         null,
@@ -1442,16 +1591,17 @@ async function processSymbol({
     );
 
   console.log(
-    `Fetching ${config.symbol} daily OHLC ` +
-    `(${requestsMade + 1}/${MAX_REQUESTS_PER_RUN})...`
+    `Loading ${config.symbol} daily OHLC ` +
+    `(MT5 primary, Twelve Data fallback)...`
   );
 
   try {
     /*
-     * Exactly one provider request is permitted for this symbol.
+     * MT5 is primary. The existing Twelve Data function remains the
+     * automatic provider fallback and still uses at most one request.
      */
     const fetched =
-      await fetchDaily(
+      await fetchPrimaryDaily(
         config
       );
 
@@ -1464,8 +1614,9 @@ async function processSymbol({
       );
 
     console.log(
-      `Fetched ${fetched.rows.length} valid candles for ` +
-      `${config.symbol}; stored ${merged.rows.length} total candles.`
+      `Loaded ${fetched.rows.length} valid daily candles from ` +
+      `${fetched.source} for ${config.symbol}; ` +
+      `stored ${merged.rows.length} total candles.`
     );
   } catch (error) {
     const failed =
@@ -1547,7 +1698,8 @@ function finalizeOutput(
         (
           output.metadata[
             config.key
-          ]?.fallbackUsed
+          ]?.source ===
+          "local-cache"
             ? 1
             : 0
         ),
@@ -1577,7 +1729,7 @@ function logRunSummary(
   );
 
   console.log(
-    `Twelve Data requests used: ` +
+    `Twelve Data fallback requests used: ` +
     `${output.requestsMade}/${MAX_REQUESTS_PER_RUN}`
   );
 

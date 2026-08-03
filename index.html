@@ -13217,12 +13217,8 @@ function backendScalpEntryForPair(
     const primary =
       pairSignals.find(
         item=>
-          item.signal === "BUY" ||
-          item.signal === "SELL"
-      ) ||
-      pairSignals.find(
-        item=>
           String(item.mode || "")
+            .trim()
             .toUpperCase() === "M5"
       ) ||
       pairSignals[0];

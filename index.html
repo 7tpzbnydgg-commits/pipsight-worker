@@ -14595,8 +14595,11 @@ function isScalpSignalFresh(
     payload?.prepared?.quality?.m5 ??
     null;
 
-  if(quality && typeof quality.stale === "boolean"){
-    return !quality.stale;
+  if(
+    quality &&
+    quality.stale === true
+  ){
+    return false;
   }
 
   const timestamp =

@@ -10270,12 +10270,21 @@ async function fetchScalpCandles({
     SCALP_DATA =
       normalizedPayload;
 
-    return SCALP_DATA;
-  }catch(error){
-    console.warn(
-      "Scalp-candle worker fetch failed:",
-      normalizeErrorMessage(error)
-    );
+    for(const pair of PAIRS){
+      const openTrades =
+        loadScalpOpen();
+
+      if(
+        openTrades[pair.key] &&
+        openTrades[pair.key].status === "OPEN"
+      ){
+        updateScalpTracker(
+          pair,
+          normalizedPayload[pair.key],
+          null
+        );
+      }
+    }
 
     return SCALP_DATA;
   }

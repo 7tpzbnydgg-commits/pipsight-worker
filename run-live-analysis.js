@@ -15275,6 +15275,21 @@ async function runLiveAnalysisRuntime(
       );
   }
 
+  output.runtime.telegram = {
+    enabled:
+      runtimeOptions.processTelegram ===
+      true,
+
+    sentCount:
+      telegramResult.sentCount,
+
+    skippedCount:
+      telegramResult.skippedCount,
+
+    failedCount:
+      telegramResult.failedCount,
+  };
+
   p6CreateBackupIfRequested(
     runtimeOptions
       .liveAnalysisPath,

@@ -63,6 +63,7 @@ jobs:
           node telegram-pattern-alerts.js
 
       - name: Validate sent-alert state
+        id: validate_alert_state
         if: always()
         run: |
           set -euo pipefail
@@ -121,7 +122,7 @@ jobs:
           '
 
       - name: Commit sent-alert state
-        if: always()
+        if: always() && steps.validate_alert_state.outcome == 'success'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

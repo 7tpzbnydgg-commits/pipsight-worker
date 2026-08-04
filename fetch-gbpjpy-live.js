@@ -23,15 +23,9 @@
 const fs = require("fs");
 const path = require("path");
 
-const {
-  createMt5MarketDataAdapter
-} = require("./mt5/mt5-market-data-adapter");
-
 // -----------------------------------------------------------------------
 // Runtime configuration
 // -----------------------------------------------------------------------
-
-const MT5_PROVIDER_NAME = "MT5_BROKER";
 
 const CONFIG = Object.freeze({
   provider: "Twelve Data",
@@ -62,18 +56,15 @@ const API_KEY = String(
   process.env[CONFIG.apiKeyEnvName] || ""
 ).trim();
 
-const mt5MarketDataAdapter =
-  createMt5MarketDataAdapter();
-
 // -----------------------------------------------------------------------
 // Startup validation
 // -----------------------------------------------------------------------
 
 function validateStartupConfig() {
   if (!API_KEY) {
-    console.warn(
-      `${CONFIG.apiKeyEnvName} is unavailable; ` +
-      "Twelve Data fallback is disabled."
+    throw new Error(
+      `${CONFIG.apiKeyEnvName} secret is not set — ` +
+      "see worker/ADD-TO-EXISTING-REPO.md"
     );
   }
 
@@ -143,13 +134,6 @@ function sleep(ms) {
 }
 
 function buildPriceUrl() {
-  if (!API_KEY) {
-    throw new Error(
-      `${CONFIG.apiKeyEnvName} secret is not set — ` +
-      "Twelve Data fallback cannot run"
-    );
-  }
-
   const url = new URL(
     "/price",
     CONFIG.apiBaseUrl
@@ -605,94 +589,23 @@ async function fetchLivePrice() {
   );
 }
 
-async function fetchPrimaryLivePrice() {
-  const mt5Result =
-    mt5MarketDataAdapter
-      .getDisplayPrice(
-        "GBPJPY",
-        {
-          /*
-           * Existing output exposes one indicative price, not execution-side
-           * bid/ask fields. MID preserves that single-price contract.
-           */
-          side:
-            "MID"
-        }
-      );
+async function main() {
+  validateStartupConfig();
 
-  if (mt5Result.available) {
-    const price =
-      Number(
-        mt5Result.data
-      );
-
-    if (
-      !Number.isFinite(price) ||
-      price <= 0
-    ) {
-      throw new Error(
-        "MT5 returned an invalid GBP/JPY display price"
-      );
-    }
-
-    return {
-      price,
-      source:
-        MT5_PROVIDER_NAME,
-      fallbackUsed:
-        false,
-      primaryFailure:
-        null
-    };
-  }
-
-  const primaryFailure = {
-    source:
-      MT5_PROVIDER_NAME,
-    reason:
-      mt5Result.reason ||
-      "MT5_UNAVAILABLE",
-    metadata:
-      mt5Result.metadata ||
-      null
-  };
-
-  console.warn(
-    `MT5 primary unavailable for ${CONFIG.symbol}: ` +
-    `${primaryFailure.reason}. Using Twelve Data fallback.`
+  console.log(
+    `Fetching live ${CONFIG.symbol} price from ${CONFIG.provider}...`
   );
 
   const price =
     await fetchLivePrice();
 
-  return {
-    price,
-    source:
-      CONFIG.provider,
-    fallbackUsed:
-      true,
-    primaryFailure
-  };
-}
-
-async function main() {
-  validateStartupConfig();
-
-  console.log(
-    `Loading live ${CONFIG.symbol} price ` +
-    "(MT5 primary, Twelve Data fallback)..."
-  );
-
-  const selected =
-    await fetchPrimaryLivePrice();
-
   const output =
     writeLivePriceOutput(
-      selected.price
+      price
     );
 
   console.log(
-    `Wrote live ${CONFIG.symbol} tick from ${selected.source}:`,
+    `Wrote live ${CONFIG.symbol} tick:`,
     output
   );
 
@@ -780,7 +693,6 @@ function logFatalError(error) {
    writeLivePriceOutput,
 
    fetchLivePrice,
-   fetchPrimaryLivePrice,
    main,
    logFatalError,
  });

@@ -2509,6 +2509,10 @@ function normalizeScalpSignal({
 
     timestamp:
       firstDefined(
+        rawSignal.analyzedCandleAt,
+        rawSignal.signalCandleAt,
+        rawSignal.candleTime,
+        rawSignal.candleTimestamp,
         rawSignal.generatedAt,
         rawSignal.createdAt,
         rawSignal.updatedAt,
@@ -2754,45 +2758,13 @@ async function processPatternAlerts() {
     );
 
   /*
-   * data/scalp-signals.json is the primary Scalp source.
-   * live-analysis Scalp is used only when the primary source
-   * contains no qualified BUY/SELL trade.
+   * Scalp Telegram alerts must match the dashboard's authoritative
+   * backend source exactly. Do not fall back to live-analysis Scalp:
+   * when data/scalp-signals.json has no qualified BUY/SELL trade,
+   * no Scalp Telegram trade alert is sent.
    */
-  let scalpCollection =
+  const scalpCollection =
     primaryScalpCollection;
-
-  if (
-    !primaryScalpCollection.sourceFailed &&
-    primaryScalpCollection.alerts.length === 0
-  ) {
-    console.log(
-      "No qualified primary Scalp trade found. " +
-      "Checking live-analysis Scalp fallback..."
-    );
-
-    scalpCollection =
-      await collectSourceSafely(
-        "Live Analysis Scalp Fallback",
-        () =>
-          collectLiveAnalysisAlerts({
-            includeScalp:
-              true
-          })
-      );
-
-    /*
-     * includeScalp=true also returns Swing, Intraday and Master.
-     * Keep only Scalp here because those engines were already
-     * collected by liveCollection.
-     */
-    scalpCollection.alerts =
-      scalpCollection.alerts.filter(
-        ({ signal }) =>
-          normalizeEngine(
-            signal.engine
-          ) === "scalp"
-      );
-  }
 
   const combined =
     mergeAlertCollections([

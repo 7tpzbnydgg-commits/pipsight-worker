@@ -2838,36 +2838,30 @@ async function processPatternAlerts() {
       collectPatternAlerts
     );
 
+  /*
+   * Use live-analysis.json as the single authoritative local source for
+   * Swing, Intraday, Scalp and Master Telegram alerts.
+   *
+   * The dashboard and analysis-history.json are built from the same
+   * canonical Live Analysis results. Reading raw data/scalp-signals.json
+   * separately here can expose an individual M5/M15/M30 setup that did not
+   * pass the final Scalp confirmation gate and therefore never opened on
+   * the dashboard or entered history.
+   */
   const liveCollection =
     await collectSourceSafely(
       "Live Analysis",
       () =>
         collectLiveAnalysisAlerts({
           includeScalp:
-            false
+            true
         })
     );
-
-  const primaryScalpCollection =
-    await collectSourceSafely(
-      "Primary Scalp",
-      collectScalpAlerts
-    );
-
-  /*
-   * Scalp Telegram alerts must match the dashboard's authoritative
-   * backend source exactly. Do not fall back to live-analysis Scalp:
-   * when data/scalp-signals.json has no qualified BUY/SELL trade,
-   * no Scalp Telegram trade alert is sent.
-   */
-  const scalpCollection =
-    primaryScalpCollection;
 
   const combined =
     mergeAlertCollections([
       patternCollection,
-      liveCollection,
-      scalpCollection
+      liveCollection
     ]);
 
   let sentCount = 0;

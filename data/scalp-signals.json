@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-04T02:20:55.830Z",
+  "generatedAt": "2026-08-04T02:31:36.235Z",
   "engineVersion": "1.0.0",
   "strategyVersion": "scalp-lockstep-1.0",
   "signals": [
@@ -14,17 +14,17 @@
         {
           "name": "EMA Trend",
           "pass": true,
-          "detail": "BUY full EMA alignment confirmed at 4/4: price 4058.35089, EMA20 4055.369238, EMA50 4053.892635, EMA100 4052.085433, EMA200 4050.506482"
+          "detail": "BUY full EMA alignment confirmed at 4/4: price 4056.41507, EMA20 4055.570913, EMA50 4054.092677, EMA100 4052.278066, EMA200 4050.635083"
         },
         {
           "name": "MACD",
           "pass": true,
-          "detail": "BUY confirmed: MACD 1.166271 is above signal 0.535777; histogram 0.630494"
+          "detail": "BUY confirmed: MACD 1.028678 is above signal 0.732496; histogram 0.296182"
         },
         {
           "name": "RSI",
           "pass": true,
-          "detail": "BUY RSI confirmation passed at 55.99; required range 45–65"
+          "detail": "BUY RSI confirmation passed at 51.58; required range 45–65"
         },
         {
           "name": "Higher TF",
@@ -39,7 +39,7 @@
         {
           "name": "Risk Reward",
           "pass": false,
-          "detail": "Calculated R:R is 1:1.61 using entry 4058.35089, stop 4057.2295 and target 4060.15426; minimum required is 1:2"
+          "detail": "Calculated R:R is 1:0.15 using entry 4056.41507, stop 4056.07309 and target 4056.46601; minimum required is 1:2"
         }
       ],
       "tradePlan": null,
@@ -132,13 +132,13 @@
         "reason": "No matching Learning Enrichment performance context was found."
       },
       "mode": "M5",
-      "generatedAt": "2026-08-04T02:20:55.830Z",
-      "analyzedCandleAt": "2026-08-04T02:15:00.000Z",
+      "generatedAt": "2026-08-04T02:31:36.235Z",
+      "analyzedCandleAt": "2026-08-04T02:25:00.000Z",
       "prepared": {
         "counts": {
           "m5": 1500,
-          "m15": 499,
-          "m30": 249,
+          "m15": 500,
+          "m30": 250,
           "h1": 900
         },
         "source": {
@@ -146,7 +146,7 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-04T02:20:55.713Z",
+          "m5": "2026-08-04T02:31:36.135Z",
           "h1": "2026-08-04T02:16:32.776Z"
         },
         "quality": {
@@ -157,9 +157,9 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-29T21:20:00.000Z",
-            "lastDate": "2026-08-04T02:15:00.000Z",
-            "ageMinutes": 5,
+            "firstDate": "2026-07-29T21:30:00.000Z",
+            "lastDate": "2026-08-04T02:25:00.000Z",
+            "ageMinutes": 6,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
             "hasOHLC": true,
@@ -177,7 +177,7 @@
             "timeFilteredCandlesRemoved": 0,
             "firstDate": "2026-06-27T14:00:00.000Z",
             "lastDate": "2026-08-04T01:00:00.000Z",
-            "ageMinutes": 80,
+            "ageMinutes": 91,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,
@@ -194,38 +194,42 @@
       "signal": "WAIT",
       "confidence": 0,
       "reasons": [
-        "Risk Reward below 1:2"
+        "MACD confirmation failed"
       ],
       "steps": [
         {
           "name": "EMA Trend",
           "pass": true,
-          "detail": "BUY qualified partial EMA alignment confirmed at 3/4 with EMA20–EMA50–EMA100 core structure; confidence penalty -10: price 4058.48151, EMA20 4052.592317, EMA50 4050.745374, EMA100 4050.223976, EMA200 4050.345587"
+          "detail": "BUY qualified partial EMA alignment confirmed at 3/4 with EMA20–EMA50–EMA100 core structure; confidence penalty -10: price 4056.41507, EMA20 4052.838946, EMA50 4050.931266, EMA100 4050.346572, EMA200 4050.40598"
         },
         {
           "name": "MACD",
-          "pass": true,
-          "detail": "BUY confirmed: MACD 2.26959 is above signal 2.267016; histogram 0.002575"
+          "pass": false,
+          "detail": "BUY not confirmed: MACD 2.18231 is not above signal 2.250074; histogram -0.067765"
         },
         {
           "name": "RSI",
-          "pass": true,
-          "detail": "BUY RSI confirmation passed at 57.66; required range 45–65"
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because MACD did not pass"
         },
         {
           "name": "Higher TF",
-          "pass": true,
-          "detail": "Higher timeframe has no full EMA direction, so no conflicting trend was found"
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because MACD did not pass"
         },
         {
           "name": "News",
-          "pass": true,
-          "detail": "No conflicting high-impact news found across 4 pair-specific item(s); net news score 55"
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because MACD did not pass"
         },
         {
           "name": "Risk Reward",
-          "pass": false,
-          "detail": "Calculated R:R is 1:0.65 using entry 4058.48151, stop 4055.47895 and target 4060.41904; minimum required is 1:2"
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because MACD did not pass"
         }
       ],
       "tradePlan": null,
@@ -318,13 +322,13 @@
         "reason": "No matching Learning Enrichment performance context was found."
       },
       "mode": "M15",
-      "generatedAt": "2026-08-04T02:20:55.830Z",
-      "analyzedCandleAt": "2026-08-04T02:00:00.000Z",
+      "generatedAt": "2026-08-04T02:31:36.235Z",
+      "analyzedCandleAt": "2026-08-04T02:15:00.000Z",
       "prepared": {
         "counts": {
           "m5": 1500,
-          "m15": 499,
-          "m30": 249,
+          "m15": 500,
+          "m30": 250,
           "h1": 900
         },
         "source": {
@@ -332,7 +336,7 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-04T02:20:55.713Z",
+          "m5": "2026-08-04T02:31:36.135Z",
           "h1": "2026-08-04T02:16:32.776Z"
         },
         "quality": {
@@ -343,9 +347,9 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-29T21:20:00.000Z",
-            "lastDate": "2026-08-04T02:15:00.000Z",
-            "ageMinutes": 5,
+            "firstDate": "2026-07-29T21:30:00.000Z",
+            "lastDate": "2026-08-04T02:25:00.000Z",
+            "ageMinutes": 6,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
             "hasOHLC": true,
@@ -363,7 +367,7 @@
             "timeFilteredCandlesRemoved": 0,
             "firstDate": "2026-06-27T14:00:00.000Z",
             "lastDate": "2026-08-04T01:00:00.000Z",
-            "ageMinutes": 80,
+            "ageMinutes": 91,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,
@@ -515,13 +519,13 @@
         "reason": "No matching Learning Enrichment performance context was found."
       },
       "mode": "M30",
-      "generatedAt": "2026-08-04T02:20:55.830Z",
-      "analyzedCandleAt": "2026-08-04T01:30:00.000Z",
+      "generatedAt": "2026-08-04T02:31:36.235Z",
+      "analyzedCandleAt": "2026-08-04T02:00:00.000Z",
       "prepared": {
         "counts": {
           "m5": 1500,
-          "m15": 499,
-          "m30": 249,
+          "m15": 500,
+          "m30": 250,
           "h1": 900
         },
         "source": {
@@ -529,7 +533,7 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-04T02:20:55.713Z",
+          "m5": "2026-08-04T02:31:36.135Z",
           "h1": "2026-08-04T02:16:32.776Z"
         },
         "quality": {
@@ -540,9 +544,9 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-29T21:20:00.000Z",
-            "lastDate": "2026-08-04T02:15:00.000Z",
-            "ageMinutes": 5,
+            "firstDate": "2026-07-29T21:30:00.000Z",
+            "lastDate": "2026-08-04T02:25:00.000Z",
+            "ageMinutes": 6,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
             "hasOHLC": true,
@@ -560,7 +564,7 @@
             "timeFilteredCandlesRemoved": 0,
             "firstDate": "2026-06-27T14:00:00.000Z",
             "lastDate": "2026-08-04T01:00:00.000Z",
-            "ageMinutes": 80,
+            "ageMinutes": 91,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,
@@ -583,17 +587,17 @@
         {
           "name": "EMA Trend",
           "pass": true,
-          "detail": "BUY full EMA alignment confirmed at 4/4: price 211.71941, EMA20 211.514176, EMA50 211.386441, EMA100 211.262294, EMA200 211.173703"
+          "detail": "BUY full EMA alignment confirmed at 4/4: price 211.79619, EMA20 211.545596, EMA50 211.410875, EMA100 211.282009, EMA200 211.18541"
         },
         {
           "name": "MACD",
           "pass": true,
-          "detail": "BUY confirmed: MACD 0.085234 is above signal 0.06053; histogram 0.024704"
+          "detail": "BUY confirmed: MACD 0.094375 is above signal 0.071712; histogram 0.022663"
         },
         {
           "name": "RSI",
           "pass": false,
-          "detail": "BUY RSI confirmation failed at 65.82; required range 45–65"
+          "detail": "BUY RSI confirmation failed at 69.89; required range 45–65"
         },
         {
           "name": "Higher TF",
@@ -704,13 +708,13 @@
         "reason": "No matching Learning Enrichment performance context was found."
       },
       "mode": "M5",
-      "generatedAt": "2026-08-04T02:20:55.830Z",
-      "analyzedCandleAt": "2026-08-04T02:15:00.000Z",
+      "generatedAt": "2026-08-04T02:31:36.235Z",
+      "analyzedCandleAt": "2026-08-04T02:25:00.000Z",
       "prepared": {
         "counts": {
           "m5": 1500,
-          "m15": 499,
-          "m30": 249,
+          "m15": 500,
+          "m30": 250,
           "h1": 900
         },
         "source": {
@@ -718,7 +722,7 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-04T02:20:55.713Z",
+          "m5": "2026-08-04T02:31:36.135Z",
           "h1": "2026-08-04T02:16:32.776Z"
         },
         "quality": {
@@ -729,9 +733,9 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-29T21:20:00.000Z",
-            "lastDate": "2026-08-04T02:15:00.000Z",
-            "ageMinutes": 5,
+            "firstDate": "2026-07-29T21:30:00.000Z",
+            "lastDate": "2026-08-04T02:25:00.000Z",
+            "ageMinutes": 6,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
             "hasOHLC": true,
@@ -749,7 +753,7 @@
             "timeFilteredCandlesRemoved": 0,
             "firstDate": "2026-06-27T14:00:00.000Z",
             "lastDate": "2026-08-04T01:00:00.000Z",
-            "ageMinutes": 80,
+            "ageMinutes": 91,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,
@@ -895,13 +899,13 @@
         "reason": "No matching Learning Enrichment performance context was found."
       },
       "mode": "M15",
-      "generatedAt": "2026-08-04T02:20:55.830Z",
-      "analyzedCandleAt": "2026-08-04T02:00:00.000Z",
+      "generatedAt": "2026-08-04T02:31:36.235Z",
+      "analyzedCandleAt": "2026-08-04T02:15:00.000Z",
       "prepared": {
         "counts": {
           "m5": 1500,
-          "m15": 499,
-          "m30": 249,
+          "m15": 500,
+          "m30": 250,
           "h1": 900
         },
         "source": {
@@ -909,7 +913,7 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-04T02:20:55.713Z",
+          "m5": "2026-08-04T02:31:36.135Z",
           "h1": "2026-08-04T02:16:32.776Z"
         },
         "quality": {
@@ -920,9 +924,9 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-29T21:20:00.000Z",
-            "lastDate": "2026-08-04T02:15:00.000Z",
-            "ageMinutes": 5,
+            "firstDate": "2026-07-29T21:30:00.000Z",
+            "lastDate": "2026-08-04T02:25:00.000Z",
+            "ageMinutes": 6,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
             "hasOHLC": true,
@@ -940,7 +944,7 @@
             "timeFilteredCandlesRemoved": 0,
             "firstDate": "2026-06-27T14:00:00.000Z",
             "lastDate": "2026-08-04T01:00:00.000Z",
-            "ageMinutes": 80,
+            "ageMinutes": 91,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,
@@ -1092,13 +1096,13 @@
         "reason": "No matching Learning Enrichment performance context was found."
       },
       "mode": "M30",
-      "generatedAt": "2026-08-04T02:20:55.830Z",
-      "analyzedCandleAt": "2026-08-04T01:30:00.000Z",
+      "generatedAt": "2026-08-04T02:31:36.235Z",
+      "analyzedCandleAt": "2026-08-04T02:00:00.000Z",
       "prepared": {
         "counts": {
           "m5": 1500,
-          "m15": 499,
-          "m30": 249,
+          "m15": 500,
+          "m30": 250,
           "h1": 900
         },
         "source": {
@@ -1106,7 +1110,7 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-04T02:20:55.713Z",
+          "m5": "2026-08-04T02:31:36.135Z",
           "h1": "2026-08-04T02:16:32.776Z"
         },
         "quality": {
@@ -1117,9 +1121,9 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-29T21:20:00.000Z",
-            "lastDate": "2026-08-04T02:15:00.000Z",
-            "ageMinutes": 5,
+            "firstDate": "2026-07-29T21:30:00.000Z",
+            "lastDate": "2026-08-04T02:25:00.000Z",
+            "ageMinutes": 6,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
             "hasOHLC": true,
@@ -1137,7 +1141,7 @@
             "timeFilteredCandlesRemoved": 0,
             "firstDate": "2026-06-27T14:00:00.000Z",
             "lastDate": "2026-08-04T01:00:00.000Z",
-            "ageMinutes": 80,
+            "ageMinutes": 91,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,

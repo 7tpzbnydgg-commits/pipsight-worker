@@ -1397,16 +1397,95 @@ class PipSightLearner {
          */
 
         const [
-            strategy,
-            pair,
+            strategyInput,
+            pairInput,
             won,
             confidence
         ] = args;
 
+        const strategy =
+            this.normalizeLegacyStrategy(
+                strategyInput
+            );
+
+        const pair =
+            this.normalizeLegacyPair(
+                pairInput
+            );
+
+        /*
+         * The four-argument legacy signature does not contain timeframe,
+         * direction or entry. Never invent those values. Resolve it only
+         * when exactly one existing pending signal matches the supplied
+         * pair and strategy, then reuse that signal's verified fields.
+         */
+        const matchingPendingSignals =
+            this.data.signals.filter(
+                signal =>
+                    isPlainObject(signal) &&
+                    signal.outcome === null &&
+                    signal.pair === pair &&
+                    signal.strategy === strategy &&
+                    LearningConfig
+                        .SUPPORTED_TIMEFRAMES
+                        .includes(
+                            signal.timeframe
+                        ) &&
+                    (
+                        signal.direction === "BUY" ||
+                        signal.direction === "SELL"
+                    ) &&
+                    isFiniteNumber(
+                        signal.entry
+                    ) &&
+                    signal.entry > 0
+            );
+
+        if (
+            matchingPendingSignals.length !==
+            1
+        ) {
+            console.warn(
+                matchingPendingSignals.length === 0
+                    ? "Legacy addResult failed: no unique pending signal matches the supplied pair and strategy."
+                    : "Legacy addResult failed: multiple pending signals match; use object-style addResult with timeframe, direction and entry."
+            );
+
+            return false;
+        }
+
+        const pendingSignal =
+            matchingPendingSignals[0];
+
         return this.recordOutcome({
-            strategy,
-            pair,
-            result: won ? "WIN" : "LOSS",
+            strategy:
+                pendingSignal.strategy,
+
+            pair:
+                pendingSignal.pair,
+
+            timeframe:
+                pendingSignal.timeframe,
+
+            direction:
+                pendingSignal.direction,
+
+            entry:
+                pendingSignal.entry,
+
+            stopLoss:
+                pendingSignal.stopLoss,
+
+            takeProfit:
+                pendingSignal.takeProfit,
+
+            openedAt:
+                pendingSignal.openedAt ||
+                pendingSignal.timestamp,
+
+            result:
+                won ? "WIN" : "LOSS",
+
             confidence
         });
     }

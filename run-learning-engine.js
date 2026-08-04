@@ -338,16 +338,42 @@ function atomicWriteJSON(
       2
     )}\n`;
 
-  fs.writeFileSync(
-    temporaryPath,
-    serialized,
-    "utf8"
-  );
+  try {
 
-  fs.renameSync(
-    temporaryPath,
-    filePath
-  );
+    fs.writeFileSync(
+      temporaryPath,
+      serialized,
+      "utf8"
+    );
+
+    fs.renameSync(
+      temporaryPath,
+      filePath
+    );
+
+  } finally {
+
+    if (
+      fs.existsSync(
+        temporaryPath
+      )
+    ) {
+
+      try {
+
+        fs.unlinkSync(
+          temporaryPath
+        );
+
+      } catch (_) {
+
+        // Cleanup failure must not hide the original filesystem error.
+
+      }
+
+    }
+
+  }
 
 }
 
@@ -982,6 +1008,46 @@ function normalizeState(
 
     processedTradeKeys,
 
+    pendingTransaction:
+      isPlainObject(
+        value.pendingTransaction
+      )
+        ? {
+            version:
+              1,
+
+            createdAt:
+              toISOStringOrNull(
+                value.pendingTransaction.createdAt
+              ),
+
+            exportHash:
+              toTrimmedString(
+                value.pendingTransaction.exportHash
+              ) || null,
+
+            tradeKeys:
+              Array.isArray(
+                value.pendingTransaction.tradeKeys
+              )
+                ? [
+                    ...new Set(
+                      value.pendingTransaction.tradeKeys
+                        .map(
+                          item =>
+                            toTrimmedString(
+                              item
+                            )
+                        )
+                        .filter(
+                          Boolean
+                        )
+                    )
+                  ]
+                : []
+          }
+        : null,
+
     totals: {
       ...fallback.totals,
       ...totals
@@ -1158,6 +1224,176 @@ function loadExistingLearningExport() {
   }
 
   return null;
+
+}
+
+// -----------------------------------------------------------------------------
+// Cross-file transaction recovery
+// -----------------------------------------------------------------------------
+
+function createLearnerExportHash(
+  learnerExport
+) {
+
+  const payload = {
+    learning:
+      isPlainObject(
+        learnerExport?.learning
+      )
+        ? learnerExport.learning
+        : {},
+
+    confidence:
+      isPlainObject(
+        learnerExport?.confidence
+      )
+        ? learnerExport.confidence
+        : {}
+  };
+
+  return crypto
+    .createHash(
+      "sha256"
+    )
+    .update(
+      JSON.stringify(
+        payload
+      )
+    )
+    .digest(
+      "hex"
+    );
+
+}
+
+function createPendingTransaction(
+  learnerExport,
+  successfulResults
+) {
+
+  const tradeKeys = [
+    ...new Set(
+      (
+        Array.isArray(
+          successfulResults
+        )
+          ? successfulResults
+          : []
+      )
+        .map(
+          result =>
+            toTrimmedString(
+              result?.tradeKey
+            )
+        )
+        .filter(
+          Boolean
+        )
+    )
+  ];
+
+  return {
+    version:
+      1,
+
+    createdAt:
+      new Date().toISOString(),
+
+    exportHash:
+      createLearnerExportHash(
+        learnerExport
+      ),
+
+    tradeKeys
+  };
+
+}
+
+function recoverPendingTransaction(
+  state,
+  existingExport
+) {
+
+  const pending =
+    isPlainObject(
+      state?.pendingTransaction
+    )
+      ? state.pendingTransaction
+      : null;
+
+  if (!pending) {
+
+    return {
+      recovered:
+        false,
+
+      matched:
+        false,
+
+      committedKeys:
+        0
+    };
+
+  }
+
+  const expectedHash =
+    toTrimmedString(
+      pending.exportHash
+    );
+
+  const currentHash =
+    existingExport
+      ? createLearnerExportHash(
+          existingExport
+        )
+      : null;
+
+  let committedKeys =
+    0;
+
+  if (
+    expectedHash &&
+    currentHash ===
+      expectedHash
+  ) {
+
+    /*
+     * The learning export reached disk but the final state commit did not.
+     * Rewrite both output files from the verified export, then promote the
+     * pending trade keys into the authoritative processed-key set.
+     */
+    saveLearnerExport(
+      existingExport
+    );
+
+    committedKeys =
+      commitProcessedTradeKeys(
+        state,
+        pending.tradeKeys.map(
+          tradeKey => ({
+            tradeKey
+          })
+        )
+      );
+
+  }
+
+  state.pendingTransaction =
+    null;
+
+  return {
+    recovered:
+      true,
+
+    matched:
+      Boolean(
+        expectedHash &&
+        currentHash ===
+          expectedHash
+      ),
+
+    committedKeys
+  };
 
 }
 
@@ -4420,6 +4656,40 @@ function runLearningEngine() {
     const existingExport =
       loadExistingLearningExport();
 
+    const recovery =
+      recoverPendingTransaction(
+        state,
+        existingExport
+      );
+
+    if (
+      recovery.recovered
+    ) {
+
+      console.warn(
+        recovery.matched
+          ? `[learning-engine] Recovered a completed learning transaction and committed ${recovery.committedKeys} trade keys.`
+          : "[learning-engine] Cleared an incomplete learning transaction; affected trades will be retried."
+      );
+
+      const recoveryStateSave =
+        trySaveLearningState(
+          state
+        );
+
+      if (
+        !recoveryStateSave.success
+      ) {
+
+        throw recoveryStateSave.error;
+
+      }
+
+      state =
+        recoveryStateSave.state;
+
+    }
+
     learner =
       createLearner();
 
@@ -4499,25 +4769,55 @@ function runLearningEngine() {
 
     }
 
+    const learnerExport =
+      exportLearnerData(
+        learner
+      );
+
+    /*
+     * Persist a recovery marker before writing either learning output.
+     * The marker contains the exact expected export hash and successful
+     * trade keys, but pending keys are not treated as processed.
+     */
+    state.pendingTransaction =
+      createPendingTransaction(
+        learnerExport,
+        processing.successful
+      );
+
+    const pendingStateSave =
+      trySaveLearningState(
+        state
+      );
+
+    if (
+      !pendingStateSave.success
+    ) {
+
+      throw pendingStateSave.error;
+
+    }
+
+    state =
+      pendingStateSave.state;
+
+    persistenceResult =
+      saveLearnerExport(
+        learnerExport
+      );
+
     const committedKeys =
       commitProcessedTradeKeys(
         state,
         processing.successful
       );
 
+    state.pendingTransaction =
+      null;
+
     console.log(
       `[learning-engine] Committed ${committedKeys} processed trade keys.`
     );
-
-    const learnerExport =
-      exportLearnerData(
-        learner
-      );
-
-    persistenceResult =
-      saveLearnerExport(
-        learnerExport
-      );
 
     state.lastRun.persistedLearningData =
       true;

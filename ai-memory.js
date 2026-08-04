@@ -1920,6 +1920,12 @@ function createEmptyMemoryState(
 
     processedTradeKeys: [],
 
+    /*
+     * Crash-recovery marker for the two-file AI Memory commit.
+     * This field is null after every fully completed run.
+     */
+    pendingTransaction: null,
+
     counters: {
       runs: 0,
       successfulRuns: 0,
@@ -2093,6 +2099,11 @@ function normalizeExistingMemoryState(
       -MAX_PROCESSED_KEYS
     );
 
+  normalized.pendingTransaction =
+    normalizePendingMemoryTransaction(
+      value.pendingTransaction
+    );
+
   normalized.counters =
     normalizeStateCounters(
       value.counters
@@ -2104,6 +2115,460 @@ function normalizeExistingMemoryState(
     );
 
   return normalized;
+
+}
+
+function normalizePendingMemoryTransaction(
+  value
+) {
+
+  if (
+    !isPlainObject(
+      value
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const memoryHash =
+    toNonEmptyStringOrNull(
+      value.memoryHash
+    );
+
+  const runAt =
+    toISOStringOrNull(
+      value.runAt
+    );
+
+  const status =
+    toNonEmptyStringOrNull(
+      value.status
+    );
+
+  if (
+    !memoryHash ||
+    !runAt ||
+    (
+      status !== "UPDATED" &&
+      status !== "UNCHANGED"
+    )
+  ) {
+
+    return null;
+
+  }
+
+  return {
+    version:
+      1,
+
+    createdAt:
+      toISOStringOrNull(
+        value.createdAt
+      ) ||
+      runAt,
+
+    runAt,
+
+    status,
+
+    memoryHash,
+
+    sourceHashes: {
+      learningData:
+        toNonEmptyStringOrNull(
+          getNestedValue(
+            value,
+            [
+              "sourceHashes",
+              "learningData"
+            ]
+          )
+        ),
+
+      confidenceData:
+        toNonEmptyStringOrNull(
+          getNestedValue(
+            value,
+            [
+              "sourceHashes",
+              "confidenceData"
+            ]
+          )
+        ),
+
+      learningEnrichment:
+        toNonEmptyStringOrNull(
+          getNestedValue(
+            value,
+            [
+              "sourceHashes",
+              "learningEnrichment"
+            ]
+          )
+        )
+    },
+
+    sourceModifiedAt: {
+      learningData:
+        toISOStringOrNull(
+          getNestedValue(
+            value,
+            [
+              "sourceModifiedAt",
+              "learningData"
+            ]
+          )
+        ),
+
+      confidenceData:
+        toISOStringOrNull(
+          getNestedValue(
+            value,
+            [
+              "sourceModifiedAt",
+              "confidenceData"
+            ]
+          )
+        ),
+
+      learningEnrichment:
+        toISOStringOrNull(
+          getNestedValue(
+            value,
+            [
+              "sourceModifiedAt",
+              "learningEnrichment"
+            ]
+          )
+        )
+    },
+
+    counts: {
+      sourceSignals:
+        normalizeNonNegativeInteger(
+          getNestedValue(
+            value,
+            [
+              "counts",
+              "sourceSignals"
+            ]
+          )
+        ),
+
+      acceptedTrades:
+        normalizeNonNegativeInteger(
+          getNestedValue(
+            value,
+            [
+              "counts",
+              "acceptedTrades"
+            ]
+          )
+        ),
+
+      rejectedTrades:
+        normalizeNonNegativeInteger(
+          getNestedValue(
+            value,
+            [
+              "counts",
+              "rejectedTrades"
+            ]
+          )
+        ),
+
+      normalizedDuplicateTradeKeys:
+        normalizeNonNegativeInteger(
+          getNestedValue(
+            value,
+            [
+              "counts",
+              "normalizedDuplicateTradeKeys"
+            ]
+          )
+        ),
+
+      newTradeKeys:
+        normalizeNonNegativeInteger(
+          getNestedValue(
+            value,
+            [
+              "counts",
+              "newTradeKeys"
+            ]
+          )
+        ),
+
+      reconciledDuplicateTradeKeys:
+        normalizeNonNegativeInteger(
+          getNestedValue(
+            value,
+            [
+              "counts",
+              "reconciledDuplicateTradeKeys"
+            ]
+          )
+        )
+    }
+  };
+
+}
+
+function createPendingMemoryTransaction({
+  runAt,
+  status,
+  memoryDocument,
+  learningHash,
+  confidenceHash,
+  enrichmentHash,
+  learningModifiedAt,
+  confidenceModifiedAt,
+  enrichmentModifiedAt,
+  normalizedTrades,
+  canonicalTrades,
+  keyReconciliation
+}) {
+
+  return normalizePendingMemoryTransaction({
+    version:
+      1,
+
+    createdAt:
+      new Date().toISOString(),
+
+    runAt,
+    status,
+
+    memoryHash:
+      createHash(
+        memoryDocument
+      ),
+
+    sourceHashes: {
+      learningData:
+        learningHash,
+
+      confidenceData:
+        confidenceHash,
+
+      learningEnrichment:
+        enrichmentHash ||
+        null
+    },
+
+    sourceModifiedAt: {
+      learningData:
+        learningModifiedAt,
+
+      confidenceData:
+        confidenceModifiedAt,
+
+      learningEnrichment:
+        enrichmentModifiedAt ||
+        null
+    },
+
+    counts: {
+      sourceSignals:
+        normalizedTrades.sourceSignals,
+
+      acceptedTrades:
+        canonicalTrades.length,
+
+      rejectedTrades:
+        normalizedTrades.rejectedTrades.length,
+
+      normalizedDuplicateTradeKeys:
+        normalizedTrades.duplicateTradeKeys,
+
+      newTradeKeys:
+        keyReconciliation.newTradeKeys,
+
+      reconciledDuplicateTradeKeys:
+        keyReconciliation.duplicateTradeKeys
+    }
+  });
+
+}
+
+function recoverPendingMemoryTransaction(
+  previousStateDocument
+) {
+
+  const state =
+    normalizeExistingMemoryState(
+      previousStateDocument
+    );
+
+  const pending =
+    state.pendingTransaction;
+
+  if (!pending) {
+
+    return {
+      state,
+      recovered:
+        false,
+
+      matched:
+        false
+    };
+
+  }
+
+  const existingMemory =
+    readExistingMemoryDocument();
+
+  const memoryHash =
+    existingMemory.valid
+      ? createHash(
+          existingMemory.document
+        )
+      : null;
+
+  if (
+    memoryHash !==
+      pending.memoryHash
+  ) {
+
+    /*
+     * The intended memory document did not reach disk. Clear only the
+     * recovery marker; the normal run will rebuild from the source files.
+     */
+    state.pendingTransaction =
+      null;
+
+    atomicWriteJSON(
+      AI_MEMORY_STATE_PATH,
+      state
+    );
+
+    return {
+      state,
+      recovered:
+        true,
+
+      matched:
+        false
+    };
+
+  }
+
+  const canonicalTradeKeys =
+    uniqueSortedStrings(
+      getNestedValue(
+        existingMemory.document,
+        [
+          "metadata",
+          "canonicalTradeKeys"
+        ]
+      )
+    );
+
+  const recoveredKeyReconciliation = {
+    processedTradeKeys:
+      uniqueSortedStrings([
+        ...state.processedTradeKeys,
+        ...canonicalTradeKeys
+      ]).slice(
+        -MAX_PROCESSED_KEYS
+      ),
+
+    newTradeKeys:
+      pending.counts.newTradeKeys,
+
+    duplicateTradeKeys:
+      pending.counts
+        .reconciledDuplicateTradeKeys
+  };
+
+  state.pendingTransaction =
+    null;
+
+  const recoveredState =
+    completeMemoryRun({
+      state,
+
+      runAt:
+        pending.runAt,
+
+      status:
+        pending.status,
+
+      learningHash:
+        pending.sourceHashes
+          .learningData,
+
+      confidenceHash:
+        pending.sourceHashes
+          .confidenceData,
+
+      enrichmentHash:
+        pending.sourceHashes
+          .learningEnrichment,
+
+      learningModifiedAt:
+        pending.sourceModifiedAt
+          .learningData,
+
+      confidenceModifiedAt:
+        pending.sourceModifiedAt
+          .confidenceData,
+
+      enrichmentModifiedAt:
+        pending.sourceModifiedAt
+          .learningEnrichment,
+
+      normalizedTrades: {
+        sourceSignals:
+          pending.counts
+            .sourceSignals,
+
+        duplicateTradeKeys:
+          pending.counts
+            .normalizedDuplicateTradeKeys,
+
+        rejectedTrades:
+          new Array(
+            pending.counts
+              .rejectedTrades
+          )
+      },
+
+      canonicalTrades:
+        new Array(
+          pending.counts
+            .acceptedTrades
+        ),
+
+      keyReconciliation:
+        recoveredKeyReconciliation,
+
+      memoryWritten:
+        true
+    });
+
+  recoveredState.pendingTransaction =
+    null;
+
+  atomicWriteJSON(
+    AI_MEMORY_STATE_PATH,
+    recoveredState
+  );
+
+  return {
+    state:
+      recoveredState,
+
+    recovered:
+      true,
+
+    matched:
+      true
+  };
 
 }
 
@@ -6667,9 +7132,26 @@ function runAIMemory() {
       null
     );
 
+  const recovery =
+    recoverPendingMemoryTransaction(
+      previousStateDocument
+    );
+
+  if (
+    recovery.recovered
+  ) {
+
+    console.warn(
+      recovery.matched
+        ? "[ai-memory] Recovered a completed AI Memory transaction."
+        : "[ai-memory] Cleared an incomplete AI Memory transaction; memory will be rebuilt."
+    );
+
+  }
+
   let state =
     beginMemoryRun(
-      previousStateDocument,
+      recovery.state,
       runAt
     );
 
@@ -6858,6 +7340,41 @@ function runAIMemory() {
       mustWriteMemory
     ) {
 
+      status =
+        "UPDATED";
+
+      /*
+       * Save a recovery marker before the external memory document write.
+       * The marker records the exact expected memory hash and the state
+       * deltas needed to finish the commit after an interrupted run.
+       */
+      state.pendingTransaction =
+        createPendingMemoryTransaction({
+          runAt,
+          status,
+          memoryDocument,
+
+          learningHash,
+          confidenceHash,
+          enrichmentHash,
+
+          learningModifiedAt,
+          confidenceModifiedAt,
+          enrichmentModifiedAt,
+
+          normalizedTrades,
+          canonicalTrades,
+          keyReconciliation
+        });
+
+      atomicWriteJSON(
+        AI_MEMORY_STATE_PATH,
+        state
+      );
+
+      stateWritten =
+        true;
+
       atomicWriteJSON(
         AI_MEMORY_PATH,
         memoryDocument
@@ -6865,9 +7382,6 @@ function runAIMemory() {
 
       memoryWritten =
         true;
-
-      status =
-        "UPDATED";
 
     }
 
@@ -6890,6 +7404,9 @@ function runAIMemory() {
         keyReconciliation,
         memoryWritten
       });
+
+    state.pendingTransaction =
+      null;
 
     atomicWriteJSON(
       AI_MEMORY_STATE_PATH,

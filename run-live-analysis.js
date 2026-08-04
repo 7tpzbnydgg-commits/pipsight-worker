@@ -13866,8 +13866,6 @@ function p6AtomicWriteJson(
   const temporaryPath =
     `${filePath}.${process.pid}.${Date.now()}.tmp`;
 
-  let written = false;
-
   try {
     fs.writeFileSync(
       temporaryPath,
@@ -13879,15 +13877,17 @@ function p6AtomicWriteJson(
       "utf8"
     );
 
-    written = true;
-
     fs.renameSync(
       temporaryPath,
       filePath
     );
   } finally {
+    /*
+     * Clean up any temporary file left by either a partial write failure
+     * or a failed rename. The destination file remains untouched unless
+     * the rename succeeds.
+     */
     if (
-      written &&
       p6PathExists(
         temporaryPath
       )
@@ -13897,7 +13897,7 @@ function p6AtomicWriteJson(
           temporaryPath
         );
       } catch {
-        // Ignore temporary-file cleanup failure.
+        // Cleanup failure must not hide the original filesystem error.
       }
     }
   }
@@ -15227,6 +15227,59 @@ async function runLiveAnalysisRuntime(
     failedCount: 0,
   };
 
+  /*
+   * Persist the authoritative analysis and history snapshots before any
+   * external Telegram side effect. If either write fails, no notification
+   * is sent and the run can safely retry without creating a duplicate alert.
+   */
+  output.runtime.telegram = {
+    enabled:
+      runtimeOptions.processTelegram ===
+      true,
+
+    status:
+      runtimeOptions.processTelegram
+        ? "pending"
+        : "disabled",
+
+    sentCount: 0,
+    skippedCount: 0,
+    failedCount: 0,
+  };
+
+  p6CreateBackupIfRequested(
+    runtimeOptions
+      .liveAnalysisPath,
+    runtimeOptions
+      .createBackups
+  );
+
+  p6CreateBackupIfRequested(
+    runtimeOptions
+      .analysisHistoryPath,
+    runtimeOptions
+      .createBackups
+  );
+
+  p6CreateBackupIfRequested(
+    runtimeOptions
+      .notifyStatePath,
+    runtimeOptions
+      .createBackups
+  );
+
+  p6AtomicWriteJson(
+    runtimeOptions
+      .liveAnalysisPath,
+    output
+  );
+
+  p6AtomicWriteJson(
+    runtimeOptions
+      .analysisHistoryPath,
+    historyResult.history
+  );
+
   if (
     runtimeOptions.processTelegram
   ) {
@@ -15275,10 +15328,27 @@ async function runLiveAnalysisRuntime(
       );
   }
 
+  /*
+   * Persist deduplication state immediately after Telegram processing and
+   * before rewriting the optional Telegram runtime summary. This removes the
+   * proven duplicate window caused by unrelated output writes occurring after
+   * a successful send.
+   */
+  p6AtomicWriteJson(
+    runtimeOptions
+      .notifyStatePath,
+    telegramResult.notifyState
+  );
+
   output.runtime.telegram = {
     enabled:
       runtimeOptions.processTelegram ===
       true,
+
+    status:
+      runtimeOptions.processTelegram
+        ? "completed"
+        : "disabled",
 
     sentCount:
       telegramResult.sentCount,
@@ -15290,43 +15360,10 @@ async function runLiveAnalysisRuntime(
       telegramResult.failedCount,
   };
 
-  p6CreateBackupIfRequested(
-    runtimeOptions
-      .liveAnalysisPath,
-    runtimeOptions
-      .createBackups
-  );
-
-  p6CreateBackupIfRequested(
-    runtimeOptions
-      .analysisHistoryPath,
-    runtimeOptions
-      .createBackups
-  );
-
-  p6CreateBackupIfRequested(
-    runtimeOptions
-      .notifyStatePath,
-    runtimeOptions
-      .createBackups
-  );
-
   p6AtomicWriteJson(
     runtimeOptions
       .liveAnalysisPath,
     output
-  );
-
-  p6AtomicWriteJson(
-    runtimeOptions
-      .analysisHistoryPath,
-    historyResult.history
-  );
-
-  p6AtomicWriteJson(
-    runtimeOptions
-      .notifyStatePath,
-    telegramResult.notifyState
   );
 
   const summary =

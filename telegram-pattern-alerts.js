@@ -899,6 +899,11 @@ function normalizeSentAlertEntry(entry) {
     return null;
   }
 
+  const status =
+    normalizeText(
+      entry.status
+    ).toLowerCase();
+
   return {
     id,
 
@@ -906,7 +911,13 @@ function normalizeSentAlertEntry(entry) {
       normalizeTimestamp(
         entry.sentAt
       ) ||
-      new Date(0).toISOString()
+      new Date(0).toISOString(),
+
+    status:
+      status === "pending" ||
+      status === "sent"
+        ? status
+        : "sent"
   };
 }
 
@@ -1449,10 +1460,66 @@ async function sendUnsentSignal({
 }) {
   if (sentIds.has(signalId)) {
     console.log(
-      `Skipping previously sent alert: ${signalId}`
+      `Skipping previously reserved or sent alert: ${signalId}`
     );
 
     return "skipped";
+  }
+
+  const reservedAt =
+    new Date().toISOString();
+
+  const pendingEntry = {
+    id:
+      signalId,
+
+    sentAt:
+      reservedAt,
+
+    status:
+      "pending"
+  };
+
+  /*
+   * Reserve the signal ID durably before the external Telegram side effect.
+   *
+   * This intentionally provides at-most-once delivery:
+   * - If reservation persistence fails, no Telegram request is made.
+   * - If the process stops after Telegram accepts the message but before the
+   *   final log update, the persisted pending reservation prevents a resend.
+   * - If the Telegram request returns a definite failure, the reservation is
+   *   removed so a later workflow run may retry.
+   */
+  sentAlerts.push(
+    pendingEntry
+  );
+
+  sentIds.add(
+    signalId
+  );
+
+  try {
+    saveSentAlerts(
+      sentAlerts
+    );
+  } catch (error) {
+    sentAlerts.splice(
+      sentAlerts.indexOf(
+        pendingEntry
+      ),
+      1
+    );
+
+    sentIds.delete(
+      signalId
+    );
+
+    console.error(
+      `Failed to reserve Telegram alert ${signalId}: ` +
+      error.message
+    );
+
+    return "failed";
   }
 
   try {
@@ -1460,17 +1527,11 @@ async function sendUnsentSignal({
       buildTelegramMessage(signal)
     );
 
-    sentAlerts.push({
-      id:
-        signalId,
+    pendingEntry.status =
+      "sent";
 
-      sentAt:
-        new Date().toISOString()
-    });
-
-    sentIds.add(
-      signalId
-    );
+    pendingEntry.sentAt =
+      new Date().toISOString();
 
     saveSentAlerts(
       sentAlerts
@@ -1486,6 +1547,42 @@ async function sendUnsentSignal({
 
     return "sent";
   } catch (error) {
+    const pendingIndex =
+      sentAlerts.indexOf(
+        pendingEntry
+      );
+
+    if (
+      pendingIndex >= 0
+    ) {
+      sentAlerts.splice(
+        pendingIndex,
+        1
+      );
+    }
+
+    sentIds.delete(
+      signalId
+    );
+
+    try {
+      saveSentAlerts(
+        sentAlerts
+      );
+    } catch (
+      rollbackError
+    ) {
+      /*
+       * If rollback persistence fails, the already persisted pending
+       * reservation remains on disk. That is the safe at-most-once outcome:
+       * the next run will skip the ID instead of risking a duplicate.
+       */
+      console.error(
+        `Unable to roll back Telegram reservation ${signalId}: ` +
+        rollbackError.message
+      );
+    }
+
     console.error(
       `Failed to send Telegram alert ${signalId}: ` +
       error.message

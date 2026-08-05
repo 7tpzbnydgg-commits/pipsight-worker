@@ -3023,6 +3023,9 @@ function prepareClosedHistory(
           : null
     });
 
+    // Prevent duplicate learning within the same execution.
+    processedKeys.add(tradeKey);
+
   }
 
   return {

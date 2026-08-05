@@ -44,7 +44,7 @@ const ENGINE_NAME =
   "PipSight Pro Analysis History Resolver";
 
 const ENGINE_VERSION =
-  "1.0.0";
+  "1.0.1";
 
 const HISTORY_VERSION =
   1;
@@ -61,6 +61,27 @@ const MARKET_SOURCE_INTERVAL_MINUTES =
       60,
 
     swing:
+      24 * 60
+  });
+
+const TIMEFRAME_INTERVAL_MINUTES =
+  Object.freeze({
+    "5m":
+      5,
+
+    "15m":
+      15,
+
+    "30m":
+      30,
+
+    "1H":
+      60,
+
+    "4H":
+      4 * 60,
+
+    "D1":
       24 * 60
   });
 
@@ -1766,50 +1787,28 @@ function normalizeAnalysisHistory(
 
   }
 
-  let records;
+  /*
+   * Prefer the canonical `records` alias when it contains data, while
+   * preventing an empty/stale alias from erasing a populated compatibility
+   * alias. All aliases are synchronized to the selected array below.
+   */
+  const recordAliases = [
+    rawHistory.records,
+    rawHistory.history,
+    rawHistory.items,
+    rawHistory.signals
+  ].filter(
+    Array.isArray
+  );
 
-  if (
-    Array.isArray(
-      rawHistory.records
-    )
-  ) {
-
-    records =
-      rawHistory.records;
-
-  } else if (
-    Array.isArray(
-      rawHistory.history
-    )
-  ) {
-
-    records =
-      rawHistory.history;
-
-  } else if (
-    Array.isArray(
-      rawHistory.items
-    )
-  ) {
-
-    records =
-      rawHistory.items;
-
-  } else if (
-    Array.isArray(
-      rawHistory.signals
-    )
-  ) {
-
-    records =
-      rawHistory.signals;
-
-  } else {
-
-    records =
-      [];
-
-  }
+  const records =
+    recordAliases.find(
+      alias =>
+        alias.length >
+          0
+    ) ||
+    recordAliases[0] ||
+    [];
 
   const legacyOpen =
     isPlainObject(
@@ -2707,7 +2706,8 @@ function rowMatchesPair(
 
 function extractPairRowsFromArray(
   rows,
-  pairKey
+  pairKey,
+  options = {}
 ) {
 
   const sourceRows =
@@ -2755,13 +2755,22 @@ function extractPairRowsFromArray(
 
   }
 
-  return sourceRows;
+  /*
+   * A flat untagged array cannot safely be assigned to both supported pairs.
+   * Accept it only when the enclosing document/property has already proven
+   * which pair owns the rows.
+   */
+  return options.allowUntaggedRows ===
+    true
+      ? sourceRows
+      : [];
 
 }
 
 function unwrapRowsContainer(
   value,
-  pairKey
+  pairKey,
+  options = {}
 ) {
 
   if (
@@ -2772,7 +2781,8 @@ function unwrapRowsContainer(
 
     return extractPairRowsFromArray(
       value,
-      pairKey
+      pairKey,
+      options
     );
 
   }
@@ -2803,7 +2813,12 @@ function unwrapRowsContainer(
     const nestedPairRows =
       unwrapRowsContainer(
         pairValue,
-        pairKey
+        pairKey,
+        {
+          ...options,
+          allowUntaggedRows:
+            true
+        }
       );
 
     if (
@@ -2851,7 +2866,8 @@ function unwrapRowsContainer(
         value[
           key
         ],
-        pairKey
+        pairKey,
+        options
       );
 
     if (
@@ -2892,7 +2908,11 @@ function extractPairRows(
 
     return extractPairRowsFromArray(
       document,
-      pairKey
+      pairKey,
+      {
+        allowUntaggedRows:
+          false
+      }
     );
 
   }
@@ -2921,7 +2941,11 @@ function extractPairRows(
     const directRows =
       unwrapRowsContainer(
         directPairValue,
-        pairKey
+        pairKey,
+        {
+          allowUntaggedRows:
+            true
+        }
       );
 
     if (
@@ -2982,7 +3006,11 @@ for (
   const nestedRows =
     unwrapRowsContainer(
       pairValue,
-      pairKey
+      pairKey,
+      {
+        allowUntaggedRows:
+          true
+      }
     );
 
   if (
@@ -2996,9 +3024,34 @@ for (
 
 }
 
+const documentPairKey =
+  normalizePairKey(
+    document.pair ??
+    document.symbol ??
+    document.instrument ??
+    document.market ??
+    document.asset ??
+    document.ticker
+  );
+
+if (
+  documentPairKey &&
+  documentPairKey !==
+    pairKey
+) {
+
+  return [];
+
+}
+
 return unwrapRowsContainer(
   document,
-  pairKey
+  pairKey,
+  {
+    allowUntaggedRows:
+      documentPairKey ===
+      pairKey
+  }
 );
 
 }
@@ -3917,6 +3970,74 @@ function validateTradeGeometry(
 
   }
 
+  if (
+    normalizedDirection ===
+      "BUY"
+  ) {
+
+    for (
+      let index =
+        1;
+      index <
+        targetPrices.length;
+      index +=
+        1
+    ) {
+
+      if (
+        targetPrices[index] <=
+          targetPrices[
+            index -
+            1
+          ]
+      ) {
+
+        errors.push(
+          "BUY targets must be strictly increasing"
+        );
+
+        break;
+
+      }
+
+    }
+
+  }
+
+  if (
+    normalizedDirection ===
+      "SELL"
+  ) {
+
+    for (
+      let index =
+        1;
+      index <
+        targetPrices.length;
+      index +=
+        1
+    ) {
+
+      if (
+        targetPrices[index] >=
+          targetPrices[
+            index -
+            1
+          ]
+      ) {
+
+        errors.push(
+          "SELL targets must be strictly decreasing"
+        );
+
+        break;
+
+      }
+
+    }
+
+  }
+
   return {
     valid:
       errors.length ===
@@ -4513,10 +4634,65 @@ function updateTradePathMetrics(
 // Source selection
 // ============================================================================
 
+function getTimeframeIntervalMinutes(
+  timeframe
+) {
+
+  const normalizedTimeframe =
+    normalizeTimeframe(
+      timeframe
+    );
+
+  return normalizedTimeframe
+    ? TIMEFRAME_INTERVAL_MINUTES[
+        normalizedTimeframe
+      ] ??
+      null
+    : null;
+
+}
+
+function isMarketSourceGranularitySafe(
+  marketSource,
+  timeframe
+) {
+
+  const tradeIntervalMinutes =
+    getTimeframeIntervalMinutes(
+      timeframe
+    );
+
+  if (
+    tradeIntervalMinutes ===
+      null
+  ) {
+
+    return true;
+
+  }
+
+  const sourceIntervalMinutes =
+    toFiniteNumber(
+      marketSource?.metadata
+        ?.intervalMinutes
+    );
+
+  return (
+    sourceIntervalMinutes !==
+      null &&
+    sourceIntervalMinutes >
+      0 &&
+    sourceIntervalMinutes <=
+      tradeIntervalMinutes
+  );
+
+}
+
 function selectMasterMarketSource(
   marketDataIndex,
   pairKey,
-  openedTimestamp
+  openedTimestamp,
+  timeframe = null
 ) {
 
   const attempts =
@@ -4550,6 +4726,31 @@ function selectMasterMarketSource(
 
         candleCount:
           0
+      });
+
+      continue;
+
+    }
+
+    if (
+      !isMarketSourceGranularitySafe(
+        marketSource,
+        timeframe
+      )
+    ) {
+
+      attempts.push({
+        source:
+          sourceName,
+
+        available:
+          true,
+
+        candleCount:
+          0,
+
+        reason:
+          "Market source interval is coarser than the trade timeframe"
       });
 
       continue;
@@ -4612,7 +4813,8 @@ function selectResolutionMarketSource(
   marketDataIndex,
   pairKey,
   engine,
-  openedTimestamp
+  openedTimestamp,
+  timeframe = null
 ) {
 
   const normalizedEngine =
@@ -4628,7 +4830,8 @@ function selectResolutionMarketSource(
     return selectMasterMarketSource(
       marketDataIndex,
       pairKey,
-      openedTimestamp
+      openedTimestamp,
+      timeframe
     );
 
   }
@@ -4706,6 +4909,41 @@ function selectResolutionMarketSource(
             marketSource?.metadata
               ?.error ||
             "Market source unavailable"
+        }
+      ]
+    };
+
+  }
+
+  if (
+    !isMarketSourceGranularitySafe(
+      marketSource,
+      timeframe
+    )
+  ) {
+
+    return {
+      selected:
+        null,
+
+      sourceName,
+
+      candles:
+        [],
+
+      attempts: [
+        {
+          source:
+            sourceName,
+
+          available:
+            true,
+
+          candleCount:
+            0,
+
+          reason:
+            "Market source interval is coarser than the trade timeframe"
         }
       ]
     };
@@ -4805,6 +5043,14 @@ function prepareRecordForResolution(
       record
     );
 
+  const timeframeMetadata =
+    getRecordTimeframeMetadata(
+      record
+    );
+
+  const timeframe =
+    timeframeMetadata.timeframe;
+
   const geometry =
     validateTradeGeometry(
       direction,
@@ -4836,6 +5082,18 @@ function prepareRecordForResolution(
 
     errors.push(
       "Engine is missing or unsupported"
+    );
+
+  }
+
+  if (
+    engine ===
+      "scalp" &&
+    !timeframe
+  ) {
+
+    errors.push(
+      "Scalp timeframe is missing or unsupported"
     );
 
   }
@@ -4897,6 +5155,11 @@ function prepareRecordForResolution(
 
       engine,
 
+      timeframe,
+
+      timeframeSource:
+        timeframeMetadata.source,
+
       entry:
         geometry.entry,
 
@@ -4955,7 +5218,8 @@ function evaluatePreparedTrade(
       marketDataIndex,
       preparedTrade.pairKey,
       preparedTrade.engine,
-      preparedTrade.openedTimestamp
+      preparedTrade.openedTimestamp,
+      preparedTrade.timeframe
     );
 
   if (
@@ -5012,8 +5276,22 @@ function evaluatePreparedTrade(
 
     }
 
+    /*
+     * OHLC data proves only that the level was touched during this completed
+     * candle. The candle close is the first verified resolution timestamp;
+     * assigning the candle-open time would invent an unsupported earlier exit.
+     */
+    const resolvedTimestamp =
+      toFiniteNumber(
+        candle.closeTimestamp
+      ) ??
+      candle.timestamp;
+
     const resolvedAt =
-      candle.time;
+      candle.closeTime ||
+      new Date(
+        resolvedTimestamp
+      ).toISOString();
 
     const exitPrice =
       candleResult.exitPrice;
@@ -5044,7 +5322,7 @@ function evaluatePreparedTrade(
       Math.max(
         0,
         (
-          candle.timestamp -
+          resolvedTimestamp -
           preparedTrade.openedTimestamp
         ) /
         60000
@@ -5111,6 +5389,12 @@ function evaluatePreparedTrade(
 
         time:
           candle.time,
+
+        closeTimestamp:
+          candle.closeTimestamp,
+
+        closeTime:
+          candle.closeTime,
 
         open:
           candle.open,
@@ -5442,6 +5726,32 @@ function buildRecordMatchKey(
 
 }
 
+function getStableRecordId(
+  record
+) {
+
+  if (
+    !isPlainObject(
+      record
+    )
+  ) {
+
+    return null;
+
+  }
+
+  return (
+    toTrimmedString(
+      record.id
+    ) ||
+    toTrimmedString(
+      record.sourceHistoryRecordId
+    ) ||
+    null
+  );
+
+}
+
 function recordsReferToSameTrade(
   left,
   right
@@ -5461,23 +5771,26 @@ function recordsReferToSameTrade(
   }
 
   const leftId =
-    toTrimmedString(
-      left.id
+    getStableRecordId(
+      left
     );
 
   const rightId =
-    toTrimmedString(
-      right.id
+    getStableRecordId(
+      right
     );
 
+  /*
+   * Two explicit stable IDs are authoritative. Different IDs must never
+   * collapse merely because prices happen to be identical.
+   */
   if (
     leftId &&
-    rightId &&
-    leftId ===
-      rightId
+    rightId
   ) {
 
-    return true;
+    return leftId ===
+      rightId;
 
   }
 
@@ -5499,33 +5812,11 @@ function recordsReferToSameTrade(
 
   if (
     leftSetupIdentity &&
-    rightSetupIdentity &&
-    leftSetupIdentity ===
-      rightSetupIdentity
+    rightSetupIdentity
   ) {
 
-    return true;
-
-  }
-
-  const leftFingerprint =
-    getRecordFingerprint(
-      left
-    );
-
-  const rightFingerprint =
-    getRecordFingerprint(
-      right
-    );
-
-  if (
-    leftFingerprint &&
-    rightFingerprint &&
-    leftFingerprint ===
-      rightFingerprint
-  ) {
-
-    return true;
+    return leftSetupIdentity ===
+      rightSetupIdentity;
 
   }
 
@@ -5539,11 +5830,36 @@ function recordsReferToSameTrade(
       right
     );
 
-  return Boolean(
+  /*
+   * When both records have temporal identity, compare it before the legacy
+   * price-plan fingerprint. This keeps repeated setups at different times
+   * separate.
+   */
+  if (
     leftMatchKey &&
-    rightMatchKey &&
-    leftMatchKey ===
-      rightMatchKey
+    rightMatchKey
+  ) {
+
+    return leftMatchKey ===
+      rightMatchKey;
+
+  }
+
+  const leftFingerprint =
+    getRecordFingerprint(
+      left
+    );
+
+  const rightFingerprint =
+    getRecordFingerprint(
+      right
+    );
+
+  return Boolean(
+    leftFingerprint &&
+    rightFingerprint &&
+    leftFingerprint ===
+      rightFingerprint
   );
 
 }
@@ -7857,6 +8173,56 @@ function resolveAnalysisHistory(
   const results =
     [];
 
+  /*
+   * A legacy open entry that matches an already resolved rich record is stale
+   * state. Remove it even when no new rich trade resolves during this run.
+   */
+  let staleLegacyOpenRemovedCount =
+    0;
+
+  for (
+    const descriptor of
+      initialOpenInventory
+        .legacyDescriptors
+  ) {
+
+    if (
+      descriptor.classification !==
+        "matched-resolved"
+    ) {
+
+      continue;
+
+    }
+
+    const removal =
+      removeLegacyOpenTrade(
+        workingHistory.open,
+        descriptor.record
+      );
+
+    if (
+      removal.removedCount >
+        0
+    ) {
+
+      staleLegacyOpenRemovedCount +=
+        removal.removedCount;
+
+      workingHistory = {
+        ...workingHistory,
+
+        open:
+          removal.open,
+
+        updatedAt:
+          new Date().toISOString()
+      };
+
+    }
+
+  }
+
   let candidateCount =
     0;
 
@@ -7870,7 +8236,7 @@ function resolveAnalysisHistory(
     0;
 
   let legacyOpenRemovedCount =
-    0;
+    staleLegacyOpenRemovedCount;
 
   let legacyClosedAppendedCount =
     0;
@@ -8196,6 +8562,8 @@ function resolveAnalysisHistory(
 
     changed:
       resolvedCount > 0 ||
+      staleLegacyOpenRemovedCount >
+        0 ||
       statisticsChanged,
 
     summary: {
@@ -8212,6 +8580,8 @@ function resolveAnalysisHistory(
       ineligibleCount,
 
       legacyOpenRemovedCount,
+
+      staleLegacyOpenRemovedCount,
 
       legacyClosedAppendedCount,
 

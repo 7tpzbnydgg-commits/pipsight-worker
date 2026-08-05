@@ -10,6 +10,9 @@
 //   the source data actually supports those dimensions.
 // - Handle missing optional metadata safely without inventing values.
 // - Keep AI Memory completely independent from existing trading engines.
+// - Build an advisory-only Autonomous Memory Extension with recency-weighted,
+//   Bayesian-shrunk, R-normalized and drift-aware evidence for the separate
+//   AI Policy Engine. The extension never receives live execution authority.
 //
 // Reads:
 //   data/learning-data.json
@@ -57,8 +60,30 @@ const crypto =
 const ENGINE_NAME =
   "PipSight Pro Adaptive AI Memory Engine";
 
+/*
+ * Compatibility identity.
+ *
+ * Existing Live Analysis, hourly workflow validation and the already deployed
+ * AI Policy Engine currently hard-lock this value. It intentionally remains
+ * 1.0.1 until those consumers are upgraded in the final integration phase.
+ */
 const ENGINE_VERSION =
   "1.0.1";
+
+/*
+ * Autonomous intelligence revision.
+ *
+ * This version identifies the new advisory memory layer without breaking the
+ * established AI Memory document and workflow compatibility contract.
+ */
+const AUTONOMOUS_MEMORY_ENGINE_NAME =
+  "PipSight Pro Autonomous Memory Extension";
+
+const AUTONOMOUS_MEMORY_VERSION =
+  "1.4.0";
+
+const AUTONOMOUS_MEMORY_SCHEMA_VERSION =
+  1;
 
 const MEMORY_SCHEMA_VERSION =
   1;
@@ -204,6 +229,88 @@ const MAX_PROCESSED_KEYS =
 
 const HASH_ALGORITHM =
   "sha256";
+
+const DAY_MS =
+  24 * 60 * 60 * 1000;
+
+const LN_2 =
+  Math.log(
+    2
+  );
+
+const AUTONOMOUS_MEMORY_CONFIG =
+  Object.freeze({
+    recencyHalfLifeDays: 45,
+    minimumRecencyWeight: 0.01,
+    bayesianPriorStrength: 20,
+    maximumAbsoluteRealizedR: 20,
+    recentWindowSize: 20,
+    driftMinimumWindowSamples: 10,
+    driftThresholdR: 0.25,
+    supportiveExpectancyR: 0.05,
+    suppressiveExpectancyR: -0.05,
+    filterMinimumSamples: 30,
+    filterMinimumReliability: 0.70,
+    tradePlanMinimumSamples: 50,
+    tradePlanMinimumReliability: 0.80,
+    directionMinimumSamples: 75,
+    directionMinimumReliability: 0.85
+  });
+
+const AUTONOMOUS_SCOPE_DEFINITIONS =
+  Object.freeze({
+    pair: [
+      "pair"
+    ],
+    engine: [
+      "engine"
+    ],
+    direction: [
+      "direction"
+    ],
+    pairDirection: [
+      "pair",
+      "direction"
+    ],
+    pairTimeframeDirection: [
+      "pair",
+      "timeframe",
+      "direction"
+    ],
+    pairEngineDirection: [
+      "pair",
+      "engine",
+      "direction"
+    ],
+    pairTimeframeEngineDirection: [
+      "pair",
+      "timeframe",
+      "engine",
+      "direction"
+    ],
+    pairTimeframeEngineDirectionRegime: [
+      "pair",
+      "timeframe",
+      "engine",
+      "direction",
+      "marketRegime"
+    ],
+    pairTimeframeEngineDirectionRegimeSession: [
+      "pair",
+      "timeframe",
+      "engine",
+      "direction",
+      "marketRegime",
+      "session"
+    ],
+    pairTimeframeEngineDirectionPattern: [
+      "pair",
+      "timeframe",
+      "engine",
+      "direction",
+      "pattern"
+    ]
+  });
 
 // -----------------------------------------------------------------------------
 // Generic type helpers
@@ -1695,6 +1802,2175 @@ function loadOptionalLearningEnrichment() {
 
 }
 
+
+// -----------------------------------------------------------------------------
+// Autonomous Memory Extension 1.4.0
+// -----------------------------------------------------------------------------
+
+function createEmptyAutonomousMetric() {
+
+  return {
+    totalTrades: 0,
+    decisiveTrades: 0,
+    wins: 0,
+    losses: 0,
+    breakevens: 0,
+
+    realizedRSamples: 0,
+    invalidRSamples: 0,
+    futureDatedSamples: 0,
+
+    winRate: 0,
+    bayesianWinRate: 50,
+
+    winRateInterval95: {
+      lower: 0,
+      upper: 100,
+      width: 100
+    },
+
+    expectancyR: null,
+    recencyWeightedExpectancyR: null,
+    profitFactorR: null,
+
+    averageWinR: null,
+    averageLossR: null,
+    standardDeviationR: null,
+
+    maximumDrawdownR: null,
+    currentDrawdownR: null,
+    maximumConsecutiveLosses: 0,
+
+    recency: {
+      halfLifeDays:
+        AUTONOMOUS_MEMORY_CONFIG
+          .recencyHalfLifeDays,
+      weightSum: 0,
+      effectiveSampleSize: 0,
+      latestClosedAt: null
+    },
+
+    drift: {
+      status: "INSUFFICIENT_DATA",
+      recentSamples: 0,
+      priorSamples: 0,
+      recentExpectancyR: null,
+      priorExpectancyR: null,
+      expectancyChangeR: null
+    },
+
+    quality: {
+      rCoverage: 0,
+      sampleScore: 0,
+      recencyScore: 0,
+      intervalScore: 0,
+      stabilityScore: 0,
+      reliability: 0
+    },
+
+    evidence: {
+      action: "OBSERVE",
+      reason:
+        "Insufficient decisive, risk-normalized evidence.",
+      filterEvidenceReady: false,
+      tradePlanEvidenceReady: false,
+      directionEvidenceReady: false,
+      policyAuthorityEligible: false
+    },
+
+    firstTradeAt: null,
+    lastTradeAt: null
+  };
+
+}
+
+function createEmptyAutonomousMemory(
+  generatedAt =
+    new Date().toISOString()
+) {
+
+  const scopes =
+    {};
+
+  for (
+    const scopeName of
+    Object.keys(
+      AUTONOMOUS_SCOPE_DEFINITIONS
+    ).sort()
+  ) {
+
+    scopes[scopeName] =
+      {};
+
+  }
+
+  return {
+    version:
+      AUTONOMOUS_MEMORY_SCHEMA_VERSION,
+
+    engineName:
+      AUTONOMOUS_MEMORY_ENGINE_NAME,
+
+    engineVersion:
+      AUTONOMOUS_MEMORY_VERSION,
+
+    generatedAt:
+      toISOStringOrNull(
+        generatedAt
+      ) ||
+      new Date().toISOString(),
+
+    advisoryOnly: true,
+    liveAuthorityPermitted: false,
+
+    methodology: {
+      chronological: true,
+      duplicateSafe: true,
+      futureDatedEvidenceExcluded: true,
+      breakevenCountsTowardMaturity: false,
+      realizedRRequiredForExpectancy: true,
+      bayesianShrinkage: true,
+      wilsonInterval95: true,
+      exponentialRecencyWeighting: true,
+      conceptDriftMonitoring: true,
+      outOfSampleAuthorityValidationRequiredElsewhere: true,
+      noParameterSearch: true
+    },
+
+    configuration:
+      cloneJSONCompatible(
+        AUTONOMOUS_MEMORY_CONFIG
+      ),
+
+    source: {
+      acceptedCanonicalTrades: 0,
+      normalizedTradeSetHash: null,
+      realizedRTrades: 0,
+      invalidRTrades: 0,
+      futureDatedTrades: 0
+    },
+
+    global:
+      createEmptyAutonomousMetric(),
+
+    scopes,
+
+    summary: {
+      scopeCount:
+        Object.keys(
+          AUTONOMOUS_SCOPE_DEFINITIONS
+        ).length,
+      bucketCount: 0,
+      supportiveBuckets: 0,
+      suppressiveBuckets: 0,
+      observeBuckets: 0,
+      filterEvidenceReadyBuckets: 0,
+      tradePlanEvidenceReadyBuckets: 0,
+      directionEvidenceReadyBuckets: 0
+    },
+
+    validation: {
+      valid: true,
+      errors: [],
+      warnings: []
+    }
+  };
+
+}
+
+function calculateTradeRealizedR(
+  trade
+) {
+
+  const entry =
+    toFiniteNumber(
+      trade?.entry
+    );
+
+  const stopLoss =
+    toFiniteNumber(
+      trade?.stopLoss
+    );
+
+  if (
+    entry === null ||
+    stopLoss === null
+  ) {
+
+    return null;
+
+  }
+
+  const initialRisk =
+    Math.abs(
+      entry -
+      stopLoss
+    );
+
+  if (
+    !Number.isFinite(
+      initialRisk
+    ) ||
+    initialRisk <= 0
+  ) {
+
+    return null;
+
+  }
+
+  let profitPoints =
+    toFiniteNumber(
+      trade?.profitPoints
+    );
+
+  if (
+    profitPoints === null
+  ) {
+
+    if (
+      trade?.outcome ===
+      "LOSS"
+    ) {
+
+      profitPoints =
+        -initialRisk;
+
+    } else if (
+      trade?.outcome ===
+      "BREAKEVEN"
+    ) {
+
+      profitPoints =
+        0;
+
+    } else if (
+      trade?.outcome ===
+      "WIN"
+    ) {
+
+      const takeProfit =
+        toFiniteNumber(
+          trade?.takeProfit
+        );
+
+      if (
+        takeProfit !== null
+      ) {
+
+        profitPoints =
+          Math.abs(
+            takeProfit -
+            entry
+          );
+
+      }
+
+    }
+
+  }
+
+  if (
+    profitPoints === null
+  ) {
+
+    return null;
+
+  }
+
+  const realizedR =
+    profitPoints /
+    initialRisk;
+
+  if (
+    !Number.isFinite(
+      realizedR
+    ) ||
+    Math.abs(
+      realizedR
+    ) >
+    AUTONOMOUS_MEMORY_CONFIG
+      .maximumAbsoluteRealizedR
+  ) {
+
+    return null;
+
+  }
+
+  return round(
+    realizedR,
+    8
+  );
+
+}
+
+function calculateRecencyWeight(
+  closedAt,
+  generatedAt
+) {
+
+  const normalizedClosedAt =
+    toISOStringOrNull(
+      closedAt
+    );
+
+  const normalizedGeneratedAt =
+    toISOStringOrNull(
+      generatedAt
+    );
+
+  if (
+    !normalizedClosedAt ||
+    !normalizedGeneratedAt
+  ) {
+
+    return {
+      weight: 0,
+      futureDated: false
+    };
+
+  }
+
+  const closedTime =
+    new Date(
+      normalizedClosedAt
+    ).getTime();
+
+  const generatedTime =
+    new Date(
+      normalizedGeneratedAt
+    ).getTime();
+
+  if (
+    !Number.isFinite(
+      closedTime
+    ) ||
+    !Number.isFinite(
+      generatedTime
+    )
+  ) {
+
+    return {
+      weight: 0,
+      futureDated: false
+    };
+
+  }
+
+  if (
+    closedTime >
+    generatedTime +
+    5 * 60 * 1000
+  ) {
+
+    return {
+      weight: 0,
+      futureDated: true
+    };
+
+  }
+
+  const ageDays =
+    Math.max(
+      0,
+      (
+        generatedTime -
+        closedTime
+      ) /
+      DAY_MS
+    );
+
+  const rawWeight =
+    Math.exp(
+      -
+      LN_2 *
+      ageDays /
+      AUTONOMOUS_MEMORY_CONFIG
+        .recencyHalfLifeDays
+    );
+
+  return {
+    weight:
+      round(
+        Math.max(
+          AUTONOMOUS_MEMORY_CONFIG
+            .minimumRecencyWeight,
+          Math.min(
+            1,
+            rawWeight
+          )
+        ),
+        10
+      ),
+    futureDated: false
+  };
+
+}
+
+function calculateWilsonInterval95(
+  wins,
+  decisiveTrades
+) {
+
+  if (
+    decisiveTrades <= 0
+  ) {
+
+    return {
+      lower: 0,
+      upper: 100,
+      width: 100
+    };
+
+  }
+
+  const z =
+    1.959963984540054;
+
+  const probability =
+    wins /
+    decisiveTrades;
+
+  const denominator =
+    1 +
+    (
+      z *
+      z
+    ) /
+    decisiveTrades;
+
+  const centre =
+    probability +
+    (
+      z *
+      z
+    ) /
+    (
+      2 *
+      decisiveTrades
+    );
+
+  const margin =
+    z *
+    Math.sqrt(
+      (
+        probability *
+        (
+          1 -
+          probability
+        ) +
+        (
+          z *
+          z
+        ) /
+        (
+          4 *
+          decisiveTrades
+        )
+      ) /
+      decisiveTrades
+    );
+
+  const lower =
+    Math.max(
+      0,
+      (
+        centre -
+        margin
+      ) /
+      denominator
+    ) *
+    100;
+
+  const upper =
+    Math.min(
+      1,
+      (
+        centre +
+        margin
+      ) /
+      denominator
+    ) *
+    100;
+
+  return {
+    lower:
+      round(
+        lower,
+        4
+      ),
+    upper:
+      round(
+        upper,
+        4
+      ),
+    width:
+      round(
+        upper -
+        lower,
+        4
+      )
+  };
+
+}
+
+function calculateStandardDeviation(
+  values,
+  average
+) {
+
+  if (
+    !Array.isArray(
+      values
+    ) ||
+    values.length < 2 ||
+    !Number.isFinite(
+      average
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const variance =
+    values.reduce(
+      (
+        total,
+        value
+      ) =>
+        total +
+        (
+          value -
+          average
+        ) **
+        2,
+      0
+    ) /
+    (
+      values.length -
+      1
+    );
+
+  return round(
+    Math.sqrt(
+      Math.max(
+        0,
+        variance
+      )
+    ),
+    8
+  );
+
+}
+
+function calculateEffectiveSampleSize(
+  weights
+) {
+
+  if (
+    !Array.isArray(
+      weights
+    ) ||
+    weights.length === 0
+  ) {
+
+    return 0;
+
+  }
+
+  const weightSum =
+    weights.reduce(
+      (
+        total,
+        value
+      ) =>
+        total +
+        value,
+      0
+    );
+
+  const squaredWeightSum =
+    weights.reduce(
+      (
+        total,
+        value
+      ) =>
+        total +
+        value *
+        value,
+      0
+    );
+
+  if (
+    squaredWeightSum <= 0
+  ) {
+
+    return 0;
+
+  }
+
+  return round(
+    (
+      weightSum *
+      weightSum
+    ) /
+    squaredWeightSum,
+    4
+  );
+
+}
+
+function calculateDrawdownStats(
+  realizedRValues
+) {
+
+  if (
+    !Array.isArray(
+      realizedRValues
+    ) ||
+    realizedRValues.length === 0
+  ) {
+
+    return {
+      maximumDrawdownR: null,
+      currentDrawdownR: null
+    };
+
+  }
+
+  let equity =
+    0;
+
+  let peak =
+    0;
+
+  let maximumDrawdown =
+    0;
+
+  for (
+    const realizedR of
+    realizedRValues
+  ) {
+
+    equity +=
+      realizedR;
+
+    if (
+      equity >
+      peak
+    ) {
+
+      peak =
+        equity;
+
+    }
+
+    maximumDrawdown =
+      Math.max(
+        maximumDrawdown,
+        peak -
+        equity
+      );
+
+  }
+
+  return {
+    maximumDrawdownR:
+      round(
+        maximumDrawdown,
+        8
+      ),
+    currentDrawdownR:
+      round(
+        peak -
+        equity,
+        8
+      )
+  };
+
+}
+
+function calculateMaximumConsecutiveLosses(
+  trades
+) {
+
+  let current =
+    0;
+
+  let maximum =
+    0;
+
+  for (
+    const trade of
+    trades
+  ) {
+
+    if (
+      trade.outcome ===
+      "LOSS"
+    ) {
+
+      current +=
+        1;
+
+      maximum =
+        Math.max(
+          maximum,
+          current
+        );
+
+    } else if (
+      trade.outcome ===
+      "WIN"
+    ) {
+
+      current =
+        0;
+
+    }
+
+  }
+
+  return maximum;
+
+}
+
+function calculateDrift(
+  realizedRSamples
+) {
+
+  const windowSize =
+    AUTONOMOUS_MEMORY_CONFIG
+      .recentWindowSize;
+
+  const minimumWindow =
+    AUTONOMOUS_MEMORY_CONFIG
+      .driftMinimumWindowSamples;
+
+  if (
+    !Array.isArray(
+      realizedRSamples
+    ) ||
+    realizedRSamples.length <
+      minimumWindow * 2
+  ) {
+
+    return {
+      status: "INSUFFICIENT_DATA",
+      recentSamples:
+        Math.min(
+          realizedRSamples?.length ||
+          0,
+          windowSize
+        ),
+      priorSamples: 0,
+      recentExpectancyR: null,
+      priorExpectancyR: null,
+      expectancyChangeR: null
+    };
+
+  }
+
+  const recent =
+    realizedRSamples.slice(
+      -windowSize
+    );
+
+  const prior =
+    realizedRSamples.slice(
+      -
+      (
+        windowSize * 2
+      ),
+      -windowSize
+    );
+
+  if (
+    recent.length <
+      minimumWindow ||
+    prior.length <
+      minimumWindow
+  ) {
+
+    return {
+      status: "INSUFFICIENT_DATA",
+      recentSamples:
+        recent.length,
+      priorSamples:
+        prior.length,
+      recentExpectancyR: null,
+      priorExpectancyR: null,
+      expectancyChangeR: null
+    };
+
+  }
+
+  const average =
+    values =>
+      values.reduce(
+        (
+          total,
+          value
+        ) =>
+          total +
+          value,
+        0
+      ) /
+      values.length;
+
+  const recentExpectancy =
+    average(
+      recent
+    );
+
+  const priorExpectancy =
+    average(
+      prior
+    );
+
+  const change =
+    recentExpectancy -
+    priorExpectancy;
+
+  let status =
+    "STABLE";
+
+  if (
+    change >=
+    AUTONOMOUS_MEMORY_CONFIG
+      .driftThresholdR
+  ) {
+
+    status =
+      "IMPROVING";
+
+  } else if (
+    change <=
+    -
+    AUTONOMOUS_MEMORY_CONFIG
+      .driftThresholdR
+  ) {
+
+    status =
+      "DETERIORATING";
+
+  }
+
+  return {
+    status,
+    recentSamples:
+      recent.length,
+    priorSamples:
+      prior.length,
+    recentExpectancyR:
+      round(
+        recentExpectancy,
+        8
+      ),
+    priorExpectancyR:
+      round(
+        priorExpectancy,
+        8
+      ),
+    expectancyChangeR:
+      round(
+        change,
+        8
+      )
+  };
+
+}
+
+function createAutonomousAccumulator() {
+
+  return {
+    trades: [],
+    totalTrades: 0,
+    decisiveTrades: 0,
+    wins: 0,
+    losses: 0,
+    breakevens: 0,
+    invalidRSamples: 0,
+    futureDatedSamples: 0,
+    realizedRSamples: [],
+    recencyWeights: [],
+    weightedRValues: [],
+    firstTradeAt: null,
+    lastTradeAt: null
+  };
+
+}
+
+function addTradeToAutonomousAccumulator(
+  accumulator,
+  trade,
+  generatedAt
+) {
+
+  accumulator.totalTrades +=
+    1;
+
+  accumulator.trades.push(
+    trade
+  );
+
+  if (
+    trade.outcome ===
+    "WIN"
+  ) {
+
+    accumulator.wins +=
+      1;
+
+    accumulator.decisiveTrades +=
+      1;
+
+  } else if (
+    trade.outcome ===
+    "LOSS"
+  ) {
+
+    accumulator.losses +=
+      1;
+
+    accumulator.decisiveTrades +=
+      1;
+
+  } else if (
+    trade.outcome ===
+    "BREAKEVEN"
+  ) {
+
+    accumulator.breakevens +=
+      1;
+
+  }
+
+  if (
+    !accumulator.firstTradeAt ||
+    new Date(
+      trade.openedAt
+    ).getTime() <
+    new Date(
+      accumulator.firstTradeAt
+    ).getTime()
+  ) {
+
+    accumulator.firstTradeAt =
+      trade.openedAt;
+
+  }
+
+  if (
+    !accumulator.lastTradeAt ||
+    new Date(
+      trade.closedAt
+    ).getTime() >
+    new Date(
+      accumulator.lastTradeAt
+    ).getTime()
+  ) {
+
+    accumulator.lastTradeAt =
+      trade.closedAt;
+
+  }
+
+  const recency =
+    calculateRecencyWeight(
+      trade.closedAt,
+      generatedAt
+    );
+
+  if (
+    recency.futureDated
+  ) {
+
+    accumulator.futureDatedSamples +=
+      1;
+
+    return;
+
+  }
+
+  const realizedR =
+    calculateTradeRealizedR(
+      trade
+    );
+
+  if (
+    realizedR === null
+  ) {
+
+    accumulator.invalidRSamples +=
+      1;
+
+    return;
+
+  }
+
+  accumulator.realizedRSamples.push(
+    realizedR
+  );
+
+  accumulator.recencyWeights.push(
+    recency.weight
+  );
+
+  accumulator.weightedRValues.push(
+    realizedR *
+    recency.weight
+  );
+
+}
+
+function finalizeAutonomousAccumulator(
+  accumulator,
+  globalPriorWinRate
+) {
+
+  const metric =
+    createEmptyAutonomousMetric();
+
+  metric.totalTrades =
+    accumulator.totalTrades;
+
+  metric.decisiveTrades =
+    accumulator.decisiveTrades;
+
+  metric.wins =
+    accumulator.wins;
+
+  metric.losses =
+    accumulator.losses;
+
+  metric.breakevens =
+    accumulator.breakevens;
+
+  metric.realizedRSamples =
+    accumulator.realizedRSamples.length;
+
+  metric.invalidRSamples =
+    accumulator.invalidRSamples;
+
+  metric.futureDatedSamples =
+    accumulator.futureDatedSamples;
+
+  metric.firstTradeAt =
+    accumulator.firstTradeAt;
+
+  metric.lastTradeAt =
+    accumulator.lastTradeAt;
+
+  metric.winRate =
+    calculateRate(
+      accumulator.wins,
+      accumulator.decisiveTrades
+    );
+
+  const priorProbability =
+    Math.max(
+      0,
+      Math.min(
+        1,
+        toFiniteNumber(
+          globalPriorWinRate
+        ) ??
+        0.5
+      )
+    );
+
+  const priorStrength =
+    AUTONOMOUS_MEMORY_CONFIG
+      .bayesianPriorStrength;
+
+  metric.bayesianWinRate =
+    round(
+      (
+        accumulator.wins +
+        priorProbability *
+        priorStrength
+      ) /
+      (
+        accumulator.decisiveTrades +
+        priorStrength
+      ) *
+      100,
+      4
+    );
+
+  metric.winRateInterval95 =
+    calculateWilsonInterval95(
+      accumulator.wins,
+      accumulator.decisiveTrades
+    );
+
+  const rValues =
+    accumulator.realizedRSamples;
+
+  const rCount =
+    rValues.length;
+
+  const rSum =
+    rValues.reduce(
+      (
+        total,
+        value
+      ) =>
+        total +
+        value,
+      0
+    );
+
+  metric.expectancyR =
+    rCount > 0
+      ? round(
+          rSum /
+          rCount,
+          8
+        )
+      : null;
+
+  const weightSum =
+    accumulator.recencyWeights
+      .reduce(
+        (
+          total,
+          value
+        ) =>
+          total +
+          value,
+        0
+      );
+
+  const weightedRSum =
+    accumulator.weightedRValues
+      .reduce(
+        (
+          total,
+          value
+        ) =>
+          total +
+          value,
+        0
+      );
+
+  metric.recencyWeightedExpectancyR =
+    weightSum > 0
+      ? round(
+          weightedRSum /
+          weightSum,
+          8
+        )
+      : null;
+
+  const winsR =
+    rValues.filter(
+      value =>
+        value >
+        0
+    );
+
+  const lossesR =
+    rValues.filter(
+      value =>
+        value <
+        0
+    );
+
+  const grossProfitR =
+    winsR.reduce(
+      (
+        total,
+        value
+      ) =>
+        total +
+        value,
+      0
+    );
+
+  const grossLossR =
+    Math.abs(
+      lossesR.reduce(
+        (
+          total,
+          value
+        ) =>
+          total +
+          value,
+        0
+      )
+    );
+
+  metric.profitFactorR =
+    grossLossR > 0
+      ? round(
+          grossProfitR /
+          grossLossR,
+          8
+        )
+      : (
+          grossProfitR > 0
+            ? null
+            : 0
+        );
+
+  metric.averageWinR =
+    winsR.length > 0
+      ? round(
+          grossProfitR /
+          winsR.length,
+          8
+        )
+      : null;
+
+  metric.averageLossR =
+    lossesR.length > 0
+      ? round(
+          lossesR.reduce(
+            (
+              total,
+              value
+            ) =>
+              total +
+              value,
+            0
+          ) /
+          lossesR.length,
+          8
+        )
+      : null;
+
+  metric.standardDeviationR =
+    calculateStandardDeviation(
+      rValues,
+      metric.expectancyR
+    );
+
+  const drawdown =
+    calculateDrawdownStats(
+      rValues
+    );
+
+  metric.maximumDrawdownR =
+    drawdown.maximumDrawdownR;
+
+  metric.currentDrawdownR =
+    drawdown.currentDrawdownR;
+
+  metric.maximumConsecutiveLosses =
+    calculateMaximumConsecutiveLosses(
+      accumulator.trades
+    );
+
+  metric.recency = {
+    halfLifeDays:
+      AUTONOMOUS_MEMORY_CONFIG
+        .recencyHalfLifeDays,
+    weightSum:
+      round(
+        weightSum,
+        8
+      ) ||
+      0,
+    effectiveSampleSize:
+      calculateEffectiveSampleSize(
+        accumulator.recencyWeights
+      ),
+    latestClosedAt:
+      accumulator.lastTradeAt
+  };
+
+  metric.drift =
+    calculateDrift(
+      rValues
+    );
+
+  const rCoverage =
+    metric.totalTrades > 0
+      ? metric.realizedRSamples /
+        metric.totalTrades
+      : 0;
+
+  const sampleScore =
+    Math.min(
+      1,
+      metric.decisiveTrades /
+      AUTONOMOUS_MEMORY_CONFIG
+        .directionMinimumSamples
+    );
+
+  const recencyScore =
+    metric.decisiveTrades > 0
+      ? Math.min(
+          1,
+          metric.recency
+            .effectiveSampleSize /
+          metric.decisiveTrades
+        )
+      : 0;
+
+  const intervalScore =
+    Math.max(
+      0,
+      1 -
+      metric.winRateInterval95
+        .width /
+      100
+    );
+
+  const stabilityScore =
+    metric.standardDeviationR ===
+      null
+      ? 0
+      : 1 /
+        (
+          1 +
+          metric.standardDeviationR
+        );
+
+  const reliability =
+    0.35 *
+      sampleScore +
+    0.20 *
+      rCoverage +
+    0.15 *
+      recencyScore +
+    0.15 *
+      intervalScore +
+    0.15 *
+      stabilityScore;
+
+  metric.quality = {
+    rCoverage:
+      round(
+        rCoverage,
+        4
+      ),
+    sampleScore:
+      round(
+        sampleScore,
+        4
+      ),
+    recencyScore:
+      round(
+        recencyScore,
+        4
+      ),
+    intervalScore:
+      round(
+        intervalScore,
+        4
+      ),
+    stabilityScore:
+      round(
+        stabilityScore,
+        4
+      ),
+    reliability:
+      round(
+        Math.max(
+          0,
+          Math.min(
+            1,
+            reliability
+          )
+        ),
+        4
+      )
+  };
+
+  const weightedExpectancy =
+    metric.recencyWeightedExpectancyR;
+
+  const deteriorating =
+    metric.drift.status ===
+    "DETERIORATING";
+
+  let action =
+    "OBSERVE";
+
+  let reason =
+    "Evidence is not mature enough for a directional recommendation.";
+
+  if (
+    metric.decisiveTrades >=
+      AUTONOMOUS_MEMORY_CONFIG
+        .filterMinimumSamples &&
+    metric.quality.reliability >=
+      AUTONOMOUS_MEMORY_CONFIG
+        .filterMinimumReliability &&
+    weightedExpectancy !== null
+  ) {
+
+    if (
+      weightedExpectancy <=
+        AUTONOMOUS_MEMORY_CONFIG
+          .suppressiveExpectancyR ||
+      metric.winRateInterval95
+        .upper <
+        50
+    ) {
+
+      action =
+        "SUPPRESS";
+
+      reason =
+        "Mature evidence indicates negative or statistically weak recent edge.";
+
+    } else if (
+      weightedExpectancy >=
+        AUTONOMOUS_MEMORY_CONFIG
+          .supportiveExpectancyR &&
+      !deteriorating
+    ) {
+
+      action =
+        "SUPPORT";
+
+      reason =
+        "Mature evidence indicates positive recent risk-normalized edge.";
+
+    }
+
+  }
+
+  metric.evidence = {
+    action,
+    reason,
+
+    filterEvidenceReady:
+      metric.decisiveTrades >=
+        AUTONOMOUS_MEMORY_CONFIG
+          .filterMinimumSamples &&
+      metric.quality.reliability >=
+        AUTONOMOUS_MEMORY_CONFIG
+          .filterMinimumReliability,
+
+    tradePlanEvidenceReady:
+      metric.decisiveTrades >=
+        AUTONOMOUS_MEMORY_CONFIG
+          .tradePlanMinimumSamples &&
+      metric.quality.reliability >=
+        AUTONOMOUS_MEMORY_CONFIG
+          .tradePlanMinimumReliability,
+
+    directionEvidenceReady:
+      metric.decisiveTrades >=
+        AUTONOMOUS_MEMORY_CONFIG
+          .directionMinimumSamples &&
+      metric.quality.reliability >=
+        AUTONOMOUS_MEMORY_CONFIG
+          .directionMinimumReliability,
+
+    /*
+     * Memory evidence alone can never grant authority. The Policy Engine must
+     * still pass chronological out-of-sample, embargo, source-hash and rollout
+     * validation before the Decision Engine receives any live permission.
+     */
+    policyAuthorityEligible: false
+  };
+
+  return metric;
+
+}
+
+function createAutonomousScopeKey(
+  trade,
+  dimensions
+) {
+
+  const values =
+    [];
+
+  for (
+    const dimension of
+    dimensions
+  ) {
+
+    const value =
+      toNonEmptyStringOrNull(
+        trade?.[dimension]
+      );
+
+    if (
+      !value
+    ) {
+
+      return null;
+
+    }
+
+    values.push(
+      value
+    );
+
+  }
+
+  return values.join(
+    "::"
+  );
+
+}
+
+function buildAutonomousMemory(
+  canonicalTrades,
+  generatedAt
+) {
+
+  const document =
+    createEmptyAutonomousMemory(
+      generatedAt
+    );
+
+  const orderedTrades =
+    Array.isArray(
+      canonicalTrades
+    )
+      ? canonicalTrades
+          .slice()
+          .sort(
+            (
+              left,
+              right
+            ) => {
+
+              const leftTime =
+                new Date(
+                  left.closedAt
+                ).getTime();
+
+              const rightTime =
+                new Date(
+                  right.closedAt
+                ).getTime();
+
+              if (
+                leftTime !==
+                rightTime
+              ) {
+
+                return (
+                  leftTime -
+                  rightTime
+                );
+
+              }
+
+              return String(
+                left.tradeKey ||
+                ""
+              ).localeCompare(
+                String(
+                  right.tradeKey ||
+                  ""
+                )
+              );
+
+            }
+          )
+      : [];
+
+  const globalAccumulator =
+    createAutonomousAccumulator();
+
+  const scopeAccumulators =
+    {};
+
+  for (
+    const scopeName of
+    Object.keys(
+      AUTONOMOUS_SCOPE_DEFINITIONS
+    )
+  ) {
+
+    scopeAccumulators[scopeName] =
+      {};
+
+  }
+
+  for (
+    const trade of
+    orderedTrades
+  ) {
+
+    addTradeToAutonomousAccumulator(
+      globalAccumulator,
+      trade,
+      generatedAt
+    );
+
+    for (
+      const [
+        scopeName,
+        dimensions
+      ] of
+      Object.entries(
+        AUTONOMOUS_SCOPE_DEFINITIONS
+      )
+    ) {
+
+      const key =
+        createAutonomousScopeKey(
+          trade,
+          dimensions
+        );
+
+      if (
+        !key
+      ) {
+
+        continue;
+
+      }
+
+      if (
+        !scopeAccumulators[
+          scopeName
+        ][key]
+      ) {
+
+        scopeAccumulators[
+          scopeName
+        ][key] =
+          createAutonomousAccumulator();
+
+      }
+
+      addTradeToAutonomousAccumulator(
+        scopeAccumulators[
+          scopeName
+        ][key],
+        trade,
+        generatedAt
+      );
+
+    }
+
+  }
+
+  const globalPriorWinRate =
+    globalAccumulator
+      .decisiveTrades > 0
+      ? globalAccumulator.wins /
+        globalAccumulator.decisiveTrades
+      : 0.5;
+
+  document.global =
+    finalizeAutonomousAccumulator(
+      globalAccumulator,
+      globalPriorWinRate
+    );
+
+  let bucketCount =
+    0;
+
+  let supportiveBuckets =
+    0;
+
+  let suppressiveBuckets =
+    0;
+
+  let observeBuckets =
+    0;
+
+  let filterReady =
+    0;
+
+  let tradePlanReady =
+    0;
+
+  let directionReady =
+    0;
+
+  for (
+    const scopeName of
+    Object.keys(
+      AUTONOMOUS_SCOPE_DEFINITIONS
+    ).sort()
+  ) {
+
+    const finalizedScope =
+      {};
+
+    for (
+      const key of
+      Object.keys(
+        scopeAccumulators[
+          scopeName
+        ]
+      ).sort()
+    ) {
+
+      const metric =
+        finalizeAutonomousAccumulator(
+          scopeAccumulators[
+            scopeName
+          ][key],
+          globalPriorWinRate
+        );
+
+      finalizedScope[key] =
+        metric;
+
+      bucketCount +=
+        1;
+
+      if (
+        metric.evidence.action ===
+        "SUPPORT"
+      ) {
+
+        supportiveBuckets +=
+          1;
+
+      } else if (
+        metric.evidence.action ===
+        "SUPPRESS"
+      ) {
+
+        suppressiveBuckets +=
+          1;
+
+      } else {
+
+        observeBuckets +=
+          1;
+
+      }
+
+      if (
+        metric.evidence
+          .filterEvidenceReady
+      ) {
+
+        filterReady +=
+          1;
+
+      }
+
+      if (
+        metric.evidence
+          .tradePlanEvidenceReady
+      ) {
+
+        tradePlanReady +=
+          1;
+
+      }
+
+      if (
+        metric.evidence
+          .directionEvidenceReady
+      ) {
+
+        directionReady +=
+          1;
+
+      }
+
+    }
+
+    document.scopes[
+      scopeName
+    ] =
+      finalizedScope;
+
+  }
+
+  document.source = {
+    acceptedCanonicalTrades:
+      orderedTrades.length,
+
+    normalizedTradeSetHash:
+      createHash(
+        orderedTrades.map(
+          trade => ({
+            tradeKey:
+              trade.tradeKey,
+            outcome:
+              trade.outcome,
+            closedAt:
+              trade.closedAt,
+            profitPoints:
+              trade.profitPoints,
+            stopLoss:
+              trade.stopLoss,
+            takeProfit:
+              trade.takeProfit,
+            session:
+              trade.session,
+            pattern:
+              trade.pattern,
+            marketRegime:
+              trade.marketRegime
+          })
+        )
+      ),
+
+    realizedRTrades:
+      globalAccumulator
+        .realizedRSamples
+        .length,
+
+    invalidRTrades:
+      globalAccumulator
+        .invalidRSamples,
+
+    futureDatedTrades:
+      globalAccumulator
+        .futureDatedSamples
+  };
+
+  document.summary = {
+    scopeCount:
+      Object.keys(
+        AUTONOMOUS_SCOPE_DEFINITIONS
+      ).length,
+
+    bucketCount,
+    supportiveBuckets,
+    suppressiveBuckets,
+    observeBuckets,
+
+    filterEvidenceReadyBuckets:
+      filterReady,
+
+    tradePlanEvidenceReadyBuckets:
+      tradePlanReady,
+
+    directionEvidenceReadyBuckets:
+      directionReady
+  };
+
+  const validation =
+    validateAutonomousMemorySection(
+      document
+    );
+
+  document.validation = {
+    valid:
+      validation.valid,
+    errors:
+      uniqueSortedStrings(
+        validation.errors
+      ),
+    warnings:
+      uniqueSortedStrings(
+        validation.warnings
+      )
+  };
+
+  return sortObjectKeysDeep(
+    document
+  );
+
+}
+
+function validateAutonomousMetric(
+  metric,
+  label
+) {
+
+  const errors =
+    [];
+
+  const warnings =
+    [];
+
+  if (
+    !isPlainObject(
+      metric
+    )
+  ) {
+
+    return createValidationResult(
+      false,
+      [
+        `${label} must be a JSON object.`
+      ],
+      []
+    );
+
+  }
+
+  const countFields =
+    [
+      "totalTrades",
+      "decisiveTrades",
+      "wins",
+      "losses",
+      "breakevens",
+      "realizedRSamples",
+      "invalidRSamples",
+      "futureDatedSamples",
+      "maximumConsecutiveLosses"
+    ];
+
+  for (
+    const field of
+    countFields
+  ) {
+
+    const value =
+      toFiniteNumber(
+        metric[field]
+      );
+
+    if (
+      value === null ||
+      value < 0 ||
+      !Number.isInteger(
+        value
+      )
+    ) {
+
+      errors.push(
+        `${label}.${field} must be a non-negative integer.`
+      );
+
+    }
+
+  }
+
+  if (
+    metric.decisiveTrades !==
+    metric.wins +
+    metric.losses
+  ) {
+
+    errors.push(
+      `${label}.decisiveTrades must equal wins plus losses.`
+    );
+
+  }
+
+  const reliability =
+    toFiniteNumber(
+      metric.quality
+        ?.reliability
+    );
+
+  if (
+    reliability === null ||
+    reliability < 0 ||
+    reliability > 1
+  ) {
+
+    errors.push(
+      `${label}.quality.reliability must be between 0 and 1.`
+    );
+
+  }
+
+  if (
+    ![
+      "OBSERVE",
+      "SUPPORT",
+      "SUPPRESS"
+    ].includes(
+      metric.evidence?.action
+    )
+  ) {
+
+    errors.push(
+      `${label}.evidence.action is invalid.`
+    );
+
+  }
+
+  if (
+    metric.evidence
+      ?.policyAuthorityEligible !==
+    false
+  ) {
+
+    errors.push(
+      `${label} must not grant policy authority.`
+    );
+
+  }
+
+  if (
+    metric.futureDatedSamples >
+    0
+  ) {
+
+    warnings.push(
+      `${label} excluded ${metric.futureDatedSamples} future-dated sample(s).`
+    );
+
+  }
+
+  return createValidationResult(
+    errors.length === 0,
+    errors,
+    warnings
+  );
+
+}
+
+function validateAutonomousMemorySection(
+  section
+) {
+
+  const results =
+    [];
+
+  const errors =
+    [];
+
+  const warnings =
+    [];
+
+  if (
+    !isPlainObject(
+      section
+    )
+  ) {
+
+    return createValidationResult(
+      false,
+      [
+        "AI memory autonomousMemory section must be a JSON object."
+      ],
+      []
+    );
+
+  }
+
+  if (
+    section.version !==
+    AUTONOMOUS_MEMORY_SCHEMA_VERSION
+  ) {
+
+    errors.push(
+      "AI memory autonomousMemory schema version is invalid."
+    );
+
+  }
+
+  if (
+    section.engineName !==
+    AUTONOMOUS_MEMORY_ENGINE_NAME
+  ) {
+
+    errors.push(
+      "AI memory autonomousMemory engine name is invalid."
+    );
+
+  }
+
+  if (
+    section.engineVersion !==
+    AUTONOMOUS_MEMORY_VERSION
+  ) {
+
+    errors.push(
+      "AI memory autonomousMemory engine version is invalid."
+    );
+
+  }
+
+  if (
+    section.advisoryOnly !==
+      true ||
+    section.liveAuthorityPermitted !==
+      false
+  ) {
+
+    errors.push(
+      "AI memory autonomousMemory must remain advisory-only without live authority."
+    );
+
+  }
+
+  results.push(
+    validateAutonomousMetric(
+      section.global,
+      "autonomousMemory.global"
+    )
+  );
+
+  if (
+    !isPlainObject(
+      section.scopes
+    )
+  ) {
+
+    errors.push(
+      "AI memory autonomousMemory.scopes must be a JSON object."
+    );
+
+  } else {
+
+    for (
+      const scopeName of
+      Object.keys(
+        AUTONOMOUS_SCOPE_DEFINITIONS
+      )
+    ) {
+
+      const scope =
+        section.scopes[
+          scopeName
+        ];
+
+      if (
+        !isPlainObject(
+          scope
+        )
+      ) {
+
+        errors.push(
+          `AI memory autonomousMemory.scopes.${scopeName} must be a JSON object.`
+        );
+
+        continue;
+
+      }
+
+      for (
+        const key of
+        Object.keys(
+          scope
+        )
+      ) {
+
+        results.push(
+          validateAutonomousMetric(
+            scope[key],
+            `autonomousMemory.scopes.${scopeName}.${key}`
+          )
+        );
+
+      }
+
+    }
+
+  }
+
+  const merged =
+    mergeValidationResults(
+      results
+    );
+
+  errors.push(
+    ...merged.errors
+  );
+
+  warnings.push(
+    ...merged.warnings
+  );
+
+  return createValidationResult(
+    errors.length === 0,
+    errors,
+    warnings
+  );
+
+}
+
 // -----------------------------------------------------------------------------
 // Empty memory structures
 // -----------------------------------------------------------------------------
@@ -1824,6 +4100,11 @@ function createEmptyMemoryDocument(
     enrichment:
       createUnavailableEnrichmentMemory(),
 
+    autonomousMemory:
+      createEmptyAutonomousMemory(
+        generatedAt
+      ),
+
     coverage: createEmptyCoverage(),
 
     source: {
@@ -1865,6 +4146,11 @@ function createEmptyMemoryDocument(
       incrementalState: true,
       optionalEnrichment: true,
       enrichmentAdvisoryOnly: true,
+      autonomousMemoryAvailable: true,
+      autonomousMemoryVersion:
+        AUTONOMOUS_MEMORY_VERSION,
+      autonomousMemoryAdvisoryOnly: true,
+      liveAuthorityPermitted: false,
       optionalMetadataPolicy:
         "Only explicitly supplied source metadata is aggregated.",
       supportedPairs: Array.from(
@@ -6401,6 +8687,12 @@ function validateMemoryDocument(
     )
   );
 
+  results.push(
+    validateAutonomousMemorySection(
+      document.autonomousMemory
+    )
+  );
+
   if (
     !isPlainObject(
       document.coverage
@@ -6576,6 +8868,12 @@ function buildMemoryDocument({
           enrichmentMemory
         )
       : createUnavailableEnrichmentMemory();
+
+  memoryDocument.autonomousMemory =
+    buildAutonomousMemory(
+      canonicalTrades,
+      generatedAt
+    );
 
   const learningModifiedAt =
     getFileModifiedAt(
@@ -6785,6 +9083,23 @@ function buildMemoryDocument({
       memoryDocument.enrichment
         .available ===
       true,
+
+    autonomousMemoryVersion:
+      AUTONOMOUS_MEMORY_VERSION,
+
+    autonomousMemoryValid:
+      memoryDocument.autonomousMemory
+        .validation
+        .valid ===
+      true,
+
+    autonomousMemoryBucketCount:
+      memoryDocument.autonomousMemory
+        .summary
+        .bucketCount,
+
+    liveAuthorityPermitted:
+      false,
 
     canonicalTradeKeys:
       canonicalTrades
@@ -7866,6 +10181,12 @@ module.exports = {
   MEMORY_SCHEMA_VERSION,
   STATE_SCHEMA_VERSION,
 
+  AUTONOMOUS_MEMORY_ENGINE_NAME,
+  AUTONOMOUS_MEMORY_VERSION,
+  AUTONOMOUS_MEMORY_SCHEMA_VERSION,
+  AUTONOMOUS_MEMORY_CONFIG,
+  AUTONOMOUS_SCOPE_DEFINITIONS,
+
   SUPPORTED_ENRICHMENT_SCHEMA_VERSION,
   SUPPORTED_ENRICHMENT_ENGINE_NAME,
   SUPPORTED_ENRICHMENT_ENGINE_VERSION,
@@ -7900,6 +10221,12 @@ module.exports = {
   normalizeLearningTrades,
   normalizeLearnedTrade,
   buildConfidenceOverlay,
+
+  buildAutonomousMemory,
+  validateAutonomousMemorySection,
+  calculateTradeRealizedR,
+  calculateRecencyWeight,
+  calculateWilsonInterval95,
 
   buildEnrichmentMemory,
   loadOptionalLearningEnrichment,

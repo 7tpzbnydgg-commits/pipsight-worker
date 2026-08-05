@@ -10,8 +10,9 @@ permissions:
   contents: write
 
 concurrency:
-  group: pipsight-unified-analysis-${{ github.ref }}
+  group: pipsight-analysis-writes-${{ github.ref }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   sync-learning:
@@ -75,6 +76,104 @@ jobs:
           done
 
           echo "Resolver, Learning and AI Memory JavaScript syntax is valid."
+
+      - name: Verify fixed adaptive engine compatibility
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          "use strict";
+
+          const {
+            PipSightLearner,
+            LearningConfig
+          } = require("./learner.js");
+
+          const resolver =
+            require("./resolve-analysis-history.js");
+
+          const aiMemory =
+            require("./ai-memory.js");
+
+          if (LearningConfig.VERSION !== "2.1.0") {
+            throw new Error(
+              `learner.js version ${LearningConfig.VERSION} is unsupported; expected 2.1.0.`
+            );
+          }
+
+          if (resolver.ENGINE_VERSION !== "1.0.1") {
+            throw new Error(
+              `resolve-analysis-history.js version ${resolver.ENGINE_VERSION} is unsupported; expected 1.0.1.`
+            );
+          }
+
+          if (aiMemory.ENGINE_VERSION !== "1.0.1") {
+            throw new Error(
+              `ai-memory.js version ${aiMemory.ENGINE_VERSION} is unsupported; expected 1.0.1.`
+            );
+          }
+
+          const learner =
+            new PipSightLearner();
+
+          learner.data.signals = [
+            {
+              id: "compatibility-signal",
+              pair: "GBPJPY",
+              strategy: "scalp",
+              timeframe: "5m",
+              direction: "BUY",
+              entry: 200,
+              outcome: null
+            }
+          ];
+
+          const unsafeFallback =
+            learner.findPendingLegacySignal({
+              pair: "GBPJPY",
+              strategy: "scalp",
+              timeframe: "15m",
+              direction: "BUY",
+              entry: 200
+            });
+
+          if (unsafeFallback !== null) {
+            throw new Error(
+              "learner.js still permits approximate pending-trade matching."
+            );
+          }
+
+          const identityBase = {
+            id: "compatibility-signal",
+            pair: "GBPJPY",
+            engine: "scalp",
+            direction: "BUY",
+            timeframe: "5m",
+            entry: 200,
+            openedAt: "2026-01-01T00:00:00.000Z"
+          };
+
+          const originalKey =
+            aiMemory.createTradeKey(identityBase);
+
+          const correctedKey =
+            aiMemory.createTradeKey({
+              ...identityBase,
+              outcome: "WIN",
+              closePrice: 201,
+              closedAt: "2026-01-01T01:00:00.000Z"
+            });
+
+          if (originalKey !== correctedKey) {
+            throw new Error(
+              "ai-memory.js identity changes when mutable resolution fields change."
+            );
+          }
+
+          console.log(
+            "Fixed learner, resolver and AI Memory compatibility checks passed."
+          );
+          NODE
 
       - name: Validate source analysis history
         run: |
@@ -256,10 +355,10 @@ jobs:
           }
 
           if (
-            history.records.length !==
-              history.history.length ||
-            history.records.length !==
-              history.items.length
+            JSON.stringify(history.records) !==
+              JSON.stringify(history.history) ||
+            JSON.stringify(history.records) !==
+              JSON.stringify(history.items)
           ) {
             throw new Error(
               "Resolved history aliases are not synchronized."
@@ -806,12 +905,7 @@ jobs:
 
           const fs = require("fs");
 
-          const outputFiles = [
-            "data/ai-memory.json",
-            "data/ai-memory-state.json"
-          ];
-
-          for (const filePath of outputFiles) {
+          function readObject(filePath) {
             if (!fs.existsSync(filePath)) {
               throw new Error(
                 `Required output file was not created: ${filePath}`
@@ -819,10 +913,7 @@ jobs:
             }
 
             const raw =
-              fs.readFileSync(
-                filePath,
-                "utf8"
-              ).trim();
+              fs.readFileSync(filePath, "utf8").trim();
 
             if (!raw) {
               throw new Error(
@@ -830,31 +921,61 @@ jobs:
               );
             }
 
-            let data;
-
-            try {
-              data =
-                JSON.parse(raw);
-            } catch (error) {
-              throw new Error(
-                `${filePath} contains invalid JSON: ${error.message}`
-              );
-            }
+            const parsed = JSON.parse(raw);
 
             if (
-              data === null ||
-              typeof data !== "object" ||
-              Array.isArray(data)
+              parsed === null ||
+              typeof parsed !== "object" ||
+              Array.isArray(parsed)
             ) {
               throw new Error(
-                `${filePath} must contain a valid JSON object.`
+                `${filePath} must contain a JSON object.`
               );
             }
 
-            console.log(
-              `Validated ${filePath}`
+            return parsed;
+          }
+
+          const memory =
+            readObject("data/ai-memory.json");
+
+          const state =
+            readObject("data/ai-memory-state.json");
+
+          if (
+            memory.version !== 1 ||
+            memory.engineName !==
+              "PipSight Pro Adaptive AI Memory Engine" ||
+            memory.engineVersion !== "1.0.1" ||
+            memory.validation?.valid !== true ||
+            memory.metadata?.deterministic !== true ||
+            memory.metadata?.duplicateSafe !== true
+          ) {
+            throw new Error(
+              "data/ai-memory.json failed its production compatibility contract."
             );
           }
+
+          if (
+            state.version !== 1 ||
+            state.engineName !==
+              "PipSight Pro Adaptive AI Memory Engine" ||
+            state.engineVersion !== "1.0.1" ||
+            state.pendingTransaction !== null ||
+            !["UPDATED", "UNCHANGED"].includes(
+              state.lastRun?.status
+            ) ||
+            state.lastRun?.stateWritten !== true ||
+            state.lastRun?.error !== null
+          ) {
+            throw new Error(
+              "data/ai-memory-state.json does not contain a fully committed successful run."
+            );
+          }
+
+          console.log(
+            "AI Memory schema, version and transaction-state validation passed."
+          );
           NODE
 
       - name: Show adaptive pipeline outputs
@@ -885,6 +1006,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+
+          if [[ "${GITHUB_REF_TYPE}" != "branch" ]]; then
+            echo "::error::Adaptive state can only be committed from a branch workflow run."
+            exit 1
+          fi
 
           git config user.name "pipsight-adaptive-robot"
           git config user.email "actions@users.noreply.github.com"

@@ -38,6 +38,50 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Verify fixed live-analysis engine
+        run: |
+          set -euo pipefail
+
+          test -s "run-live-analysis.js"
+          node --check "run-live-analysis.js"
+
+          node <<'NODE'
+          "use strict";
+
+          const live =
+            require("./run-live-analysis.js");
+
+          if (
+            typeof live.buildLiveAnalysisOutput !==
+              "function"
+          ) {
+            throw new Error(
+              "run-live-analysis.js does not expose the expected production API."
+            );
+          }
+
+          const probe =
+            live.buildLiveAnalysisOutput({
+              pairs: [],
+              generatedAt:
+                "2026-01-01T00:00:00.000Z",
+              timestamp:
+                Date.parse(
+                  "2026-01-01T00:00:00.000Z"
+                )
+            });
+
+          if (probe.engineVersion !== "1.4.1-pro") {
+            throw new Error(
+              `run-live-analysis.js version ${probe.engineVersion} is unsupported; expected 1.4.1-pro.`
+            );
+          }
+
+          console.log(
+            "Fixed Live Analysis engine compatibility check passed."
+          );
+          NODE
+
       - name: Run live analysis
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -51,40 +95,141 @@ jobs:
         run: |
           set -euo pipefail
 
-          files=(
-            "data/live-analysis.json"
-            "data/analysis-history.json"
-            "data/notify-state.json"
-          )
+          node <<'NODE'
+          "use strict";
 
-          for file in "${files[@]}"; do
-            test -s "$file"
+          const fs = require("fs");
 
-            node -e "
-              const fs = require('fs');
-              const file = process.argv[1];
-              const parsed = JSON.parse(
-                fs.readFileSync(file, 'utf8')
+          function readObject(filePath) {
+            if (!fs.existsSync(filePath)) {
+              throw new Error(
+                `Required output file does not exist: ${filePath}`
               );
+            }
 
-              if (
-                parsed === null ||
-                typeof parsed !== 'object'
-              ) {
-                throw new Error(
-                  file + ' must contain a JSON object or array'
-                );
-              }
+            const raw =
+              fs.readFileSync(filePath, "utf8").trim();
 
-              console.log('Validated:', file);
-            " "$file"
-          done
+            if (!raw) {
+              throw new Error(
+                `Output file is empty: ${filePath}`
+              );
+            }
+
+            const parsed = JSON.parse(raw);
+
+            if (
+              parsed === null ||
+              typeof parsed !== "object" ||
+              Array.isArray(parsed)
+            ) {
+              throw new Error(
+                `${filePath} must contain a JSON object.`
+              );
+            }
+
+            return parsed;
+          }
+
+          const live =
+            readObject("data/live-analysis.json");
+
+          const history =
+            readObject("data/analysis-history.json");
+
+          const notify =
+            readObject("data/notify-state.json");
+
+          if (
+            live.engineVersion !== "1.4.1-pro" ||
+            live.status !== "ok" ||
+            typeof live.pairs !== "object" ||
+            live.pairs === null ||
+            Array.isArray(live.pairs) ||
+            !Array.isArray(live.results) ||
+            !Array.isArray(live.analyses) ||
+            !Array.isArray(live.data) ||
+            live.pairCount !==
+              Object.keys(live.pairs).length ||
+            JSON.stringify(live.results) !==
+              JSON.stringify(live.analyses) ||
+            JSON.stringify(live.results) !==
+              JSON.stringify(live.data)
+          ) {
+            throw new Error(
+              "data/live-analysis.json failed its production schema contract."
+            );
+          }
+
+          for (const field of [
+            "records",
+            "history",
+            "items",
+            "closed"
+          ]) {
+            if (!Array.isArray(history[field])) {
+              throw new Error(
+                `data/analysis-history.json field ${field} must be an array.`
+              );
+            }
+          }
+
+          if (
+            history.open === null ||
+            typeof history.open !== "object" ||
+            Array.isArray(history.open) ||
+            JSON.stringify(history.records) !==
+              JSON.stringify(history.history) ||
+            JSON.stringify(history.records) !==
+              JSON.stringify(history.items)
+          ) {
+            throw new Error(
+              "data/analysis-history.json aliases or open collection are invalid."
+            );
+          }
+
+          for (const field of [
+            "signals",
+            "notifications",
+            "state"
+          ]) {
+            if (
+              notify[field] === null ||
+              typeof notify[field] !== "object" ||
+              Array.isArray(notify[field])
+            ) {
+              throw new Error(
+                `data/notify-state.json field ${field} must be an object.`
+              );
+            }
+          }
+
+          if (
+            JSON.stringify(notify.signals) !==
+              JSON.stringify(notify.notifications) ||
+            JSON.stringify(notify.signals) !==
+              JSON.stringify(notify.state)
+          ) {
+            throw new Error(
+              "data/notify-state.json aliases are not synchronized."
+            );
+          }
+
+          console.log(
+            "Live analysis, history and notify-state validation passed."
+          );
+          NODE
 
       - name: Commit and push updated analysis
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+
+          if [[ "${GITHUB_REF_TYPE}" != "branch" ]]; then
+            echo "::error::Live analysis can only be committed from a branch workflow run."
+            exit 1
+          fi
 
           git config user.name "pipsight-robot"
           git config user.email "actions@users.noreply.github.com"
@@ -107,7 +252,7 @@ jobs:
           for attempt in $(seq 1 "$max_attempts"); do
             echo "Push attempt ${attempt}/${max_attempts}"
 
-            if git push origin HEAD:main; then
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
               echo "Live analysis pushed successfully."
               exit 0
             fi
@@ -119,9 +264,9 @@ jobs:
 
             echo "Remote branch changed. Rebasing before retry..."
 
-            git fetch origin main
+            git fetch origin "${GITHUB_REF_NAME}"
 
-            if ! git rebase origin/main; then
+            if ! git rebase "origin/${GITHUB_REF_NAME}"; then
               echo "Rebase conflict detected."
               git rebase --abort || true
               exit 1

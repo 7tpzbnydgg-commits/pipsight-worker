@@ -1,0 +1,316 @@
+{
+  "schemaVersion": 1,
+  "configName": "PipSight Pro Autonomous Trading Control Plane",
+  "configVersion": "1.4.0",
+  "createdAt": "2026-08-05T19:59:11.346478Z",
+  "description": "Single source of truth for AI policy authority, staged rollout, hard risk controls, model validation, safety gates, auditability and deterministic rollback.",
+  "deployment": {
+    "enabled": true,
+    "mode": "SHADOW",
+    "allowedModes": [
+      "OFF",
+      "SHADOW",
+      "CONTROLLED",
+      "AUTONOMOUS",
+      "EMERGENCY_STOP"
+    ],
+    "autonomousRolloutPercent": 0,
+    "rolloutHashSalt": "pipsight-autonomous-v1",
+    "deterministicFallbackRequired": true,
+    "fallbackOnAnyValidationFailure": true,
+    "fallbackMode": "CONTROLLED",
+    "emergencyStop": false,
+    "emergencyStopReason": null,
+    "requireExplicitModePromotion": true,
+    "allowRuntimeSelfPromotion": false,
+    "allowPolicyToChangeDeploymentMode": false
+  },
+  "authority": {
+    "confidenceAdjustment": {
+      "enabled": true,
+      "maximumAbsolutePoints": 5
+    },
+    "signalFiltering": {
+      "enabled": true,
+      "liveAuthorityModes": [
+        "CONTROLLED",
+        "AUTONOMOUS"
+      ],
+      "mayConvertBuySellToHold": true,
+      "mayConvertHoldToBuySell": false,
+      "minimumDecisiveSamples": 30,
+      "minimumReliability": 0.7
+    },
+    "directionSelection": {
+      "enabled": true,
+      "liveAuthorityModes": [
+        "AUTONOMOUS"
+      ],
+      "maySelectBuySellHold": true,
+      "mayReverseDeterministicDirection": true,
+      "minimumDecisiveSamples": 75,
+      "minimumReliability": 0.85,
+      "minimumPolicyEdgeR": 0.15,
+      "requireMultiEngineSupportForReversal": true,
+      "minimumSupportingDirectionalEngines": 2
+    },
+    "tradePlanOptimization": {
+      "enabled": true,
+      "liveAuthorityModes": [
+        "AUTONOMOUS"
+      ],
+      "minimumDecisiveSamples": 50,
+      "minimumReliability": 0.8,
+      "allowEntryRefinement": true,
+      "allowStopTightening": true,
+      "allowStopWidening": false,
+      "allowTargetOptimization": true,
+      "maximumEntryDisplacementAtr": 0.25,
+      "maximumStopTighteningPercent": 20,
+      "minimumRiskReward": 1.5,
+      "maximumRiskReward": 4.0,
+      "requirePositiveInitialRisk": true,
+      "requireStrictTargetOrdering": true
+    },
+    "masterConsensus": {
+      "enabled": true,
+      "liveAuthorityModes": [
+        "AUTONOMOUS"
+      ],
+      "minimumActiveEngines": 2,
+      "minimumConsensusScore": 0.65,
+      "conflictAction": "HOLD",
+      "allowSingleEngineDecision": false
+    }
+  },
+  "learningEligibility": {
+    "acceptedOutcomes": [
+      "WIN",
+      "LOSS",
+      "BREAKEVEN"
+    ],
+    "decisiveOutcomes": [
+      "WIN",
+      "LOSS"
+    ],
+    "excludeOpenUnresolved": true,
+    "excludeInvalidRejectedError": true,
+    "excludeFutureDatedRecords": true,
+    "requireClosedAtAfterOpenedAt": true,
+    "requireStableCanonicalTradeIdentity": true,
+    "requireChronologicalProcessing": true,
+    "preventDuplicateLearning": true,
+    "breakevenCountsTowardSampleMaturity": false,
+    "minimumGlobalDecisiveSamples": 50,
+    "minimumBucketDecisiveSamples": 30,
+    "strongBucketDecisiveSamples": 50,
+    "maximumLearningRecordAgeDays": 365,
+    "recencyHalfLifeDays": 45
+  },
+  "policyIsolation": {
+    "dimensions": [
+      "pair",
+      "timeframe",
+      "direction",
+      "engine",
+      "marketRegime",
+      "session",
+      "pattern"
+    ],
+    "neverInventMissingDimensions": true,
+    "fallbackOrder": [
+      "pairTimeframeEngineDirectionRegime",
+      "pairTimeframeEngineDirection",
+      "pairEngineDirection",
+      "pairTimeframeDirection",
+      "pairDirection",
+      "engineDirection",
+      "pair",
+      "engine",
+      "direction"
+    ],
+    "maximumFallbackLevels": 3,
+    "rejectConflictingCanonicalAliases": true
+  },
+  "policyValidation": {
+    "required": true,
+    "walkForwardValidationRequired": true,
+    "minimumOutOfSampleFraction": 0.3,
+    "minimumOutOfSampleDecisiveTrades": 30,
+    "purgeOverlapRequired": true,
+    "embargoBars": 5,
+    "probabilityOfBacktestOverfittingEnabled": true,
+    "maximumAcceptedPbo": 0.2,
+    "maximumParameterTrialsPerPolicy": 20,
+    "rejectInSampleOnlyImprovement": true,
+    "requireOutOfSamplePositiveExpectancy": true,
+    "minimumOutOfSampleProfitFactor": 1.1,
+    "minimumOutOfSampleExpectancyR": 0.05,
+    "maximumOutOfSampleDrawdownR": 10,
+    "maximumPolicyAgeMinutes": 180,
+    "requirePolicyHashMatch": true,
+    "requireSourceHashMatch": true,
+    "requireEngineVersionMatch": true
+  },
+  "riskSafetyGate": {
+    "immutable": true,
+    "policyMayOverride": false,
+    "preTradeValidationRequired": true,
+    "rejectDuplicateOrders": true,
+    "rejectStaleMarketData": true,
+    "maximumMarketDataAgeSeconds": {
+      "scalp": 900,
+      "intraday": 7200,
+      "swing": 172800
+    },
+    "riskPerTradePercent": {
+      "default": 0.25,
+      "maximum": 0.5
+    },
+    "maximumOpenPositions": 2,
+    "maximumOpenPositionsPerPair": 1,
+    "maximumCorrelatedExposurePositions": 1,
+    "maximumDailyLossPercent": 2.0,
+    "maximumWeeklyLossPercent": 4.0,
+    "maximumConsecutiveLosses": 3,
+    "lossCooldownMinutes": 180,
+    "maximumSignalsPerPairPerDay": 4,
+    "minimumMinutesBetweenSamePairSignals": 60,
+    "rejectZeroOrNegativeRisk": true,
+    "rejectNonFinitePrices": true,
+    "rejectInvalidBuyGeometry": true,
+    "rejectInvalidSellGeometry": true,
+    "rejectNonIncreasingBuyTargets": true,
+    "rejectNonDecreasingSellTargets": true,
+    "requireMinimumRiskReward": true,
+    "minimumRiskReward": 1.5,
+    "killSwitchOnStateCorruption": true,
+    "killSwitchOnRepeatedWriteFailure": true,
+    "maximumConsecutiveStateWriteFailures": 2,
+    "killSwitchOnPolicyValidationFailure": false,
+    "fallbackOnPolicyValidationFailure": true
+  },
+  "experiencedTraderBehaviour": {
+    "preferNoTradeOverLowQualityTrade": true,
+    "requireRegimeCompatibility": true,
+    "requireLiquiditySessionCompatibility": true,
+    "avoidChasingExtendedMoves": true,
+    "avoidOvertrading": true,
+    "reduceAuthorityAfterLossCluster": true,
+    "increaseAuthorityOnlyAfterValidatedEvidence": true,
+    "neverAverageDownAutomatically": true,
+    "neverMartingale": true,
+    "neverIncreaseRiskToRecoverLosses": true,
+    "conflictingEvidenceAction": "HOLD",
+    "missingCriticalContextAction": "HOLD"
+  },
+  "monitoring": {
+    "continuousValidation": true,
+    "recordEveryDecision": true,
+    "recordRejectedDecisions": true,
+    "recordDeterministicBaseline": true,
+    "recordCounterfactualOutcome": true,
+    "compareAgainstDeterministicBaseline": true,
+    "rollingEvaluationWindows": [
+      20,
+      50,
+      100
+    ],
+    "minimumWindowForPromotion": 50,
+    "promotionMetrics": [
+      "expectancyR",
+      "profitFactor",
+      "maximumDrawdownR",
+      "lossRate",
+      "tradeFrequency",
+      "policyOverrideRate"
+    ],
+    "automaticDemotionEnabled": true,
+    "demotionTriggers": {
+      "negativeExpectancyRWindow": 30,
+      "profitFactorBelow": 0.9,
+      "maximumDrawdownRAbove": 6,
+      "consecutivePolicyLosses": 4,
+      "policyValidationFailure": true,
+      "stalePolicy": true,
+      "sourceHashMismatch": true
+    }
+  },
+  "rollout": {
+    "stages": [
+      {
+        "name": "SHADOW",
+        "percent": 0,
+        "minimumDecisiveOutcomesBeforePromotion": 50,
+        "minimumDays": 7
+      },
+      {
+        "name": "AUTONOMOUS_10",
+        "percent": 10,
+        "minimumDecisiveOutcomesBeforePromotion": 50,
+        "minimumDays": 7
+      },
+      {
+        "name": "AUTONOMOUS_30",
+        "percent": 30,
+        "minimumDecisiveOutcomesBeforePromotion": 75,
+        "minimumDays": 14
+      },
+      {
+        "name": "AUTONOMOUS_60",
+        "percent": 60,
+        "minimumDecisiveOutcomesBeforePromotion": 100,
+        "minimumDays": 14
+      },
+      {
+        "name": "AUTONOMOUS_100",
+        "percent": 100,
+        "minimumDecisiveOutcomesBeforePromotion": 150,
+        "minimumDays": 30
+      }
+    ],
+    "promotionRequiresManualApproval": true,
+    "promotionRequiresBaselineOutperformance": true,
+    "promotionRequiresNoSafetyBreach": true,
+    "promotionRequiresValidRollbackSnapshot": true
+  },
+  "rollback": {
+    "enabled": true,
+    "instantMode": "CONTROLLED",
+    "hardStopMode": "EMERGENCY_STOP",
+    "preserveDecisionLogs": true,
+    "preserveLearningData": true,
+    "disablePolicyAuthorityOnRollback": true,
+    "restoreDeterministicDecisionSemantics": true,
+    "requireLastKnownGoodPolicySnapshot": true,
+    "maximumRollbackSeconds": 5
+  },
+  "stateAndRecovery": {
+    "atomicWritesRequired": true,
+    "pendingTransactionRequired": true,
+    "recoverPendingTransactionBeforeNewRun": true,
+    "writeOutputsBeforeFinalStateCommit": true,
+    "neverClearPendingTransactionBeforeAllWritesSucceed": true,
+    "sourceHashesRequired": true,
+    "monotonicCountersRequired": true,
+    "lastKnownGoodSnapshotRequired": true,
+    "maximumSnapshots": 10
+  },
+  "governance": {
+    "policyEngineMayModifySourceCode": false,
+    "decisionEngineMayModifySourceCode": false,
+    "externalNetworkCallsDuringDecision": false,
+    "humanApprovalRequiredForModePromotion": true,
+    "humanApprovalRequiredForRiskLimitIncrease": true,
+    "riskLimitDecreaseMayBeAutomatic": true,
+    "fullExplainabilityRequired": true,
+    "decisionLogRetentionDays": 365,
+    "standardsBasis": [
+      "NIST AI RMF govern-map-measure-manage lifecycle",
+      "SEC Rule 15c3-5 style pre-trade financial and erroneous-order controls",
+      "FINRA algorithmic trading development, testing, validation and supervision practices",
+      "FCA algorithmic trading kill functionality and controlled material changes",
+      "Probability of Backtest Overfitting / out-of-sample validation principles"
+    ]
+  }
+}

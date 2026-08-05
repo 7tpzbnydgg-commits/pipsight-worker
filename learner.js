@@ -111,6 +111,73 @@ function round(value, decimals = 2) {
     return Math.round(value * multiplier) / multiplier;
 }
 
+function getSignalChronologyTimestamp(signal) {
+    if (!isPlainObject(signal)) {
+        return null;
+    }
+
+    const candidates = [
+        signal.closedAt,
+        signal.resolvedAt,
+        signal.openedAt,
+        signal.timestamp
+    ];
+
+    for (const candidate of candidates) {
+        if (
+            typeof candidate !== "string" ||
+            !candidate.trim()
+        ) {
+            continue;
+        }
+
+        const timestamp = Date.parse(candidate);
+
+        if (Number.isFinite(timestamp)) {
+            return timestamp;
+        }
+    }
+
+    return null;
+}
+
+function sortSignalsChronologically(signals) {
+    if (!Array.isArray(signals)) {
+        return [];
+    }
+
+    return signals
+        .map((signal, index) => ({
+            signal,
+            index,
+            timestamp:
+                getSignalChronologyTimestamp(signal)
+        }))
+        .sort((left, right) => {
+            if (
+                left.timestamp === null &&
+                right.timestamp === null
+            ) {
+                return left.index - right.index;
+            }
+
+            if (left.timestamp === null) {
+                return 1;
+            }
+
+            if (right.timestamp === null) {
+                return -1;
+            }
+
+            if (left.timestamp !== right.timestamp) {
+                return left.timestamp - right.timestamp;
+            }
+
+            return left.index - right.index;
+        })
+        .map(item => item.signal);
+}
+
 function createEmptyStats() {
     return {
         totalSignals: 0,
@@ -563,6 +630,14 @@ class MemoryManager {
         );
     }
 
+    static getDecisiveSignals(learner) {
+        return learner.data.signals.filter(
+            signal =>
+                signal.outcome === "WIN" ||
+                signal.outcome === "LOSS"
+        );
+    }
+
     static getPendingSignals(learner) {
         return learner.data.signals.filter(
             signal => signal.outcome === null
@@ -862,15 +937,12 @@ class PipSightLearner {
             return exactMatch;
         }
 
-        return this.data.signals.find(signal => {
-            return (
-                signal &&
-                signal.outcome === null &&
-                signal.pair === pair &&
-                signal.strategy === strategy &&
-                signal.direction === direction
-            );
-        }) || null;
+        /*
+         * Object-style outcome data supplies timeframe and entry. Falling back
+         * to pair/strategy/direction alone can resolve a different open trade.
+         * No approximate match is safe here; create a new exact signal instead.
+         */
+        return null;
     }
 
     /* -----------------------------------------------------------------
@@ -927,11 +999,11 @@ class PipSightLearner {
                 recordedSignal
             );
 
-        const resolvedCount =
-            MemoryManager.getResolvedSignals(this).length;
+        const decisiveCount =
+            MemoryManager.getDecisiveSignals(this).length;
 
         const enoughDataToFilter =
-            resolvedCount >=
+            decisiveCount >=
             LearningConfig.MIN_SIGNALS_FOR_CONFIDENCE;
 
         recordedSignal.status =
@@ -1942,22 +2014,24 @@ class PipSightLearner {
                 )
             );
 
-        if (
-            outcomes.length <
-            LearningConfig.MIN_SIGNALS_FOR_LEARNING
-        ) {
-            return LearningConfig
-                .DEFAULT_CONFIDENCE;
-        }
-
         const decisiveOutcomes =
-            outcomes.filter(
-                signal =>
-                    signal.outcome === "WIN" ||
-                    signal.outcome === "LOSS"
+            sortSignalsChronologically(
+                outcomes.filter(
+                    signal =>
+                        signal.outcome === "WIN" ||
+                        signal.outcome === "LOSS"
+                )
             );
 
-        if (decisiveOutcomes.length === 0) {
+        /*
+         * BREAKEVEN records are valid resolved outcomes, but they do not prove
+         * a WIN/LOSS edge. Require the configured sample size from decisive
+         * outcomes before adaptive confidence can move away from the default.
+         */
+        if (
+            decisiveOutcomes.length <
+            LearningConfig.MIN_SIGNALS_FOR_LEARNING
+        ) {
             return LearningConfig
                 .DEFAULT_CONFIDENCE;
         }
@@ -2083,8 +2157,8 @@ class PipSightLearner {
         }
 
         const recentSignals =
-            this.data.signals
-                .filter(
+            sortSignalsChronologically(
+                this.data.signals.filter(
                     existing =>
                         (
                             existing.outcome ===
@@ -2097,10 +2171,10 @@ class PipSightLearner {
                         existing.pair ===
                             signal.pair
                 )
-                .slice(
-                    -LearningConfig
-                        .PERFORMANCE_WINDOW
-                );
+            ).slice(
+                -LearningConfig
+                    .PERFORMANCE_WINDOW
+            );
 
         if (recentSignals.length >= 10) {
             const recentWins =
@@ -2143,7 +2217,15 @@ class PipSightLearner {
                 signal
             );
 
+        const decisiveCount =
+            MemoryManager.getDecisiveSignals(this).length;
+
+        const enoughDataToFilter =
+            decisiveCount >=
+            LearningConfig.MIN_SIGNALS_FOR_CONFIDENCE;
+
         signal.status =
+            !enoughDataToFilter ||
             signal.confidence >=
             LearningConfig
                 .ACTIONABLE_CONFIDENCE_THRESHOLD
@@ -2154,13 +2236,13 @@ class PipSightLearner {
     }
 
     refreshPendingConfidence() {
-        const resolvedCount =
+        const decisiveCount =
             MemoryManager
-                .getResolvedSignals(this)
+                .getDecisiveSignals(this)
                 .length;
 
         const enoughDataToFilter =
-            resolvedCount >=
+            decisiveCount >=
             LearningConfig.MIN_SIGNALS_FOR_CONFIDENCE;
 
         for (
@@ -2217,10 +2299,14 @@ class PipSightLearner {
             const entries = Object.entries(
                 source || {}
             ).filter(([, value]) => {
+                const decisiveSamples =
+                    Number(value?.wins || 0) +
+                    Number(value?.losses || 0);
+
                 return (
                     value &&
                     isFiniteNumber(value.winRate) &&
-                    Number(value.resolved || 0) >=
+                    decisiveSamples >=
                         minimumResolved
                 );
             });
@@ -2342,10 +2428,12 @@ class PipSightLearner {
 
     getPerformanceTrend() {
         const decisiveSignals =
-            this.data.signals.filter(
-                signal =>
-                    signal.outcome === "WIN" ||
-                    signal.outcome === "LOSS"
+            sortSignalsChronologically(
+                this.data.signals.filter(
+                    signal =>
+                        signal.outcome === "WIN" ||
+                        signal.outcome === "LOSS"
+                )
             );
 
         const windowSize =
@@ -2423,10 +2511,14 @@ class PipSightLearner {
             const [strategy, values] of
             Object.entries(strategies)
         ) {
+            const decisiveSamples =
+                Number(values?.wins || 0) +
+                Number(values?.losses || 0);
+
             if (
                 !values ||
                 !isFiniteNumber(values.winRate) ||
-                Number(values.resolved || 0) <
+                decisiveSamples <
                     LearningConfig.MIN_SIGNALS_FOR_LEARNING
             ) {
                 continue;
@@ -2458,10 +2550,14 @@ class PipSightLearner {
             const [indicator, values] of
             Object.entries(indicators)
         ) {
+            const decisiveSamples =
+                Number(values?.wins || 0) +
+                Number(values?.losses || 0);
+
             if (
                 !values ||
                 !isFiniteNumber(values.winRate) ||
-                Number(values.resolved || 0) <
+                decisiveSamples <
                     LearningConfig.MIN_SIGNALS_FOR_LEARNING
             ) {
                 continue;

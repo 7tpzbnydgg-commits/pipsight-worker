@@ -58,7 +58,7 @@ const ENGINE_NAME =
   "PipSight Pro Adaptive AI Memory Engine";
 
 const ENGINE_VERSION =
-  "1.0.0";
+  "1.0.1";
 
 const MEMORY_SCHEMA_VERSION =
   1;
@@ -3830,6 +3830,23 @@ function normalizeLearnedTrade(
   }
 
   if (
+    openedAt &&
+    closedAt &&
+    new Date(
+      closedAt
+    ).getTime() <
+    new Date(
+      openedAt
+    ).getTime()
+  ) {
+
+    errors.push(
+      `Signal at index ${sourceIndex} closes before it opens.`
+    );
+
+  }
+
+  if (
     errors.length > 0
   ) {
 
@@ -3877,6 +3894,67 @@ function normalizeLearnedTrade(
         entry,
         profitPoints
       );
+
+  }
+
+  if (
+    outcome === "WIN" &&
+    profitPoints !== null &&
+    profitPoints < 0
+  ) {
+
+    errors.push(
+      `Signal at index ${sourceIndex} has WIN outcome with negative profit points.`
+    );
+
+  }
+
+  if (
+    outcome === "LOSS" &&
+    profitPoints !== null &&
+    profitPoints > 0
+  ) {
+
+    errors.push(
+      `Signal at index ${sourceIndex} has LOSS outcome with positive profit points.`
+    );
+
+  }
+
+  if (
+    outcome === "WIN" &&
+    resultPercentage !== null &&
+    resultPercentage < 0
+  ) {
+
+    errors.push(
+      `Signal at index ${sourceIndex} has WIN outcome with negative result percentage.`
+    );
+
+  }
+
+  if (
+    outcome === "LOSS" &&
+    resultPercentage !== null &&
+    resultPercentage > 0
+  ) {
+
+    errors.push(
+      `Signal at index ${sourceIndex} has LOSS outcome with positive result percentage.`
+    );
+
+  }
+
+  if (
+    errors.length > 0
+  ) {
+
+    return {
+      valid: false,
+      trade: null,
+      errors,
+      warnings
+    };
 
   }
 
@@ -3969,42 +4047,49 @@ function createTradeIdentityPayload(
   trade
 ) {
 
-  return {
-    id:
-      trade.id || null,
+  const stableId =
+    toNonEmptyStringOrNull(
+      trade?.id
+    );
 
+  /*
+   * A persisted learner signal id is the canonical identity when available.
+   * Outcome, exit, SL/TP and closed timestamps are mutable resolution data and
+   * must not create a second identity when a historical result is corrected.
+   */
+  if (
+    stableId
+  ) {
+
+    return {
+      id:
+        stableId
+    };
+
+  }
+
+  /*
+   * Legacy records may not have an id. Fall back only to immutable opening
+   * fields that are required by normalizeLearnedTrade().
+   */
+  return {
     pair:
-      trade.pair || null,
+      trade?.pair || null,
 
     engine:
-      trade.engine || null,
+      trade?.engine || null,
 
     direction:
-      trade.direction || null,
+      trade?.direction || null,
 
     timeframe:
-      trade.timeframe || null,
-
-    outcome:
-      trade.outcome || null,
+      trade?.timeframe || null,
 
     entry:
-      trade.entry ?? null,
-
-    stopLoss:
-      trade.stopLoss ?? null,
-
-    takeProfit:
-      trade.takeProfit ?? null,
-
-    closePrice:
-      trade.closePrice ?? null,
+      trade?.entry ?? null,
 
     openedAt:
-      trade.openedAt || null,
-
-    closedAt:
-      trade.closedAt || null
+      trade?.openedAt || null
   };
 
 }
@@ -4545,39 +4630,50 @@ function finalizePerformanceAccumulator(
         )
       : null;
 
+  const wins =
+    normalizeNonNegativeInteger(
+      accumulator.wins
+    );
+
+  const losses =
+    normalizeNonNegativeInteger(
+      accumulator.losses
+    );
+
+  const breakevens =
+    normalizeNonNegativeInteger(
+      accumulator.breakevens
+    );
+
+  const decisiveTrades =
+    wins + losses;
+
   return {
     totalTrades,
 
-    wins:
-      normalizeNonNegativeInteger(
-        accumulator.wins
-      ),
+    wins,
+    losses,
+    breakevens,
 
-    losses:
-      normalizeNonNegativeInteger(
-        accumulator.losses
-      ),
-
-    breakevens:
-      normalizeNonNegativeInteger(
-        accumulator.breakevens
-      ),
-
+    /*
+     * Keep AI Memory aligned with learner.js: WIN/LOSS rates are based only
+     * on decisive outcomes, while BREAKEVEN rate remains total-trade based.
+     */
     winRate:
       calculateRate(
-        accumulator.wins,
-        totalTrades
+        wins,
+        decisiveTrades
       ),
 
     lossRate:
       calculateRate(
-        accumulator.losses,
-        totalTrades
+        losses,
+        decisiveTrades
       ),
 
     breakevenRate:
       calculateRate(
-        accumulator.breakevens,
+        breakevens,
         totalTrades
       ),
 
@@ -4889,8 +4985,41 @@ function normalizeConfidenceMetric(
       100
     );
 
+  const normalizeOptionalCount =
+    candidate => {
+
+      if (
+        candidate === undefined ||
+        candidate === null ||
+        candidate === ""
+      ) {
+
+        return null;
+
+      }
+
+      const number =
+        toFiniteNumber(
+          candidate
+        );
+
+      if (
+        number === null ||
+        number < 0
+      ) {
+
+        return null;
+
+      }
+
+      return Math.floor(
+        number
+      );
+
+    };
+
   const total =
-    normalizeNonNegativeInteger(
+    normalizeOptionalCount(
       getFirstDefinedValue(
         value,
         [
@@ -4902,7 +5031,7 @@ function normalizeConfidenceMetric(
     );
 
   const resolved =
-    normalizeNonNegativeInteger(
+    normalizeOptionalCount(
       getFirstDefinedValue(
         value,
         [
@@ -4914,17 +5043,17 @@ function normalizeConfidenceMetric(
     );
 
   const wins =
-    normalizeNonNegativeInteger(
+    normalizeOptionalCount(
       value.wins
     );
 
   const losses =
-    normalizeNonNegativeInteger(
+    normalizeOptionalCount(
       value.losses
     );
 
   const breakevens =
-    normalizeNonNegativeInteger(
+    normalizeOptionalCount(
       value.breakevens
     );
 
@@ -5001,10 +5130,24 @@ function normalizeConfidenceSection(
   const normalized =
     {};
 
-  for (
-    const sourceKey of Object.keys(
+  const selectedSources =
+    {};
+
+  const sourceKeys =
+    Object.keys(
       value
-    )
+    ).sort(
+      (
+        left,
+        right
+      ) =>
+        left.localeCompare(
+          right
+        )
+    );
+
+  for (
+    const sourceKey of sourceKeys
   ) {
 
     const targetKey =
@@ -5036,6 +5179,33 @@ function normalizeConfidenceSection(
       continue;
 
     }
+
+    const exactCanonicalKey =
+      toTrimmedString(
+        sourceKey
+      ) ===
+      targetKey;
+
+    const existingSelection =
+      selectedSources[targetKey];
+
+    if (
+      existingSelection &&
+      !(
+        exactCanonicalKey &&
+        !existingSelection
+          .exactCanonicalKey
+      )
+    ) {
+
+      continue;
+
+    }
+
+    selectedSources[targetKey] = {
+      sourceKey,
+      exactCanonicalKey
+    };
 
     normalized[targetKey] =
       metric;
@@ -5777,34 +5947,89 @@ function validatePerformanceStats(
 
   }
 
-  const rateTotal =
-    (
-      toFiniteNumber(
-        stats.winRate
-      ) || 0
-    ) +
-    (
-      toFiniteNumber(
-        stats.lossRate
-      ) || 0
-    ) +
-    (
-      toFiniteNumber(
-        stats.breakevenRate
-      ) || 0
+  const winRate =
+    toFiniteNumber(
+      stats.winRate
     );
+
+  const lossRate =
+    toFiniteNumber(
+      stats.lossRate
+    );
+
+  const breakevenRate =
+    toFiniteNumber(
+      stats.breakevenRate
+    );
+
+  const decisiveTrades =
+    wins + losses;
 
   if (
-    totalTrades > 0 &&
-    Math.abs(
-      rateTotal -
-      100
-    ) > 0.1
+    winRate === null ||
+    winRate < 0 ||
+    winRate > 100 ||
+    lossRate === null ||
+    lossRate < 0 ||
+    lossRate > 100 ||
+    breakevenRate === null ||
+    breakevenRate < 0 ||
+    breakevenRate > 100
   ) {
 
-    warnings.push(
-      `${label} outcome rates do not total approximately 100%.`
+    errors.push(
+      `${label} outcome rates must be finite percentages between 0 and 100.`
     );
+
+  } else {
+
+    const decisiveRateTotal =
+      winRate +
+      lossRate;
+
+    if (
+      decisiveTrades > 0 &&
+      Math.abs(
+        decisiveRateTotal -
+        100
+      ) > 0.1
+    ) {
+
+      warnings.push(
+        `${label} WIN and LOSS rates do not total approximately 100%.`
+      );
+
+    }
+
+    if (
+      decisiveTrades === 0 &&
+      decisiveRateTotal !== 0
+    ) {
+
+      warnings.push(
+        `${label} has WIN or LOSS rate without a decisive trade.`
+      );
+
+    }
+
+    const expectedBreakevenRate =
+      calculateRate(
+        breakevens,
+        totalTrades
+      );
+
+    if (
+      Math.abs(
+        breakevenRate -
+        expectedBreakevenRate
+      ) > 0.1
+    ) {
+
+      warnings.push(
+        `${label} BREAKEVEN rate does not match total trades.`
+      );
+
+    }
 
   }
 
@@ -6068,6 +6293,17 @@ function validateMemoryDocument(
 
     errors.push(
       "AI memory document engine name is invalid."
+    );
+
+  }
+
+  if (
+    document.engineVersion !==
+      ENGINE_VERSION
+  ) {
+
+    errors.push(
+      "AI memory document engine version is invalid."
     );
 
   }
@@ -6634,51 +6870,6 @@ function haveSourceHashesChanged(
 
 }
 
-function haveSourceModifiedTimesChanged(
-  state,
-  learningModifiedAt,
-  confidenceModifiedAt,
-  enrichmentModifiedAt
-) {
-
-  const previousLearningModifiedAt =
-    getNestedValue(
-      state,
-      [
-        "sourceModifiedAt",
-        "learningData"
-      ]
-    ) || null;
-
-  const previousConfidenceModifiedAt =
-    getNestedValue(
-      state,
-      [
-        "sourceModifiedAt",
-        "confidenceData"
-      ]
-    ) || null;
-
-  const previousEnrichmentModifiedAt =
-    getNestedValue(
-      state,
-      [
-        "sourceModifiedAt",
-        "learningEnrichment"
-      ]
-    ) || null;
-
-  return (
-    previousLearningModifiedAt !==
-      learningModifiedAt ||
-    previousConfidenceModifiedAt !==
-      confidenceModifiedAt ||
-    previousEnrichmentModifiedAt !==
-      enrichmentModifiedAt
-  );
-
-}
-
 // -----------------------------------------------------------------------------
 // Processed trade-key reconciliation
 // -----------------------------------------------------------------------------
@@ -6927,7 +7118,8 @@ function completeMemoryRun({
 function failMemoryRun(
   state,
   runAt,
-  error
+  error,
+  options = {}
 ) {
 
   const message =
@@ -6950,6 +7142,12 @@ function failMemoryRun(
 
     status:
       "FAILED",
+
+    memoryWritten:
+      Boolean(
+        options.memoryWritten ||
+        state.lastRun?.memoryWritten
+      ),
 
     stateWritten:
       true,
@@ -7158,6 +7356,9 @@ function runAIMemory() {
   let stateWritten =
     false;
 
+  let memoryWritten =
+    false;
+
   try {
 
     if (
@@ -7311,27 +7512,15 @@ function runAIMemory() {
         enrichmentHash
       );
 
-    const sourceModifiedTimesChanged =
-      haveSourceModifiedTimesChanged(
-        state,
-        learningModifiedAt,
-        confidenceModifiedAt,
-        enrichmentModifiedAt
-      );
-
     const existingMemory =
       readExistingMemoryDocument();
 
     const mustWriteMemory =
       (
         sourceHashesChanged ||
-        sourceModifiedTimesChanged ||
         !existingMemory.exists ||
         !existingMemory.valid
       );
-
-    let memoryWritten =
-      false;
 
     let status =
       "UNCHANGED";
@@ -7385,9 +7574,13 @@ function runAIMemory() {
 
     }
 
-    state =
+    const completedState =
       completeMemoryRun({
-        state,
+        state:
+          cloneJSONCompatible(
+            state
+          ),
+
         runAt,
         status,
 
@@ -7405,13 +7598,21 @@ function runAIMemory() {
         memoryWritten
       });
 
-    state.pendingTransaction =
+    completedState.pendingTransaction =
       null;
 
+    /*
+     * Do not mutate the in-memory recovery state until the final state commit
+     * succeeds. If this write fails after ai-memory.json was written, the
+     * pending transaction remains available for the next-run recovery path.
+     */
     atomicWriteJSON(
       AI_MEMORY_STATE_PATH,
-      state
+      completedState
     );
+
+    state =
+      completedState;
 
     stateWritten =
       true;
@@ -7520,7 +7721,11 @@ function runAIMemory() {
       failMemoryRun(
         state,
         runAt,
-        error
+        error,
+        {
+          memoryWritten,
+          stateWritten
+        }
       );
 
     try {
@@ -7561,8 +7766,7 @@ function runAIMemory() {
 
       runAt,
 
-      memoryWritten:
-        false,
+      memoryWritten,
 
       stateWritten,
 

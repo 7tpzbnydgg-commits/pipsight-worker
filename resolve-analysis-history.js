@@ -44,7 +44,7 @@ const ENGINE_NAME =
   "PipSight Pro Analysis History Resolver";
 
 const ENGINE_VERSION =
-  "1.0.1";
+  "1.0.2";
 
 const HISTORY_VERSION =
   1;
@@ -1012,9 +1012,45 @@ function getRecordTimeframeMetadata(
 
   }
 
+  if (
+    engine ===
+      "scalp"
+  ) {
+
+    const source =
+      normalizeLowerString(
+        record.source ??
+        record.snapshot?.source
+      );
+
+    /*
+     * Live Analysis explicitly owns a 15-minute anchor policy for aggregated
+     * Scalp signals. Older history records from those exact sources
+     * predate the persisted timeframe field, so this is a compatibility
+     * migration of a documented upstream policy—not a generic Scalp guess.
+     */
+    if (
+      source ===
+        "data/scalp-signals.json" ||
+      source ===
+        "data/scalp-candles.json"
+    ) {
+
+      return {
+        timeframe:
+          "15m",
+
+        source:
+          "live-analysis-scalp-anchor"
+      };
+
+    }
+
+  }
+
   /*
-   * Generic scalp has no reliable timeframe.
-   * Do not silently convert it to 5m.
+   * Generic Scalp records from unknown/legacy sources still have no reliable
+   * timeframe. Do not silently convert those records to 5m or 15m.
    */
   return {
     timeframe:
@@ -1675,7 +1711,13 @@ function isRecordOpenCandidate(
 
   if (
     status ===
-      "hold"
+      "hold" ||
+    status ===
+      "invalid" ||
+    status ===
+      "rejected" ||
+    status ===
+      "error"
   ) {
 
     return false;
@@ -5121,16 +5163,34 @@ function prepareRecordForResolution(
 
   }
 
-  if (
+  const normalizedStatus =
     normalizeStatus(
       record.status,
       record.outcome
-    ) ===
+    );
+
+  if (
+    normalizedStatus ===
       "hold"
   ) {
 
     errors.push(
       "HOLD records cannot be resolved"
+    );
+
+  }
+
+  if (
+    normalizedStatus ===
+      "invalid" ||
+    normalizedStatus ===
+      "rejected" ||
+    normalizedStatus ===
+      "error"
+  ) {
+
+    errors.push(
+      "Invalid or rejected history records cannot be resolved"
     );
 
   }

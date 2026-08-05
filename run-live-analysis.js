@@ -28,7 +28,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const ENGINE_VERSION = "1.4.1-pro";
+const ENGINE_VERSION = "1.4.2-pro";
 const STRATEGY_VERSION = "legacy-compatible-1.1";
 
 const TELEGRAM_TIMEOUT_MS = 15000;
@@ -10115,32 +10115,81 @@ function normalizeLiveTradePlan(source, pair, decision) {
     return null;
   }
 
-  const calculatedRisk = Math.abs(entry - stopLoss);
-  const calculatedReward = Math.abs(takeProfit1 - entry);
+  const primaryGeometryValid =
+    normalizedDecision === "BUY"
+      ? (
+          stopLoss < entry &&
+          takeProfit1 > entry
+        )
+      : (
+          stopLoss > entry &&
+          takeProfit1 < entry
+        );
 
-  const risk = roundPrice(
-    liveFirstDefined(source, ["risk"], calculatedRisk)
-  );
+  const orderedTargets = [
+    takeProfit1,
+    takeProfit2,
+    takeProfit3,
+  ].filter(Number.isFinite);
 
-  const reward = roundPrice(
-    liveFirstDefined(source, ["reward"], calculatedReward)
-  );
+  const optionalTargetsValid =
+    orderedTargets.every(
+      (target, index) =>
+        index === 0 ||
+        (
+          normalizedDecision === "BUY"
+            ? target > orderedTargets[index - 1]
+            : target < orderedTargets[index - 1]
+        )
+    );
 
-  const suppliedRiskReward = liveFiniteNumber(
-    liveFirstDefined(source, [
-      "riskReward",
-      "risk_reward",
-      "rr",
-      "riskToReward",
-    ])
-  );
+  if (
+    !primaryGeometryValid ||
+    !optionalTargetsValid
+  ) {
+    return null;
+  }
+
+  const calculatedRisk =
+    Math.abs(entry - stopLoss);
+
+  const calculatedReward =
+    Math.abs(takeProfit1 - entry);
+
+  if (
+    calculatedRisk <= 0 ||
+    calculatedReward <= 0
+  ) {
+    return null;
+  }
+
+  /*
+   * Risk, reward and R:R are derived from the exact normalized prices that
+   * downstream consumers receive. Do not retain a supplied R:R calculated
+   * from higher-precision values after pair-price rounding has changed the
+   * executable geometry.
+   */
+  const risk =
+    Number(
+      calculatedRisk.toFixed(
+        Math.min(12, decimals + 4)
+      )
+    );
+
+  const reward =
+    Number(
+      calculatedReward.toFixed(
+        Math.min(12, decimals + 4)
+      )
+    );
 
   const riskReward =
-    Number.isFinite(suppliedRiskReward)
-      ? Number(suppliedRiskReward.toFixed(2))
-      : calculatedRisk > 0
-        ? Number((calculatedReward / calculatedRisk).toFixed(2))
-        : null;
+    Number(
+      (
+        calculatedReward /
+        calculatedRisk
+      ).toFixed(2)
+    );
 
   return {
     direction: normalizedDecision,
@@ -10238,6 +10287,29 @@ function buildCanonicalEngineResult(
     mode
   );
 
+  const timeframe =
+    normalizeAIMemoryTimeframe(
+      firstString(
+        options.timeframe,
+        rawSource.timeframe,
+        rawSource.sourceTimeframe,
+        rawSource.tf,
+        rawSource.interval
+      )
+    );
+
+  const timeframeSource =
+    liveNonEmptyString(
+      options.timeframeSource ||
+        rawSource.timeframeSource ||
+        (
+          timeframe
+            ? "source"
+            : null
+        ),
+      null
+    );
+
   let decision = liveExtractDecision(rawSource);
   let confidence = liveExtractConfidence(
     rawSource,
@@ -10303,6 +10375,12 @@ function buildCanonicalEngineResult(
     mode,
     engine: engineName,
     engineName,
+
+    timeframe,
+    sourceTimeframe:
+      timeframe,
+
+    timeframeSource,
 
     decision,
     signal: decision,
@@ -10675,7 +10753,7 @@ function selectScalpEngineResult(input = {}) {
         mode: "scalp",
         engineName: "scalp-signals",
         source: "data/scalp-signals.json",
-        requireTradePlan: false,
+        requireTradePlan: true,
       }
     );
 
@@ -10708,7 +10786,7 @@ function selectScalpEngineResult(input = {}) {
         mode: "scalp",
         engineName: "legacy-scalp-candles",
         source: "data/scalp-candles.json",
-        requireTradePlan: false,
+        requireTradePlan: true,
       }
     );
 
@@ -11550,7 +11628,7 @@ function buildPairEngineBundle(
         pipeline,
     });
 
-  const baseScalp =
+  const selectedBaseScalp =
     selectScalpEngineResult({
       pair,
 
@@ -11569,6 +11647,47 @@ function buildPairEngineBundle(
       maximumPrimaryScalpAgeMs:
         input.maximumPrimaryScalpAgeMs,
     });
+
+  /*
+   * The dedicated Scalp pipeline uses the 15-minute anchor whenever its
+   * aggregated pair result does not carry an explicit component timeframe.
+   * Persist that policy in the canonical result so the history resolver does
+   * not have to guess later.
+   */
+  const scalpTimeframe =
+    normalizeAIMemoryTimeframe(
+      firstString(
+        selectedBaseScalp.timeframe,
+        selectedBaseScalp.sourceTimeframe,
+        selectedBaseScalp.tf,
+        selectedBaseScalp.interval,
+
+        selectedBaseScalp.sourceData &&
+          selectedBaseScalp.sourceData.timeframe,
+
+        selectedBaseScalp.raw &&
+          selectedBaseScalp.raw.timeframe
+      )
+    ) ||
+    "15m";
+
+  const baseScalp = {
+    ...selectedBaseScalp,
+
+    timeframe:
+      scalpTimeframe,
+
+    sourceTimeframe:
+      scalpTimeframe,
+
+    timeframeSource:
+      selectedBaseScalp.timeframe
+        ? (
+            selectedBaseScalp.timeframeSource ||
+            "source"
+          )
+        : "live-analysis-scalp-anchor",
+  };
 
   // --------------------------------------------------------
   // Master consensus intentionally uses original confidence.
@@ -11626,22 +11745,6 @@ function buildPairEngineBundle(
         timeframe: "1H",
       }
     );
-
-  const scalpTimeframe =
-    normalizeAIMemoryTimeframe(
-      firstString(
-        baseScalp.timeframe,
-        baseScalp.tf,
-        baseScalp.interval,
-
-        baseScalp.sourceData &&
-          baseScalp.sourceData.timeframe,
-
-        baseScalp.raw &&
-          baseScalp.raw.timeframe
-      )
-    ) ||
-    "15m";
 
   const scalp =
     attachAIMemoryAssessment(
@@ -12144,6 +12247,19 @@ function liveHistoryRecordFromEngine(
     engineName:
       canonical.engineName,
 
+    timeframe:
+      canonical.timeframe ||
+      null,
+
+    sourceTimeframe:
+      canonical.sourceTimeframe ||
+      canonical.timeframe ||
+      null,
+
+    timeframeSource:
+      canonical.timeframeSource ||
+      null,
+
     decision:
       canonical.decision,
 
@@ -12469,6 +12585,23 @@ function appendAnalysisHistoryRecords(
       ...history,
 
       updatedAt,
+
+      engineVersion:
+        options.engineVersion ||
+        (
+          typeof ENGINE_VERSION !== "undefined"
+            ? ENGINE_VERSION
+            : history.engineVersion
+        ),
+
+      strategyVersion:
+        options.strategyVersion ||
+        (
+          typeof STRATEGY_VERSION !== "undefined"
+            ? STRATEGY_VERSION
+            : history.strategyVersion
+        ),
+
       records,
 
       // Preserve aliases used by older readers.
@@ -13575,6 +13708,12 @@ async function assembleLiveAnalysisArtifacts(
 
         maximumRecords:
           input.maximumHistoryRecords,
+
+        engineVersion:
+          output.engineVersion,
+
+        strategyVersion:
+          output.strategyVersion,
       }
     );
 
@@ -15418,6 +15557,12 @@ async function runLiveAnalysisRuntime(
         maximumRecords:
           runtimeOptions
             .maximumHistoryRecords,
+
+        engineVersion:
+          output.engineVersion,
+
+        strategyVersion:
+          output.strategyVersion,
       }
     );
 

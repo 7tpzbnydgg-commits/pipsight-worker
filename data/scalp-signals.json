@@ -1,173 +1,142 @@
 {
-  "generatedAt": "2026-08-05T18:08:49.577Z",
+  "generatedAt": "2026-08-05T18:10:43.470Z",
   "engineVersion": "1.0.0",
   "strategyVersion": "scalp-lockstep-1.0",
   "signals": [
     {
       "pair": "XAU/USD",
-      "signal": "BUY",
-      "confidence": 82,
-      "reasons": [],
+      "signal": "WAIT",
+      "confidence": 0,
+      "reasons": [
+        "RSI confirmation failed"
+      ],
       "steps": [
         {
           "name": "EMA Trend",
           "pass": true,
-          "detail": "BUY full EMA alignment confirmed at 4/4: price 4251.89887, EMA20 4243.181709, EMA50 4232.09851, EMA100 4216.269198, EMA200 4184.147112"
+          "detail": "BUY full EMA alignment confirmed at 4/4: price 4256.40809, EMA20 4244.035024, EMA50 4232.895545, EMA100 4217.064028, EMA200 4184.866127"
         },
         {
           "name": "MACD",
           "pass": true,
-          "detail": "BUY confirmed: MACD 3.192331 is above signal 2.629087; histogram 0.563244"
+          "detail": "BUY confirmed: MACD 3.668656 is above signal 2.837001; histogram 0.831656"
         },
         {
           "name": "RSI",
-          "pass": true,
-          "detail": "BUY RSI confirmation passed at 61.86; required range 45–65"
+          "pass": false,
+          "detail": "BUY RSI confirmation failed at 66.42; required range 45–65"
         },
         {
           "name": "Higher TF",
-          "pass": true,
-          "detail": "Higher timeframe confirms the same BUY direction"
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because RSI did not pass"
         },
         {
           "name": "News",
-          "pass": true,
-          "detail": "No conflicting high-impact news found across 5 pair-specific item(s); net news score 80"
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because RSI did not pass"
         },
         {
           "name": "Risk Reward",
-          "pass": true,
-          "detail": "Risk:Reward passed at 1:14.94 using entry 4251.89887, stop 4250.87872 and target 4267.13964"
-        },
-        {
-          "name": "ATR Dynamic TP/SL",
-          "pass": true,
-          "detail": "XAU/USD BUY ATR(14)=4.76 SL 1x ATR, TP1 2x ATR, TP2 3x ATR, TP3 4x ATR"
-        },
-        {
-          "name": "AI Memory Confidence",
-          "pass": true,
-          "detail": "Base 80, adjustment +2, final 82; pairEngineDirection XAUUSD::scalp::BUY; 36 trades, 30.56% win rate, 1.4227 profit factor; Qualified historical profitability adjustment"
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because RSI did not pass"
         }
       ],
-      "tradePlan": {
-        "entry": 4251.9,
-        "stopLoss": 4247.14,
-        "target1": 4261.42,
-        "target2": 4266.18,
-        "target3": 4270.93,
-        "riskReward": 2,
-        "atr": 4.76,
-        "atrPeriod": 14,
-        "riskModel": "ATR_DYNAMIC",
-        "stopAtrMultiplier": 1,
-        "targetAtrMultipliers": [
-          2,
-          3,
-          4
-        ]
-      },
+      "tradePlan": null,
       "confidenceExplainability": {
         "version": 1,
         "adjustmentOwner": "scalp-engine",
-        "baseConfidence": 80,
-        "aiAdjustment": 2,
-        "finalConfidence": 82,
+        "baseConfidence": 0,
+        "aiAdjustment": 0,
+        "finalConfidence": 0,
         "evaluated": true,
-        "matched": true,
-        "applied": true,
-        "status": "SUPPORTIVE",
-        "source": "pairEngineDirection",
-        "key": "XAUUSD::scalp::BUY",
-        "sampleSize": 36,
-        "winRate": 30.56,
-        "profitFactor": 1.4227,
+        "matched": false,
+        "applied": false,
+        "status": "NOT_APPLICABLE",
+        "source": null,
+        "key": null,
+        "sampleSize": 0,
+        "winRate": null,
+        "profitFactor": null,
         "reliability": null,
-        "reason": "Qualified historical profitability adjustment",
+        "reason": "Confidence adjustment requires a BUY or SELL decision",
         "enrichmentContext": {
           "version": 1,
           "advisoryOnly": true,
-          "available": true,
+          "available": false,
           "compatible": true,
           "evaluated": true,
-          "generatedAt": "2026-08-05T15:51:12.024Z",
-          "status": "CAUTION",
-          "source": "pairStrategyDirection",
-          "key": "XAUUSD::scalp::BUY",
-          "sampleSize": 36,
-          "sampleSufficient": true,
-          "learningTrend": "insufficient-data",
-          "trendAvailable": false,
-          "trendReasons": [
-            "At least 40 trades are required for two 20-trade trend segments."
-          ],
+          "status": "NO_MATCH",
+          "source": null,
+          "key": null,
+          "sampleSize": 0,
+          "sampleSufficient": false,
+          "learningTrend": "unknown",
           "recentPerformance": {
-            "window": 20,
-            "availableTrades": 1,
-            "complete": true,
-            "winRate": 25,
+            "window": null,
+            "availableTrades": 0,
+            "complete": false,
+            "winRate": null,
             "profitFactor": null,
             "averageProfitPoints": null
           },
           "recencyWeighted": {
-            "available": true,
+            "available": false,
             "winRate": null,
             "profitFactor": null,
             "averageProfitPoints": null
           },
           "overallPerformance": {
-            "winRate": 30.5556,
+            "winRate": null,
             "profitFactor": null,
             "averageProfitPoints": null
           },
           "calibration": null,
-          "advisorySignal": "CAUTION",
-          "reason": "Recent enriched performance indicates declining or weak historical conditions."
+          "advisorySignal": "NEUTRAL",
+          "reason": "No matching Learning Enrichment performance context was found."
         }
       },
       "enrichmentContext": {
         "version": 1,
         "advisoryOnly": true,
-        "available": true,
+        "available": false,
         "compatible": true,
         "evaluated": true,
-        "generatedAt": "2026-08-05T15:51:12.024Z",
-        "status": "CAUTION",
-        "source": "pairStrategyDirection",
-        "key": "XAUUSD::scalp::BUY",
-        "sampleSize": 36,
-        "sampleSufficient": true,
-        "learningTrend": "insufficient-data",
-        "trendAvailable": false,
-        "trendReasons": [
-          "At least 40 trades are required for two 20-trade trend segments."
-        ],
+        "status": "NO_MATCH",
+        "source": null,
+        "key": null,
+        "sampleSize": 0,
+        "sampleSufficient": false,
+        "learningTrend": "unknown",
         "recentPerformance": {
-          "window": 20,
-          "availableTrades": 1,
-          "complete": true,
-          "winRate": 25,
+          "window": null,
+          "availableTrades": 0,
+          "complete": false,
+          "winRate": null,
           "profitFactor": null,
           "averageProfitPoints": null
         },
         "recencyWeighted": {
-          "available": true,
+          "available": false,
           "winRate": null,
           "profitFactor": null,
           "averageProfitPoints": null
         },
         "overallPerformance": {
-          "winRate": 30.5556,
+          "winRate": null,
           "profitFactor": null,
           "averageProfitPoints": null
         },
         "calibration": null,
-        "advisorySignal": "CAUTION",
-        "reason": "Recent enriched performance indicates declining or weak historical conditions."
+        "advisorySignal": "NEUTRAL",
+        "reason": "No matching Learning Enrichment performance context was found."
       },
       "mode": "M5",
-      "generatedAt": "2026-08-05T18:08:49.577Z",
-      "analyzedCandleAt": "2026-08-05T18:00:00.000Z",
+      "generatedAt": "2026-08-05T18:10:43.470Z",
+      "analyzedCandleAt": "2026-08-05T18:05:00.000Z",
       "prepared": {
         "counts": {
           "m5": 1500,
@@ -180,8 +149,8 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-05T18:08:49.453Z",
-          "h1": "2026-08-05T18:00:57.809Z"
+          "m5": "2026-08-05T18:10:43.350Z",
+          "h1": "2026-08-05T18:10:01.928Z"
         },
         "quality": {
           "m5": {
@@ -191,9 +160,9 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-31T13:05:00.000Z",
-            "lastDate": "2026-08-05T18:00:00.000Z",
-            "ageMinutes": 8,
+            "firstDate": "2026-07-31T13:10:00.000Z",
+            "lastDate": "2026-08-05T18:05:00.000Z",
+            "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
             "hasOHLC": true,
@@ -211,7 +180,7 @@
             "timeFilteredCandlesRemoved": 0,
             "firstDate": "2026-06-29T06:00:00.000Z",
             "lastDate": "2026-08-05T17:00:00.000Z",
-            "ageMinutes": 68,
+            "ageMinutes": 70,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,
@@ -356,7 +325,7 @@
         "reason": "No matching Learning Enrichment performance context was found."
       },
       "mode": "M15",
-      "generatedAt": "2026-08-05T18:08:49.577Z",
+      "generatedAt": "2026-08-05T18:10:43.470Z",
       "analyzedCandleAt": "2026-08-05T17:45:00.000Z",
       "prepared": {
         "counts": {
@@ -370,8 +339,8 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-05T18:08:49.453Z",
-          "h1": "2026-08-05T18:00:57.809Z"
+          "m5": "2026-08-05T18:10:43.350Z",
+          "h1": "2026-08-05T18:10:01.928Z"
         },
         "quality": {
           "m5": {
@@ -381,9 +350,9 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-31T13:05:00.000Z",
-            "lastDate": "2026-08-05T18:00:00.000Z",
-            "ageMinutes": 8,
+            "firstDate": "2026-07-31T13:10:00.000Z",
+            "lastDate": "2026-08-05T18:05:00.000Z",
+            "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
             "hasOHLC": true,
@@ -401,7 +370,7 @@
             "timeFilteredCandlesRemoved": 0,
             "firstDate": "2026-06-29T06:00:00.000Z",
             "lastDate": "2026-08-05T17:00:00.000Z",
-            "ageMinutes": 68,
+            "ageMinutes": 70,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,
@@ -545,7 +514,7 @@
         "reason": "No matching Learning Enrichment performance context was found."
       },
       "mode": "M30",
-      "generatedAt": "2026-08-05T18:08:49.577Z",
+      "generatedAt": "2026-08-05T18:10:43.470Z",
       "analyzedCandleAt": "2026-08-05T17:30:00.000Z",
       "prepared": {
         "counts": {
@@ -559,8 +528,8 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-05T18:08:49.453Z",
-          "h1": "2026-08-05T18:00:57.809Z"
+          "m5": "2026-08-05T18:10:43.350Z",
+          "h1": "2026-08-05T18:10:01.928Z"
         },
         "quality": {
           "m5": {
@@ -570,9 +539,9 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-31T13:05:00.000Z",
-            "lastDate": "2026-08-05T18:00:00.000Z",
-            "ageMinutes": 8,
+            "firstDate": "2026-07-31T13:10:00.000Z",
+            "lastDate": "2026-08-05T18:05:00.000Z",
+            "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
             "hasOHLC": true,
@@ -590,7 +559,7 @@
             "timeFilteredCandlesRemoved": 0,
             "firstDate": "2026-06-29T06:00:00.000Z",
             "lastDate": "2026-08-05T17:00:00.000Z",
-            "ageMinutes": 68,
+            "ageMinutes": 70,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,
@@ -604,24 +573,26 @@
     },
     {
       "pair": "GBP/JPY",
-      "signal": "BUY",
-      "confidence": 74,
-      "reasons": [],
+      "signal": "WAIT",
+      "confidence": 0,
+      "reasons": [
+        "Risk Reward below 1:2"
+      ],
       "steps": [
         {
           "name": "EMA Trend",
           "pass": true,
-          "detail": "BUY full EMA alignment confirmed at 4/4: price 212.40686, EMA20 212.326127, EMA50 212.304527, EMA100 212.291132, EMA200 212.233575"
+          "detail": "BUY full EMA alignment confirmed at 4/4: price 212.35854, EMA20 212.328218, EMA50 212.306298, EMA100 212.292467, EMA200 212.234819"
         },
         {
           "name": "MACD",
           "pass": true,
-          "detail": "BUY confirmed: MACD 0.037675 is above signal 0.032292; histogram 0.005383"
+          "detail": "BUY confirmed: MACD 0.033917 is above signal 0.032617; histogram 0.0013"
         },
         {
           "name": "RSI",
           "pass": true,
-          "detail": "BUY RSI confirmation passed at 63.96; required range 45–65"
+          "detail": "BUY RSI confirmation passed at 54.29; required range 45–65"
         },
         {
           "name": "Higher TF",
@@ -635,142 +606,102 @@
         },
         {
           "name": "Risk Reward",
-          "pass": true,
-          "detail": "Risk:Reward passed at 1:10.85 using entry 212.40686, stop 212.40673 and target 212.40827"
-        },
-        {
-          "name": "ATR Dynamic TP/SL",
-          "pass": true,
-          "detail": "GBP/JPY BUY ATR(14)=0.047 SL 1x ATR, TP1 2x ATR, TP2 3x ATR, TP3 4x ATR"
-        },
-        {
-          "name": "AI Memory Confidence",
-          "pass": true,
-          "detail": "Base 80, adjustment -6, final 74; pairEngineDirection GBPJPY::scalp::BUY; 64 trades, 18.75% win rate, 0.3483 profit factor; Qualified historical profitability adjustment"
+          "pass": false,
+          "detail": "Calculated R:R is 1:0.35 using entry 212.35854, stop 212.35192 and target 212.36086; minimum required is 1:2"
         }
       ],
-      "tradePlan": {
-        "entry": 212.407,
-        "stopLoss": 212.36,
-        "target1": 212.501,
-        "target2": 212.548,
-        "target3": 212.595,
-        "riskReward": 2,
-        "atr": 0.047,
-        "atrPeriod": 14,
-        "riskModel": "ATR_DYNAMIC",
-        "stopAtrMultiplier": 1,
-        "targetAtrMultipliers": [
-          2,
-          3,
-          4
-        ]
-      },
+      "tradePlan": null,
       "confidenceExplainability": {
         "version": 1,
         "adjustmentOwner": "scalp-engine",
-        "baseConfidence": 80,
-        "aiAdjustment": -6,
-        "finalConfidence": 74,
+        "baseConfidence": 0,
+        "aiAdjustment": 0,
+        "finalConfidence": 0,
         "evaluated": true,
-        "matched": true,
-        "applied": true,
-        "status": "CAUTION",
-        "source": "pairEngineDirection",
-        "key": "GBPJPY::scalp::BUY",
-        "sampleSize": 64,
-        "winRate": 18.75,
-        "profitFactor": 0.3483,
+        "matched": false,
+        "applied": false,
+        "status": "NOT_APPLICABLE",
+        "source": null,
+        "key": null,
+        "sampleSize": 0,
+        "winRate": null,
+        "profitFactor": null,
         "reliability": null,
-        "reason": "Qualified historical profitability adjustment",
+        "reason": "Confidence adjustment requires a BUY or SELL decision",
         "enrichmentContext": {
           "version": 1,
           "advisoryOnly": true,
-          "available": true,
+          "available": false,
           "compatible": true,
           "evaluated": true,
-          "generatedAt": "2026-08-05T15:51:12.024Z",
-          "status": "CAUTION",
-          "source": "pairStrategyDirection",
-          "key": "GBPJPY::scalp::BUY",
-          "sampleSize": 63,
-          "sampleSufficient": true,
-          "learningTrend": "improving",
-          "trendAvailable": true,
-          "trendReasons": [
-            "Recent average profit points improved.",
-            "Recent profit factor increased by 0.2505.",
-            "Recent win rate increased by 15 percentage points."
-          ],
+          "status": "NO_MATCH",
+          "source": null,
+          "key": null,
+          "sampleSize": 0,
+          "sampleSufficient": false,
+          "learningTrend": "unknown",
           "recentPerformance": {
-            "window": 20,
-            "availableTrades": 1,
-            "complete": true,
-            "winRate": 15,
+            "window": null,
+            "availableTrades": 0,
+            "complete": false,
+            "winRate": null,
             "profitFactor": null,
             "averageProfitPoints": null
           },
           "recencyWeighted": {
-            "available": true,
+            "available": false,
             "winRate": null,
             "profitFactor": null,
             "averageProfitPoints": null
           },
           "overallPerformance": {
-            "winRate": 19.0476,
+            "winRate": null,
             "profitFactor": null,
             "averageProfitPoints": null
           },
           "calibration": null,
-          "advisorySignal": "CAUTION",
-          "reason": "Recent enriched performance indicates declining or weak historical conditions."
+          "advisorySignal": "NEUTRAL",
+          "reason": "No matching Learning Enrichment performance context was found."
         }
       },
       "enrichmentContext": {
         "version": 1,
         "advisoryOnly": true,
-        "available": true,
+        "available": false,
         "compatible": true,
         "evaluated": true,
-        "generatedAt": "2026-08-05T15:51:12.024Z",
-        "status": "CAUTION",
-        "source": "pairStrategyDirection",
-        "key": "GBPJPY::scalp::BUY",
-        "sampleSize": 63,
-        "sampleSufficient": true,
-        "learningTrend": "improving",
-        "trendAvailable": true,
-        "trendReasons": [
-          "Recent average profit points improved.",
-          "Recent profit factor increased by 0.2505.",
-          "Recent win rate increased by 15 percentage points."
-        ],
+        "status": "NO_MATCH",
+        "source": null,
+        "key": null,
+        "sampleSize": 0,
+        "sampleSufficient": false,
+        "learningTrend": "unknown",
         "recentPerformance": {
-          "window": 20,
-          "availableTrades": 1,
-          "complete": true,
-          "winRate": 15,
+          "window": null,
+          "availableTrades": 0,
+          "complete": false,
+          "winRate": null,
           "profitFactor": null,
           "averageProfitPoints": null
         },
         "recencyWeighted": {
-          "available": true,
+          "available": false,
           "winRate": null,
           "profitFactor": null,
           "averageProfitPoints": null
         },
         "overallPerformance": {
-          "winRate": 19.0476,
+          "winRate": null,
           "profitFactor": null,
           "averageProfitPoints": null
         },
         "calibration": null,
-        "advisorySignal": "CAUTION",
-        "reason": "Recent enriched performance indicates declining or weak historical conditions."
+        "advisorySignal": "NEUTRAL",
+        "reason": "No matching Learning Enrichment performance context was found."
       },
       "mode": "M5",
-      "generatedAt": "2026-08-05T18:08:49.577Z",
-      "analyzedCandleAt": "2026-08-05T18:00:00.000Z",
+      "generatedAt": "2026-08-05T18:10:43.470Z",
+      "analyzedCandleAt": "2026-08-05T18:05:00.000Z",
       "prepared": {
         "counts": {
           "m5": 1500,
@@ -783,8 +714,8 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-05T18:08:49.453Z",
-          "h1": "2026-08-05T18:00:57.809Z"
+          "m5": "2026-08-05T18:10:43.350Z",
+          "h1": "2026-08-05T18:10:01.928Z"
         },
         "quality": {
           "m5": {
@@ -794,9 +725,9 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-31T13:05:00.000Z",
-            "lastDate": "2026-08-05T18:00:00.000Z",
-            "ageMinutes": 8,
+            "firstDate": "2026-07-31T13:10:00.000Z",
+            "lastDate": "2026-08-05T18:05:00.000Z",
+            "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
             "hasOHLC": true,
@@ -814,7 +745,7 @@
             "timeFilteredCandlesRemoved": 0,
             "firstDate": "2026-06-29T06:00:00.000Z",
             "lastDate": "2026-08-05T17:00:00.000Z",
-            "ageMinutes": 68,
+            "ageMinutes": 70,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,
@@ -955,7 +886,7 @@
         "reason": "No matching Learning Enrichment performance context was found."
       },
       "mode": "M15",
-      "generatedAt": "2026-08-05T18:08:49.577Z",
+      "generatedAt": "2026-08-05T18:10:43.470Z",
       "analyzedCandleAt": "2026-08-05T17:45:00.000Z",
       "prepared": {
         "counts": {
@@ -969,8 +900,8 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-05T18:08:49.453Z",
-          "h1": "2026-08-05T18:00:57.809Z"
+          "m5": "2026-08-05T18:10:43.350Z",
+          "h1": "2026-08-05T18:10:01.928Z"
         },
         "quality": {
           "m5": {
@@ -980,9 +911,9 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-31T13:05:00.000Z",
-            "lastDate": "2026-08-05T18:00:00.000Z",
-            "ageMinutes": 8,
+            "firstDate": "2026-07-31T13:10:00.000Z",
+            "lastDate": "2026-08-05T18:05:00.000Z",
+            "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
             "hasOHLC": true,
@@ -1000,7 +931,7 @@
             "timeFilteredCandlesRemoved": 0,
             "firstDate": "2026-06-29T06:00:00.000Z",
             "lastDate": "2026-08-05T17:00:00.000Z",
-            "ageMinutes": 68,
+            "ageMinutes": 70,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,
@@ -1145,7 +1076,7 @@
         "reason": "No matching Learning Enrichment performance context was found."
       },
       "mode": "M30",
-      "generatedAt": "2026-08-05T18:08:49.577Z",
+      "generatedAt": "2026-08-05T18:10:43.470Z",
       "analyzedCandleAt": "2026-08-05T17:30:00.000Z",
       "prepared": {
         "counts": {
@@ -1159,8 +1090,8 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-05T18:08:49.453Z",
-          "h1": "2026-08-05T18:00:57.809Z"
+          "m5": "2026-08-05T18:10:43.350Z",
+          "h1": "2026-08-05T18:10:01.928Z"
         },
         "quality": {
           "m5": {
@@ -1170,9 +1101,9 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-31T13:05:00.000Z",
-            "lastDate": "2026-08-05T18:00:00.000Z",
-            "ageMinutes": 8,
+            "firstDate": "2026-07-31T13:10:00.000Z",
+            "lastDate": "2026-08-05T18:05:00.000Z",
+            "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
             "hasOHLC": true,
@@ -1190,7 +1121,7 @@
             "timeFilteredCandlesRemoved": 0,
             "firstDate": "2026-06-29T06:00:00.000Z",
             "lastDate": "2026-08-05T17:00:00.000Z",
-            "ageMinutes": 68,
+            "ageMinutes": 70,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,

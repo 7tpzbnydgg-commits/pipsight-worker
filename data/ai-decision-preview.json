@@ -1,0 +1,171 @@
+{
+  "version": 1,
+  "engineName": "PipSight Pro Autonomous AI Decision Engine",
+  "engineVersion": "1.4.0",
+  "evaluatedAt": "2026-08-06T03:29:52.138Z",
+  "decisionId": "live|1.4.0|GBPJPY|daily|1H|HOLD|none|2026-08-06T03:00:00.000Z",
+  "decisionHash": "d5e2c8d84a05771e53195e5e6d304bcf4122d985d4c423166823d27623668670",
+  "context": {
+    "pair": "GBPJPY",
+    "timeframe": "1H",
+    "engine": "daily",
+    "marketRegime": null,
+    "session": null,
+    "pattern": null,
+    "marketDataAt": "2026-08-06T03:00:00.000Z"
+  },
+  "deployment": {
+    "configuredMode": "SHADOW",
+    "authorityMode": "SHADOW",
+    "enabled": true,
+    "emergencyStop": false,
+    "rollout": {
+      "percent": 0,
+      "selected": false,
+      "bucket": 80.19,
+      "identityStable": true,
+      "reason": "Decision is outside the deterministic autonomous rollout cohort."
+    }
+  },
+  "baseline": {
+    "decision": "HOLD",
+    "confidence": 0,
+    "tradePlan": null,
+    "reasons": [
+      "No directional engine produced an active setup"
+    ]
+  },
+  "shadowCandidate": {
+    "decision": "HOLD",
+    "confidence": 0,
+    "tradePlan": null,
+    "reasons": [
+      "No directional engine produced an active setup"
+    ]
+  },
+  "proposedDecision": {
+    "decision": "HOLD",
+    "confidence": 0,
+    "tradePlan": null,
+    "reasons": [
+      "No directional engine produced an active setup"
+    ]
+  },
+  "changes": [],
+  "blockedChanges": [],
+  "evidence": {
+    "baselinePolicy": null,
+    "buyPolicy": null,
+    "sellPolicy": null,
+    "baselineMatchAttempts": [],
+    "buyMatchAttempts": [
+      {
+        "scope": "pairTimeframeEngineDirectionRegime",
+        "signature": null,
+        "matched": false,
+        "reason": "Required context dimension is unavailable."
+      },
+      {
+        "scope": "pairTimeframeEngineDirection",
+        "signature": "pairTimeframeEngineDirection|GBPJPY|1H|daily|BUY",
+        "matched": false,
+        "reason": "No policy bucket matched."
+      },
+      {
+        "scope": "pairEngineDirection",
+        "signature": "pairEngineDirection|GBPJPY|daily|BUY",
+        "matched": false,
+        "reason": "No policy bucket matched."
+      },
+      {
+        "scope": "pairTimeframeDirection",
+        "signature": "pairTimeframeDirection|GBPJPY|1H|BUY",
+        "matched": false,
+        "reason": "No policy bucket matched."
+      }
+    ],
+    "sellMatchAttempts": [
+      {
+        "scope": "pairTimeframeEngineDirectionRegime",
+        "signature": null,
+        "matched": false,
+        "reason": "Required context dimension is unavailable."
+      },
+      {
+        "scope": "pairTimeframeEngineDirection",
+        "signature": "pairTimeframeEngineDirection|GBPJPY|1H|daily|SELL",
+        "matched": false,
+        "reason": "No policy bucket matched."
+      },
+      {
+        "scope": "pairEngineDirection",
+        "signature": "pairEngineDirection|GBPJPY|daily|SELL",
+        "matched": false,
+        "reason": "No policy bucket matched."
+      },
+      {
+        "scope": "pairTimeframeDirection",
+        "signature": "pairTimeframeDirection|GBPJPY|1H|SELL",
+        "matched": false,
+        "reason": "No policy bucket matched."
+      }
+    ],
+    "engineEvidence": [
+      {
+        "engine": "daily",
+        "decision": "HOLD",
+        "confidence": 0,
+        "active": true,
+        "tradePlan": null,
+        "source": "data/intraday-h1.json"
+      },
+      {
+        "engine": "scalp",
+        "decision": "HOLD",
+        "confidence": 0,
+        "active": true,
+        "tradePlan": null,
+        "source": "data/scalp-candles.json"
+      },
+      {
+        "engine": "weekly",
+        "decision": "HOLD",
+        "confidence": 0,
+        "active": true,
+        "tradePlan": null,
+        "source": "daily-analysis"
+      }
+    ],
+    "evidenceReasons": []
+  },
+  "validation": {
+    "valid": true,
+    "errors": [],
+    "warnings": []
+  },
+  "safety": {
+    "finalApprovalRequired": true,
+    "finalAuthority": "PipSight Pro AI Safety Gate",
+    "orderPlacementPermitted": false,
+    "riskLimitModificationPermitted": false,
+    "sourceCodeModificationPermitted": false,
+    "externalNetworkCalls": false,
+    "failClosedRecommendation": "HOLD",
+    "notes": [
+      "proposedDecision is not executable until the independent Safety Gate approves it.",
+      "Direction changes require an independently generated valid trade plan; this engine never invents prices.",
+      "Risk limits remain immutable and outside AI policy authority."
+    ]
+  },
+  "metadata": {
+    "policyHash": "8baaaa8b50823a473339d830d6969cb9e20c557c3f35b8a2ad279e7e703f6323",
+    "policyGeneratedAt": "2026-08-06T03:29:51.826Z",
+    "configVersion": "1.4.0",
+    "deterministic": true,
+    "deterministicRollout": true,
+    "explainable": true,
+    "duplicateSafe": true,
+    "liveOrderExecution": false,
+    "nextConsumer": "PipSight Pro AI Safety Gate"
+  }
+}

@@ -20,6 +20,10 @@
  * - Atomic JSON writes
  * - Maximum two API requests per run
  * - No automatic API retries
+ * - Exact 5-minute UTC timestamp-grid enforcement
+ * - Consistent run-level candle-close reference time
+ * - Optional provider-volume preservation
+ * - Actual complete-bucket aggregation diagnostics
  *
  * Important:
  * This file only provides reliable candle data.
@@ -30,7 +34,7 @@ const path = require("path");
 /* =====================================================================
    Configuration
    ===================================================================== */
-const FILE_VERSION = "2.0.0";
+const FILE_VERSION = "2.1.0";
 const SOURCE_NAME = "Twelve Data";
 const INTERVAL = "5min";
 const INTERVAL_MINUTES = 5;
@@ -96,11 +100,14 @@ const STALE_AFTER_MINUTES = 30;
 const MAX_GAP_SAMPLES = 20;
 let requestsMade = 0;
 /* =====================================================================
-   Startup Validation
+   Runtime Validation
    ===================================================================== */
-if (!API_KEY) {
-    console.error("Missing TWELVEDATA_API_KEY environment variable.");
-    process.exit(1);
+function validateRuntimeConfiguration() {
+    if (!API_KEY) {
+        throw new Error(
+            "Missing TWELVEDATA_API_KEY environment variable."
+        );
+    }
 }
 /* =====================================================================
    Generic Helpers
@@ -117,6 +124,18 @@ function sleep(milliseconds) {
 function parsePrice(value) {
     const parsed = Number.parseFloat(value);
     return Number.isFinite(parsed)
+        ? parsed
+        : null;
+}
+function parseOptionalVolume(value) {
+    if (value === null ||
+        value === undefined ||
+        value === "") {
+        return null;
+    }
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) &&
+        parsed >= 0
         ? parsed
         : null;
 }
@@ -147,7 +166,7 @@ function normalizeTimestamp(value) {
         return null;
     }
     const trimmed = value.trim();
-    const match = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/);
+    const match = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/);
     if (!match) {
         return null;
     }
@@ -192,6 +211,21 @@ function timestampToMs(value) {
         ? timestamp
         : null;
 }
+function isAlignedIntervalTimestamp(
+    value,
+    intervalMinutes = INTERVAL_MINUTES
+) {
+    const timestamp = timestampToMs(value);
+    if (!Number.isFinite(timestamp) ||
+        !Number.isInteger(intervalMinutes) ||
+        intervalMinutes <= 0) {
+        return false;
+    }
+    const date = new Date(timestamp);
+    return date.getUTCSeconds() === 0 &&
+        date.getUTCMilliseconds() === 0 &&
+        date.getUTCMinutes() % intervalMinutes === 0;
+}
 function ageMinutes(value, referenceTimeMs = Date.now()) {
     const timestamp = timestampToMs(value);
     if (!Number.isFinite(timestamp) ||
@@ -200,6 +234,22 @@ function ageMinutes(value, referenceTimeMs = Date.now()) {
     }
     return Math.max(0, (referenceTimeMs -
         timestamp) /
+        60000);
+}
+function candleCloseAgeMinutes(
+    value,
+    referenceTimeMs = Date.now(),
+    intervalMs = INTERVAL_MS
+) {
+    const timestamp = timestampToMs(value);
+    if (!Number.isFinite(timestamp) ||
+        !Number.isFinite(referenceTimeMs) ||
+        !Number.isFinite(intervalMs) ||
+        intervalMs <= 0) {
+        return null;
+    }
+    return Math.max(0, (referenceTimeMs -
+        (timestamp + intervalMs)) /
         60000);
 }
 /*
@@ -307,6 +357,12 @@ function normalizeCandle(raw, referenceTimeMs = Date.now()) {
             reason: "invalid-time"
         };
     }
+    if (!isAlignedIntervalTimestamp(time)) {
+        return {
+            candle: null,
+            reason: "misaligned-candle-time"
+        };
+    }
     const timeState = getCandleTimeState(time, safeReferenceTimeMs);
     if (timeState === "future") {
         return {
@@ -330,6 +386,7 @@ function normalizeCandle(raw, referenceTimeMs = Date.now()) {
     const high = parsePrice(raw.high);
     const low = parsePrice(raw.low);
     const close = parsePrice(raw.close);
+    const volume = parseOptionalVolume(raw.volume);
     if (!isFiniteNumber(open) ||
         !isFiniteNumber(high) ||
         !isFiniteNumber(low) ||
@@ -374,7 +431,8 @@ function normalizeCandle(raw, referenceTimeMs = Date.now()) {
             open,
             high,
             low,
-            close
+            close,
+            volume
         },
         reason: null
     };
@@ -383,61 +441,104 @@ function normalizeCandle(raw, referenceTimeMs = Date.now()) {
    Gap and Continuity Diagnostics
    ===================================================================== */
 function analyzeTimeGaps(rows) {
+    const sourceRows = Array.isArray(rows)
+        ? rows
+        : [];
     let continuousIntervals = 0;
     let missingIntervalEstimate = 0;
     let largeGapCount = 0;
+    let irregularIntervalCount = 0;
     let largestGapMinutes = 0;
     const samples = [];
-    for (let index = 1; index < rows.length; index++) {
-        const previousTime = timestampToMs(rows[index - 1].time);
-        const currentTime = timestampToMs(rows[index].time);
+    for (let index = 1; index < sourceRows.length; index++) {
+        const previousTime = timestampToMs(sourceRows[index - 1].time);
+        const currentTime = timestampToMs(sourceRows[index].time);
         if (!Number.isFinite(previousTime) ||
             !Number.isFinite(currentTime)) {
+            irregularIntervalCount++;
             continue;
         }
         const gapMs = currentTime -
             previousTime;
-        if (gapMs <= 0) {
-            continue;
-        }
-        const gapMinutes = gapMs / 60000;
-        largestGapMinutes =
-            Math.max(largestGapMinutes, gapMinutes);
-        /*
-         * Small tolerance handles provider timestamp variation.
-         */
-        if (gapMinutes >= 4 &&
-            gapMinutes <= 6) {
+        if (gapMs === INTERVAL_MS) {
             continuousIntervals++;
+            largestGapMinutes = Math.max(
+                largestGapMinutes,
+                INTERVAL_MINUTES
+            );
             continue;
         }
-        if (gapMinutes >
-            INTERVAL_MINUTES) {
-            largeGapCount++;
-            missingIntervalEstimate +=
-                Math.max(0, Math.floor(gapMinutes /
-                    INTERVAL_MINUTES) - 1);
-            if (samples.length <
-                MAX_GAP_SAMPLES) {
+        irregularIntervalCount++;
+        if (gapMs <= 0) {
+            if (samples.length < MAX_GAP_SAMPLES) {
                 samples.push({
-                    from: rows[index - 1].time,
-                    to: rows[index].time,
-                    gapMinutes: round(gapMinutes, 2)
+                    from: sourceRows[index - 1].time,
+                    to: sourceRows[index].time,
+                    gapMinutes: round(gapMs / 60000, 2),
+                    reason: "non-increasing-time"
                 });
             }
+            continue;
+        }
+        const gapMinutes = gapMs /
+            60000;
+        largestGapMinutes = Math.max(
+            largestGapMinutes,
+            gapMinutes
+        );
+        if (gapMs > INTERVAL_MS) {
+            largeGapCount++;
+            missingIntervalEstimate += Math.max(
+                0,
+                Math.floor(gapMs / INTERVAL_MS) - 1
+            );
+        }
+        if (samples.length < MAX_GAP_SAMPLES) {
+            samples.push({
+                from: sourceRows[index - 1].time,
+                to: sourceRows[index].time,
+                gapMinutes: round(gapMinutes, 2),
+                reason: gapMs > INTERVAL_MS
+                    ? "missing-source-intervals"
+                    : "unexpected-source-interval"
+            });
         }
     }
     return {
+        expectedIntervalMinutes: INTERVAL_MINUTES,
+        evaluatedIntervals: Math.max(0, sourceRows.length - 1),
         continuousIntervals,
+        irregularIntervalCount,
         largeGapCount,
         missingIntervalEstimate,
         largestGapMinutes: round(largestGapMinutes, 2),
+        continuityPercent: sourceRows.length <= 1
+            ? 100
+            : round(
+                continuousIntervals /
+                    (sourceRows.length - 1) *
+                    100,
+                2
+            ),
         sampleLargeGaps: samples
     };
 }
 /* =====================================================================
    Candle Collection Normalization
    ===================================================================== */
+function emptyGapDiagnostics() {
+    return {
+        expectedIntervalMinutes: INTERVAL_MINUTES,
+        evaluatedIntervals: 0,
+        continuousIntervals: 0,
+        irregularIntervalCount: 0,
+        largeGapCount: 0,
+        missingIntervalEstimate: 0,
+        largestGapMinutes: 0,
+        continuityPercent: 100,
+        sampleLargeGaps: []
+    };
+}
 function normalizeCandles(values, referenceTimeMs = Date.now()) {
     const byTime = new Map();
     const rejectedReasons = {};
@@ -460,16 +561,16 @@ function normalizeCandles(values, referenceTimeMs = Date.now()) {
                 firstTime: null,
                 lastTime: null,
                 ageMinutes: null,
+                closeAgeMinutes: null,
                 stale: true,
                 possiblyOpenLastCandle: false,
                 closedCandleCount: 0,
-                gaps: {
-                    continuousIntervals: 0,
-                    largeGapCount: 0,
-                    missingIntervalEstimate: 0,
-                    largestGapMinutes: 0,
-                    sampleLargeGaps: []
-                }
+                volume: {
+                    availableRows: 0,
+                    unavailableRows: 0,
+                    coveragePercent: 0
+                },
+                gaps: emptyGapDiagnostics()
             }
         };
     }
@@ -499,8 +600,24 @@ function normalizeCandles(values, referenceTimeMs = Date.now()) {
         null;
     const lastTime = rows[rows.length - 1]?.time ||
         null;
-    const latestAgeMinutes = ageMinutes(lastTime, safeReferenceTimeMs);
-    const openLastCandle = isPossiblyOpenCandle(lastTime, safeReferenceTimeMs);
+    const latestAgeMinutes = ageMinutes(
+        lastTime,
+        safeReferenceTimeMs
+    );
+    const latestCloseAgeMinutes = candleCloseAgeMinutes(
+        lastTime,
+        safeReferenceTimeMs
+    );
+    const openLastCandle = isPossiblyOpenCandle(
+        lastTime,
+        safeReferenceTimeMs
+    );
+    const volumeAvailableRows = rows.reduce(
+        (count, row) => Number.isFinite(row.volume)
+            ? count + 1
+            : count,
+        0
+    );
     return {
         rows,
         quality: {
@@ -514,11 +631,32 @@ function normalizeCandles(values, referenceTimeMs = Date.now()) {
             ageMinutes: latestAgeMinutes == null
                 ? null
                 : round(latestAgeMinutes, 2),
-            stale: latestAgeMinutes == null ||
-                latestAgeMinutes >
+            closeAgeMinutes: latestCloseAgeMinutes == null
+                ? null
+                : round(latestCloseAgeMinutes, 2),
+            stale: latestCloseAgeMinutes == null ||
+                latestCloseAgeMinutes >
                     STALE_AFTER_MINUTES,
             possiblyOpenLastCandle: openLastCandle,
-            closedCandleCount: countClosedCandles(rows, safeReferenceTimeMs),
+            closedCandleCount: countClosedCandles(
+                rows,
+                safeReferenceTimeMs
+            ),
+            volume: {
+                availableRows: volumeAvailableRows,
+                unavailableRows: Math.max(
+                    0,
+                    rows.length - volumeAvailableRows
+                ),
+                coveragePercent: rows.length === 0
+                    ? 0
+                    : round(
+                        volumeAvailableRows /
+                            rows.length *
+                            100,
+                        2
+                    )
+            },
             gaps: analyzeTimeGaps(rows)
         }
     };
@@ -526,7 +664,11 @@ function normalizeCandles(values, referenceTimeMs = Date.now()) {
 /* =====================================================================
    Previous Data Recovery
    ===================================================================== */
-function getPreviousRows(previousOutput, key) {
+function getPreviousRows(
+    previousOutput,
+    key,
+    referenceTimeMs = Date.now()
+) {
     if (!previousOutput ||
         typeof previousOutput !== "object") {
         return [];
@@ -540,7 +682,10 @@ function getPreviousRows(previousOutput, key) {
      * }
      */
     if (Array.isArray(previousOutput[key])) {
-        return normalizeCandles(previousOutput[key]).rows;
+        return normalizeCandles(
+            previousOutput[key],
+            referenceTimeMs
+        ).rows;
     }
     /*
      * Optional nested compatibility.
@@ -549,7 +694,10 @@ function getPreviousRows(previousOutput, key) {
         ?.symbols?.[key]
         ?.candles;
     if (Array.isArray(nestedRows)) {
-        return normalizeCandles(nestedRows).rows;
+        return normalizeCandles(
+            nestedRows,
+            referenceTimeMs
+        ).rows;
     }
     return [];
 }
@@ -635,7 +783,10 @@ async function fetchJsonOnce(url, timeoutMs = REQUEST_TIMEOUT_MS) {
 /* =====================================================================
    Twelve Data 5-Minute Fetch
    ===================================================================== */
-async function fetchCandles(symbol) {
+async function fetchCandles(
+    symbol,
+    referenceTimeMs = Date.now()
+) {
     const params = new URLSearchParams({
         symbol,
         interval: INTERVAL,
@@ -662,7 +813,10 @@ async function fetchCandles(symbol) {
     if (!Array.isArray(payload.values)) {
         throw new Error(`Twelve Data response for ${symbol} does not contain a values array`);
     }
-    const normalized = normalizeCandles(payload.values);
+    const normalized = normalizeCandles(
+        payload.values,
+        referenceTimeMs
+    );
     if (normalized.rows.length === 0) {
         throw new Error(`No valid 5-minute candles returned for ${symbol}`);
     }
@@ -693,19 +847,29 @@ async function fetchCandles(symbol) {
 /* =====================================================================
    Cache Merge
    ===================================================================== */
-function mergeCandleRows(previousRows, freshRows) {
-    const normalizedFresh = normalizeCandles(Array.isArray(freshRows)
-        ? freshRows
-        : []);
+function mergeCandleRows(
+    previousRows,
+    freshRows,
+    referenceTimeMs = Date.now()
+) {
+    const normalizedFresh = normalizeCandles(
+        Array.isArray(freshRows)
+            ? freshRows
+            : [],
+        referenceTimeMs
+    );
     /*
      * Defensive fallback:
      * if no usable fresh candles are available, preserve the
      * existing cached rows through the normal validation pipeline.
      */
     if (normalizedFresh.rows.length === 0) {
-        return normalizeCandles(Array.isArray(previousRows)
-            ? previousRows
-            : []);
+        return normalizeCandles(
+            Array.isArray(previousRows)
+                ? previousRows
+                : [],
+            referenceTimeMs
+        );
     }
     const firstFreshTime = timestampToMs(normalizedFresh.rows[0].time);
     /*
@@ -729,10 +893,13 @@ function mergeCandleRows(previousRows, freshRows) {
      * chronological sorting, duplicate handling, quality metadata
      * and MAX_STORED_CANDLES limit.
      */
-    return normalizeCandles([
-        ...safePreviousRows,
-        ...normalizedFresh.rows
-    ]);
+    return normalizeCandles(
+        [
+            ...safePreviousRows,
+            ...normalizedFresh.rows
+        ],
+        referenceTimeMs
+    );
 }
 /* =====================================================================
    Closed-Candle Helpers
@@ -743,8 +910,14 @@ function getClosedRows(rows, referenceTimeMs = Date.now()) {
     }
     return rows.filter(row => isClosedCandle(row?.time, referenceTimeMs));
 }
-function getLatestClosedCandle(rows) {
-    const closedRows = getClosedRows(rows);
+function getLatestClosedCandle(
+    rows,
+    referenceTimeMs = Date.now()
+) {
+    const closedRows = getClosedRows(
+        rows,
+        referenceTimeMs
+    );
     return (closedRows[closedRows.length - 1] ||
         null);
 }
@@ -763,12 +936,33 @@ function getLatestClosedCandle(rows) {
  * - No additional API requests.
  * - Input arrays are never mutated.
  */
-function aggregateClosedCandles(rows, targetMinutes, referenceTimeMs = Date.now()) {
+function aggregateClosedCandlesDetailed(
+    rows,
+    targetMinutes,
+    referenceTimeMs = Date.now()
+) {
+    const emptyResult = {
+        candles: [],
+        diagnostics: {
+            targetMinutes,
+            sourceIntervalMinutes: INTERVAL_MINUTES,
+            expectedSourceCount: null,
+            sourceClosedCandles: 0,
+            totalBuckets: 0,
+            completeBuckets: 0,
+            incompleteBuckets: 0,
+            nonContiguousBuckets: 0,
+            formingBucketsSkipped: 0,
+            invalidOhlcBuckets: 0,
+            completeVolumeBuckets: 0,
+            unavailableVolumeBuckets: 0
+        }
+    };
     if (!Array.isArray(rows) ||
         !Number.isInteger(targetMinutes) ||
         targetMinutes <= INTERVAL_MINUTES ||
         targetMinutes % INTERVAL_MINUTES !== 0) {
-        return [];
+        return emptyResult;
     }
     const safeReferenceTimeMs = Number.isFinite(referenceTimeMs)
         ? referenceTimeMs
@@ -797,7 +991,21 @@ function aggregateClosedCandles(rows, targetMinutes, referenceTimeMs = Date.now(
             .get(bucketStart)
             .push(item);
     }
-    const aggregated = [];
+    const diagnostics = {
+        targetMinutes,
+        sourceIntervalMinutes: INTERVAL_MINUTES,
+        expectedSourceCount,
+        sourceClosedCandles: sourceRows.length,
+        totalBuckets: groups.size,
+        completeBuckets: 0,
+        incompleteBuckets: 0,
+        nonContiguousBuckets: 0,
+        formingBucketsSkipped: 0,
+        invalidOhlcBuckets: 0,
+        completeVolumeBuckets: 0,
+        unavailableVolumeBuckets: 0
+    };
+    const candles = [];
     for (const [bucketStart, items] of groups.entries()) {
         /*
          * Only a fully elapsed target candle may be emitted.
@@ -805,10 +1013,12 @@ function aggregateClosedCandles(rows, targetMinutes, referenceTimeMs = Date.now(
         if (bucketStart +
             targetMs >
             safeReferenceTimeMs) {
+            diagnostics.formingBucketsSkipped++;
             continue;
         }
         if (items.length !==
             expectedSourceCount) {
+            diagnostics.incompleteBuckets++;
             continue;
         }
         let contiguous = true;
@@ -822,18 +1032,39 @@ function aggregateClosedCandles(rows, targetMinutes, referenceTimeMs = Date.now(
             }
         }
         if (!contiguous) {
+            diagnostics.nonContiguousBuckets++;
             continue;
         }
-        const candles = items.map(item => item.row);
-        const open = candles[0].open;
-        const close = candles[candles.length - 1].close;
-        const high = Math.max(...candles.map(candle => candle.high));
-        const low = Math.min(...candles.map(candle => candle.low));
+        const sourceCandles = items.map(item => item.row);
+        const open = sourceCandles[0].open;
+        const close = sourceCandles[sourceCandles.length - 1].close;
+        const high = Math.max(...sourceCandles.map(candle => candle.high));
+        const low = Math.min(...sourceCandles.map(candle => candle.low));
         if (!isFiniteNumber(open) ||
             !isFiniteNumber(high) ||
             !isFiniteNumber(low) ||
-            !isFiniteNumber(close)) {
+            !isFiniteNumber(close) ||
+            high < low ||
+            high < open ||
+            high < close ||
+            low > open ||
+            low > close) {
+            diagnostics.invalidOhlcBuckets++;
             continue;
+        }
+        const volumeValues = sourceCandles.map(candle => candle.volume);
+        const hasCompleteVolume = volumeValues.every(value =>
+            Number.isFinite(value) &&
+            value >= 0
+        );
+        const volume = hasCompleteVolume
+            ? volumeValues.reduce((sum, value) => sum + value, 0)
+            : null;
+        if (hasCompleteVolume) {
+            diagnostics.completeVolumeBuckets++;
+        }
+        else {
+            diagnostics.unavailableVolumeBuckets++;
         }
         const bucketDate = new Date(bucketStart);
         const time = `${bucketDate.getUTCFullYear()}-` +
@@ -841,56 +1072,167 @@ function aggregateClosedCandles(rows, targetMinutes, referenceTimeMs = Date.now(
             `${pad2(bucketDate.getUTCDate())} ` +
             `${pad2(bucketDate.getUTCHours())}:` +
             `${pad2(bucketDate.getUTCMinutes())}:00`;
-        aggregated.push({
+        candles.push({
             time,
             open,
             high,
             low,
-            close
+            close,
+            volume
         });
+        diagnostics.completeBuckets++;
     }
-    return aggregated;
-}
-function buildDerivedTimeframeCandles(rows, referenceTimeMs = Date.now()) {
     return {
-        "15m": aggregateClosedCandles(rows, 15, referenceTimeMs),
-        "30m": aggregateClosedCandles(rows, 30, referenceTimeMs),
-        "1H": aggregateClosedCandles(rows, 60, referenceTimeMs),
-        "4H": aggregateClosedCandles(rows, 240, referenceTimeMs)
+        candles,
+        diagnostics
     };
+}
+function aggregateClosedCandles(
+    rows,
+    targetMinutes,
+    referenceTimeMs = Date.now()
+) {
+    return aggregateClosedCandlesDetailed(
+        rows,
+        targetMinutes,
+        referenceTimeMs
+    ).candles;
+}
+function buildDerivedTimeframeData(
+    rows,
+    referenceTimeMs = Date.now()
+) {
+    const targets = [
+        ["15m", 15],
+        ["30m", 30],
+        ["1H", 60],
+        ["4H", 240]
+    ];
+    const candles = {};
+    const diagnostics = {};
+    for (const [label, minutes] of targets) {
+        const result = aggregateClosedCandlesDetailed(
+            rows,
+            minutes,
+            referenceTimeMs
+        );
+        candles[label] = result.candles;
+        diagnostics[label] = result.diagnostics;
+    }
+    return {
+        candles,
+        diagnostics
+    };
+}
+function buildDerivedTimeframeCandles(
+    rows,
+    referenceTimeMs = Date.now()
+) {
+    return buildDerivedTimeframeData(
+        rows,
+        referenceTimeMs
+    ).candles;
 }
 /* =====================================================================
    Aggregation Readiness
    ===================================================================== */
-function calculateAggregationReadiness(rows) {
-    const closedRows = getClosedRows(rows);
+function calculateAggregationReadiness(
+    rows,
+    referenceTimeMs = Date.now(),
+    derivedData = null
+) {
+    const safeReferenceTimeMs = Number.isFinite(referenceTimeMs)
+        ? referenceTimeMs
+        : Date.now();
+    const closedRows = getClosedRows(
+        rows,
+        safeReferenceTimeMs
+    );
     const closedCount = closedRows.length;
+    const actualDerivedData = derivedData &&
+        typeof derivedData === "object" &&
+        derivedData.candles &&
+        derivedData.diagnostics
+        ? derivedData
+        : buildDerivedTimeframeData(
+            rows,
+            safeReferenceTimeMs
+        );
+    function readinessEntry(
+        label,
+        groupSize,
+        minimumRecommended
+    ) {
+        const completeCandles = Array.isArray(
+            actualDerivedData.candles[label]
+        )
+            ? actualDerivedData.candles[label].length
+            : 0;
+        const diagnostics = actualDerivedData.diagnostics[label] ||
+            {};
+        return {
+            estimatedCandles: Math.floor(closedCount / groupSize),
+            actualCompleteCandles: completeCandles,
+            groupSize,
+            minimumRecommended,
+            ready: completeCandles >= minimumRecommended,
+            incompleteBuckets: diagnostics.incompleteBuckets ||
+                0,
+            nonContiguousBuckets: diagnostics.nonContiguousBuckets ||
+                0,
+            formingBucketsSkipped: diagnostics.formingBucketsSkipped ||
+                0,
+            invalidOhlcBuckets: diagnostics.invalidOhlcBuckets ||
+                0
+        };
+    }
     return {
         fiveMinute: {
             availableCandles: closedCount,
             minimumRecommended: 200,
             ready: closedCount >= 200
         },
-        fifteenMinute: {
-            estimatedCandles: Math.floor(closedCount / 3),
-            groupSize: 3,
-            minimumRecommended: 100,
-            ready: Math.floor(closedCount / 3) >= 100
-        },
-        thirtyMinute: {
-            estimatedCandles: Math.floor(closedCount / 6),
-            groupSize: 6,
-            minimumRecommended: 50,
-            ready: Math.floor(closedCount / 6) >= 50
-        }
+        fifteenMinute: readinessEntry(
+            "15m",
+            3,
+            100
+        ),
+        thirtyMinute: readinessEntry(
+            "30m",
+            6,
+            50
+        ),
+        oneHour: readinessEntry(
+            "1H",
+            12,
+            35
+        ),
+        fourHour: readinessEntry(
+            "4H",
+            48,
+            30
+        )
     };
 }
 /* =====================================================================
    Professional Strategy Context Metadata
    ===================================================================== */
-function buildStrategyContext(rows) {
-    const closedRows = getClosedRows(rows);
-    const latestClosed = getLatestClosedCandle(rows);
+function buildStrategyContext(
+    rows,
+    referenceTimeMs = Date.now(),
+    derivedData = null
+) {
+    const safeReferenceTimeMs = Number.isFinite(referenceTimeMs)
+        ? referenceTimeMs
+        : Date.now();
+    const closedRows = getClosedRows(
+        rows,
+        safeReferenceTimeMs
+    );
+    const latestClosed = getLatestClosedCandle(
+        rows,
+        safeReferenceTimeMs
+    );
     return {
         dataOnly: true,
         strategyExecutedHere: false,
@@ -901,10 +1243,15 @@ function buildStrategyContext(rows) {
             "1h"
         ],
         useClosedCandlesOnly: true,
+        requireExactTimestampGrid: true,
         latestClosedCandleTime: latestClosed?.time ||
             null,
         closedCandleCount: closedRows.length,
-        aggregation: calculateAggregationReadiness(rows),
+        aggregation: calculateAggregationReadiness(
+            rows,
+            safeReferenceTimeMs,
+            derivedData
+        ),
         recommendedFilters: {
             higherTimeframeTrend: "H1 trend must align with trade direction",
             entryConfirmation: "5m candle close plus 15m momentum confirmation",
@@ -921,13 +1268,43 @@ function buildStrategyContext(rows) {
 /* =====================================================================
    Symbol Metadata Builder
    ===================================================================== */
-function buildSymbolMetadata({ config, rows, source, fetchSucceeded, fallbackUsed, errorMessage, fetchedQuality, finalQuality, providerMeta }) {
+function buildSymbolMetadata({
+    config,
+    rows,
+    source,
+    fetchSucceeded,
+    fallbackUsed,
+    errorMessage,
+    fetchedQuality,
+    finalQuality,
+    providerMeta,
+    referenceTimeMs = Date.now(),
+    derivedData = null
+}) {
+    const safeReferenceTimeMs = Number.isFinite(referenceTimeMs)
+        ? referenceTimeMs
+        : Date.now();
     const firstTime = rows[0]?.time ||
         null;
     const lastTime = rows[rows.length - 1]?.time ||
         null;
-    const latestAgeMinutes = ageMinutes(lastTime);
-    const latestClosed = getLatestClosedCandle(rows);
+    const latestAgeMinutes = ageMinutes(
+        lastTime,
+        safeReferenceTimeMs
+    );
+    const latestCloseAgeMinutes = candleCloseAgeMinutes(
+        lastTime,
+        safeReferenceTimeMs
+    );
+    const latestClosed = getLatestClosedCandle(
+        rows,
+        safeReferenceTimeMs
+    );
+    const aggregationReadiness = calculateAggregationReadiness(
+        rows,
+        safeReferenceTimeMs,
+        derivedData
+    );
     return {
         symbol: config.symbol,
         key: config.key,
@@ -939,7 +1316,10 @@ function buildSymbolMetadata({ config, rows, source, fetchSucceeded, fallbackUse
         error: errorMessage ||
             null,
         candleCount: rows.length,
-        closedCandleCount: getClosedRows(rows).length,
+        closedCandleCount: getClosedRows(
+            rows,
+            safeReferenceTimeMs
+        ).length,
         firstTime,
         lastTime,
         latestClosedTime: latestClosed?.time ||
@@ -947,15 +1327,27 @@ function buildSymbolMetadata({ config, rows, source, fetchSucceeded, fallbackUse
         ageMinutes: latestAgeMinutes == null
             ? null
             : round(latestAgeMinutes, 2),
+        closeAgeMinutes: latestCloseAgeMinutes == null
+            ? null
+            : round(latestCloseAgeMinutes, 2),
         stale: !fetchSucceeded ||
             rows.length === 0 ||
             finalQuality.stale,
-        possiblyOpenLastCandle: isPossiblyOpenCandle(lastTime),
+        possiblyOpenLastCandle: isPossiblyOpenCandle(
+            lastTime,
+            safeReferenceTimeMs
+        ),
         fetchedQuality: fetchedQuality ||
             null,
         quality: finalQuality,
-        aggregationReadiness: calculateAggregationReadiness(rows),
-        strategyContext: buildStrategyContext(rows),
+        aggregationReadiness,
+        aggregationDiagnostics: derivedData?.diagnostics ||
+            null,
+        strategyContext: buildStrategyContext(
+            rows,
+            safeReferenceTimeMs,
+            derivedData
+        ),
         provider: providerMeta ||
             null
     };
@@ -964,7 +1356,10 @@ function buildSymbolMetadata({ config, rows, source, fetchSucceeded, fallbackUse
    Main Worker
    ===================================================================== */
 async function main() {
+    validateRuntimeConfiguration();
+    requestsMade = 0;
     const startedAt = new Date();
+    const referenceTimeMs = startedAt.getTime();
     fs.mkdirSync(DATA_DIR, {
         recursive: true
     });
@@ -981,6 +1376,7 @@ async function main() {
     const output = {
         updatedAt: startedAt.toISOString(),
         startedAt: startedAt.toISOString(),
+        referenceTime: startedAt.toISOString(),
         version: FILE_VERSION,
         source: SOURCE_NAME,
         interval: INTERVAL,
@@ -996,6 +1392,16 @@ async function main() {
                 source: "5m",
                 grouping: 6,
                 extraApiRequests: 0
+            },
+            H1: {
+                source: "5m",
+                grouping: 12,
+                extraApiRequests: 0
+            },
+            H4: {
+                source: "5m",
+                grouping: 48,
+                extraApiRequests: 0
             }
         },
         requestPolicy: {
@@ -1007,31 +1413,48 @@ async function main() {
         strategyPolicy: {
             dataCollectorOnly: true,
             closedCandlesOnly: true,
+            exactFiveMinuteGridRequired: true,
+            completeDerivedBucketsOnly: true,
+            preserveProviderVolumeWhenAvailable: true,
             professionalScalpMode: true,
             weakThreeOfFiveDeprecated: true,
             recommendedDecisionModel: "weighted multi-timeframe confirmation"
         },
         stale: {},
         metadata: {},
+        derivedCandles: {},
+        derivedDiagnostics: {},
         errors: []
     };
     for (let index = 0; index < SYMBOLS.length; index++) {
         const config = SYMBOLS[index];
-        const previousRows = getPreviousRows(previousOutput, config.key);
+        const previousRows = getPreviousRows(
+            previousOutput,
+            config.key,
+            referenceTimeMs
+        );
         try {
             console.log(`Fetching ${config.symbol} 5m OHLC ` +
                 `(${requestsMade + 1}/${MAX_REQUESTS_PER_RUN})...`);
-            const fetched = await fetchCandles(config.symbol);
-            const merged = mergeCandleRows(previousRows, fetched.rows);
+            const fetched = await fetchCandles(
+                config.symbol,
+                referenceTimeMs
+            );
+            const merged = mergeCandleRows(
+                previousRows,
+                fetched.rows,
+                referenceTimeMs
+            );
+            const derivedData = buildDerivedTimeframeData(
+                merged.rows,
+                referenceTimeMs
+            );
             output[config.key] =
                 merged.rows;
-            if (!output.derivedCandles ||
-                typeof output.derivedCandles !==
-                    "object") {
-                output.derivedCandles = {};
-            }
             output.derivedCandles[config.key] =
-                buildDerivedTimeframeCandles(merged.rows);
+                derivedData.candles;
+            output.derivedDiagnostics[config.key] =
+                derivedData.diagnostics;
             output.stale[config.key] =
                 merged.quality.stale;
             output.metadata[config.key] =
@@ -1044,7 +1467,9 @@ async function main() {
                     errorMessage: null,
                     fetchedQuality: fetched.quality,
                     finalQuality: merged.quality,
-                    providerMeta: fetched.providerMeta
+                    providerMeta: fetched.providerMeta,
+                    referenceTimeMs,
+                    derivedData
                 });
             console.log(`Fetched ${fetched.rows.length} valid 5m candles for ` +
                 `${config.symbol}; stored ${merged.rows.length}, ` +
@@ -1058,16 +1483,20 @@ async function main() {
             /*
              * No retry is performed. Cached data becomes the fallback.
              */
-            const cached = normalizeCandles(previousRows);
+            const cached = normalizeCandles(
+                previousRows,
+                referenceTimeMs
+            );
+            const derivedData = buildDerivedTimeframeData(
+                cached.rows,
+                referenceTimeMs
+            );
             output[config.key] =
                 cached.rows;
-            if (!output.derivedCandles ||
-                typeof output.derivedCandles !==
-                    "object") {
-                output.derivedCandles = {};
-            }
             output.derivedCandles[config.key] =
-                buildDerivedTimeframeCandles(cached.rows);
+                derivedData.candles;
+            output.derivedDiagnostics[config.key] =
+                derivedData.diagnostics;
             output.stale[config.key] =
                 true;
             output.metadata[config.key] =
@@ -1086,7 +1515,9 @@ async function main() {
                         ...cached.quality,
                         stale: true
                     },
-                    providerMeta: null
+                    providerMeta: null,
+                    referenceTimeMs,
+                    derivedData
                 });
             output.errors.push({
                 symbol: config.symbol,
@@ -1095,7 +1526,10 @@ async function main() {
                 fallbackUsed: cached.rows.length >
                     0,
                 cachedCandleCount: cached.rows.length,
-                cachedClosedCandleCount: getClosedRows(cached.rows).length
+                cachedClosedCandleCount: getClosedRows(
+                    cached.rows,
+                    referenceTimeMs
+                ).length
             });
             if (cached.rows.length > 0) {
                 console.warn(`Using ${cached.rows.length} cached 5m candles for ` +
@@ -1123,11 +1557,32 @@ async function main() {
             startedAt.getTime();
     output.requestsMade =
         requestsMade;
+    /*
+     * Legacy field retained. "Reached" means the planned budget was fully
+     * consumed; it does not mean the safety guard was violated.
+     */
     output.requestLimitReached =
         requestsMade >=
             MAX_REQUESTS_PER_RUN;
+    output.requestLimitExceeded =
+        requestsMade >
+            MAX_REQUESTS_PER_RUN;
+    output.requestBudget = {
+        maximum: MAX_REQUESTS_PER_RUN,
+        used: requestsMade,
+        remaining: Math.max(
+            0,
+            MAX_REQUESTS_PER_RUN - requestsMade
+        ),
+        exhausted: requestsMade >=
+            MAX_REQUESTS_PER_RUN,
+        exceeded: requestsMade >
+            MAX_REQUESTS_PER_RUN
+    };
     output.successCount =
-        SYMBOLS.filter(config => output.metadata[config.key]?.fetchSucceeded).length;
+        SYMBOLS.filter(config =>
+            output.metadata[config.key]?.fetchSucceeded
+        ).length;
     output.failureCount =
         output.errors.length;
     /*
@@ -1144,14 +1599,51 @@ async function main() {
         console.warn(`Completed with ${output.failureCount} fetch failure(s); ` +
             "cached data was preserved where available.");
     }
+    return output;
 }
 /* =====================================================================
-   Process-Level Error Handling
+   Process-Level Error Handling and Test Exports
    ===================================================================== */
-main().catch(error => {
+function handleFatalError(error) {
     console.error("fetch-scalp-candles.js failed:", error instanceof Error
         ? error.stack ||
             error.message
         : error);
     process.exitCode = 1;
-});
+}
+if (require.main === module) {
+    main().catch(handleFatalError);
+}
+module.exports = {
+    FILE_VERSION,
+    INTERVAL,
+    INTERVAL_MINUTES,
+    INTERVAL_MS,
+    OUTPUT_SIZE,
+    MAX_STORED_CANDLES,
+    MAX_REQUESTS_PER_RUN,
+    STALE_AFTER_MINUTES,
+    normalizeTimestamp,
+    timestampToMs,
+    isAlignedIntervalTimestamp,
+    ageMinutes,
+    candleCloseAgeMinutes,
+    getCandleTimeState,
+    isPossiblyOpenCandle,
+    isClosedCandle,
+    normalizeCandle,
+    normalizeCandles,
+    analyzeTimeGaps,
+    getPreviousRows,
+    mergeCandleRows,
+    getClosedRows,
+    getLatestClosedCandle,
+    aggregateClosedCandlesDetailed,
+    aggregateClosedCandles,
+    buildDerivedTimeframeData,
+    buildDerivedTimeframeCandles,
+    calculateAggregationReadiness,
+    buildStrategyContext,
+    buildSymbolMetadata,
+    main
+};

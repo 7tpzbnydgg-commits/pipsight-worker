@@ -1,12 +1,18 @@
 // run-learning-engine.js
 //
-// PipSight Pro — Automatic Learning Engine Runner.
+// PipSight Pro — Autonomous Learning Pipeline Runner.
+//
+// Version: 1.4.0
 //
 // Purpose:
 // - Read verified resolved trades from data/analysis-history.json.
 // - Convert historical outcomes into learner.js-compatible payloads.
+// - Preserve immutable opening identity while tracking resolution revisions.
 // - Prevent duplicate learning across repeated GitHub Actions runs.
-// - Reuse PipSightLearner public APIs instead of duplicating learning logic.
+// - Support an explicit or safely detected fresh-learning cutoff.
+// - Propagate clean pair/timeframe/engine/direction/context attribution.
+// - Persist learning-data.json and confidence-data.json transactionally.
+// - Orchestrate Learning Enrichment → AI Memory → AI Policy after commit.
 // - Preserve all existing signal, analysis, Telegram and history behavior.
 //
 // Reads:
@@ -14,19 +20,29 @@
 //   data/learning-engine-state.json
 //   data/learning-data.json
 //   data/confidence-data.json
+//   data/autonomous-config.json                  (optional control source)
+//   learning-enrichment.js                       (optional advisory stage)
+//   ai-memory.js                                 (required autonomous stage)
+//   ai-policy-engine.js                          (required autonomous stage)
 //
 // Writes:
 //   data/learning-engine-state.json
 //   data/learning-data.json
 //   data/confidence-data.json
+//   downstream enrichment, memory and policy outputs through their own APIs
 //
-// Compatibility:
+// Compatibility and safety:
 // - CommonJS / Node.js 20.
-// - Existing learner.js API retained.
+// - Existing learner.js public API retained.
 // - Existing analysis-history.json schema retained.
 // - Existing strategy and signal engines are not modified.
 // - Open trades are never treated as completed learning outcomes.
 // - Only verified WIN, LOSS and BREAKEVEN records are learned.
+// - Mutable outcome fields never participate in immutable trade identity.
+// - Historical corrections update one identity; they never create a new trade.
+// - Future-dated or chronologically invalid outcomes fail validation.
+// - Downstream failure never rolls back committed learning data, but the run
+//   fails closed so stale/unvalidated policy cannot be promoted.
 
 "use strict";
 
@@ -46,10 +62,31 @@ const ENGINE_NAME =
   "PipSight Pro Automatic Learning Engine";
 
 const ENGINE_VERSION =
+  "1.4.0";
+
+const LEGACY_ENGINE_VERSION =
   "1.0.0";
+
+const AUTONOMOUS_SCHEMA_VERSION =
+  1;
 
 const STATE_VERSION =
   1;
+
+const MAX_PROCESSED_TRADE_KEYS =
+  100000;
+
+const MAX_RESOLUTION_VERSION_RECORDS =
+  100000;
+
+const FUTURE_TIMESTAMP_TOLERANCE_MS =
+  5 * 60 * 1000;
+
+const DOWNSTREAM_PIPELINE_ENV =
+  "PIPSIGHT_RUN_DOWNSTREAM_PIPELINE";
+
+const SKIP_DOWNSTREAM_PIPELINE_ENV =
+  "PIPSIGHT_SKIP_DOWNSTREAM_PIPELINE";
 
 // -----------------------------------------------------------------------------
 // Paths
@@ -86,6 +123,30 @@ const LEARNING_STATE_PATH =
   path.join(
     DATA_DIR,
     "learning-engine-state.json"
+  );
+
+const AUTONOMOUS_CONFIG_PATH =
+  path.join(
+    DATA_DIR,
+    "autonomous-config.json"
+  );
+
+const LEARNING_ENRICHMENT_MODULE_PATH =
+  path.join(
+    ROOT_DIR,
+    "learning-enrichment.js"
+  );
+
+const AI_MEMORY_MODULE_PATH =
+  path.join(
+    ROOT_DIR,
+    "ai-memory.js"
+  );
+
+const AI_POLICY_MODULE_PATH =
+  path.join(
+    ROOT_DIR,
+    "ai-policy-engine.js"
   );
 
 // -----------------------------------------------------------------------------
@@ -374,6 +435,306 @@ function atomicWriteJSON(
     }
 
   }
+
+}
+
+
+// -----------------------------------------------------------------------------
+// Production integrity utilities
+// -----------------------------------------------------------------------------
+
+function createHash(
+  value
+) {
+
+  return crypto
+    .createHash(
+      "sha256"
+    )
+    .update(
+      String(
+        value ?? ""
+      )
+    )
+    .digest(
+      "hex"
+    );
+
+}
+
+function createFileContentHash(
+  filePath
+) {
+
+  if (
+    !fs.existsSync(
+      filePath
+    )
+  ) {
+
+    return null;
+
+  }
+
+  return createHash(
+    fs.readFileSync(
+      filePath
+    )
+  );
+
+}
+
+function readJSONStrictIfExists(
+  filePath
+) {
+
+  if (
+    !fs.existsSync(
+      filePath
+    )
+  ) {
+
+    return {
+      exists:
+        false,
+
+      value:
+        null
+    };
+
+  }
+
+  const raw =
+    fs.readFileSync(
+      filePath,
+      "utf8"
+    );
+
+  if (
+    !raw.trim()
+  ) {
+
+    throw new Error(
+      `${path.relative(
+        ROOT_DIR,
+        filePath
+      )} exists but is empty.`
+    );
+
+  }
+
+  let value;
+
+  try {
+
+    value =
+      JSON.parse(
+        raw
+      );
+
+  } catch (
+    error
+  ) {
+
+    throw new Error(
+      `${path.relative(
+        ROOT_DIR,
+        filePath
+      )} contains invalid JSON: ${error.message}`
+    );
+
+  }
+
+  return {
+    exists:
+      true,
+
+    value
+  };
+
+}
+
+function toNonNegativeInteger(
+  value,
+  fallback = 0
+) {
+
+  const number =
+    toFiniteNumber(
+      value
+    );
+
+  if (
+    number === null ||
+    number < 0
+  ) {
+
+    return fallback;
+
+  }
+
+  return Math.trunc(
+    number
+  );
+
+}
+
+function uniqueSortedStrings(
+  values
+) {
+
+  return [
+    ...new Set(
+      (
+        Array.isArray(
+          values
+        )
+          ? values
+          : []
+      )
+        .map(
+          value =>
+            toTrimmedString(
+              value
+            )
+        )
+        .filter(
+          Boolean
+        )
+    )
+  ].sort();
+
+}
+
+function getNestedValue(
+  object,
+  pathParts
+) {
+
+  let current =
+    object;
+
+  for (
+    const part of pathParts
+  ) {
+
+    if (
+      !isPlainObject(
+        current
+      ) &&
+      !Array.isArray(
+        current
+      )
+    ) {
+
+      return undefined;
+
+    }
+
+    current =
+      current[part];
+
+  }
+
+  return current;
+
+}
+
+function firstFiniteNumber(
+  ...values
+) {
+
+  for (
+    const value of values
+  ) {
+
+    const number =
+      toFiniteNumber(
+        value
+      );
+
+    if (
+      number !== null
+    ) {
+
+      return number;
+
+    }
+
+  }
+
+  return null;
+
+}
+
+function firstNonEmptyString(
+  ...values
+) {
+
+  for (
+    const value of values
+  ) {
+
+    const normalized =
+      toTrimmedString(
+        value
+      );
+
+    if (
+      normalized
+    ) {
+
+      return normalized;
+
+    }
+
+  }
+
+  return null;
+
+}
+
+function parseBooleanEnvironment(
+  value,
+  fallback = null
+) {
+
+  const normalized =
+    toTrimmedString(
+      value
+    ).toLowerCase();
+
+  if (
+    [
+      "1",
+      "true",
+      "yes",
+      "on"
+    ].includes(
+      normalized
+    )
+  ) {
+
+    return true;
+
+  }
+
+  if (
+    [
+      "0",
+      "false",
+      "no",
+      "off"
+    ].includes(
+      normalized
+    )
+  ) {
+
+    return false;
+
+  }
+
+  return fallback;
 
 }
 
@@ -757,65 +1118,85 @@ function buildTradeIdentitySource(
   trade
 ) {
 
-  return [
-    normalizePair(
-      trade?.pair ??
-      trade?.symbol
-    ) || "",
+  const explicitHistoryRecordId =
+    firstNonEmptyString(
+      trade?.historyRecordId,
+      trade?.recordId
+    );
 
-    normalizeEngineName(
-      trade?.engine ??
-      trade?.engineName ??
-      trade?.mode ??
-      trade?.strategy
-    ),
+  if (
+    explicitHistoryRecordId
+  ) {
 
-    normalizeDirection(
-      trade?.direction ??
-      trade?.decision ??
-      trade?.signal ??
-      trade?.action
-    ) || "",
+    return JSON.stringify({
+      historyRecordId:
+        explicitHistoryRecordId
+    });
 
-    normalizeIdentityNumber(
-      trade?.entry ??
-      trade?.entryPrice
-    ),
+  }
 
-    normalizeIdentityNumber(
-      trade?.stop ??
-      trade?.stopLoss ??
-      trade?.sl
-    ),
+  const explicitSourceTradeKey =
+    firstNonEmptyString(
+      trade?.sourceTradeKey,
+      trade?.tradeKey
+    );
 
-    normalizeIdentityNumber(
-      trade?.target ??
-      trade?.target1 ??
-      trade?.takeProfit ??
-      trade?.takeProfit1 ??
-      trade?.tp1
-    ),
+  if (
+    explicitSourceTradeKey
+  ) {
 
-    normalizeOutcome(
-      trade?.outcome ??
-      trade?.result
-    ) || "",
+    return JSON.stringify({
+      sourceTradeKey:
+        explicitSourceTradeKey
+    });
 
-    toISOStringOrNull(
-      trade?.openedAt ??
-      trade?.signalTime ??
-      trade?.createdAt
-    ) || "",
+  }
 
-    toISOStringOrNull(
-      trade?.closedAt ??
-      trade?.resolvedAt ??
-      trade?.updatedAt
-    ) || ""
+  const {
+    strategy,
+    timeframe
+  } =
+    inferStrategyAndTimeframe(
+      trade
+    );
 
-  ].join(
-    "|"
-  );
+  return JSON.stringify({
+    pair:
+      normalizePair(
+        trade?.pair ??
+        trade?.symbol ??
+        trade?.pairLabel
+      ) || "",
+
+    strategy:
+      strategy || "",
+
+    timeframe:
+      timeframe || "",
+
+    direction:
+      normalizeDirection(
+        trade?.direction ??
+        trade?.decision ??
+        trade?.signal ??
+        trade?.action
+      ) || "",
+
+    entry:
+      normalizeIdentityNumber(
+        trade?.entry ??
+        trade?.entryPrice ??
+        trade?.price
+      ),
+
+    openedAt:
+      toISOStringOrNull(
+        trade?.openedAt ??
+        trade?.signalTime ??
+        trade?.createdAt ??
+        trade?.recordedAt
+      ) || ""
+  });
 
 }
 
@@ -823,21 +1204,205 @@ function createTradeKey(
   trade
 ) {
 
-  const identitySource =
+  return createHash(
     buildTradeIdentitySource(
       trade
+    )
+  );
+
+}
+
+function calculateResolvedClosePrice(
+  normalizedTrade,
+  richRecord = null
+) {
+
+  const raw =
+    isPlainObject(
+      normalizedTrade?.raw
+    )
+      ? normalizedTrade.raw
+      : {};
+
+  const snapshot =
+    isPlainObject(
+      richRecord?.snapshot
+    )
+      ? richRecord.snapshot
+      : {};
+
+  const explicit =
+    firstFiniteNumber(
+      raw.closePrice,
+      raw.exitPrice,
+      raw.close,
+      richRecord?.closePrice,
+      richRecord?.exitPrice,
+      snapshot.closePrice,
+      snapshot.exitPrice
     );
 
-  return crypto
-    .createHash(
-      "sha256"
-    )
-    .update(
-      identitySource
-    )
-    .digest(
-      "hex"
+  if (
+    explicit !== null &&
+    explicit > 0
+  ) {
+
+    return explicit;
+
+  }
+
+  if (
+    normalizedTrade?.outcome ===
+      "WIN"
+  ) {
+
+    return normalizedTrade.takeProfit;
+
+  }
+
+  if (
+    normalizedTrade?.outcome ===
+      "LOSS"
+  ) {
+
+    return normalizedTrade.stopLoss;
+
+  }
+
+  return normalizedTrade?.entry ??
+    null;
+
+}
+
+function calculateProfitPoints(
+  normalizedTrade,
+  closePrice
+) {
+
+  const entry =
+    toFiniteNumber(
+      normalizedTrade?.entry
     );
+
+  const close =
+    toFiniteNumber(
+      closePrice
+    );
+
+  const direction =
+    normalizeDirection(
+      normalizedTrade?.direction
+    );
+
+  if (
+    entry === null ||
+    close === null ||
+    !direction
+  ) {
+
+    return null;
+
+  }
+
+  const rawPoints =
+    direction ===
+      "SELL"
+      ? entry - close
+      : close - entry;
+
+  if (
+    normalizedTrade?.outcome ===
+      "WIN"
+  ) {
+
+    return Number(
+      Math.abs(
+        rawPoints
+      ).toFixed(
+        8
+      )
+    );
+
+  }
+
+  if (
+    normalizedTrade?.outcome ===
+      "LOSS"
+  ) {
+
+    return Number(
+      (
+        -Math.abs(
+          rawPoints
+        )
+      ).toFixed(
+        8
+      )
+    );
+
+  }
+
+  return 0;
+
+}
+
+function buildTradeResolutionSource(
+  normalizedTrade,
+  richRecord = null
+) {
+
+  const closePrice =
+    calculateResolvedClosePrice(
+      normalizedTrade,
+      richRecord
+    );
+
+  return JSON.stringify({
+    outcome:
+      normalizedTrade?.outcome ||
+      null,
+
+    closePrice:
+      normalizeIdentityNumber(
+        closePrice
+      ),
+
+    closedAt:
+      normalizedTrade?.closedAt ||
+      null,
+
+    stopLoss:
+      normalizeIdentityNumber(
+        normalizedTrade?.stopLoss
+      ),
+
+    takeProfit:
+      normalizeIdentityNumber(
+        normalizedTrade?.takeProfit
+      ),
+
+    exitReason:
+      firstNonEmptyString(
+        normalizedTrade?.raw?.exitReason,
+        normalizedTrade?.raw?.reason,
+        richRecord?.exitReason,
+        richRecord?.resolutionReason
+      )
+  });
+
+}
+
+function createTradeResolutionHash(
+  normalizedTrade,
+  richRecord = null
+) {
+
+  return createHash(
+    buildTradeResolutionSource(
+      normalizedTrade,
+      richRecord
+    )
+  );
 
 }
 
@@ -854,11 +1419,17 @@ function createEmptyState() {
     version:
       STATE_VERSION,
 
+    schemaVersion:
+      AUTONOMOUS_SCHEMA_VERSION,
+
     engineName:
       ENGINE_NAME,
 
     engineVersion:
       ENGINE_VERSION,
+
+    legacyEngineVersion:
+      LEGACY_ENGINE_VERSION,
 
     createdAt:
       now,
@@ -875,8 +1446,31 @@ function createEmptyState() {
     lastHistoryUpdatedAt:
       null,
 
+    learningStartAt:
+      null,
+
+    learningStartSource:
+      null,
+
     processedTradeKeys:
       [],
+
+    processedTradeVersions:
+      {},
+
+    sourceHashes: {
+      analysisHistory:
+        null,
+
+      learningData:
+        null,
+
+      confidenceData:
+        null
+    },
+
+    pendingTransaction:
+      null,
 
     totals: {
       runs:
@@ -897,13 +1491,31 @@ function createEmptyState() {
       learnedRecords:
         0,
 
+      correctionRecords:
+        0,
+
+      migrationReplayRecords:
+        0,
+
       duplicateRecords:
+        0,
+
+      cutoffSkippedRecords:
         0,
 
       skippedRecords:
         0,
 
       invalidRecords:
+        0,
+
+      failedRecords:
+        0,
+
+      downstreamRuns:
+        0,
+
+      downstreamFailures:
         0
     },
 
@@ -926,7 +1538,16 @@ function createEmptyState() {
       learnedRecords:
         0,
 
+      correctionRecords:
+        0,
+
+      migrationReplayRecords:
+        0,
+
       duplicateRecords:
+        0,
+
+      cutoffSkippedRecords:
         0,
 
       skippedRecords:
@@ -935,9 +1556,252 @@ function createEmptyState() {
       invalidRecords:
         0,
 
+      failedRecords:
+        0,
+
+      richRecordCount:
+        0,
+
+      richRecordsMatched:
+        0,
+
+      importedExistingData:
+        false,
+
+      persistedLearningData:
+        false,
+
+      sourceHistoryHash:
+        null,
+
+      learningStartAt:
+        null,
+
+      learningStartSource:
+        null,
+
+      pendingRecovery:
+        null,
+
+      downstream:
+        null,
+
       errors:
         []
     }
+  };
+
+}
+
+function normalizeProcessedTradeVersions(
+  value
+) {
+
+  if (
+    !isPlainObject(
+      value
+    )
+  ) {
+
+    return {};
+
+  }
+
+  const entries =
+    Object.entries(
+      value
+    )
+      .filter(
+        ([
+          tradeKey,
+          record
+        ]) =>
+          Boolean(
+            toTrimmedString(
+              tradeKey
+            )
+          ) &&
+          isPlainObject(
+            record
+          )
+      )
+      .map(
+        ([
+          tradeKey,
+          record
+        ]) => [
+          toTrimmedString(
+            tradeKey
+          ),
+          {
+            resolutionHash:
+              toTrimmedString(
+                record.resolutionHash
+              ) || null,
+
+            revision:
+              Math.max(
+                1,
+                toNonNegativeInteger(
+                  record.revision,
+                  1
+                )
+              ),
+
+            processedAt:
+              toISOStringOrNull(
+                record.processedAt
+              ),
+
+            closedAt:
+              toISOStringOrNull(
+                record.closedAt
+              ),
+
+            outcome:
+              normalizeOutcome(
+                record.outcome
+              ),
+
+            historyRecordId:
+              firstNonEmptyString(
+                record.historyRecordId
+              )
+          }
+        ]
+      )
+      .sort(
+        (
+          left,
+          right
+        ) =>
+          (
+            left[1].processedAt ||
+            ""
+          ).localeCompare(
+            right[1].processedAt ||
+            ""
+          )
+      )
+      .slice(
+        -MAX_RESOLUTION_VERSION_RECORDS
+      );
+
+  return Object.fromEntries(
+    entries
+  );
+
+}
+
+function normalizePendingTransaction(
+  value
+) {
+
+  if (
+    !isPlainObject(
+      value
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const tradeKeys =
+    uniqueSortedStrings(
+      value.tradeKeys
+    );
+
+  const tradeVersions =
+    Array.isArray(
+      value.tradeVersions
+    )
+      ? value.tradeVersions
+          .filter(
+            isPlainObject
+          )
+          .map(
+            item => ({
+              tradeKey:
+                toTrimmedString(
+                  item.tradeKey
+                ),
+
+              resolutionHash:
+                toTrimmedString(
+                  item.resolutionHash
+                ) || null,
+
+              revision:
+                Math.max(
+                  1,
+                  toNonNegativeInteger(
+                    item.revision,
+                    1
+                  )
+                ),
+
+              processedAt:
+                toISOStringOrNull(
+                  item.processedAt
+                ),
+
+              closedAt:
+                toISOStringOrNull(
+                  item.closedAt
+                ),
+
+              outcome:
+                normalizeOutcome(
+                  item.outcome
+                ),
+
+              historyRecordId:
+                firstNonEmptyString(
+                  item.historyRecordId
+                )
+            }))
+          .filter(
+            item =>
+              Boolean(
+                item.tradeKey
+              )
+          )
+      : tradeKeys.map(
+          tradeKey => ({
+            tradeKey,
+            resolutionHash:
+              null,
+            revision:
+              1,
+            processedAt:
+              null,
+            closedAt:
+              null,
+            outcome:
+              null,
+            historyRecordId:
+              null
+          })
+        );
+
+  return {
+    version:
+      AUTONOMOUS_SCHEMA_VERSION,
+
+    createdAt:
+      toISOStringOrNull(
+        value.createdAt
+      ),
+
+    exportHash:
+      toTrimmedString(
+        value.exportHash
+      ) || null,
+
+    tradeKeys,
+
+    tradeVersions
   };
 
 }
@@ -974,24 +1838,17 @@ function normalizeState(
       : {};
 
   const processedTradeKeys =
-    Array.isArray(
+    uniqueSortedStrings(
       value.processedTradeKeys
     )
-      ? [
-          ...new Set(
-            value.processedTradeKeys
-              .map(
-                item =>
-                  toTrimmedString(
-                    item
-                  )
-              )
-              .filter(
-                Boolean
-              )
-          )
-        ]
-      : [];
+      .slice(
+        -MAX_PROCESSED_TRADE_KEYS
+      );
+
+  const learningStartAt =
+    toISOStringOrNull(
+      value.learningStartAt
+    );
 
   return {
     ...fallback,
@@ -1000,53 +1857,58 @@ function normalizeState(
     version:
       STATE_VERSION,
 
+    schemaVersion:
+      AUTONOMOUS_SCHEMA_VERSION,
+
     engineName:
       ENGINE_NAME,
 
     engineVersion:
       ENGINE_VERSION,
 
+    legacyEngineVersion:
+      LEGACY_ENGINE_VERSION,
+
+    createdAt:
+      toISOStringOrNull(
+        value.createdAt
+      ) ||
+      fallback.createdAt,
+
+    learningStartAt,
+
+    learningStartSource:
+      learningStartAt
+        ? (
+            firstNonEmptyString(
+              value.learningStartSource
+            ) ||
+            "state"
+          )
+        : null,
+
     processedTradeKeys,
 
-    pendingTransaction:
-      isPlainObject(
-        value.pendingTransaction
+    processedTradeVersions:
+      normalizeProcessedTradeVersions(
+        value.processedTradeVersions
+      ),
+
+    sourceHashes: {
+      ...fallback.sourceHashes,
+      ...(
+        isPlainObject(
+          value.sourceHashes
+        )
+          ? value.sourceHashes
+          : {}
       )
-        ? {
-            version:
-              1,
+    },
 
-            createdAt:
-              toISOStringOrNull(
-                value.pendingTransaction.createdAt
-              ),
-
-            exportHash:
-              toTrimmedString(
-                value.pendingTransaction.exportHash
-              ) || null,
-
-            tradeKeys:
-              Array.isArray(
-                value.pendingTransaction.tradeKeys
-              )
-                ? [
-                    ...new Set(
-                      value.pendingTransaction.tradeKeys
-                        .map(
-                          item =>
-                            toTrimmedString(
-                              item
-                            )
-                        )
-                        .filter(
-                          Boolean
-                        )
-                    )
-                  ]
-                : []
-          }
-        : null,
+    pendingTransaction:
+      normalizePendingTransaction(
+        value.pendingTransaction
+      ),
 
     totals: {
       ...fallback.totals,
@@ -1070,11 +1932,21 @@ function normalizeState(
 
 function loadLearningState() {
 
+  const source =
+    readJSONStrictIfExists(
+      LEARNING_STATE_PATH
+    );
+
+  if (
+    !source.exists
+  ) {
+
+    return createEmptyState();
+
+  }
+
   return normalizeState(
-    readJSON(
-      LEARNING_STATE_PATH,
-      null
-    )
+    source.value
   );
 
 }
@@ -1151,17 +2023,56 @@ function loadAnalysisHistory() {
 
 function loadExistingLearningExport() {
 
-  const learningData =
-    readJSON(
-      LEARNING_DATA_PATH,
-      null
+  const learningSource =
+    readJSONStrictIfExists(
+      LEARNING_DATA_PATH
     );
 
-  const confidenceData =
-    readJSON(
-      CONFIDENCE_DATA_PATH,
-      null
+  const confidenceSource =
+    readJSONStrictIfExists(
+      CONFIDENCE_DATA_PATH
     );
+
+  if (
+    !learningSource.exists &&
+    !confidenceSource.exists
+  ) {
+
+    return null;
+
+  }
+
+  const learningData =
+    learningSource.value;
+
+  const confidenceData =
+    confidenceSource.value;
+
+  if (
+    learningSource.exists &&
+    !isPlainObject(
+      learningData
+    )
+  ) {
+
+    throw new Error(
+      "data/learning-data.json must contain a JSON object."
+    );
+
+  }
+
+  if (
+    confidenceSource.exists &&
+    !isPlainObject(
+      confidenceData
+    )
+  ) {
+
+    throw new Error(
+      "data/confidence-data.json must contain a JSON object."
+    );
+
+  }
 
   if (
     isPlainObject(
@@ -1172,58 +2083,272 @@ function loadExistingLearningExport() {
     )
   ) {
 
-    return learningData;
-
-  }
-
-  if (
-    isPlainObject(
-      learningData
-    ) ||
-    isPlainObject(
-      confidenceData
-    )
-  ) {
-
     return {
-      learning:
-        isPlainObject(
-          learningData?.learning
-        )
-          ? learningData.learning
-          : (
-              isPlainObject(
-                learningData
-              )
-                ? learningData
-                : {}
-            ),
+      ...learningData,
 
       confidence:
         isPlainObject(
-          confidenceData?.confidence
+          learningData.confidence
         )
-          ? confidenceData.confidence
+          ? learningData.confidence
           : (
               isPlainObject(
-                confidenceData
+                confidenceData?.confidence
               )
-                ? confidenceData
+                ? confidenceData.confidence
                 : {}
-            ),
-
-      exportedAt:
-        new Date().toISOString(),
-
-      metadata: {
-        importedFromLegacyFiles:
-          true
-      }
+            )
     };
 
   }
 
-  return null;
+  return {
+    learning:
+      isPlainObject(
+        learningData?.learning
+      )
+        ? learningData.learning
+        : (
+            isPlainObject(
+              learningData
+            )
+              ? learningData
+              : {}
+          ),
+
+    confidence:
+      isPlainObject(
+        confidenceData?.confidence
+      )
+        ? confidenceData.confidence
+        : (
+            isPlainObject(
+              confidenceData
+            )
+              ? confidenceData
+              : {}
+          ),
+
+    exportedAt:
+      toISOStringOrNull(
+        learningData?.exportedAt ??
+        confidenceData?.exportedAt
+      ) ||
+      new Date().toISOString(),
+
+    metadata: {
+      ...(
+        isPlainObject(
+          learningData?.metadata
+        )
+          ? learningData.metadata
+          : {}
+      ),
+
+      importedFromLegacyFiles:
+        true
+    }
+  };
+
+}
+
+function countExistingLearningSignals(
+  existingExport
+) {
+
+  const signals =
+    getNestedValue(
+      existingExport,
+      [
+        "learning",
+        "signals"
+      ]
+    );
+
+  return Array.isArray(
+    signals
+  )
+    ? signals.length
+    : 0;
+
+}
+
+function loadAutonomousConfig() {
+
+  const source =
+    readJSONStrictIfExists(
+      AUTONOMOUS_CONFIG_PATH
+    );
+
+  if (
+    !source.exists
+  ) {
+
+    return null;
+
+  }
+
+  if (
+    !isPlainObject(
+      source.value
+    )
+  ) {
+
+    throw new Error(
+      "data/autonomous-config.json must contain a JSON object."
+    );
+
+  }
+
+  return source.value;
+
+}
+
+function resolveLearningStartAt({
+  state,
+  existingExport,
+  history,
+  autonomousConfig
+}) {
+
+  const environmentValue =
+    firstNonEmptyString(
+      process.env
+        .PIPSIGHT_LEARNING_START_AT
+    );
+
+  const configuredValue =
+    firstNonEmptyString(
+      autonomousConfig
+        ?.learningEligibility
+        ?.learningStartAt,
+      autonomousConfig
+        ?.learningEligibility
+        ?.freshDataStartAt
+    );
+
+  const stateValue =
+    firstNonEmptyString(
+      state?.learningStartAt
+    );
+
+  const explicitValue =
+    environmentValue ||
+    configuredValue ||
+    stateValue;
+
+  if (
+    explicitValue
+  ) {
+
+    const normalized =
+      toISOStringOrNull(
+        explicitValue
+      );
+
+    if (
+      !normalized
+    ) {
+
+      throw new Error(
+        "Configured learningStartAt is not a valid timestamp."
+      );
+
+    }
+
+    return {
+      learningStartAt:
+        normalized,
+
+      source:
+        environmentValue
+          ? "environment"
+          : configuredValue
+            ? "autonomous-config"
+            : "state",
+
+      detectedFreshReset:
+        false
+    };
+
+  }
+
+  /*
+   * Safe fresh-reset detection:
+   * - both generated output files already exist,
+   * - the export contains zero signals,
+   * - state contains no processed identities,
+   * - history still contains older closed records.
+   *
+   * A first installation with no generated files does NOT activate this rule,
+   * so historical imports remain backward compatible.
+   */
+  const generatedEmptyExport =
+    Boolean(
+      existingExport &&
+      fs.existsSync(
+        LEARNING_DATA_PATH
+      ) &&
+      fs.existsSync(
+        CONFIDENCE_DATA_PATH
+      ) &&
+      countExistingLearningSignals(
+        existingExport
+      ) === 0 &&
+      (
+        state?.processedTradeKeys
+          ?.length || 0
+      ) === 0 &&
+      Object.keys(
+        state?.processedTradeVersions ||
+        {}
+      ).length === 0 &&
+      (
+        history?.closed?.length || 0
+      ) > 0
+    );
+
+  if (
+    generatedEmptyExport
+  ) {
+
+    const detected =
+      toISOStringOrNull(
+        existingExport.exportedAt
+      ) ||
+      toISOStringOrNull(
+        state?.createdAt
+      );
+
+    if (
+      detected
+    ) {
+
+      return {
+        learningStartAt:
+          detected,
+
+        source:
+          "detected-generated-empty-reset",
+
+        detectedFreshReset:
+          true
+      };
+
+    }
+
+  }
+
+  return {
+    learningStartAt:
+      null,
+
+    source:
+      null,
+
+    detectedFreshReset:
+      false
+  };
 
 }
 
@@ -1235,34 +2360,83 @@ function createLearnerExportHash(
   learnerExport
 ) {
 
-  const payload = {
-    learning:
-      isPlainObject(
-        learnerExport?.learning
-      )
-        ? learnerExport.learning
-        : {},
+  const learning =
+    isPlainObject(
+      learnerExport?.learning
+    )
+      ? JSON.parse(
+          JSON.stringify(
+            learnerExport.learning
+          )
+        )
+      : {};
 
-    confidence:
-      isPlainObject(
-        learnerExport?.confidence
-      )
-        ? learnerExport.confidence
-        : {}
+  const confidence =
+    isPlainObject(
+      learnerExport?.confidence
+    )
+      ? JSON.parse(
+          JSON.stringify(
+            learnerExport.confidence
+          )
+        )
+      : {};
+
+  /*
+   * MemoryManager refreshes operational timestamps during import/export and
+   * may mark legacy signals as repaired. These fields do not change learned
+   * evidence, so they must not force a full output/policy rewrite.
+   */
+  delete learning.updatedAt;
+
+  if (
+    isPlainObject(
+      learning.stats
+    )
+  ) {
+
+    delete learning.stats.updatedAt;
+
+  }
+
+  delete confidence.updatedAt;
+
+  if (
+    Array.isArray(
+      learning.signals
+    )
+  ) {
+
+    for (
+      const signal of learning.signals
+    ) {
+
+      if (
+        isPlainObject(
+          signal?.autonomousLearning
+        )
+      ) {
+
+        delete signal
+          .autonomousLearning
+          .repaired;
+
+      }
+
+    }
+
+  }
+
+  const payload = {
+    learning,
+    confidence
   };
 
-  return crypto
-    .createHash(
-      "sha256"
+  return createHash(
+    JSON.stringify(
+      payload
     )
-    .update(
-      JSON.stringify(
-        payload
-      )
-    )
-    .digest(
-      "hex"
-    );
+  );
 
 }
 
@@ -1271,30 +2445,68 @@ function createPendingTransaction(
   successfulResults
 ) {
 
-  const tradeKeys = [
-    ...new Set(
-      (
-        Array.isArray(
-          successfulResults
-        )
-          ? successfulResults
-          : []
+  const tradeVersions =
+    (
+      Array.isArray(
+        successfulResults
       )
-        .map(
-          result =>
+        ? successfulResults
+        : []
+    )
+      .filter(
+        result =>
+          Boolean(
             toTrimmedString(
               result?.tradeKey
             )
-        )
-        .filter(
-          Boolean
-        )
-    )
-  ];
+          )
+      )
+      .map(
+        result => ({
+          tradeKey:
+            toTrimmedString(
+              result.tradeKey
+            ),
+
+          resolutionHash:
+            toTrimmedString(
+              result.resolutionHash
+            ) || null,
+
+          revision:
+            Math.max(
+              1,
+              toNonNegativeInteger(
+                result.revision,
+                1
+              )
+            ),
+
+          processedAt:
+            toISOStringOrNull(
+              result.processedAt
+            ) ||
+            new Date().toISOString(),
+
+          closedAt:
+            toISOStringOrNull(
+              result.closedAt
+            ),
+
+          outcome:
+            normalizeOutcome(
+              result.outcome
+            ),
+
+          historyRecordId:
+            firstNonEmptyString(
+              result.historyRecordId
+            )
+        }));
 
   return {
     version:
-      1,
+      AUTONOMOUS_SCHEMA_VERSION,
 
     createdAt:
       new Date().toISOString(),
@@ -1304,7 +2516,15 @@ function createPendingTransaction(
         learnerExport
       ),
 
-    tradeKeys
+    tradeKeys:
+      uniqueSortedStrings(
+        tradeVersions.map(
+          item =>
+            item.tradeKey
+        )
+      ),
+
+    tradeVersions
   };
 
 }
@@ -1315,13 +2535,13 @@ function recoverPendingTransaction(
 ) {
 
   const pending =
-    isPlainObject(
+    normalizePendingTransaction(
       state?.pendingTransaction
-    )
-      ? state.pendingTransaction
-      : null;
+    );
 
-  if (!pending) {
+  if (
+    !pending
+  ) {
 
     return {
       recovered:
@@ -1331,6 +2551,9 @@ function recoverPendingTransaction(
         false,
 
       committedKeys:
+        0,
+
+      committedVersions:
         0
     };
 
@@ -1351,30 +2574,30 @@ function recoverPendingTransaction(
   let committedKeys =
     0;
 
+  let committedVersions =
+    0;
+
   if (
     expectedHash &&
     currentHash ===
       expectedHash
   ) {
 
-    /*
-     * The learning export reached disk but the final state commit did not.
-     * Rewrite both output files from the verified export, then promote the
-     * pending trade keys into the authoritative processed-key set.
-     */
     saveLearnerExport(
       existingExport
     );
 
-    committedKeys =
+    const commitResult =
       commitProcessedTradeKeys(
         state,
-        pending.tradeKeys.map(
-          tradeKey => ({
-            tradeKey
-          })
-        )
+        pending.tradeVersions
       );
+
+    committedKeys =
+      commitResult.addedKeys;
+
+    committedVersions =
+      commitResult.updatedVersions;
 
   }
 
@@ -1392,7 +2615,9 @@ function recoverPendingTransaction(
           expectedHash
       ),
 
-    committedKeys
+    committedKeys,
+
+    committedVersions
   };
 
 }
@@ -1710,6 +2935,72 @@ function validateClosedTrade(
 
     errors.push(
       "SELL trade take profit must be below entry."
+    );
+
+  }
+
+  const nowTimestamp =
+    Date.now();
+
+  if (
+    openedAt &&
+    new Date(
+      openedAt
+    ).getTime() >
+      nowTimestamp +
+      FUTURE_TIMESTAMP_TOLERANCE_MS
+  ) {
+
+    errors.push(
+      "openedAt timestamp is in the future."
+    );
+
+  }
+
+  if (
+    closedAt &&
+    new Date(
+      closedAt
+    ).getTime() >
+      nowTimestamp +
+      FUTURE_TIMESTAMP_TOLERANCE_MS
+  ) {
+
+    errors.push(
+      "closedAt timestamp is in the future."
+    );
+
+  }
+
+  if (
+    entry !== null &&
+    entry <= 0
+  ) {
+
+    errors.push(
+      "Entry price must be greater than zero."
+    );
+
+  }
+
+  if (
+    stopLoss !== null &&
+    stopLoss <= 0
+  ) {
+
+    errors.push(
+      "Stop-loss price must be greater than zero."
+    );
+
+  }
+
+  if (
+    takeProfit !== null &&
+    takeProfit <= 0
+  ) {
+
+    errors.push(
+      "Take-profit price must be greater than zero."
     );
 
   }
@@ -2612,13 +3903,168 @@ function extractScore(
 
 }
 
+
+function extractTradeContext(
+  normalizedTrade,
+  richRecord = null
+) {
+
+  const raw =
+    isPlainObject(
+      normalizedTrade?.raw
+    )
+      ? normalizedTrade.raw
+      : {};
+
+  const snapshot =
+    isPlainObject(
+      richRecord?.snapshot
+    )
+      ? richRecord.snapshot
+      : {};
+
+  const tradePlan =
+    isPlainObject(
+      snapshot.tradePlan
+    )
+      ? snapshot.tradePlan
+      : (
+          isPlainObject(
+            snapshot.plan
+          )
+            ? snapshot.plan
+            : {}
+        );
+
+  return {
+    historyRecordId:
+      firstNonEmptyString(
+        raw.historyRecordId,
+        raw.recordId,
+        richRecord?.id
+      ),
+
+    fingerprint:
+      firstNonEmptyString(
+        raw.fingerprint,
+        richRecord?.fingerprint
+      ),
+
+    source:
+      firstNonEmptyString(
+        raw.source,
+        richRecord?.source,
+        snapshot.source,
+        "analysis-history.closed"
+      ),
+
+    reason:
+      firstNonEmptyString(
+        raw.reason,
+        richRecord?.reason,
+        snapshot.reason
+      ),
+
+    correctionReason:
+      firstNonEmptyString(
+        raw.correctionReason,
+        raw.revisionReason,
+        richRecord?.correctionReason,
+        richRecord?.revisionReason
+      ),
+
+    session:
+      firstNonEmptyString(
+        raw.session,
+        raw.marketSession,
+        richRecord?.session,
+        richRecord?.marketSession,
+        snapshot.session,
+        snapshot.marketSession
+      ),
+
+    pattern:
+      firstNonEmptyString(
+        raw.pattern,
+        raw.patternName,
+        richRecord?.pattern,
+        richRecord?.patternName,
+        snapshot.pattern,
+        snapshot.patternName
+      ),
+
+    marketRegime:
+      firstNonEmptyString(
+        raw.marketRegime,
+        raw.regime,
+        richRecord?.marketRegime,
+        richRecord?.regime,
+        snapshot.marketRegime,
+        snapshot.regime
+      ),
+
+    marketState:
+      firstNonEmptyString(
+        raw.marketState,
+        richRecord?.marketState,
+        snapshot.marketState
+      ),
+
+    exitReason:
+      firstNonEmptyString(
+        raw.exitReason,
+        raw.resolutionReason,
+        richRecord?.exitReason,
+        richRecord?.resolutionReason
+      ),
+
+    qualityGrade:
+      firstNonEmptyString(
+        raw.qualityGrade,
+        richRecord?.qualityGrade,
+        snapshot.qualityGrade
+      ),
+
+    highestTargetReached:
+      firstFiniteNumber(
+        raw.highestTargetReached,
+        richRecord?.highestTargetReached,
+        snapshot.highestTargetReached
+      ),
+
+    mfeR:
+      firstFiniteNumber(
+        raw.mfeR,
+        richRecord?.mfeR,
+        snapshot.mfeR
+      ),
+
+    maeR:
+      firstFiniteNumber(
+        raw.maeR,
+        richRecord?.maeR,
+        snapshot.maeR
+      ),
+
+    atr:
+      firstFiniteNumber(
+        raw.atr,
+        richRecord?.atr,
+        snapshot.atr,
+        tradePlan.atr
+      )
+  };
+
+}
+
 // -----------------------------------------------------------------------------
 // Learner payload mapping
 // -----------------------------------------------------------------------------
 
 function buildLearnerOutcomePayload(
   normalizedTrade,
-  richRecord = null
+  richRecord = null,
+  options = {}
 ) {
 
   const risk =
@@ -2651,9 +4097,27 @@ function buildLearnerOutcomePayload(
       richRecord
     );
 
-  const indicators =
+  const indicatorSnapshot =
     extractIndicators(
       richRecord
+    );
+
+  const context =
+    extractTradeContext(
+      normalizedTrade,
+      richRecord
+    );
+
+  const closePrice =
+    calculateResolvedClosePrice(
+      normalizedTrade,
+      richRecord
+    );
+
+  const profitPoints =
+    calculateProfitPoints(
+      normalizedTrade,
+      closePrice
     );
 
   const payload = {
@@ -2708,12 +4172,156 @@ function buildLearnerOutcomePayload(
     resolvedAt:
       normalizedTrade.closedAt,
 
+    closePrice,
+
+    profitPoints,
+
     engine:
       normalizedTrade.engine,
 
     source:
-      "analysis-history.closed"
+      context.source,
+
+    sourceTradeKey:
+      firstNonEmptyString(
+        options.tradeKey
+      ),
+
+    sourceResolutionHash:
+      firstNonEmptyString(
+        options.resolutionHash
+      ),
+
+    correction:
+      options.correction === true,
+
+    corrected:
+      options.correction === true,
+
+    revision:
+      Math.max(
+        1,
+        toNonNegativeInteger(
+          options.revision,
+          1
+        )
+      ),
+
+    correctionReason:
+      firstNonEmptyString(
+        options.correctionReason,
+        context.correctionReason,
+        options.correction === true
+          ? "Historical resolution changed for the same immutable trade identity."
+          : null
+      ),
+
+    autonomousLearning: {
+      schemaVersion:
+        AUTONOMOUS_SCHEMA_VERSION,
+
+      runnerVersion:
+        ENGINE_VERSION,
+
+      immutableIdentity:
+        firstNonEmptyString(
+          options.tradeKey
+        ),
+
+      resolutionHash:
+        firstNonEmptyString(
+          options.resolutionHash
+        ),
+
+      revision:
+        Math.max(
+          1,
+          toNonNegativeInteger(
+            options.revision,
+            1
+          )
+        ),
+
+      correction:
+        options.correction === true,
+
+      migrationReplay:
+        options.migrationReplay === true,
+
+      chronological:
+        true,
+
+      futureLeakageProtected:
+        true,
+
+      advisoryOnly:
+        true,
+
+      liveAuthorityPermitted:
+        false
+    }
   };
+
+  if (
+    context.historyRecordId
+  ) {
+
+    payload.historyRecordId =
+      context.historyRecordId;
+
+  }
+
+  if (
+    context.fingerprint
+  ) {
+
+    payload.fingerprint =
+      context.fingerprint;
+
+  }
+
+  for (
+    const field of [
+      "reason",
+      "session",
+      "pattern",
+      "marketRegime",
+      "marketState",
+      "exitReason",
+      "qualityGrade"
+    ]
+  ) {
+
+    if (
+      context[field]
+    ) {
+
+      payload[field] =
+        context[field];
+
+    }
+
+  }
+
+  for (
+    const field of [
+      "highestTargetReached",
+      "mfeR",
+      "maeR",
+      "atr"
+    ]
+  ) {
+
+    if (
+      context[field] !== null
+    ) {
+
+      payload[field] =
+        context[field];
+
+    }
+
+  }
 
   if (
     risk !== null
@@ -2723,6 +4331,9 @@ function buildLearnerOutcomePayload(
       risk;
 
     payload.initialRisk =
+      risk;
+
+    payload.initialRiskPoints =
       risk;
 
   }
@@ -2737,6 +4348,9 @@ function buildLearnerOutcomePayload(
     payload.plannedReward =
       reward;
 
+    payload.plannedRewardPoints =
+      reward;
+
   }
 
   if (
@@ -2748,6 +4362,27 @@ function buildLearnerOutcomePayload(
 
     payload.rr =
       riskReward;
+
+    payload.plannedRiskReward =
+      riskReward;
+
+  }
+
+  if (
+    risk !== null &&
+    profitPoints !== null &&
+    risk > 0
+  ) {
+
+    payload.realizedR =
+      Number(
+        (
+          profitPoints /
+          risk
+        ).toFixed(
+          8
+        )
+      );
 
   }
 
@@ -2787,63 +4422,58 @@ function buildLearnerOutcomePayload(
 
   }
 
+  const indicatorNames =
+    uniqueSortedStrings([
+      (
+        indicatorSnapshot.rsi !==
+          undefined
+          ? "RSI"
+          : null
+      ),
+      (
+        indicatorSnapshot.macd !==
+          undefined ||
+        indicatorSnapshot.macdSignal !==
+          undefined ||
+        indicatorSnapshot.macdHistogram !==
+          undefined
+          ? "MACD"
+          : null
+      )
+    ]);
+
   if (
     Object.keys(
-      indicators
-    ).length > 0
+      indicatorSnapshot
+    ).length >
+      0
   ) {
 
     payload.indicators =
-      indicators;
+      indicatorNames;
 
-  }
+    payload.indicatorSnapshot =
+      indicatorSnapshot;
 
-  if (
-    isPlainObject(
-      richRecord
-    )
-  ) {
-
-    const richRecordId =
-      toTrimmedString(
-        richRecord.id
-      );
-
-    const fingerprint =
-      normalizeFingerprint(
-        richRecord.fingerprint
-      );
-
-    const reason =
-      toTrimmedString(
-        richRecord.reason ??
-        richRecord.snapshot?.reason
-      );
-
-    if (
-      richRecordId
+    for (
+      const [
+        key,
+        value
+      ] of Object.entries(
+        indicatorSnapshot
+      )
     ) {
 
-      payload.historyRecordId =
-        richRecordId;
+      if (
+        toFiniteNumber(
+          value
+        ) !== null
+      ) {
 
-    }
+        payload[key] =
+          value;
 
-    if (
-      fingerprint
-    ) {
-
-      payload.fingerprint =
-        fingerprint;
-
-    }
-
-    if (
-      reason
-    ) {
-
-      payload.reason =
-        reason;
+      }
 
     }
 
@@ -2859,7 +4489,8 @@ function buildLearnerOutcomePayload(
 
 function prepareClosedHistory(
   history,
-  state
+  state,
+  options = {}
 ) {
 
   const closedRecords =
@@ -2878,6 +4509,26 @@ function prepareClosedHistory(
         : []
     );
 
+  const processedVersions =
+    isPlainObject(
+      state?.processedTradeVersions
+    )
+      ? state.processedTradeVersions
+      : {};
+
+  const learningStartAt =
+    toISOStringOrNull(
+      options.learningStartAt ??
+      state?.learningStartAt
+    );
+
+  const learningStartTimestamp =
+    learningStartAt
+      ? new Date(
+          learningStartAt
+        ).getTime()
+      : null;
+
   const richRecordIndex =
     buildRichRecordIndex(
       history
@@ -2889,8 +4540,14 @@ function prepareClosedHistory(
   const duplicates =
     [];
 
+  const cutoffSkipped =
+    [];
+
   const invalid =
     [];
+
+  const seenThisRun =
+    new Map();
 
   for (
     let index = 0;
@@ -2947,21 +4604,16 @@ function prepareClosedHistory(
     const normalizedTrade =
       validation.normalized;
 
-    const tradeKey =
-      createTradeKey(
-        normalizedTrade.raw
-      );
-
     if (
-      processedKeys.has(
-        tradeKey
-      )
+      learningStartTimestamp !== null &&
+      new Date(
+        normalizedTrade.openedAt
+      ).getTime() <
+        learningStartTimestamp
     ) {
 
-      duplicates.push({
+      cutoffSkipped.push({
         index,
-
-        tradeKey,
 
         pair:
           normalizedTrade.pair,
@@ -2975,14 +4627,13 @@ function prepareClosedHistory(
         direction:
           normalizedTrade.direction,
 
-        outcome:
-          normalizedTrade.outcome,
-
         openedAt:
           normalizedTrade.openedAt,
 
         closedAt:
-          normalizedTrade.closedAt
+          normalizedTrade.closedAt,
+
+        learningStartAt
       });
 
       continue;
@@ -2995,26 +4646,196 @@ function prepareClosedHistory(
         richRecordIndex
       );
 
-    const learnerPayload =
-      buildLearnerOutcomePayload(
+    const tradeKey =
+      createTradeKey({
+        ...normalizedTrade.raw,
+
+        strategy:
+          normalizedTrade.strategy,
+
+        timeframe:
+          normalizedTrade.timeframe,
+
+        openedAt:
+          normalizedTrade.openedAt
+      });
+
+    const resolutionHash =
+      createTradeResolutionHash(
         normalizedTrade,
         richRecord
       );
 
+    const withinRunVersion =
+      seenThisRun.get(
+        tradeKey
+      );
+
+    if (
+      withinRunVersion
+    ) {
+
+      if (
+        withinRunVersion ===
+          resolutionHash
+      ) {
+
+        duplicates.push({
+          index,
+          tradeKey,
+          resolutionHash,
+          reason:
+            "DUPLICATE_WITHIN_CURRENT_HISTORY",
+          pair:
+            normalizedTrade.pair,
+          strategy:
+            normalizedTrade.strategy,
+          timeframe:
+            normalizedTrade.timeframe,
+          direction:
+            normalizedTrade.direction,
+          outcome:
+            normalizedTrade.outcome,
+          openedAt:
+            normalizedTrade.openedAt,
+          closedAt:
+            normalizedTrade.closedAt
+        });
+
+      } else {
+
+        invalid.push({
+          index,
+          pair:
+            normalizedTrade.pair,
+          engine:
+            normalizedTrade.engine,
+          openedAt:
+            normalizedTrade.openedAt,
+          closedAt:
+            normalizedTrade.closedAt,
+          errors: [
+            "Conflicting resolutions share the same immutable trade identity within analysis history."
+          ]
+        });
+
+      }
+
+      continue;
+
+    }
+
+    seenThisRun.set(
+      tradeKey,
+      resolutionHash
+    );
+
+    const previousVersion =
+      isPlainObject(
+        processedVersions[
+          tradeKey
+        ]
+      )
+        ? processedVersions[
+            tradeKey
+          ]
+        : null;
+
+    if (
+      previousVersion &&
+      previousVersion.resolutionHash ===
+        resolutionHash
+    ) {
+
+      duplicates.push({
+        index,
+        tradeKey,
+        resolutionHash,
+        reason:
+          "UNCHANGED_RESOLUTION",
+        pair:
+          normalizedTrade.pair,
+        strategy:
+          normalizedTrade.strategy,
+        timeframe:
+          normalizedTrade.timeframe,
+        direction:
+          normalizedTrade.direction,
+        outcome:
+          normalizedTrade.outcome,
+        openedAt:
+          normalizedTrade.openedAt,
+        closedAt:
+          normalizedTrade.closedAt
+      });
+
+      continue;
+
+    }
+
+    const correction =
+      Boolean(
+        previousVersion &&
+        previousVersion.resolutionHash &&
+        previousVersion.resolutionHash !==
+          resolutionHash
+      );
+
+    const migrationReplay =
+      Boolean(
+        !previousVersion &&
+        processedKeys.has(
+          tradeKey
+        )
+      );
+
+    const revision =
+      correction
+        ? Math.max(
+            2,
+            toNonNegativeInteger(
+              previousVersion.revision,
+              1
+            ) + 1
+          )
+        : 1;
+
+    const learnerPayload =
+      buildLearnerOutcomePayload(
+        normalizedTrade,
+        richRecord,
+        {
+          tradeKey,
+          resolutionHash,
+          correction,
+          revision,
+          migrationReplay,
+          correctionReason:
+            firstNonEmptyString(
+              normalizedTrade.raw
+                ?.correctionReason,
+              richRecord
+                ?.correctionReason,
+              correction
+                ? "Resolution hash changed for the same immutable opening identity."
+                : null
+            )
+        }
+      );
+
     accepted.push({
       index,
-
       tradeKey,
-
+      resolutionHash,
+      revision,
+      correction,
+      migrationReplay,
       normalizedTrade,
-
       learnerPayload,
-
       richRecordMatched:
         Boolean(
           richRecord
         ),
-
       richRecordId:
         richRecord?.id
           ? String(
@@ -3023,10 +4844,31 @@ function prepareClosedHistory(
           : null
     });
 
-    // Prevent duplicate learning within the same execution.
-    processedKeys.add(tradeKey);
-
   }
+
+  accepted.sort(
+    (
+      left,
+      right
+    ) =>
+      (
+        left.normalizedTrade.closedAt ||
+        ""
+      ).localeCompare(
+        right.normalizedTrade.closedAt ||
+        ""
+      ) ||
+      (
+        left.normalizedTrade.openedAt ||
+        ""
+      ).localeCompare(
+        right.normalizedTrade.openedAt ||
+        ""
+      ) ||
+      left.tradeKey.localeCompare(
+        right.tradeKey
+      )
+  );
 
   return {
     historyRecordsSeen:
@@ -3036,10 +4878,14 @@ function prepareClosedHistory(
 
     duplicates,
 
+    cutoffSkipped,
+
     invalid,
 
     richRecordCount:
-      richRecordIndex.records.length
+      richRecordIndex.records.length,
+
+    learningStartAt
   };
 
 }
@@ -3509,6 +5355,20 @@ function processAcceptedTrade(
       tradeKey:
         preparedTrade.tradeKey,
 
+      resolutionHash:
+        preparedTrade.resolutionHash,
+
+      revision:
+        preparedTrade.revision,
+
+      correction:
+        preparedTrade.correction ===
+          true,
+
+      migrationReplay:
+        preparedTrade.migrationReplay ===
+          true,
+
       pair:
         preparedTrade.normalizedTrade.pair,
 
@@ -3558,6 +5418,20 @@ function processAcceptedTrade(
 
       tradeKey:
         preparedTrade?.tradeKey ?? null,
+
+      resolutionHash:
+        preparedTrade?.resolutionHash ?? null,
+
+      revision:
+        preparedTrade?.revision ?? null,
+
+      correction:
+        preparedTrade?.correction ===
+          true,
+
+      migrationReplay:
+        preparedTrade?.migrationReplay ===
+          true,
 
       pair:
         preparedTrade?.normalizedTrade?.pair ?? null,
@@ -3684,11 +5558,25 @@ function commitProcessedTradeKeys(
         : []
     );
 
-  let added =
+  const versions =
+    normalizeProcessedTradeVersions(
+      state?.processedTradeVersions
+    );
+
+  let addedKeys =
+    0;
+
+  let updatedVersions =
     0;
 
   for (
-    const result of successfulResults
+    const result of (
+      Array.isArray(
+        successfulResults
+      )
+        ? successfulResults
+        : []
+    )
   ) {
 
     const tradeKey =
@@ -3697,31 +5585,113 @@ function commitProcessedTradeKeys(
       );
 
     if (
-      !tradeKey ||
-      existing.has(
-        tradeKey
-      )
+      !tradeKey
     ) {
 
       continue;
 
     }
 
-    existing.add(
-      tradeKey
-    );
+    if (
+      !existing.has(
+        tradeKey
+      )
+    ) {
 
-    added +=
-      1;
+      existing.add(
+        tradeKey
+      );
+
+      addedKeys +=
+        1;
+
+    }
+
+    const resolutionHash =
+      toTrimmedString(
+        result?.resolutionHash
+      ) || null;
+
+    const previous =
+      versions[
+        tradeKey
+      ];
+
+    if (
+      !previous ||
+      previous.resolutionHash !==
+        resolutionHash ||
+      previous.revision !==
+        Math.max(
+          1,
+          toNonNegativeInteger(
+            result?.revision,
+            1
+          )
+        )
+    ) {
+
+      versions[
+        tradeKey
+      ] = {
+        resolutionHash,
+
+        revision:
+          Math.max(
+            1,
+            toNonNegativeInteger(
+              result?.revision,
+              1
+            )
+          ),
+
+        processedAt:
+          toISOStringOrNull(
+            result?.processedAt
+          ) ||
+          new Date().toISOString(),
+
+        closedAt:
+          toISOStringOrNull(
+            result?.closedAt
+          ),
+
+        outcome:
+          normalizeOutcome(
+            result?.outcome
+          ),
+
+        historyRecordId:
+          firstNonEmptyString(
+            result?.richRecordId,
+            result?.historyRecordId
+          )
+      };
+
+      updatedVersions +=
+        1;
+
+    }
 
   }
 
   state.processedTradeKeys =
     Array.from(
       existing
+    )
+      .slice(
+        -MAX_PROCESSED_TRADE_KEYS
+      );
+
+  state.processedTradeVersions =
+    normalizeProcessedTradeVersions(
+      versions
     );
 
-  return added;
+  return {
+    addedKeys,
+    updatedVersions
+  };
 
 }
 
@@ -3764,7 +5734,16 @@ function beginLearningRun(
     learnedRecords:
       0,
 
+    correctionRecords:
+      0,
+
+    migrationReplayRecords:
+      0,
+
     duplicateRecords:
+      0,
+
+    cutoffSkippedRecords:
       0,
 
     skippedRecords:
@@ -3787,6 +5766,23 @@ function beginLearningRun(
 
     persistedLearningData:
       false,
+
+    sourceHistoryHash:
+      null,
+
+    learningStartAt:
+      state.learningStartAt ||
+      null,
+
+    learningStartSource:
+      state.learningStartSource ||
+      null,
+
+    pendingRecovery:
+      null,
+
+    downstream:
+      null,
 
     errors:
       []
@@ -3832,18 +5828,25 @@ function applyPreparationStats(
       prepared?.historyRecordsSeen
     ) || 0;
 
-  const acceptedRecords =
+  const accepted =
     Array.isArray(
       prepared?.accepted
     )
-      ? prepared.accepted.length
-      : 0;
+      ? prepared.accepted
+      : [];
 
   const duplicateRecords =
     Array.isArray(
       prepared?.duplicates
     )
       ? prepared.duplicates.length
+      : 0;
+
+  const cutoffSkippedRecords =
+    Array.isArray(
+      prepared?.cutoffSkipped
+    )
+      ? prepared.cutoffSkipped.length
       : 0;
 
   const invalidRecords =
@@ -3853,35 +5856,55 @@ function applyPreparationStats(
       ? prepared.invalid.length
       : 0;
 
+  const correctionRecords =
+    accepted.filter(
+      item =>
+        item.correction ===
+          true
+    ).length;
+
+  const migrationReplayRecords =
+    accepted.filter(
+      item =>
+        item.migrationReplay ===
+          true
+    ).length;
+
   const richRecordCount =
     toFiniteNumber(
       prepared?.richRecordCount
     ) || 0;
 
   const richRecordsMatched =
-    Array.isArray(
-      prepared?.accepted
-    )
-      ? prepared.accepted.filter(
-          item =>
-            item.richRecordMatched
-        ).length
-      : 0;
+    accepted.filter(
+      item =>
+        item.richRecordMatched
+    ).length;
 
   state.lastRun.historyRecordsSeen =
     historyRecordsSeen;
 
   state.lastRun.acceptedRecords =
-    acceptedRecords;
+    accepted.length;
+
+  state.lastRun.correctionRecords =
+    correctionRecords;
+
+  state.lastRun.migrationReplayRecords =
+    migrationReplayRecords;
 
   state.lastRun.duplicateRecords =
     duplicateRecords;
+
+  state.lastRun.cutoffSkippedRecords =
+    cutoffSkippedRecords;
 
   state.lastRun.invalidRecords =
     invalidRecords;
 
   state.lastRun.skippedRecords =
     duplicateRecords +
+    cutoffSkippedRecords +
     invalidRecords;
 
   state.lastRun.richRecordCount =
@@ -3889,6 +5912,11 @@ function applyPreparationStats(
 
   state.lastRun.richRecordsMatched =
     richRecordsMatched;
+
+  state.lastRun.learningStartAt =
+    prepared?.learningStartAt ||
+    state.learningStartAt ||
+    null;
 
   addNumericCounter(
     state.totals,
@@ -3899,13 +5927,31 @@ function applyPreparationStats(
   addNumericCounter(
     state.totals,
     "acceptedRecords",
-    acceptedRecords
+    accepted.length
+  );
+
+  addNumericCounter(
+    state.totals,
+    "correctionRecords",
+    correctionRecords
+  );
+
+  addNumericCounter(
+    state.totals,
+    "migrationReplayRecords",
+    migrationReplayRecords
   );
 
   addNumericCounter(
     state.totals,
     "duplicateRecords",
     duplicateRecords
+  );
+
+  addNumericCounter(
+    state.totals,
+    "cutoffSkippedRecords",
+    cutoffSkippedRecords
   );
 
   addNumericCounter(
@@ -3918,6 +5964,7 @@ function applyPreparationStats(
     state.totals,
     "skippedRecords",
     duplicateRecords +
+    cutoffSkippedRecords +
     invalidRecords
   );
 
@@ -4222,6 +6269,13 @@ function buildRunSummary(
       ? prepared.duplicates
       : [];
 
+  const cutoffSkipped =
+    Array.isArray(
+      prepared?.cutoffSkipped
+    )
+      ? prepared.cutoffSkipped
+      : [];
+
   const invalid =
     Array.isArray(
       prepared?.invalid
@@ -4236,26 +6290,54 @@ function buildRunSummary(
     engineVersion:
       ENGINE_VERSION,
 
+    legacyEngineVersion:
+      LEGACY_ENGINE_VERSION,
+
+    autonomousSchemaVersion:
+      AUTONOMOUS_SCHEMA_VERSION,
+
     success:
-      state?.lastRun?.success === true,
+      state?.lastRun?.success ===
+        true,
 
     startedAt:
-      state?.lastRun?.startedAt ?? null,
+      state?.lastRun?.startedAt ??
+      null,
 
     completedAt:
-      state?.lastRun?.completedAt ?? null,
+      state?.lastRun?.completedAt ??
+      null,
 
     historyRecordsSeen:
-      prepared?.historyRecordsSeen ?? 0,
+      prepared?.historyRecordsSeen ??
+      0,
 
     acceptedRecords:
-      prepared?.accepted?.length ?? 0,
+      prepared?.accepted?.length ??
+      0,
 
     learnedRecords:
       successful.length,
 
+    correctionRecords:
+      successful.filter(
+        item =>
+          item.correction ===
+            true
+      ).length,
+
+    migrationReplayRecords:
+      successful.filter(
+        item =>
+          item.migrationReplay ===
+            true
+      ).length,
+
     duplicateRecords:
       duplicates.length,
+
+    cutoffSkippedRecords:
+      cutoffSkipped.length,
 
     invalidRecords:
       invalid.length,
@@ -4263,14 +6345,29 @@ function buildRunSummary(
     failedRecords:
       failed.length,
 
+    learningStartAt:
+      state?.learningStartAt ??
+      null,
+
+    learningStartSource:
+      state?.learningStartSource ??
+      null,
+
+    sourceHistoryHash:
+      state?.lastRun
+        ?.sourceHistoryHash ??
+      null,
+
     richRecordCount:
-      prepared?.richRecordCount ?? 0,
+      prepared?.richRecordCount ??
+      0,
 
     richRecordsMatched:
       prepared?.accepted?.filter(
         item =>
           item.richRecordMatched
-      ).length ?? 0,
+      ).length ??
+      0,
 
     processedTradeKeyCount:
       Array.isArray(
@@ -4279,35 +6376,47 @@ function buildRunSummary(
         ? state.processedTradeKeys.length
         : 0,
 
+    processedTradeVersionCount:
+      Object.keys(
+        state?.processedTradeVersions ||
+        {}
+      ).length,
+
     persisted:
       Boolean(
         persistenceResult
       ),
 
-    output: persistenceResult
-      ? {
-          learningData:
-            path.relative(
-              ROOT_DIR,
-              persistenceResult.learningPath
-            ),
+    downstream:
+      state?.lastRun
+        ?.downstream ??
+      null,
 
-          confidenceData:
-            path.relative(
-              ROOT_DIR,
-              persistenceResult.confidencePath
-            ),
+    output:
+      persistenceResult
+        ? {
+            learningData:
+              path.relative(
+                ROOT_DIR,
+                persistenceResult.learningPath
+              ),
 
-          state:
-            path.relative(
-              ROOT_DIR,
-              LEARNING_STATE_PATH
-            ),
+            confidenceData:
+              path.relative(
+                ROOT_DIR,
+                persistenceResult.confidencePath
+              ),
 
-          exportedAt:
-            persistenceResult.exportedAt
-        }
-      : null,
+            state:
+              path.relative(
+                ROOT_DIR,
+                LEARNING_STATE_PATH
+              ),
+
+            exportedAt:
+              persistenceResult.exportedAt
+          }
+        : null,
 
     failures:
       failed.map(
@@ -4317,6 +6426,15 @@ function buildRunSummary(
 
           tradeKey:
             item.tradeKey,
+
+          resolutionHash:
+            item.resolutionHash,
+
+          revision:
+            item.revision,
+
+          correction:
+            item.correction,
 
           pair:
             item.pair,
@@ -4413,7 +6531,19 @@ function logRunSummary(
   );
 
   console.log(
+    `  Corrected records: ${summary.correctionRecords}`
+  );
+
+  console.log(
+    `  Migration replays: ${summary.migrationReplayRecords}`
+  );
+
+  console.log(
     `  Duplicate records: ${summary.duplicateRecords}`
+  );
+
+  console.log(
+    `  Pre-cutoff records: ${summary.cutoffSkippedRecords}`
   );
 
   console.log(
@@ -4435,6 +6565,30 @@ function logRunSummary(
   console.log(
     `  Total processed keys: ${summary.processedTradeKeyCount}`
   );
+
+  console.log(
+    `  Resolution versions: ${summary.processedTradeVersionCount}`
+  );
+
+  if (
+    summary.learningStartAt
+  ) {
+
+    console.log(
+      `  Learning cutoff: ${summary.learningStartAt} (${summary.learningStartSource || "unknown"})`
+    );
+
+  }
+
+  if (
+    summary.downstream
+  ) {
+
+    console.log(
+      `  Downstream pipeline: ${summary.downstream.success === false ? "FAILED" : summary.downstream.enabled === false ? "DISABLED" : "PASS"}`
+    );
+
+  }
 
   if (
     summary.output
@@ -4582,11 +6736,295 @@ function trySaveLearningState(
 
 }
 
+
+// -----------------------------------------------------------------------------
+// Autonomous downstream pipeline
+// -----------------------------------------------------------------------------
+
+function shouldRunDownstreamPipeline(
+  options = {}
+) {
+
+  if (
+    options.runDownstream ===
+      false
+  ) {
+
+    return false;
+
+  }
+
+  const explicitSkip =
+    parseBooleanEnvironment(
+      process.env[
+        SKIP_DOWNSTREAM_PIPELINE_ENV
+      ],
+      false
+    );
+
+  if (
+    explicitSkip ===
+      true
+  ) {
+
+    return false;
+
+  }
+
+  const explicitRun =
+    parseBooleanEnvironment(
+      process.env[
+        DOWNSTREAM_PIPELINE_ENV
+      ],
+      null
+    );
+
+  if (
+    explicitRun !==
+      null
+  ) {
+
+    return explicitRun;
+
+  }
+
+  return true;
+
+}
+
+function invokePipelineModule({
+  label,
+  modulePath,
+  exportName,
+  required
+}) {
+
+  if (
+    !fs.existsSync(
+      modulePath
+    )
+  ) {
+
+    if (
+      required
+    ) {
+
+      throw new Error(
+        `${label} module is missing: ${path.relative(
+          ROOT_DIR,
+          modulePath
+        )}`
+      );
+
+    }
+
+    return {
+      label,
+      status:
+        "SKIPPED_MISSING_MODULE",
+      required:
+        false,
+      result:
+        null
+    };
+
+  }
+
+  delete require.cache[
+    require.resolve(
+      modulePath
+    )
+  ];
+
+  const moduleApi =
+    require(
+      modulePath
+    );
+
+  const runner =
+    moduleApi?.[
+      exportName
+    ];
+
+  if (
+    typeof runner !==
+      "function"
+  ) {
+
+    throw new Error(
+      `${label} does not export ${exportName}().`
+    );
+
+  }
+
+  const result =
+    runner();
+
+  const status =
+    firstNonEmptyString(
+      result?.status,
+      result?.success ===
+        false
+        ? "FAILED"
+        : null,
+      "COMPLETED"
+    );
+
+  if (
+    status ===
+      "FAILED" ||
+    result?.success ===
+      false
+  ) {
+
+    throw new Error(
+      `${label} failed: ${
+        firstNonEmptyString(
+          result?.error,
+          result?.message
+        ) ||
+        "unknown downstream error"
+      }`
+    );
+
+  }
+
+  return {
+    label,
+    status,
+    required:
+      Boolean(
+        required
+      ),
+    result:
+      result ?? null
+  };
+
+}
+
+function runAdaptiveDownstreamPipeline(
+  options = {}
+) {
+
+  const startedAt =
+    new Date().toISOString();
+
+  if (
+    !shouldRunDownstreamPipeline(
+      options
+    )
+  ) {
+
+    return {
+      enabled:
+        false,
+
+      success:
+        true,
+
+      startedAt,
+
+      completedAt:
+        new Date().toISOString(),
+
+      stages:
+        [],
+
+      warnings: [
+        "Autonomous downstream pipeline was explicitly disabled."
+      ]
+    };
+
+  }
+
+  const stages =
+    [];
+
+  const warnings =
+    [];
+
+  const enrichmentStage =
+    invokePipelineModule({
+      label:
+        "Learning Enrichment",
+      modulePath:
+        LEARNING_ENRICHMENT_MODULE_PATH,
+      exportName:
+        "runLearningEnrichment",
+      required:
+        false
+    });
+
+  stages.push(
+    enrichmentStage
+  );
+
+  if (
+    enrichmentStage.status ===
+      "SKIPPED_MISSING_MODULE"
+  ) {
+
+    warnings.push(
+      "learning-enrichment.js is unavailable; AI Memory will run without optional enrichment."
+    );
+
+  }
+
+  stages.push(
+    invokePipelineModule({
+      label:
+        "AI Memory",
+      modulePath:
+        AI_MEMORY_MODULE_PATH,
+      exportName:
+        "runAIMemory",
+      required:
+        true
+    })
+  );
+
+  stages.push(
+    invokePipelineModule({
+      label:
+        "AI Policy Engine",
+      modulePath:
+        AI_POLICY_MODULE_PATH,
+      exportName:
+        "runAIPolicyEngine",
+      required:
+        true
+    })
+  );
+
+  return {
+    enabled:
+      true,
+
+    success:
+      true,
+
+    startedAt,
+
+    completedAt:
+      new Date().toISOString(),
+
+    stages,
+
+    warnings:
+      uniqueSortedStrings(
+        warnings
+      )
+  };
+
+}
+
 // -----------------------------------------------------------------------------
 // Full learning engine orchestration
 // -----------------------------------------------------------------------------
 
-function runLearningEngine() {
+function runLearningEngine(
+  options = {}
+) {
 
   logRunHeader();
 
@@ -4615,11 +7053,18 @@ function runLearningEngine() {
     duplicates:
       [],
 
+    cutoffSkipped:
+      [],
+
     invalid:
       [],
 
     richRecordCount:
-      0
+      0,
+
+    learningStartAt:
+      state.learningStartAt ||
+      null
   };
 
   let processing = {
@@ -4652,6 +7097,27 @@ function runLearningEngine() {
       state.lastHistoryUpdatedAt ||
       null;
 
+    const historyHash =
+      createFileContentHash(
+        ANALYSIS_HISTORY_PATH
+      );
+
+    if (
+      !historyHash
+    ) {
+
+      throw new Error(
+        "Unable to calculate analysis-history.json source hash."
+      );
+
+    }
+
+    state.sourceHashes.analysisHistory =
+      historyHash;
+
+    state.lastRun.sourceHistoryHash =
+      historyHash;
+
     console.log(
       `[learning-engine] Loaded ${history.closed.length} closed history records.`
     );
@@ -4665,13 +7131,16 @@ function runLearningEngine() {
         existingExport
       );
 
+    state.lastRun.pendingRecovery =
+      recovery;
+
     if (
       recovery.recovered
     ) {
 
       console.warn(
         recovery.matched
-          ? `[learning-engine] Recovered a completed learning transaction and committed ${recovery.committedKeys} trade keys.`
+          ? `[learning-engine] Recovered a completed learning transaction and committed ${recovery.committedKeys} trade keys / ${recovery.committedVersions} resolution versions.`
           : "[learning-engine] Cleared an incomplete learning transaction; affected trades will be retried."
       );
 
@@ -4693,6 +7162,58 @@ function runLearningEngine() {
 
     }
 
+    const autonomousConfig =
+      loadAutonomousConfig();
+
+    const cutoff =
+      resolveLearningStartAt({
+        state,
+        existingExport,
+        history:
+          history.raw,
+        autonomousConfig
+      });
+
+    if (
+      cutoff.learningStartAt
+    ) {
+
+      state.learningStartAt =
+        cutoff.learningStartAt;
+
+      state.learningStartSource =
+        cutoff.source;
+
+      state.lastRun.learningStartAt =
+        cutoff.learningStartAt;
+
+      state.lastRun.learningStartSource =
+        cutoff.source;
+
+      if (
+        cutoff.detectedFreshReset
+      ) {
+
+        console.warn(
+          `[learning-engine] Fresh empty learning outputs detected. Learning cutoff locked at ${cutoff.learningStartAt}.`
+        );
+
+      } else {
+
+        console.log(
+          `[learning-engine] Learning cutoff: ${cutoff.learningStartAt} (${cutoff.source}).`
+        );
+
+      }
+
+    } else {
+
+      console.log(
+        "[learning-engine] No learning cutoff configured; eligible historical records remain importable."
+      );
+
+    }
+
     learner =
       createLearner();
 
@@ -4707,7 +7228,8 @@ function runLearningEngine() {
         );
 
       state.lastRun.importedExistingData =
-        importResult.imported === true;
+        importResult.imported ===
+          true;
 
       console.log(
         "[learning-engine] Existing learner data imported."
@@ -4727,7 +7249,11 @@ function runLearningEngine() {
     prepared =
       prepareClosedHistory(
         history.raw,
-        state
+        state,
+        {
+          learningStartAt:
+            state.learningStartAt
+        }
       );
 
     applyPreparationStats(
@@ -4736,11 +7262,15 @@ function runLearningEngine() {
     );
 
     console.log(
-      `[learning-engine] Prepared ${prepared.accepted.length} new records.`
+      `[learning-engine] Prepared ${prepared.accepted.length} new/revised records.`
     );
 
     console.log(
-      `[learning-engine] Skipped ${prepared.duplicates.length} duplicate records.`
+      `[learning-engine] Skipped ${prepared.duplicates.length} unchanged duplicate records.`
+    );
+
+    console.log(
+      `[learning-engine] Skipped ${prepared.cutoffSkipped.length} pre-cutoff records.`
     );
 
     console.log(
@@ -4763,7 +7293,8 @@ function runLearningEngine() {
     );
 
     if (
-      processing.failed.length > 0
+      processing.failed.length >
+        0
     ) {
 
       console.warn(
@@ -4777,39 +7308,138 @@ function runLearningEngine() {
         learner
       );
 
-    /*
-     * Persist a recovery marker before writing either learning output.
-     * The marker contains the exact expected export hash and successful
-     * trade keys, but pending keys are not treated as processed.
-     */
-    state.pendingTransaction =
-      createPendingTransaction(
-        learnerExport,
-        processing.successful
-      );
+    learnerExport.metadata = {
+      ...(
+        isPlainObject(
+          learnerExport.metadata
+        )
+          ? learnerExport.metadata
+          : {}
+      ),
 
-    const pendingStateSave =
-      trySaveLearningState(
-        state
-      );
+      runner:
+        ENGINE_NAME,
 
-    if (
-      !pendingStateSave.success
-    ) {
+      runnerVersion:
+        ENGINE_VERSION,
 
-      throw pendingStateSave.error;
+      legacyRunnerVersion:
+        LEGACY_ENGINE_VERSION,
 
-    }
+      autonomousSchemaVersion:
+        AUTONOMOUS_SCHEMA_VERSION,
 
-    state =
-      pendingStateSave.state;
+      immutableIdentity:
+        true,
 
-    persistenceResult =
-      saveLearnerExport(
+      correctionAware:
+        true,
+
+      chronologicalProcessing:
+        true,
+
+      futureLeakageProtected:
+        true,
+
+      learningStartAt:
+        state.learningStartAt ||
+        null,
+
+      learningStartSource:
+        state.learningStartSource ||
+        null,
+
+      sourceHistoryHash:
+        historyHash
+    };
+
+    const existingExportHash =
+      existingExport
+        ? createLearnerExportHash(
+            existingExport
+          )
+        : null;
+
+    const learnerExportHash =
+      createLearnerExportHash(
         learnerExport
       );
 
-    const committedKeys =
+    const learningOutputChanged =
+      !existingExport ||
+      existingExportHash !==
+        learnerExportHash;
+
+    state.lastRun.outputChanged =
+      learningOutputChanged;
+
+    if (
+      learningOutputChanged
+    ) {
+
+      state.pendingTransaction =
+        createPendingTransaction(
+          learnerExport,
+          processing.successful
+        );
+
+      const pendingStateSave =
+        trySaveLearningState(
+          state
+        );
+
+      if (
+        !pendingStateSave.success
+      ) {
+
+        throw pendingStateSave.error;
+
+      }
+
+      state =
+        pendingStateSave.state;
+
+      persistenceResult =
+        {
+          ...saveLearnerExport(
+            learnerExport
+          ),
+
+          changed:
+            true,
+
+          semanticHash:
+            learnerExportHash
+        };
+
+    } else {
+
+      persistenceResult = {
+        learningPath:
+          LEARNING_DATA_PATH,
+
+        confidencePath:
+          CONFIDENCE_DATA_PATH,
+
+        exportedAt:
+          toISOStringOrNull(
+            existingExport?.exportedAt
+          ),
+
+        changed:
+          false,
+
+        semanticHash:
+          learnerExportHash
+      };
+
+      console.log(
+        "[learning-engine] Learning and confidence payloads are semantically unchanged; output rewrite skipped."
+      );
+
+    }
+
+    const commitResult =
       commitProcessedTradeKeys(
         state,
         processing.successful
@@ -4818,12 +7448,113 @@ function runLearningEngine() {
     state.pendingTransaction =
       null;
 
+    state.lastRun.persistedLearningData =
+      Boolean(
+        fs.existsSync(
+          LEARNING_DATA_PATH
+        ) &&
+        fs.existsSync(
+          CONFIDENCE_DATA_PATH
+        )
+      );
+
+    state.sourceHashes.learningData =
+      createFileContentHash(
+        LEARNING_DATA_PATH
+      );
+
+    state.sourceHashes.confidenceData =
+      createFileContentHash(
+        CONFIDENCE_DATA_PATH
+      );
+
     console.log(
-      `[learning-engine] Committed ${committedKeys} processed trade keys.`
+      `[learning-engine] Committed ${commitResult.addedKeys} trade keys and ${commitResult.updatedVersions} resolution versions.`
     );
 
-    state.lastRun.persistedLearningData =
-      true;
+    /*
+     * Commit the learning transaction before any downstream stage. A later
+     * enrichment/memory/policy error must never make successfully persisted
+     * learning appear uncommitted.
+     */
+    const committedStateSave =
+      trySaveLearningState(
+        state
+      );
+
+    if (
+      !committedStateSave.success
+    ) {
+
+      throw committedStateSave.error;
+
+    }
+
+    state =
+      committedStateSave.state;
+
+    let downstream;
+
+    try {
+
+      downstream =
+        runAdaptiveDownstreamPipeline(
+          options
+        );
+
+      state.lastRun.downstream =
+        downstream;
+
+      if (
+        downstream.enabled
+      ) {
+
+        addNumericCounter(
+          state.totals,
+          "downstreamRuns",
+          1
+        );
+
+      }
+
+    } catch (
+      downstreamError
+    ) {
+
+      addNumericCounter(
+        state.totals,
+        "downstreamRuns",
+        1
+      );
+
+      addNumericCounter(
+        state.totals,
+        "downstreamFailures",
+        1
+      );
+
+      state.lastRun.downstream = {
+        enabled:
+          true,
+
+        success:
+          false,
+
+        completedAt:
+          new Date().toISOString(),
+
+        error:
+          downstreamError instanceof
+            Error
+            ? downstreamError.message
+            : String(
+                downstreamError
+              )
+      };
+
+      throw downstreamError;
+
+    }
 
     const runErrors =
       collectRunErrors(
@@ -4832,7 +7563,13 @@ function runLearningEngine() {
       );
 
     const runSuccess =
-      processing.failed.length === 0;
+      processing.failed.length ===
+        0 &&
+      prepared.invalid.length ===
+        0 &&
+      state.lastRun.downstream
+        ?.success !==
+        false;
 
     completeLearningRun(
       state,
@@ -4874,7 +7611,9 @@ function runLearningEngine() {
     state.lastRun.persistedLearningData =
       Boolean(
         persistenceResult
-      );
+      ) ||
+      state.lastRun.persistedLearningData ===
+        true;
 
     const fatalSerialized =
       serializeError(
@@ -5024,6 +7763,8 @@ if (
 module.exports = {
   ENGINE_NAME,
   ENGINE_VERSION,
+  LEGACY_ENGINE_VERSION,
+  AUTONOMOUS_SCHEMA_VERSION,
   STATE_VERSION,
 
   paths: {
@@ -5032,14 +7773,24 @@ module.exports = {
     ANALYSIS_HISTORY_PATH,
     LEARNING_DATA_PATH,
     CONFIDENCE_DATA_PATH,
-    LEARNING_STATE_PATH
+    LEARNING_STATE_PATH,
+    AUTONOMOUS_CONFIG_PATH,
+    LEARNING_ENRICHMENT_MODULE_PATH,
+    AI_MEMORY_MODULE_PATH,
+    AI_POLICY_MODULE_PATH
   },
 
   runLearningEngine,
   executeMain,
+  runAdaptiveDownstreamPipeline,
+  shouldRunDownstreamPipeline,
+  invokePipelineModule,
 
   readJSON,
+  readJSONStrictIfExists,
   atomicWriteJSON,
+  createHash,
+  createFileContentHash,
 
   normalizePair,
   normalizeDirection,
@@ -5051,14 +7802,26 @@ module.exports = {
   validateClosedTrade,
   buildLearnerOutcomePayload,
   prepareClosedHistory,
+  extractTradeContext,
 
   buildTradeIdentitySource,
   createTradeKey,
+  buildTradeResolutionSource,
+  createTradeResolutionHash,
+  calculateResolvedClosePrice,
+  calculateProfitPoints,
 
   loadLearningState,
   saveLearningState,
   loadAnalysisHistory,
   loadExistingLearningExport,
+  loadAutonomousConfig,
+  resolveLearningStartAt,
+  countExistingLearningSignals,
+
+  createLearnerExportHash,
+  createPendingTransaction,
+  recoverPendingTransaction,
 
   createLearner,
   importExistingLearningData,
@@ -5071,8 +7834,11 @@ module.exports = {
 
   createEmptyState,
   normalizeState,
+  normalizeProcessedTradeVersions,
+  normalizePendingTransaction,
   beginLearningRun,
   completeLearningRun,
 
   buildRunSummary
 };
+

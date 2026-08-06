@@ -9,19 +9,20 @@
 // - The API key is never written to a repository file.
 // - The API key is never exposed to the browser.
 // - The API key is never included in generated JSON.
+// - Request, provider and fatal errors are centrally redacted before logging.
 //
 // Compatibility requirements:
 // - Existing functionality is retained.
 // - Existing output path is retained.
 // - Existing JSON format is retained: { price, updatedAt }.
 // - Existing GitHub Actions and frontend integration must not break.
-// - Duplicate logic is removed through reusable helpers.
-// - The same production standard used in other upgraded PipSight files
-//   is applied incrementally.
+// - Existing 15-second timeout, three total attempts and 1500ms base delay
+//   are retained.
 // -----------------------------------------------------------------------
 
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 
 // -----------------------------------------------------------------------
 // Runtime configuration
@@ -43,8 +44,14 @@ const CONFIG = Object.freeze({
   ),
 
   request: Object.freeze({
+    // maxAttempts is the authoritative meaning: three total requests/run.
+    maxAttempts: 3,
+
+    // Legacy alias retained for existing imports/tests that read this field.
     retries: 3,
+
     retryDelayMs: 1500,
+    maxRetryDelayMs: 30000,
     timeoutMs: 15000,
   }),
 });
@@ -57,11 +64,43 @@ const API_KEY = String(
 ).trim();
 
 // -----------------------------------------------------------------------
+// Structured request error
+// -----------------------------------------------------------------------
+
+class RequestError extends Error {
+  constructor(
+    message,
+    {
+      code = "REQUEST_ERROR",
+      httpStatus = null,
+      providerCode = null,
+      providerMessage = null,
+      retryable = false,
+      retryAfterMs = null,
+    } = {}
+  ) {
+    super(message);
+
+    this.name = "RequestError";
+    this.code = code;
+    this.httpStatus = httpStatus;
+    this.providerCode = providerCode;
+    this.providerMessage = providerMessage;
+    this.retryable = Boolean(retryable);
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+// -----------------------------------------------------------------------
 // Startup validation
 // -----------------------------------------------------------------------
 
-function validateStartupConfig() {
-  if (!API_KEY) {
+function validateStartupConfig(
+  {
+    apiKey = API_KEY,
+  } = {}
+) {
+  if (!String(apiKey || "").trim()) {
     throw new Error(
       `${CONFIG.apiKeyEnvName} secret is not set — ` +
       "see worker/ADD-TO-EXISTING-REPO.md"
@@ -96,11 +135,20 @@ function validateStartupConfig() {
   }
 
   if (
-    !Number.isInteger(CONFIG.request.retries) ||
-    CONFIG.request.retries < 1
+    !Number.isInteger(CONFIG.request.maxAttempts) ||
+    CONFIG.request.maxAttempts < 1
   ) {
     throw new Error(
-      "Request retries must be a positive integer"
+      "Request maxAttempts must be a positive integer"
+    );
+  }
+
+  if (
+    !Number.isInteger(CONFIG.request.retries) ||
+    CONFIG.request.retries !== CONFIG.request.maxAttempts
+  ) {
+    throw new Error(
+      "Legacy retries alias must equal request maxAttempts"
     );
   }
 
@@ -110,6 +158,15 @@ function validateStartupConfig() {
   ) {
     throw new Error(
       "Request retry delay must be a non-negative number"
+    );
+  }
+
+  if (
+    !Number.isFinite(CONFIG.request.maxRetryDelayMs) ||
+    CONFIG.request.maxRetryDelayMs < 0
+  ) {
+    throw new Error(
+      "Maximum retry delay must be a non-negative number"
     );
   }
 
@@ -133,7 +190,145 @@ function sleep(ms) {
   });
 }
 
-function buildPriceUrl() {
+function escapeRegExp(value) {
+  return String(value).replace(
+    /[.*+?^${}()|[\]\\]/g,
+    "\\$&"
+  );
+}
+
+function redactSensitiveText(
+  value,
+  {
+    apiKey = API_KEY,
+  } = {}
+) {
+  let text = String(value ?? "");
+
+  // Redact credential-like query parameters even when the current key is
+  // unavailable or the provider echoes a differently encoded value.
+  text = text.replace(
+    /([?&](?:apikey|api_key)=)[^&\s]*/gi,
+    "$1[REDACTED]"
+  );
+
+  const normalizedKey =
+    String(apiKey || "").trim();
+
+  if (normalizedKey) {
+    const candidates = new Set([
+      normalizedKey,
+      encodeURIComponent(normalizedKey),
+    ]);
+
+    for (const candidate of candidates) {
+      if (!candidate) {
+        continue;
+      }
+
+      text = text.replace(
+        new RegExp(
+          escapeRegExp(candidate),
+          "g"
+        ),
+        "[REDACTED]"
+      );
+    }
+  }
+
+  return text;
+}
+
+function normalizeError(
+  error,
+  fallbackMessage = "Unknown error"
+) {
+  if (error instanceof Error) {
+    return error;
+  }
+
+  if (
+    typeof error === "string" &&
+    error.trim()
+  ) {
+    return new Error(error);
+  }
+
+  return new Error(fallbackMessage);
+}
+
+function createRequestError(
+  message,
+  details = {}
+) {
+  return new RequestError(
+    redactSensitiveText(message),
+    {
+      ...details,
+      providerMessage:
+        details.providerMessage === null ||
+        details.providerMessage === undefined
+          ? null
+          : redactSensitiveText(
+              details.providerMessage
+            ),
+    }
+  );
+}
+
+function formatRequestError(
+  error,
+  timeoutMs
+) {
+  if (error instanceof RequestError) {
+    // Rebuild the error so every externally supplied message/property passes
+    // through the central redaction boundary.
+    return createRequestError(
+      error.message,
+      {
+        code: error.code,
+        httpStatus: error.httpStatus,
+        providerCode: error.providerCode,
+        providerMessage: error.providerMessage,
+        retryable: error.retryable,
+        retryAfterMs: error.retryAfterMs,
+      }
+    );
+  }
+
+  if (
+    error &&
+    typeof error === "object" &&
+    error.name === "AbortError"
+  ) {
+    return createRequestError(
+      `Timed out after ${timeoutMs}ms`,
+      {
+        code: "TIMEOUT",
+        retryable: true,
+      }
+    );
+  }
+
+  const normalized = normalizeError(
+    error,
+    "Unknown request error"
+  );
+
+  return createRequestError(
+    normalized.message,
+    {
+      code: "NETWORK_ERROR",
+      retryable: true,
+    }
+  );
+}
+
+function buildPriceUrl(
+  {
+    apiKey = API_KEY,
+  } = {}
+) {
   const url = new URL(
     "/price",
     CONFIG.apiBaseUrl
@@ -146,38 +341,239 @@ function buildPriceUrl() {
 
   url.searchParams.set(
     "apikey",
-    API_KEY
+    String(apiKey || "").trim()
   );
 
   return url;
 }
 
-function normalizeError(error, fallbackMessage = "Unknown error") {
-  if (error instanceof Error) {
-    return error;
-  }
-
-  if (typeof error === "string" && error.trim()) {
-    return new Error(error);
-  }
-
-  return new Error(fallbackMessage);
+function isRetryableHttpStatus(status) {
+  return (
+    status === 408 ||
+    status === 425 ||
+    status === 429 ||
+    (
+      status >= 500 &&
+      status <= 599
+    )
+  );
 }
 
-function formatRequestError(error, timeoutMs) {
-  if (
-    error &&
-    typeof error === "object" &&
-    error.name === "AbortError"
-  ) {
-    return new Error(
-      `Timed out after ${timeoutMs}ms`
-    );
+function parseRetryAfter(
+  value,
+  referenceTimeMs = Date.now()
+) {
+  const normalized =
+    String(value || "").trim();
+
+  if (!normalized) {
+    return null;
   }
 
-  return normalizeError(
-    error,
-    "Unknown request error"
+  if (/^\d+(?:\.\d+)?$/.test(normalized)) {
+    const seconds = Number(normalized);
+
+    if (
+      !Number.isFinite(seconds) ||
+      seconds < 0
+    ) {
+      return null;
+    }
+
+    return Math.ceil(seconds * 1000);
+  }
+
+  const retryAt = Date.parse(normalized);
+
+  if (!Number.isFinite(retryAt)) {
+    return null;
+  }
+
+  return Math.max(
+    0,
+    retryAt - referenceTimeMs
+  );
+}
+
+function boundRetryDelay(
+  delayMs,
+  maxRetryDelayMs
+) {
+  if (
+    !Number.isFinite(delayMs) ||
+    delayMs < 0
+  ) {
+    return null;
+  }
+
+  return Math.min(
+    Math.ceil(delayMs),
+    maxRetryDelayMs
+  );
+}
+
+function safeParseJson(text) {
+  const normalized = String(text || "");
+
+  if (!normalized.trim()) {
+    return {
+      parsed: false,
+      value: null,
+      error: new Error("Response body was empty"),
+    };
+  }
+
+  try {
+    return {
+      parsed: true,
+      value: JSON.parse(normalized),
+      error: null,
+    };
+  } catch (error) {
+    return {
+      parsed: false,
+      value: null,
+      error: normalizeError(
+        error,
+        "Invalid JSON"
+      ),
+    };
+  }
+}
+
+function getProviderErrorDetails(data) {
+  if (
+    !data ||
+    typeof data !== "object" ||
+    Array.isArray(data)
+  ) {
+    return null;
+  }
+
+  const status = String(
+    data.status || ""
+  )
+    .trim()
+    .toLowerCase();
+
+  const numericCode = Number(data.code);
+  const providerCode =
+    Number.isFinite(numericCode)
+      ? numericCode
+      : (
+          data.code === null ||
+          data.code === undefined ||
+          data.code === ""
+            ? null
+            : String(data.code)
+        );
+
+  const providerMessage =
+    typeof data.message === "string"
+      ? data.message.trim()
+      : "";
+
+  const isError =
+    status === "error" ||
+    (
+      typeof providerCode === "number" &&
+      providerCode >= 400
+    );
+
+  if (!isError) {
+    return null;
+  }
+
+  return {
+    providerCode,
+    providerMessage:
+      providerMessage ||
+      `${CONFIG.provider} returned an API error`,
+  };
+}
+
+function getProviderErrorMessage(data) {
+  const details =
+    getProviderErrorDetails(data);
+
+  return details
+    ? redactSensitiveText(
+        details.providerMessage
+      )
+    : null;
+}
+
+function buildHttpError(
+  response,
+  responseText,
+  referenceTimeMs = Date.now()
+) {
+  const parsedBody =
+    safeParseJson(responseText);
+
+  const providerDetails =
+    parsedBody.parsed
+      ? getProviderErrorDetails(
+          parsedBody.value
+        )
+      : null;
+
+  const fallbackBodyMessage =
+    !parsedBody.parsed &&
+    String(responseText || "").trim()
+      ? String(responseText).trim().slice(0, 300)
+      : null;
+
+  const providerMessage =
+    providerDetails?.providerMessage ||
+    fallbackBodyMessage ||
+    response.statusText ||
+    "HTTP error";
+
+  const retryAfterMs =
+    parseRetryAfter(
+      response.headers.get("retry-after"),
+      referenceTimeMs
+    );
+
+  return createRequestError(
+    `${CONFIG.provider} request failed ` +
+    `(${response.status} ${providerMessage})`,
+    {
+      code: "HTTP_ERROR",
+      httpStatus: response.status,
+      providerCode:
+        providerDetails?.providerCode ??
+        null,
+      providerMessage,
+      retryable:
+        isRetryableHttpStatus(
+          response.status
+        ),
+      retryAfterMs,
+    }
+  );
+}
+
+function resolveRetryDelay(
+  error,
+  attempt,
+  retryDelayMs,
+  maxRetryDelayMs
+) {
+  const providerDelay =
+    boundRetryDelay(
+      error?.retryAfterMs,
+      maxRetryDelayMs
+    );
+
+  if (providerDelay !== null) {
+    return providerDelay;
+  }
+
+  return boundRetryDelay(
+    retryDelayMs * attempt,
+    maxRetryDelayMs
   );
 }
 
@@ -185,29 +581,55 @@ function formatRequestError(error, timeoutMs) {
 // HTTP request and retry engine
 // -----------------------------------------------------------------------
 
-// Fetches JSON with:
-// - Per-request timeout.
-// - Incremental retry backoff.
-// - Clear HTTP/provider errors.
-// - No API key logging.
-// - Existing retry behavior retained.
+// Retries only transient failures:
+// - Network errors and timeouts.
+// - HTTP 408, 425, 429 and 5xx.
+// Permanent HTTP errors, invalid JSON/content type and invalid provider
+// payloads fail immediately.
 async function fetchJsonWithRetry(
   url,
-  {
-    retries = CONFIG.request.retries,
-    retryDelayMs = CONFIG.request.retryDelayMs,
-    timeoutMs = CONFIG.request.timeoutMs,
-  } = {}
+  options = {}
 ) {
-  if (!(url instanceof URL) && typeof url !== "string") {
+  if (
+    !(url instanceof URL) &&
+    typeof url !== "string"
+  ) {
     throw new TypeError(
       "fetchJsonWithRetry requires a URL or URL string"
     );
   }
 
-  if (!Number.isInteger(retries) || retries < 1) {
+  const maxAttempts =
+    options.maxAttempts ??
+    options.retries ??
+    CONFIG.request.maxAttempts;
+
+  const retryDelayMs =
+    options.retryDelayMs ??
+    CONFIG.request.retryDelayMs;
+
+  const maxRetryDelayMs =
+    options.maxRetryDelayMs ??
+    CONFIG.request.maxRetryDelayMs;
+
+  const timeoutMs =
+    options.timeoutMs ??
+    CONFIG.request.timeoutMs;
+
+  const fetchImpl =
+    options.fetchImpl ??
+    globalThis.fetch;
+
+  const sleepImpl =
+    options.sleepImpl ??
+    sleep;
+
+  if (
+    !Number.isInteger(maxAttempts) ||
+    maxAttempts < 1
+  ) {
     throw new TypeError(
-      "Retry count must be a positive integer"
+      "maxAttempts must be a positive integer"
     );
   }
 
@@ -221,6 +643,15 @@ async function fetchJsonWithRetry(
   }
 
   if (
+    !Number.isFinite(maxRetryDelayMs) ||
+    maxRetryDelayMs < 0
+  ) {
+    throw new TypeError(
+      "Maximum retry delay must be a non-negative number"
+    );
+  }
+
+  if (
     !Number.isFinite(timeoutMs) ||
     timeoutMs <= 0
   ) {
@@ -229,59 +660,114 @@ async function fetchJsonWithRetry(
     );
   }
 
+  if (typeof fetchImpl !== "function") {
+    throw new TypeError(
+      "A valid fetch implementation is required"
+    );
+  }
+
+  if (typeof sleepImpl !== "function") {
+    throw new TypeError(
+      "A valid sleep implementation is required"
+    );
+  }
+
   let lastError = null;
 
   for (
     let attempt = 1;
-    attempt <= retries;
+    attempt <= maxAttempts;
     attempt += 1
   ) {
-    const controller = new AbortController();
+    const controller =
+      new AbortController();
 
-    const timeoutHandle = setTimeout(() => {
-      controller.abort();
-    }, timeoutMs);
+    const timeoutHandle = setTimeout(
+      () => {
+        controller.abort();
+      },
+      timeoutMs
+    );
 
     try {
-      const response = await fetch(url, {
-        method: "GET",
+      const response = await fetchImpl(
+        url,
+        {
+          method: "GET",
 
-        headers: {
-          Accept: "application/json",
-          "User-Agent": "PipSight-Robot/1.0",
-        },
+          headers: {
+            Accept: "application/json",
+            "User-Agent": "PipSight-Robot/1.0",
+          },
 
-        signal: controller.signal,
-      });
+          signal: controller.signal,
+        }
+      );
+
+      if (
+        !response ||
+        typeof response !== "object" ||
+        typeof response.text !== "function" ||
+        !response.headers ||
+        typeof response.headers.get !== "function"
+      ) {
+        throw createRequestError(
+          `${CONFIG.provider} returned an invalid HTTP response object`,
+          {
+            code: "INVALID_HTTP_RESPONSE",
+            retryable: false,
+          }
+        );
+      }
+
+      const responseText =
+        await response.text();
 
       if (!response.ok) {
-        throw new Error(
-          `${CONFIG.provider} request failed ` +
-          `(${response.status} ${response.statusText || "HTTP error"})`
+        throw buildHttpError(
+          response,
+          responseText
         );
       }
 
       const contentType = String(
-        response.headers.get("content-type") || ""
+        response.headers.get("content-type") ||
+        ""
       ).toLowerCase();
 
       if (
         contentType &&
-        !contentType.includes("application/json")
+        !contentType.includes(
+          "application/json"
+        )
       ) {
-        throw new Error(
-          `${CONFIG.provider} returned an unexpected content type`
+        throw createRequestError(
+          `${CONFIG.provider} returned an unexpected content type`,
+          {
+            code: "INVALID_CONTENT_TYPE",
+            retryable: false,
+          }
         );
       }
 
-      try {
-        return await response.json();
-      } catch (error) {
-        throw new Error(
+      const parsedBody =
+        safeParseJson(responseText);
+
+      if (!parsedBody.parsed) {
+        throw createRequestError(
           `${CONFIG.provider} returned invalid JSON: ` +
-          normalizeError(error).message
+          redactSensitiveText(
+            parsedBody.error?.message ||
+            "Invalid JSON"
+          ),
+          {
+            code: "INVALID_JSON",
+            retryable: false,
+          }
         );
       }
+
+      return parsedBody.value;
     } catch (error) {
       lastError = formatRequestError(
         error,
@@ -289,20 +775,33 @@ async function fetchJsonWithRetry(
       );
 
       console.warn(
-        `  attempt ${attempt}/${retries} failed: ` +
-        lastError.message
+        `  attempt ${attempt}/${maxAttempts} failed: ` +
+        redactSensitiveText(
+          lastError.message
+        )
       );
 
-      if (attempt < retries) {
-        const delayMs =
-          retryDelayMs * attempt;
+      const shouldRetry =
+        lastError.retryable === true &&
+        attempt < maxAttempts;
 
-        console.warn(
-          `  retrying in ${delayMs}ms`
+      if (!shouldRetry) {
+        throw lastError;
+      }
+
+      const delayMs =
+        resolveRetryDelay(
+          lastError,
+          attempt,
+          retryDelayMs,
+          maxRetryDelayMs
         );
 
-        await sleep(delayMs);
-      }
+      console.warn(
+        `  retrying in ${delayMs}ms`
+      );
+
+      await sleepImpl(delayMs);
     } finally {
       clearTimeout(timeoutHandle);
     }
@@ -310,8 +809,12 @@ async function fetchJsonWithRetry(
 
   throw (
     lastError ||
-    new Error(
-      `${CONFIG.provider} request failed after all retries`
+    createRequestError(
+      `${CONFIG.provider} request failed after all attempts`,
+      {
+        code: "REQUEST_FAILED",
+        retryable: false,
+      }
     )
   );
 }
@@ -320,66 +823,74 @@ async function fetchJsonWithRetry(
 // Twelve Data response validation
 // -----------------------------------------------------------------------
 
-function getProviderErrorMessage(data) {
-  if (!data || typeof data !== "object") {
+function parseStrictPositivePrice(value) {
+  let price = null;
+
+  if (
+    typeof value === "number"
+  ) {
+    price = value;
+  } else if (
+    typeof value === "string" &&
+    value.trim()
+  ) {
+    price = Number(value.trim());
+  }
+
+  if (
+    !Number.isFinite(price) ||
+    price <= 0
+  ) {
     return null;
   }
 
-  const status = String(
-    data.status || ""
-  ).toLowerCase();
-
-  const code = data.code;
-
-  const message =
-    typeof data.message === "string"
-      ? data.message.trim()
-      : "";
-
-  if (
-    status === "error" ||
-    code === 400 ||
-    code === 401 ||
-    code === 403 ||
-    code === 404 ||
-    code === 429
-  ) {
-    return (
-      message ||
-      `${CONFIG.provider} returned an API error`
-    );
-  }
-
-  return null;
+  return price;
 }
 
 function parseLivePrice(data) {
-  if (!data || typeof data !== "object") {
-    throw new Error(
-      `${CONFIG.provider} returned an invalid response`
+  if (
+    !data ||
+    typeof data !== "object" ||
+    Array.isArray(data)
+  ) {
+    throw createRequestError(
+      `${CONFIG.provider} returned an invalid response`,
+      {
+        code: "INVALID_PROVIDER_PAYLOAD",
+        retryable: false,
+      }
     );
   }
 
-  const providerError =
-    getProviderErrorMessage(data);
+  const providerDetails =
+    getProviderErrorDetails(data);
 
-  if (providerError) {
-    throw new Error(providerError);
-  }
-
-  const price = Number.parseFloat(
-    data.price
-  );
-
-  if (!Number.isFinite(price)) {
-    throw new Error(
-      `${CONFIG.provider} response did not contain a valid price`
+  if (providerDetails) {
+    throw createRequestError(
+      providerDetails.providerMessage,
+      {
+        code: "PROVIDER_ERROR",
+        providerCode:
+          providerDetails.providerCode,
+        providerMessage:
+          providerDetails.providerMessage,
+        retryable: false,
+      }
     );
   }
 
-  if (price <= 0) {
-    throw new Error(
-      `${CONFIG.provider} returned a non-positive price`
+  const price =
+    parseStrictPositivePrice(
+      data.price
+    );
+
+  if (price === null) {
+    throw createRequestError(
+      `${CONFIG.provider} response did not contain a valid positive price`,
+      {
+        code: "INVALID_LIVE_PRICE",
+        retryable: false,
+      }
     );
   }
 
@@ -390,21 +901,31 @@ function parseLivePrice(data) {
 // Output validation and atomic JSON writing
 // -----------------------------------------------------------------------
 
-function createOutputPayload(price) {
-  if (!Number.isFinite(price) || price <= 0) {
-    throw new TypeError(
-      "Output price must be a positive finite number"
+function normalizeOutputTimestamp(value) {
+  const date =
+    value instanceof Date
+      ? new Date(value.getTime())
+      : new Date(value);
+
+  if (!Number.isFinite(date.getTime())) {
+    throw new Error(
+      "Failed to generate a valid updatedAt timestamp"
     );
   }
 
-  const updatedAt = new Date().toISOString();
+  return date.toISOString();
+}
 
+function createOutputPayload(
+  price,
+  updatedAt = new Date()
+) {
   if (
-    typeof updatedAt !== "string" ||
-    Number.isNaN(Date.parse(updatedAt))
+    !Number.isFinite(price) ||
+    price <= 0
   ) {
-    throw new Error(
-      "Failed to generate a valid updatedAt timestamp"
+    throw new TypeError(
+      "Output price must be a positive finite number"
     );
   }
 
@@ -412,7 +933,10 @@ function createOutputPayload(price) {
   // Do not add, rename, or remove fields without updating all consumers.
   return {
     price,
-    updatedAt,
+    updatedAt:
+      normalizeOutputTimestamp(
+        updatedAt
+      ),
   };
 }
 
@@ -449,13 +973,23 @@ function validateOutputPayload(payload) {
   }
 
   if (
-    typeof payload.updatedAt !== "string" ||
-    Number.isNaN(
-      Date.parse(payload.updatedAt)
-    )
+    typeof payload.updatedAt !== "string"
   ) {
     throw new Error(
       "Output payload contains an invalid updatedAt timestamp"
+    );
+  }
+
+  const timestamp =
+    Date.parse(payload.updatedAt);
+
+  if (
+    !Number.isFinite(timestamp) ||
+    new Date(timestamp).toISOString() !==
+      payload.updatedAt
+  ) {
+    throw new Error(
+      "Output payload updatedAt must be an exact ISO-8601 timestamp"
     );
   }
 
@@ -474,7 +1008,9 @@ function serializeOutputPayload(payload) {
   } catch (error) {
     throw new Error(
       "Failed to serialize live-price output: " +
-      normalizeError(error).message
+      redactSensitiveText(
+        normalizeError(error).message
+      )
     );
   }
 }
@@ -492,10 +1028,28 @@ function ensureOutputDirectory(outputPath) {
     );
   } catch (error) {
     throw new Error(
-      `Failed to create output directory: ` +
-      normalizeError(error).message
+      "Failed to create output directory: " +
+      redactSensitiveText(
+        normalizeError(error).message
+      )
     );
   }
+}
+
+function createTemporaryOutputPath(
+  outputPath
+) {
+  const nonce =
+    typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : crypto
+          .randomBytes(16)
+          .toString("hex");
+
+  return (
+    `${outputPath}.tmp-` +
+    `${process.pid}-${Date.now()}-${nonce}`
+  );
 }
 
 function writeJsonAtomic(
@@ -512,12 +1066,14 @@ function writeJsonAtomic(
   }
 
   const json =
-    serializeOutputPayload(payload);
+    `${serializeOutputPayload(payload)}\n`;
 
   ensureOutputDirectory(outputPath);
 
   const temporaryPath =
-    `${outputPath}.tmp-${process.pid}-${Date.now()}`;
+    createTemporaryOutputPath(
+      outputPath
+    );
 
   try {
     fs.writeFileSync(
@@ -525,7 +1081,8 @@ function writeJsonAtomic(
       json,
       {
         encoding: "utf8",
-        flag: "w",
+        flag: "wx",
+        mode: 0o600,
       }
     );
 
@@ -545,25 +1102,38 @@ function writeJsonAtomic(
     } catch (cleanupError) {
       console.warn(
         "  temporary output cleanup failed: " +
-        normalizeError(
-          cleanupError
-        ).message
+        redactSensitiveText(
+          normalizeError(
+            cleanupError
+          ).message
+        )
       );
     }
 
     throw new Error(
       `Failed to write ${path.basename(outputPath)}: ` +
-      normalizeError(error).message
+      redactSensitiveText(
+        normalizeError(error).message
+      )
     );
   }
 }
 
-function writeLivePriceOutput(price) {
+function writeLivePriceOutput(
+  price,
+  {
+    updatedAt = new Date(),
+    outputPath = CONFIG.outputPath,
+  } = {}
+) {
   const payload =
-    createOutputPayload(price);
+    createOutputPayload(
+      price,
+      updatedAt
+    );
 
   writeJsonAtomic(
-    CONFIG.outputPath,
+    outputPath,
     payload
   );
 
@@ -574,34 +1144,66 @@ function writeLivePriceOutput(price) {
 // Main execution flow
 // -----------------------------------------------------------------------
 
-async function fetchLivePrice() {
+async function fetchLivePrice(
+  options = {}
+) {
   const requestUrl =
-    buildPriceUrl();
+    buildPriceUrl({
+      apiKey:
+        options.apiKey ??
+        API_KEY,
+    });
 
   const data =
     await fetchJsonWithRetry(
       requestUrl,
-      CONFIG.request
+      {
+        ...CONFIG.request,
+        ...options,
+      }
     );
 
-  return parseLivePrice(
-    data
-  );
+  return parseLivePrice(data);
 }
 
-async function main() {
-  validateStartupConfig();
+async function main(
+  options = {}
+) {
+  const apiKey =
+    options.apiKey ??
+    API_KEY;
+
+  validateStartupConfig({
+    apiKey,
+  });
 
   console.log(
     `Fetching live ${CONFIG.symbol} price from ${CONFIG.provider}...`
   );
 
   const price =
-    await fetchLivePrice();
+    await fetchLivePrice({
+      ...options,
+      apiKey,
+    });
+
+  // This timestamp represents successful local receipt and validation of the
+  // provider price. No provider timestamp is fabricated.
+  const successfulFetchTime =
+    typeof options.nowImpl === "function"
+      ? options.nowImpl()
+      : new Date();
 
   const output =
     writeLivePriceOutput(
-      price
+      price,
+      {
+        updatedAt:
+          successfulFetchTime,
+        outputPath:
+          options.outputPath ??
+          CONFIG.outputPath,
+      }
     );
 
   console.log(
@@ -625,7 +1227,9 @@ function logFatalError(error) {
 
   console.error(
     `[${CONFIG.symbol}] live tick update failed: ` +
-    normalizedError.message
+    redactSensitiveText(
+      normalizedError.message
+    )
   );
 
   if (
@@ -633,66 +1237,76 @@ function logFatalError(error) {
     normalizedError.stack
   ) {
     console.error(
-      normalizedError.stack
+      redactSensitiveText(
+        normalizedError.stack
+      )
     );
   }
 }
 
+// -----------------------------------------------------------------------
+// Direct-execution guard
+// -----------------------------------------------------------------------
 
+// Run the worker only when this file is executed directly:
+//
+//   node fetch-gbpjpy-live.js
+//
+// Importing this file from tests or another worker will not accidentally
+// call Twelve Data or overwrite the existing JSON output.
+if (require.main === module) {
+  main().catch((error) => {
+    logFatalError(error);
 
- // -----------------------------------------------------------------------
- // Direct-execution guard
- // -----------------------------------------------------------------------
+    // GitHub Actions receives a non-zero exit status when all transient
+    // attempts, permanent validation, or output writing fail.
+    process.exitCode = 1;
+  });
+}
 
- // Run the worker only when this file is executed directly:
- //
- //   // node fetch-gbpjpy-live.js
- //
- // Importing this file from tests or another worker will not accidentally
- // call Twelve Data or overwrite the existing JSON output.
- if (require.main === module) {
-   main().catch((error) => {
-     logFatalError(error);
+// -----------------------------------------------------------------------
+// Test and integration exports
+// -----------------------------------------------------------------------
 
-     // Existing failure behavior is retained:
-     // GitHub Actions receives a non-zero exit status when all retries,
-     // validation, or output writing fail.
-     process.exitCode = 1;
-   });
- }
+// Existing exports remain available. New helpers are additive and allow
+// deterministic unit testing without changing direct production behavior.
+module.exports = Object.freeze({
+  CONFIG,
+  RequestError,
 
- // -----------------------------------------------------------------------
- // Test and integration exports
- // -----------------------------------------------------------------------
+  validateStartupConfig,
 
- // Exporting internal helpers does not change direct script behavior.
- // These exports allow future unit tests and other server-side workers to
- // reuse the validated logic without duplicating implementation.
- //
- // Existing integrations that execute this file directly remain unchanged.
- module.exports = Object.freeze({
-   CONFIG,
+  sleep,
+  escapeRegExp,
+  redactSensitiveText,
+  normalizeError,
+  createRequestError,
+  formatRequestError,
+  buildPriceUrl,
+  isRetryableHttpStatus,
+  parseRetryAfter,
+  boundRetryDelay,
+  safeParseJson,
+  getProviderErrorDetails,
+  buildHttpError,
+  resolveRetryDelay,
 
-   validateStartupConfig,
+  fetchJsonWithRetry,
 
-   sleep,
-   buildPriceUrl,
-   normalizeError,
-   formatRequestError,
+  getProviderErrorMessage,
+  parseStrictPositivePrice,
+  parseLivePrice,
 
-   fetchJsonWithRetry,
+  normalizeOutputTimestamp,
+  createOutputPayload,
+  validateOutputPayload,
+  serializeOutputPayload,
+  ensureOutputDirectory,
+  createTemporaryOutputPath,
+  writeJsonAtomic,
+  writeLivePriceOutput,
 
-   getProviderErrorMessage,
-   parseLivePrice,
-
-   createOutputPayload,
-   validateOutputPayload,
-   serializeOutputPayload,
-   ensureOutputDirectory,
-   writeJsonAtomic,
-   writeLivePriceOutput,
-
-   fetchLivePrice,
-   main,
-   logFatalError,
- });
+  fetchLivePrice,
+  main,
+  logFatalError,
+});

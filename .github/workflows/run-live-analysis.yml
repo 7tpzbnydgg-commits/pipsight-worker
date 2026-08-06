@@ -9,11 +9,11 @@ permissions:
 concurrency:
   group: pipsight-analysis-writes-${{ github.ref }}
   cancel-in-progress: false
-  queue: max
 
 env:
   PIPSIGHT_TELEGRAM_MODES: "master,swing,intraday,scalp"
   PIPSIGHT_TELEGRAM_NOTIFY_HOLD: "false"
+  PIPSIGHT_POLICY_REFRESH_MINUTES: "120"
 
 jobs:
   analyze:
@@ -38,47 +38,356 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Verify fixed live-analysis engine
+      - name: Verify autonomous live-analysis stack
         run: |
           set -euo pipefail
 
-          test -s "run-live-analysis.js"
-          node --check "run-live-analysis.js"
+          required_files=(
+            "run-live-analysis.js"
+            "run-learning-engine.js"
+            "learner.js"
+            "ai-memory.js"
+            "ai-policy-engine.js"
+            "ai-decision-engine.js"
+            "ai-safety-gate.js"
+            "data/autonomous-config.json"
+            "data/analysis-history.json"
+          )
+
+          for file in "${required_files[@]}"; do
+            if [[ ! -s "$file" ]]; then
+              echo "::error file=$file::Required autonomous recovery file is missing or empty."
+              exit 1
+            fi
+          done
+
+          scripts=(
+            "run-live-analysis.js"
+            "run-learning-engine.js"
+            "learner.js"
+            "ai-memory.js"
+            "ai-policy-engine.js"
+            "ai-decision-engine.js"
+            "ai-safety-gate.js"
+          )
+
+          for script in "${scripts[@]}"; do
+            node --check "$script"
+          done
 
           node <<'NODE'
           "use strict";
 
-          const live =
-            require("./run-live-analysis.js");
+          const fs = require("fs");
+          const live = require("./run-live-analysis.js");
+          const policy = require("./ai-policy-engine.js");
+          const decision = require("./ai-decision-engine.js");
+          const safety = require("./ai-safety-gate.js");
+
+          const probe = live.buildLiveAnalysisOutput({
+            pairs: [],
+            generatedAt: "2026-01-01T00:00:00.000Z",
+            timestamp: Date.parse("2026-01-01T00:00:00.000Z")
+          });
 
           if (
-            typeof live.buildLiveAnalysisOutput !==
-              "function"
+            probe.engineVersion !== "1.4.2-pro" ||
+            live.AUTONOMOUS_LIVE_VERSION !== "1.4.0" ||
+            policy.ENGINE_VERSION !== "1.4.0" ||
+            decision.ENGINE_VERSION !== "1.4.0" ||
+            safety.ENGINE_VERSION !== "1.4.0" ||
+            typeof live.applyAutonomousControlToOutput !== "function"
           ) {
-            throw new Error(
-              "run-live-analysis.js does not expose the expected production API."
-            );
+            throw new Error("Autonomous live-analysis stack version/API validation failed.");
           }
 
-          const probe =
-            live.buildLiveAnalysisOutput({
-              pairs: [],
-              generatedAt:
-                "2026-01-01T00:00:00.000Z",
-              timestamp:
-                Date.parse(
-                  "2026-01-01T00:00:00.000Z"
-                )
-            });
+          const config = JSON.parse(
+            fs.readFileSync("data/autonomous-config.json", "utf8")
+          );
 
-          if (probe.engineVersion !== "1.4.2-pro") {
-            throw new Error(
-              `run-live-analysis.js version ${probe.engineVersion} is unsupported; expected 1.4.2-pro.`
-            );
+          if (
+            config.configVersion !== "1.4.0" ||
+            config.riskSafetyGate?.immutable !== true ||
+            config.deployment?.allowRuntimeSelfPromotion !== false
+          ) {
+            throw new Error("Autonomous configuration governance validation failed.");
+          }
+
+          console.log("Autonomous Live Analysis compatibility check passed.");
+          NODE
+
+
+      - name: Prepare or recover autonomous policy snapshot
+        id: autonomous-policy
+        run: |
+          set -euo pipefail
+
+          adaptive_sources=(
+            "data/learning-data.json"
+            "data/confidence-data.json"
+            "data/learning-engine-state.json"
+            "data/ai-memory.json"
+            "data/ai-memory-state.json"
+          )
+
+          bootstrap=false
+
+          for file in "${adaptive_sources[@]}"; do
+            if [[ ! -s "$file" ]]; then
+              echo "Adaptive source is missing or empty: $file"
+              bootstrap=true
+            fi
+          done
+
+          if [[ "$bootstrap" == "true" ]]; then
+            echo "Bootstrapping the learning, AI Memory and AI Policy chain."
+            node run-learning-engine.js
+          fi
+
+          refresh_env="${RUNNER_TEMP}/autonomous-policy-refresh.env"
+
+          node > "$refresh_env" <<'NODE'
+          "use strict";
+
+          const fs = require("fs");
+          const crypto = require("crypto");
+
+          const refreshMinutes = Math.max(
+            1,
+            Number(process.env.PIPSIGHT_POLICY_REFRESH_MINUTES || 120)
+          );
+
+          function readObject(filePath) {
+            if (!fs.existsSync(filePath)) {
+              return null;
+            }
+
+            const raw = fs.readFileSync(filePath, "utf8").trim();
+            return raw ? JSON.parse(raw) : null;
+          }
+
+          function hashFile(filePath) {
+            return crypto
+              .createHash("sha256")
+              .update(fs.readFileSync(filePath))
+              .digest("hex");
+          }
+
+          const sourcePaths = {
+            autonomousConfig: "data/autonomous-config.json",
+            learningData: "data/learning-data.json",
+            confidenceData: "data/confidence-data.json",
+            aiMemory: "data/ai-memory.json"
+          };
+
+          const policy = readObject("data/ai-policy.json");
+          const state = readObject("data/ai-policy-state.json");
+          const reasons = [];
+          let forceRefresh = false;
+
+          if (!policy) {
+            reasons.push("policy-missing");
+          }
+
+          if (!state) {
+            reasons.push("policy-state-missing");
+          } else if (state.pendingTransaction) {
+            reasons.push("pending-policy-transaction");
+          }
+
+          if (policy) {
+            const generatedAt = Date.parse(policy.generatedAt || "");
+            const ageMs = Date.now() - generatedAt;
+
+            if (!Number.isFinite(generatedAt)) {
+              reasons.push("policy-generatedAt-invalid");
+              forceRefresh = true;
+            } else if (ageMs > refreshMinutes * 60 * 1000) {
+              reasons.push("policy-refresh-margin-reached");
+              forceRefresh = true;
+            } else if (ageMs < -60 * 1000) {
+              reasons.push("policy-future-dated");
+              forceRefresh = true;
+            }
+
+            for (const [key, filePath] of Object.entries(sourcePaths)) {
+              if (!fs.existsSync(filePath)) {
+                reasons.push(`source-missing-${key}`);
+                continue;
+              }
+
+              const expected = hashFile(filePath);
+              const actual = policy.source?.[key]?.hash;
+
+              if (actual !== expected) {
+                reasons.push(`source-hash-mismatch-${key}`);
+                forceRefresh = false;
+              }
+            }
+          }
+
+          const refresh = reasons.length > 0;
+          console.log(`POLICY_REFRESH=${refresh ? "true" : "false"}`);
+          console.log(`POLICY_FORCE_REFRESH=${forceRefresh && policy ? "true" : "false"}`);
+          console.log(`POLICY_REFRESH_REASON=${reasons.join(",") || "current"}`);
+          NODE
+
+          # Values are generated internally as fixed booleans and comma-separated identifiers.
+          source "$refresh_env"
+
+          echo "refresh=$POLICY_REFRESH" >> "$GITHUB_OUTPUT"
+          echo "force_refresh=$POLICY_FORCE_REFRESH" >> "$GITHUB_OUTPUT"
+          echo "reason=$POLICY_REFRESH_REASON" >> "$GITHUB_OUTPUT"
+
+          if [[ "$POLICY_REFRESH" != "true" ]]; then
+            echo "AI Policy snapshot is current."
+            exit 0
+          fi
+
+          echo "Refreshing AI Policy snapshot: $POLICY_REFRESH_REASON"
+
+          policy_backup="${RUNNER_TEMP}/ai-policy.backup.json"
+          state_backup="${RUNNER_TEMP}/ai-policy-state.backup.json"
+          had_policy=false
+          had_state=false
+
+          if [[ -f data/ai-policy.json ]]; then
+            cp data/ai-policy.json "$policy_backup"
+            had_policy=true
+          fi
+
+          if [[ -f data/ai-policy-state.json ]]; then
+            cp data/ai-policy-state.json "$state_backup"
+            had_state=true
+          fi
+
+          if [[ "$POLICY_FORCE_REFRESH" == "true" ]]; then
+            # The engine intentionally avoids rewriting unchanged policy content.
+            # Removing only the working policy copy forces a fresh generatedAt while
+            # backups keep the last-known-good snapshot recoverable on failure.
+            rm -f data/ai-policy.json
+          fi
+
+          if ! node ai-policy-engine.js; then
+            echo "::error::AI Policy refresh failed; restoring last-known-good files."
+
+            if [[ "$had_policy" == "true" ]]; then
+              cp "$policy_backup" data/ai-policy.json
+            else
+              rm -f data/ai-policy.json
+            fi
+
+            if [[ "$had_state" == "true" ]]; then
+              cp "$state_backup" data/ai-policy-state.json
+            else
+              rm -f data/ai-policy-state.json
+            fi
+
+            exit 1
+          fi
+
+      - name: Validate autonomous policy integrity
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          "use strict";
+
+          const fs = require("fs");
+          const crypto = require("crypto");
+
+          function readObject(filePath) {
+            if (!fs.existsSync(filePath)) {
+              throw new Error(`Required autonomous file is missing: ${filePath}`);
+            }
+
+            const raw = fs.readFileSync(filePath, "utf8").trim();
+
+            if (!raw) {
+              throw new Error(`Required autonomous file is empty: ${filePath}`);
+            }
+
+            const parsed = JSON.parse(raw);
+
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+              throw new Error(`${filePath} must contain a JSON object.`);
+            }
+
+            return parsed;
+          }
+
+          function hashFile(filePath) {
+            return crypto
+              .createHash("sha256")
+              .update(fs.readFileSync(filePath))
+              .digest("hex");
+          }
+
+          const config = readObject("data/autonomous-config.json");
+          const policy = readObject("data/ai-policy.json");
+          const state = readObject("data/ai-policy-state.json");
+
+          if (
+            policy.engineName !== "PipSight Pro Autonomous AI Policy Engine" ||
+            policy.engineVersion !== "1.4.0" ||
+            policy.config?.version !== "1.4.0" ||
+            policy.mode !== config.deployment.mode ||
+            Number(policy.autonomousRolloutPercent) !==
+              Number(config.deployment.autonomousRolloutPercent) ||
+            policy.validation?.valid !== true ||
+            policy.safety?.policyOnly !== true ||
+            policy.safety?.immutableSafetyGateRequired !== true ||
+            policy.safety?.riskLimitModification !== false
+          ) {
+            throw new Error("data/ai-policy.json failed its governance contract.");
+          }
+
+          if (
+            state.engineName !== policy.engineName ||
+            state.engineVersion !== "1.4.0" ||
+            state.pendingTransaction !== null ||
+            state.policyHash !== policy.metadata?.policyContentHash ||
+            state.lastKnownGoodPolicyHash !== policy.metadata?.policyContentHash
+          ) {
+            throw new Error("data/ai-policy-state.json is not committed to the active policy hash.");
+          }
+
+          const sources = {
+            autonomousConfig: "data/autonomous-config.json",
+            learningData: "data/learning-data.json",
+            confidenceData: "data/confidence-data.json",
+            aiMemory: "data/ai-memory.json"
+          };
+
+          for (const [key, filePath] of Object.entries(sources)) {
+            const actualHash = hashFile(filePath);
+
+            if (
+              policy.source?.[key]?.hash !== actualHash ||
+              state.sourceHashes?.[key] !== actualHash
+            ) {
+              throw new Error(`AI Policy source hash mismatch: ${key}`);
+            }
+          }
+
+          const generatedAt = Date.parse(policy.generatedAt || "");
+          const maximumAgeMinutes = Math.max(
+            1,
+            Number(config.policyValidation?.maximumPolicyAgeMinutes || 180)
+          );
+          const ageMs = Date.now() - generatedAt;
+
+          if (
+            !Number.isFinite(generatedAt) ||
+            ageMs < -60 * 1000 ||
+            ageMs > maximumAgeMinutes * 60 * 1000
+          ) {
+            throw new Error("AI Policy freshness validation failed.");
           }
 
           console.log(
-            "Fixed Live Analysis engine compatibility check passed."
+            `Validated AI Policy ${policy.metadata.policyContentHash} ` +
+            `in ${policy.mode} mode with ${policy.summary?.policyCount ?? 0} policy buckets.`
           );
           NODE
 
@@ -139,6 +448,15 @@ jobs:
 
           const notify =
             readObject("data/notify-state.json");
+
+          const config =
+            readObject("data/autonomous-config.json");
+
+          const decisionState =
+            readObject("data/ai-decision-state.json");
+
+          const safetyState =
+            readObject("data/ai-safety-state.json");
 
           if (
             live.engineVersion !== "1.4.2-pro" ||
@@ -215,8 +533,26 @@ jobs:
             );
           }
 
+          if (
+            live.autonomous?.version !== "1.4.0" ||
+            live.autonomous?.configuredMode !== config.deployment.mode ||
+            decisionState.engineVersion !== "1.4.0" ||
+            safetyState.engineVersion !== "1.4.0" ||
+            safetyState.pendingTransaction !== null
+          ) {
+            throw new Error(
+              "Autonomous decision and safety state validation failed."
+            );
+          }
+
+          if (fs.existsSync("data/ai-safety-state.pending.json")) {
+            throw new Error(
+              "AI Safety Gate left an incomplete pending transaction."
+            );
+          }
+
           console.log(
-            "Live analysis, history and notify-state validation passed."
+            "Live analysis, autonomous state, history and notify-state validation passed."
           );
           NODE
 
@@ -234,18 +570,42 @@ jobs:
           git config user.name "pipsight-robot"
           git config user.email "actions@users.noreply.github.com"
 
-          # Strictly stage only files owned by live analysis.
-          git add -- \
-            data/live-analysis.json \
-            data/analysis-history.json \
-            data/notify-state.json
+          # Strictly stage only files owned or refreshed by autonomous live analysis.
+          files_to_commit=(
+            "data/live-analysis.json"
+            "data/analysis-history.json"
+            "data/notify-state.json"
+            "data/ai-policy.json"
+            "data/ai-policy-state.json"
+            "data/ai-decision-preview.json"
+            "data/ai-decision-log.json"
+            "data/ai-decision-state.json"
+            "data/ai-safety-preview.json"
+            "data/ai-safety-log.json"
+            "data/ai-safety-state.json"
+          )
+
+          existing_files=()
+
+          for file in "${files_to_commit[@]}"; do
+            if [[ -f "$file" ]]; then
+              existing_files+=("$file")
+            fi
+          done
+
+          if [[ "${#existing_files[@]}" -eq 0 ]]; then
+            echo "No autonomous live-analysis outputs are available."
+            exit 0
+          fi
+
+          git add -- "${existing_files[@]}"
 
           if git diff --cached --quiet; then
             echo "No live analysis changes to commit."
             exit 0
           fi
 
-          git commit -m "robot: manually refresh live analysis"
+          git commit -m "robot: manually refresh autonomous live analysis"
 
           max_attempts=5
 

@@ -13,6 +13,15 @@
 // • Existing JSON schema preserved
 // • AI Memory controlled integration
 // • Learning Enrichment advisory context
+// • Autonomous AI Policy / Decision / Safety integration
+// • Deterministic fallback and emergency fail-closed control
+//
+// Autonomous extension 1.4.0:
+// • SHADOW preserves every legacy live decision and trade plan
+// • CONTROLLED permits bounded confidence/filter authority only
+// • AUTONOMOUS permits policy-approved direction/plan authority
+// • Every live BUY/SELL requires independent Safety Gate approval
+// • Broker order execution remains disabled in this signal-only runner
 //
 // Phase 4 compatibility:
 // • Existing BUY / SELL / HOLD decisions remain unchanged
@@ -29,6 +38,7 @@ const fs = require("fs");
 const path = require("path");
 
 const ENGINE_VERSION = "1.4.2-pro";
+const AUTONOMOUS_LIVE_VERSION = "1.4.0";
 const STRATEGY_VERSION = "legacy-compatible-1.1";
 
 const TELEGRAM_TIMEOUT_MS = 15000;
@@ -58,6 +68,80 @@ const AI_MEMORY_PATH = path.join(
   DATA_DIR,
   "ai-memory.json"
 );
+
+
+// ---------------------------------------------------------------------------
+// Autonomous control-plane paths
+// ---------------------------------------------------------------------------
+
+const AUTONOMOUS_CONFIG_PATH = path.join(
+  DATA_DIR,
+  "autonomous-config.json"
+);
+
+const AI_POLICY_PATH = path.join(
+  DATA_DIR,
+  "ai-policy.json"
+);
+
+const AI_POLICY_STATE_PATH = path.join(
+  DATA_DIR,
+  "ai-policy-state.json"
+);
+
+const AI_DECISION_ENGINE_PATH = path.join(
+  __dirname,
+  "ai-decision-engine.js"
+);
+
+const AI_SAFETY_GATE_PATH = path.join(
+  __dirname,
+  "ai-safety-gate.js"
+);
+
+const AI_DECISION_PREVIEW_PATH = path.join(
+  DATA_DIR,
+  "ai-decision-preview.json"
+);
+
+const AI_DECISION_LOG_PATH = path.join(
+  DATA_DIR,
+  "ai-decision-log.json"
+);
+
+const AI_DECISION_STATE_PATH = path.join(
+  DATA_DIR,
+  "ai-decision-state.json"
+);
+
+const AI_SAFETY_PREVIEW_PATH = path.join(
+  DATA_DIR,
+  "ai-safety-preview.json"
+);
+
+const AI_SAFETY_LOG_PATH = path.join(
+  DATA_DIR,
+  "ai-safety-log.json"
+);
+
+const AI_SAFETY_STATE_PATH = path.join(
+  DATA_DIR,
+  "ai-safety-state.json"
+);
+
+const AI_SAFETY_PENDING_PATH = path.join(
+  DATA_DIR,
+  "ai-safety-state.pending.json"
+);
+
+const AUTONOMOUS_INTEGRATION_DEFAULTS =
+  Object.freeze({
+    enabled: true,
+    persistAudit: true,
+    applyShadowOutput: false,
+    executionContext: "SIGNAL_ONLY",
+    failClosedInLiveAuthorityModes: true,
+  });
 
 /*
  * AI Memory compatibility lock. Live Analysis must not consume memory
@@ -6048,6 +6132,36 @@ function prepareLiveAnalysisFrames(
       weeklyDerived:
         derivedDailyRows.length >
         0,
+
+      // Exact completed-candle boundaries for the autonomous Safety Gate.
+      // No current-time fallback is used; missing evidence remains null.
+      scalpLatestClosedAt:
+        p6AutonomousLatestClosedAt(
+          scalpRows,
+          "5m",
+          nowMs
+        ),
+
+      intradayLatestClosedAt:
+        p6AutonomousLatestClosedAt(
+          derivedH1Rows,
+          "1H",
+          nowMs
+        ),
+
+      dailyLatestClosedAt:
+        p6AutonomousLatestClosedAt(
+          derivedDailyRows,
+          "D1",
+          nowMs
+        ),
+
+      weeklyLatestClosedAt:
+        p6AutonomousLatestClosedAt(
+          weeklyRows,
+          "W1",
+          nowMs
+        ),
     },
   };
 }
@@ -10537,6 +10651,11 @@ function buildCanonicalEngineResult(
     "aiMemoryAdjustedConfidence",
     "aiMemory",
     "confidenceExplainability",
+
+    // Autonomous extension 1.4.0 diagnostics.
+    "autonomous",
+    "autonomousDecision",
+    "autonomousSafety",
   ];
 
   for (const key of passthroughKeys) {
@@ -13868,6 +13987,1625 @@ async function notifyTelegram(
   );
 }
 
+
+// ============================================================================
+// AUTONOMOUS EXTENSION 1.4.0 — POLICY / DECISION / SAFETY CONTROL
+// ============================================================================
+
+function p6AutonomousIso(
+  value
+) {
+  if (
+    value === null ||
+    value === undefined ||
+    value === ""
+  ) {
+    return null;
+  }
+
+  if (
+    typeof value === "number" &&
+    Number.isFinite(value)
+  ) {
+    const normalized =
+      normalizeTimestampMs(value);
+
+    return Number.isFinite(normalized)
+      ? new Date(normalized)
+          .toISOString()
+      : null;
+  }
+
+  const parsed =
+    Date.parse(value);
+
+  return Number.isFinite(parsed)
+    ? new Date(parsed).toISOString()
+    : null;
+}
+
+function p6AutonomousLatestClosedAt(
+  rows,
+  timeframe,
+  nowMs = Date.now()
+) {
+  const sourceRows =
+    Array.isArray(rows)
+      ? rows
+      : [];
+
+  const intervalMs =
+    liveTimeframeMs(
+      timeframe,
+      timeframe
+    );
+
+  for (
+    let index =
+      sourceRows.length - 1;
+    index >= 0;
+    index -= 1
+  ) {
+    const row =
+      sourceRows[index];
+
+    if (!row || typeof row !== "object") {
+      continue;
+    }
+
+    const openedAt =
+      normalizeTimestampMs(
+        row.timestamp ??
+        row.time ??
+        row.date
+      );
+
+    if (!Number.isFinite(openedAt)) {
+      continue;
+    }
+
+    const explicitClose =
+      normalizeTimestampMs(
+        row.closeTimestamp ??
+        row.closeTime ??
+        row.closedAt
+      );
+
+    const closedAt =
+      Number.isFinite(explicitClose)
+        ? explicitClose
+        : openedAt + intervalMs;
+
+    const explicitlyOpen =
+      row.closed === false ||
+      row.complete === false ||
+      row.completed === false;
+
+    if (
+      !explicitlyOpen &&
+      Number.isFinite(closedAt) &&
+      closedAt <= nowMs
+    ) {
+      return new Date(closedAt)
+        .toISOString();
+    }
+  }
+
+  return null;
+}
+
+function p6AutonomousReadMode(
+  configPath
+) {
+  try {
+    const parsed = JSON.parse(
+      fs.readFileSync(
+        configPath,
+        "utf8"
+      )
+    );
+
+    const mode = String(
+      parsed?.deployment?.mode ||
+      "OFF"
+    )
+      .trim()
+      .toUpperCase();
+
+    return [
+      "OFF",
+      "SHADOW",
+      "CONTROLLED",
+      "AUTONOMOUS",
+      "EMERGENCY_STOP",
+    ].includes(mode)
+      ? mode
+      : "OFF";
+  } catch {
+    return null;
+  }
+}
+
+function p6AutonomousLoadModule(
+  modulePath,
+  expectedName,
+  expectedVersion,
+  requiredFunctions
+) {
+  try {
+    const resolvedPath =
+      path.resolve(modulePath);
+
+    if (!fs.existsSync(resolvedPath)) {
+      return {
+        available: false,
+        valid: false,
+        path: resolvedPath,
+        reason:
+          `Required module is missing: ${resolvedPath}`,
+        module: null,
+      };
+    }
+
+    const loaded =
+      require(resolvedPath);
+
+    const errors = [];
+
+    if (
+      loaded?.ENGINE_NAME !==
+      expectedName
+    ) {
+      errors.push(
+        `Expected engine name ${expectedName}`
+      );
+    }
+
+    if (
+      loaded?.ENGINE_VERSION !==
+      expectedVersion
+    ) {
+      errors.push(
+        `Expected engine version ${expectedVersion}`
+      );
+    }
+
+    for (
+      const functionName of
+      requiredFunctions
+    ) {
+      if (
+        typeof loaded?.[functionName] !==
+        "function"
+      ) {
+        errors.push(
+          `Missing ${functionName}()`
+        );
+      }
+    }
+
+    return {
+      available: true,
+      valid:
+        errors.length === 0,
+      path: resolvedPath,
+      reason:
+        errors.length > 0
+          ? errors.join("; ")
+          : null,
+      module:
+        errors.length === 0
+          ? loaded
+          : null,
+    };
+  } catch (error) {
+    return {
+      available: false,
+      valid: false,
+      path:
+        path.resolve(modulePath),
+      reason:
+        p6ErrorMessage(error),
+      module: null,
+    };
+  }
+}
+
+function p6LoadAutonomousModules(
+  runtimeOptions
+) {
+  if (
+    runtimeOptions
+      .autonomousControlEnabled !==
+    true
+  ) {
+    return {
+      enabled: false,
+      valid: true,
+      decision: null,
+      safety: null,
+      reason:
+        "Autonomous control is disabled by runtime configuration",
+    };
+  }
+
+  const decision =
+    p6AutonomousLoadModule(
+      runtimeOptions
+        .aiDecisionEnginePath,
+      "PipSight Pro Autonomous AI Decision Engine",
+      "1.4.0",
+      [
+        "evaluateDecision",
+        "persistDecisionResult",
+      ]
+    );
+
+  const safety =
+    p6AutonomousLoadModule(
+      runtimeOptions
+        .aiSafetyGatePath,
+      "PipSight Pro Immutable AI Safety Gate",
+      "1.4.0",
+      [
+        "evaluateSafetyGate",
+        "persistSafetyResult",
+      ]
+    );
+
+  return {
+    enabled: true,
+    valid:
+      decision.valid &&
+      safety.valid,
+    decision,
+    safety,
+    reason:
+      [
+        decision.reason,
+        safety.reason,
+      ]
+        .filter(Boolean)
+        .join("; ") ||
+      null,
+  };
+}
+
+function p6AutonomousEngineDescriptors(
+  pairBundle
+) {
+  const descriptors = [
+    {
+      key: "swing",
+      engine: "weekly",
+      timeframe: "D1",
+      latestClosedField:
+        "dailyLatestClosedAt",
+    },
+    {
+      key: "intraday",
+      engine: "daily",
+      timeframe: "1H",
+      latestClosedField:
+        "intradayLatestClosedAt",
+    },
+    {
+      key: "scalp",
+      engine: "scalp",
+      timeframe:
+        normalizeAIMemoryTimeframe(
+          pairBundle?.scalp
+            ?.timeframe
+        ) ||
+        "15m",
+      latestClosedField:
+        "scalpLatestClosedAt",
+    },
+  ];
+
+  return descriptors.map(
+    descriptor => {
+      const result =
+        pairBundle?.[
+          descriptor.key
+        ] ||
+        pairBundle?.engines?.[
+          descriptor.key
+        ] ||
+        {};
+
+      const decision =
+        liveExtractDecision(result);
+
+      const confidence =
+        liveBoundNumber(
+          result.originalConfidence ??
+          result.confidence ??
+          result.confidencePct,
+          0,
+          100,
+          decision === "HOLD"
+            ? 0
+            : 50
+        );
+
+      const tradePlan =
+        liveExtractTradePlan(
+          result,
+          pairBundle?.pair,
+          decision
+        );
+
+      const exactSourceAt =
+        p6AutonomousIso(
+          result.analyzedCandleAt ??
+          result.candleClosedAt ??
+          result.sourceUpdatedAt ??
+          result.updatedAt
+        );
+
+      const frameSourceAt =
+        p6AutonomousIso(
+          pairBundle
+            ?.pipelineMetadata?.[
+              descriptor
+                .latestClosedField
+            ]
+        );
+
+      return {
+        ...descriptor,
+        result,
+        decision,
+        confidence,
+        tradePlan,
+        available:
+          result.available !== false,
+        marketDataAt:
+          exactSourceAt ||
+          frameSourceAt ||
+          null,
+        source:
+          result.source ||
+          result.engineName ||
+          descriptor.key,
+      };
+    }
+  );
+}
+
+function p6AutonomousSelectContext(
+  pairBundle,
+  pairRecord
+) {
+  const master =
+    pairBundle?.master ||
+    pairRecord?.master ||
+    {};
+
+  const baselineDecision =
+    liveExtractDecision(master);
+
+  const descriptors =
+    p6AutonomousEngineDescriptors(
+      pairBundle
+    );
+
+  const sourceEngine =
+    String(
+      master?.tradePlan
+        ?.sourceEngine ||
+      master?.plan
+        ?.sourceEngine ||
+      master?.sourceEngine ||
+      ""
+    )
+      .trim()
+      .toLowerCase();
+
+  const sourceMap = {
+    swing: "weekly",
+    weekly: "weekly",
+    intraday: "daily",
+    daily: "daily",
+    scalp: "scalp",
+  };
+
+  const requestedEngine =
+    sourceMap[sourceEngine] ||
+    null;
+
+  let selected =
+    requestedEngine
+      ? descriptors.find(
+          descriptor =>
+            descriptor.engine ===
+            requestedEngine &&
+            (
+              baselineDecision ===
+                "HOLD" ||
+              descriptor.decision ===
+                baselineDecision
+            )
+        )
+      : null;
+
+  if (!selected) {
+    const matching =
+      descriptors.filter(
+        descriptor =>
+          descriptor.available &&
+          (
+            baselineDecision ===
+              "HOLD"
+              ? descriptor.decision !==
+                "HOLD"
+              : descriptor.decision ===
+                baselineDecision
+          )
+      );
+
+    matching.sort(
+      (left, right) =>
+        right.confidence -
+          left.confidence ||
+        left.engine.localeCompare(
+          right.engine
+        )
+    );
+
+    selected =
+      matching[0] ||
+      null;
+  }
+
+  if (!selected) {
+    const available =
+      descriptors.filter(
+        descriptor =>
+          descriptor.available
+      );
+
+    available.sort(
+      (left, right) =>
+        right.confidence -
+          left.confidence ||
+        left.engine.localeCompare(
+          right.engine
+        )
+    );
+
+    selected =
+      available[0] ||
+      null;
+  }
+
+  return {
+    master,
+    baselineDecision,
+    descriptors,
+    selected,
+  };
+}
+
+function p6AutonomousOptionalString(
+  ...values
+) {
+  for (const value of values) {
+    if (
+      value !== null &&
+      value !== undefined &&
+      String(value).trim()
+    ) {
+      return String(value).trim();
+    }
+  }
+
+  return null;
+}
+
+function p6BuildAutonomousDecisionInput(
+  pairBundle,
+  pairRecord
+) {
+  const pair =
+    liveNormalizePairLabel(
+      pairRecord?.pair ||
+      pairBundle?.pair
+    );
+
+  const context =
+    p6AutonomousSelectContext(
+      pairBundle,
+      pairRecord
+    );
+
+  if (!context.selected) {
+    return {
+      valid: false,
+      reason:
+        "No supported Weekly, Daily or Scalp engine context is available",
+      input: null,
+      context,
+    };
+  }
+
+  const master =
+    context.master;
+
+  const baselineDecision =
+    context.baselineDecision;
+
+  const baselineConfidence =
+    liveBoundNumber(
+      master.originalConfidence ??
+      master.confidence ??
+      master.confidencePct,
+      0,
+      100,
+      baselineDecision === "HOLD"
+        ? 0
+        : 50
+    );
+
+  const baselineTradePlan =
+    liveExtractTradePlan(
+      master,
+      pair,
+      baselineDecision
+    );
+
+  const engineSignals =
+    context.descriptors.map(
+      descriptor => ({
+        engine:
+          descriptor.engine,
+        decision:
+          descriptor.decision,
+        confidence:
+          descriptor.confidence,
+        active:
+          descriptor.available,
+        tradePlan:
+          descriptor.tradePlan,
+        source:
+          descriptor.source,
+      })
+    );
+
+  const selectedResult =
+    context.selected.result ||
+    {};
+
+  const marketRegime =
+    p6AutonomousOptionalString(
+      selectedResult.marketRegime,
+      selectedResult.regime,
+      selectedResult.marketState,
+      selectedResult.metadata
+        ?.marketRegime,
+      master.marketRegime,
+      master.regime
+    );
+
+  const session =
+    p6AutonomousOptionalString(
+      selectedResult.session,
+      selectedResult.marketSession,
+      selectedResult.metadata
+        ?.session,
+      master.session
+    );
+
+  const pattern =
+    p6AutonomousOptionalString(
+      selectedResult.pattern,
+      selectedResult.candlePattern,
+      selectedResult.metadata
+        ?.pattern,
+      master.pattern
+    );
+
+  const atr =
+    liveFiniteNumber(
+      selectedResult.atr ??
+      selectedResult.indicators?.atr ??
+      baselineTradePlan?.atr,
+      null
+    );
+
+  const marketDataAt =
+    context.selected
+      .marketDataAt;
+
+  const entryIdentity =
+    baselineTradePlan?.entry ??
+    "none";
+
+  const decisionId = [
+    "live",
+    AUTONOMOUS_LIVE_VERSION,
+    liveCompactPair(pair),
+    context.selected.engine,
+    context.selected.timeframe,
+    baselineDecision,
+    entryIdentity,
+    marketDataAt ||
+      "missing-market-time",
+  ].join("|");
+
+  const reasons =
+    Array.isArray(master.reasons)
+      ? master.reasons
+      : master.reason
+        ? [master.reason]
+        : [];
+
+  const input = {
+    decisionId,
+    pair,
+    timeframe:
+      context.selected.timeframe,
+    engine:
+      context.selected.engine,
+    marketDataAt,
+    marketRegime,
+    session,
+    pattern,
+    atr,
+
+    baseline: {
+      decision:
+        baselineDecision,
+      confidence:
+        baselineConfidence,
+      tradePlan:
+        baselineTradePlan,
+      reasons,
+    },
+
+    engineSignals,
+
+    marketContext: {
+      marketRegime,
+      session,
+    },
+  };
+
+  return {
+    valid: true,
+    reason: null,
+    input,
+    context,
+  };
+}
+
+function p6AutonomousCompactDiagnostics(
+  decisionResult,
+  safetyResult,
+  applied,
+  integrationError = null
+) {
+  return {
+    version:
+      AUTONOMOUS_LIVE_VERSION,
+    applied,
+    configuredMode:
+      decisionResult?.deployment
+        ?.configuredMode ||
+      null,
+    authorityMode:
+      decisionResult?.deployment
+        ?.authorityMode ||
+      null,
+    rollout:
+      p6Clone(
+        decisionResult?.deployment
+          ?.rollout ||
+        null
+      ),
+    decisionId:
+      decisionResult?.decisionId ||
+      safetyResult?.decisionId ||
+      null,
+    decisionHash:
+      decisionResult?.decisionHash ||
+      null,
+    safetyResultHash:
+      safetyResult
+        ?.safetyResultHash ||
+      null,
+    baseline:
+      p6Clone(
+        decisionResult?.baseline ||
+        null
+      ),
+    shadowCandidate:
+      p6Clone(
+        decisionResult
+          ?.shadowCandidate ||
+        null
+      ),
+    proposedDecision:
+      p6Clone(
+        decisionResult
+          ?.proposedDecision ||
+        null
+      ),
+    finalDecision:
+      p6Clone(
+        safetyResult
+          ?.finalDecision ||
+        null
+      ),
+    changes:
+      p6Clone(
+        decisionResult?.changes ||
+        []
+      ),
+    blockedChanges:
+      p6Clone(
+        decisionResult
+          ?.blockedChanges ||
+        []
+      ),
+    approval:
+      p6Clone(
+        safetyResult?.approval ||
+        null
+      ),
+    policyEvidence: {
+      baselinePolicyKey:
+        decisionResult?.evidence
+          ?.baselinePolicy?.key ||
+        null,
+      buyPolicyKey:
+        decisionResult?.evidence
+          ?.buyPolicy?.key ||
+        null,
+      sellPolicyKey:
+        decisionResult?.evidence
+          ?.sellPolicy?.key ||
+        null,
+    },
+    validation: {
+      decision:
+        p6Clone(
+          decisionResult
+            ?.validation ||
+          null
+        ),
+      safety:
+        p6Clone(
+          safetyResult
+            ?.validation ||
+          null
+        ),
+    },
+    error:
+      integrationError ||
+      null,
+  };
+}
+
+function p6AutonomousMasterFromSafety(
+  legacyMaster,
+  safetyResult,
+  diagnostics
+) {
+  const finalDecision =
+    safetyResult?.finalDecision
+      ?.decision ||
+    "HOLD";
+
+  const confidence =
+    finalDecision === "HOLD"
+      ? 0
+      : liveBoundNumber(
+          safetyResult
+            ?.finalDecision
+            ?.confidence,
+          0,
+          100,
+          0
+        );
+
+  const sourcePlan =
+    safetyResult?.finalDecision
+      ?.tradePlan ||
+    null;
+
+  const tradePlan =
+    finalDecision === "HOLD"
+      ? null
+      : normalizeLiveTradePlan(
+          sourcePlan,
+          legacyMaster?.pair,
+          finalDecision
+        );
+
+  const safeDecision =
+    finalDecision !== "HOLD" &&
+    !tradePlan
+      ? "HOLD"
+      : finalDecision;
+
+  const safeConfidence =
+    safeDecision === "HOLD"
+      ? 0
+      : confidence;
+
+  const safePlan =
+    safeDecision === "HOLD"
+      ? null
+      : tradePlan;
+
+  const reasons =
+    Array.isArray(
+      safetyResult?.finalDecision
+        ?.reasons
+    )
+      ? safetyResult
+          .finalDecision
+          .reasons
+      : [
+          "Autonomous Safety Gate returned no explanation",
+        ];
+
+  return buildCanonicalEngineResult(
+    {
+      ...legacyMaster,
+      decision:
+        safeDecision,
+      signal:
+        safeDecision,
+      action:
+        safeDecision,
+      direction:
+        safeDecision,
+      confidence:
+        safeConfidence,
+      confidencePct:
+        safeConfidence,
+      tradePlan:
+        safePlan,
+      plan:
+        safePlan,
+      reason:
+        reasons.join("; "),
+      reasons,
+      source:
+        "autonomous-ai-safety-gate",
+      autonomous:
+        diagnostics,
+      autonomousDecision:
+        p6Clone(
+          diagnostics
+            .proposedDecision
+        ),
+      autonomousSafety:
+        p6Clone(
+          diagnostics.approval
+        ),
+    },
+    {
+      pair:
+        legacyMaster?.pair,
+      mode: "master",
+      engineName:
+        "autonomous-master-consensus",
+      source:
+        "autonomous-ai-safety-gate",
+      requireTradePlan:
+        safeDecision !== "HOLD",
+      available: true,
+    }
+  );
+}
+
+function p6AutonomousFailClosedMaster(
+  legacyMaster,
+  mode,
+  reason
+) {
+  const diagnostics = {
+    version:
+      AUTONOMOUS_LIVE_VERSION,
+    applied: true,
+    configuredMode:
+      mode,
+    authorityMode:
+      "FAIL_CLOSED",
+    rollout: null,
+    decisionId: null,
+    decisionHash: null,
+    safetyResultHash: null,
+    baseline: {
+      decision:
+        liveExtractDecision(
+          legacyMaster
+        ),
+      confidence:
+        legacyMaster?.confidence ??
+        0,
+      tradePlan:
+        liveExtractTradePlan(
+          legacyMaster,
+          legacyMaster?.pair,
+          liveExtractDecision(
+            legacyMaster
+          )
+        ),
+    },
+    shadowCandidate: null,
+    proposedDecision: null,
+    finalDecision: {
+      decision: "HOLD",
+      confidence: 0,
+      tradePlan: null,
+      reasons: [reason],
+    },
+    changes: [],
+    blockedChanges: [],
+    approval: {
+      status: "REJECTED",
+      signalApproved: false,
+      orderApproved: false,
+      publishSignal: false,
+      executeOrder: false,
+      failClosed: true,
+      blockers: [
+        {
+          id:
+            "AUTONOMOUS_INTEGRATION_FAILURE",
+          message: reason,
+        },
+      ],
+    },
+    policyEvidence: {
+      baselinePolicyKey: null,
+      buyPolicyKey: null,
+      sellPolicyKey: null,
+    },
+    validation: {
+      decision: null,
+      safety: null,
+    },
+    error: reason,
+  };
+
+  return p6AutonomousMasterFromSafety(
+    legacyMaster,
+    {
+      finalDecision:
+        diagnostics.finalDecision,
+      approval:
+        diagnostics.approval,
+    },
+    diagnostics
+  );
+}
+
+function p6ApplyMasterToPairRecord(
+  pairRecord,
+  master,
+  diagnostics
+) {
+  pairRecord.master =
+    master;
+
+  if (!p6IsObject(pairRecord.engines)) {
+    pairRecord.engines = {};
+  }
+
+  pairRecord.engines.master =
+    master;
+
+  if (!p6IsObject(pairRecord.modes)) {
+    pairRecord.modes = {};
+  }
+
+  pairRecord.modes.master =
+    master;
+
+  pairRecord.decision =
+    master.decision;
+  pairRecord.signal =
+    master.signal;
+  pairRecord.action =
+    master.action;
+  pairRecord.direction =
+    master.direction;
+  pairRecord.confidence =
+    master.confidence;
+  pairRecord.score =
+    master.score;
+  pairRecord.price =
+    master.price;
+  pairRecord.currentPrice =
+    master.currentPrice;
+  pairRecord.lastPrice =
+    master.lastPrice;
+  pairRecord.tradePlan =
+    master.tradePlan;
+  pairRecord.plan =
+    master.plan;
+  pairRecord.entry =
+    master.entry;
+  pairRecord.stop =
+    master.stop;
+  pairRecord.stopLoss =
+    master.stopLoss;
+  pairRecord.target1 =
+    master.target1;
+  pairRecord.target2 =
+    master.target2;
+  pairRecord.target3 =
+    master.target3;
+  pairRecord.tp1 =
+    master.tp1;
+  pairRecord.tp2 =
+    master.tp2;
+  pairRecord.tp3 =
+    master.tp3;
+  pairRecord.riskReward =
+    master.riskReward;
+  pairRecord.rr =
+    master.rr;
+  pairRecord.reason =
+    master.reason;
+  pairRecord.status =
+    master.status;
+  pairRecord.autonomous =
+    diagnostics;
+}
+
+function applyAutonomousControlToOutput(
+  output,
+  pairBundles,
+  runtimeOptions
+) {
+  const configuredMode =
+    p6AutonomousReadMode(
+      runtimeOptions
+        .autonomousConfigPath
+    );
+
+  const modules =
+    p6LoadAutonomousModules(
+      runtimeOptions
+    );
+
+  const byPair = {};
+
+  const summary = {
+    version:
+      AUTONOMOUS_LIVE_VERSION,
+    enabled:
+      runtimeOptions
+        .autonomousControlEnabled ===
+      true,
+    available:
+      modules.valid,
+    configuredMode,
+    appliedPairs: 0,
+    shadowPairs: 0,
+    approvedPairs: 0,
+    rejectedPairs: 0,
+    holdPairs: 0,
+    failedPairs: 0,
+    reason:
+      modules.reason ||
+      null,
+  };
+
+  if (
+    !p6IsObject(output?.pairs)
+  ) {
+    return {
+      output,
+      summary,
+      byPair,
+    };
+  }
+
+  const bundleMap =
+    new Map();
+
+  for (
+    const bundle of
+    Array.isArray(pairBundles)
+      ? pairBundles
+      : []
+  ) {
+    const key =
+      p6NormalizePairKey(
+        bundle?.pair ||
+        bundle?.symbol
+      );
+
+    if (key) {
+      bundleMap.set(key, bundle);
+    }
+  }
+
+  for (
+    const pairRecord of
+    Object.values(output.pairs)
+  ) {
+    const pairKey =
+      p6NormalizePairKey(
+        pairRecord?.pair
+      );
+
+    const pairBundle =
+      bundleMap.get(pairKey) ||
+      pairRecord;
+
+    const legacyMaster =
+      p6Clone(
+        pairRecord.master
+      );
+
+    if (
+      runtimeOptions
+        .autonomousControlEnabled !==
+        true
+    ) {
+      const mode =
+        configuredMode ||
+        "OFF";
+
+      const liveMode =
+        [
+          "CONTROLLED",
+          "AUTONOMOUS",
+          "EMERGENCY_STOP",
+        ].includes(mode);
+
+      if (
+        liveMode &&
+        runtimeOptions
+          .autonomousFailClosedInLiveAuthorityModes
+      ) {
+        const reason =
+          "Autonomous control cannot be disabled while a live authority mode is configured";
+
+        const failedMaster =
+          p6AutonomousFailClosedMaster(
+            legacyMaster,
+            mode,
+            reason
+          );
+
+        p6ApplyMasterToPairRecord(
+          pairRecord,
+          failedMaster,
+          failedMaster.autonomous
+        );
+
+        byPair[pairRecord.pair] =
+          failedMaster.autonomous;
+        summary.appliedPairs += 1;
+        summary.failedPairs += 1;
+        summary.holdPairs += 1;
+      } else {
+        const diagnostics = {
+          version:
+            AUTONOMOUS_LIVE_VERSION,
+          applied: false,
+          configuredMode: mode,
+          authorityMode:
+            "DISABLED",
+          error: null,
+        };
+
+        pairRecord.autonomous =
+          diagnostics;
+        pairRecord.master.autonomous =
+          diagnostics;
+        byPair[pairRecord.pair] =
+          diagnostics;
+      }
+
+      continue;
+    }
+
+    const configuredLiveMode =
+      [
+        "CONTROLLED",
+        "AUTONOMOUS",
+        "EMERGENCY_STOP",
+      ].includes(
+        configuredMode
+      );
+
+    if (
+      configuredLiveMode &&
+      runtimeOptions
+        .autonomousPersistAudit !==
+      true
+    ) {
+      const reason =
+        "Autonomous audit/state persistence is mandatory in live authority modes";
+
+      const failedMaster =
+        p6AutonomousFailClosedMaster(
+          legacyMaster,
+          configuredMode,
+          reason
+        );
+
+      p6ApplyMasterToPairRecord(
+        pairRecord,
+        failedMaster,
+        failedMaster.autonomous
+      );
+
+      byPair[pairRecord.pair] =
+        failedMaster.autonomous;
+      summary.appliedPairs += 1;
+      summary.failedPairs += 1;
+      summary.holdPairs += 1;
+      continue;
+    }
+
+    if (!modules.valid) {
+      const reason =
+        modules.reason ||
+        "Autonomous modules are unavailable";
+
+      const liveMode =
+        [
+          "CONTROLLED",
+          "AUTONOMOUS",
+          "EMERGENCY_STOP",
+        ].includes(
+          configuredMode
+        );
+
+      if (
+        liveMode &&
+        runtimeOptions
+          .autonomousFailClosedInLiveAuthorityModes
+      ) {
+        const failedMaster =
+          p6AutonomousFailClosedMaster(
+            legacyMaster,
+            configuredMode,
+            reason
+          );
+
+        p6ApplyMasterToPairRecord(
+          pairRecord,
+          failedMaster,
+          failedMaster.autonomous
+        );
+
+        byPair[pairRecord.pair] =
+          failedMaster.autonomous;
+        summary.appliedPairs += 1;
+        summary.failedPairs += 1;
+        summary.holdPairs += 1;
+      } else {
+        const diagnostics = {
+          version:
+            AUTONOMOUS_LIVE_VERSION,
+          applied: false,
+          configuredMode,
+          authorityMode:
+            "DETERMINISTIC_FALLBACK",
+          error: reason,
+        };
+
+        pairRecord.autonomous =
+          diagnostics;
+        pairRecord.master.autonomous =
+          diagnostics;
+        byPair[pairRecord.pair] =
+          diagnostics;
+        summary.failedPairs += 1;
+      }
+
+      continue;
+    }
+
+    try {
+      const inputResult =
+        p6BuildAutonomousDecisionInput(
+          pairBundle,
+          pairRecord
+        );
+
+      if (!inputResult.valid) {
+        throw new Error(
+          inputResult.reason
+        );
+      }
+
+      const evaluatedAt =
+        new Date().toISOString();
+
+      const decisionResult =
+        modules.decision.module
+          .evaluateDecision(
+            inputResult.input,
+            {
+              evaluatedAt,
+              autonomousConfigPath:
+                runtimeOptions
+                  .autonomousConfigPath,
+              aiPolicyPath:
+                runtimeOptions
+                  .aiPolicyPath,
+              aiPolicyStatePath:
+                runtimeOptions
+                  .aiPolicyStatePath,
+            }
+          );
+
+      const selectedResult =
+        inputResult.context
+          .selected.result ||
+        {};
+
+      const safetyResult =
+        modules.safety.module
+          .evaluateSafetyGate(
+            {
+              decisionResult,
+              executionContext:
+                "SIGNAL_ONLY",
+              executionRequested:
+                false,
+              market: {
+                currentPrice:
+                  liveFiniteNumber(
+                    selectedResult
+                      .currentPrice ??
+                    selectedResult.price ??
+                    pairRecord
+                      .currentPrice,
+                    null
+                  ),
+                atr:
+                  liveFiniteNumber(
+                    selectedResult.atr ??
+                    selectedResult
+                      .indicators?.atr ??
+                    inputResult.input.atr,
+                    null
+                  ),
+                marketDataAt:
+                  inputResult.input
+                    .marketDataAt,
+              },
+            },
+            {
+              evaluatedAt,
+              autonomousConfigPath:
+                runtimeOptions
+                  .autonomousConfigPath,
+              statePath:
+                runtimeOptions
+                  .aiSafetyStatePath,
+            }
+          );
+
+      if (
+        runtimeOptions
+          .autonomousPersistAudit
+      ) {
+        modules.decision.module
+          .persistDecisionResult(
+            decisionResult,
+            {
+              decisionPreviewPath:
+                runtimeOptions
+                  .aiDecisionPreviewPath,
+              decisionLogPath:
+                runtimeOptions
+                  .aiDecisionLogPath,
+              decisionStatePath:
+                runtimeOptions
+                  .aiDecisionStatePath,
+            }
+          );
+
+        modules.safety.module
+          .persistSafetyResult(
+            safetyResult,
+            {
+              safetyPreviewPath:
+                runtimeOptions
+                  .aiSafetyPreviewPath,
+              safetyLogPath:
+                runtimeOptions
+                  .aiSafetyLogPath,
+              statePath:
+                runtimeOptions
+                  .aiSafetyStatePath,
+              pendingPath:
+                runtimeOptions
+                  .aiSafetyPendingPath,
+            }
+          );
+      }
+
+      const authorityMode =
+        decisionResult.deployment
+          ?.authorityMode ||
+        "DETERMINISTIC_FALLBACK";
+
+      const liveApplication =
+        authorityMode ===
+          "EMERGENCY_STOP" ||
+        (
+          [
+            "CONTROLLED",
+            "CONTROLLED_FALLBACK",
+            "AUTONOMOUS",
+            "DETERMINISTIC_FALLBACK",
+          ].includes(
+            authorityMode
+          ) &&
+          [
+            "CONTROLLED",
+            "AUTONOMOUS",
+            "EMERGENCY_STOP",
+          ].includes(
+            decisionResult.deployment
+              ?.configuredMode
+          )
+        );
+
+      const diagnostics =
+        p6AutonomousCompactDiagnostics(
+          decisionResult,
+          safetyResult,
+          liveApplication
+        );
+
+      if (liveApplication) {
+        const finalMaster =
+          p6AutonomousMasterFromSafety(
+            legacyMaster,
+            safetyResult,
+            diagnostics
+          );
+
+        p6ApplyMasterToPairRecord(
+          pairRecord,
+          finalMaster,
+          diagnostics
+        );
+
+        summary.appliedPairs += 1;
+      } else {
+        pairRecord.autonomous =
+          diagnostics;
+        pairRecord.master.autonomous =
+          diagnostics;
+      }
+
+      byPair[pairRecord.pair] =
+        diagnostics;
+
+      if (
+        authorityMode === "SHADOW"
+      ) {
+        summary.shadowPairs += 1;
+      }
+
+      if (
+        safetyResult.approval
+          ?.signalApproved
+      ) {
+        summary.approvedPairs += 1;
+      } else if (
+        safetyResult.approval
+          ?.status === "REJECTED" ||
+        safetyResult.approval
+          ?.status ===
+          "EMERGENCY_STOP"
+      ) {
+        summary.rejectedPairs += 1;
+      }
+
+      if (
+        safetyResult.finalDecision
+          ?.decision === "HOLD"
+      ) {
+        summary.holdPairs += 1;
+      }
+    } catch (error) {
+      const reason =
+        `Autonomous integration failed: ${p6ErrorMessage(error)}`;
+
+      const mode =
+        configuredMode ||
+        "OFF";
+
+      const liveMode =
+        [
+          "CONTROLLED",
+          "AUTONOMOUS",
+          "EMERGENCY_STOP",
+        ].includes(mode);
+
+      if (
+        liveMode &&
+        runtimeOptions
+          .autonomousFailClosedInLiveAuthorityModes
+      ) {
+        const failedMaster =
+          p6AutonomousFailClosedMaster(
+            legacyMaster,
+            mode,
+            reason
+          );
+
+        p6ApplyMasterToPairRecord(
+          pairRecord,
+          failedMaster,
+          failedMaster.autonomous
+        );
+
+        byPair[pairRecord.pair] =
+          failedMaster.autonomous;
+        summary.appliedPairs += 1;
+        summary.holdPairs += 1;
+      } else {
+        const diagnostics = {
+          version:
+            AUTONOMOUS_LIVE_VERSION,
+          applied: false,
+          configuredMode: mode,
+          authorityMode:
+            "DETERMINISTIC_FALLBACK",
+          error: reason,
+        };
+
+        pairRecord.autonomous =
+          diagnostics;
+        pairRecord.master.autonomous =
+          diagnostics;
+        byPair[pairRecord.pair] =
+          diagnostics;
+      }
+
+      summary.failedPairs += 1;
+
+      p6Log(
+        "ERROR",
+        `${pairRecord.pair}: ${reason}`
+      );
+    }
+  }
+
+  output.autonomous =
+    summary;
+  output.autonomousByPair =
+    byPair;
+
+  output.metadata = {
+    ...(output.metadata || {}),
+    autonomousVersion:
+      AUTONOMOUS_LIVE_VERSION,
+    autonomousConfiguredMode:
+      configuredMode,
+    autonomousAppliedPairs:
+      summary.appliedPairs,
+  };
+
+  return {
+    output,
+    summary,
+    byPair,
+  };
+}
+
+
 // ============================================================================
 // PART 6 — FINAL RUNTIME ORCHESTRATION
 //          + INPUT LOADING
@@ -14014,6 +15752,22 @@ const P6_DEFAULT_OPTIONS =
       4 * 60 * 60 * 1000,
 
     createBackups: false,
+
+    autonomousControlEnabled:
+      AUTONOMOUS_INTEGRATION_DEFAULTS.enabled,
+
+    autonomousPersistAudit:
+      AUTONOMOUS_INTEGRATION_DEFAULTS.persistAudit,
+
+    autonomousApplyShadowOutput:
+      AUTONOMOUS_INTEGRATION_DEFAULTS.applyShadowOutput,
+
+    autonomousExecutionContext:
+      AUTONOMOUS_INTEGRATION_DEFAULTS.executionContext,
+
+    autonomousFailClosedInLiveAuthorityModes:
+      AUTONOMOUS_INTEGRATION_DEFAULTS
+        .failClosedInLiveAuthorityModes,
   });
 
 
@@ -14498,6 +16252,98 @@ function p6BuildRuntimeOptions(
 
     createBackups:
       merged.createBackups === true,
+
+    autonomousControlEnabled:
+      merged.autonomousControlEnabled !==
+      false,
+
+    autonomousPersistAudit:
+      merged.autonomousPersistAudit !==
+      false,
+
+    // SHADOW is immutable: runtime options cannot promote it into live output.
+    autonomousApplyShadowOutput:
+      false,
+
+    autonomousExecutionContext:
+      "SIGNAL_ONLY",
+
+    autonomousFailClosedInLiveAuthorityModes:
+      merged
+        .autonomousFailClosedInLiveAuthorityModes !==
+      false,
+
+    autonomousConfigPath:
+      p6ResolvePath(
+        merged.autonomousConfigPath,
+        AUTONOMOUS_CONFIG_PATH
+      ),
+
+    aiPolicyPath:
+      p6ResolvePath(
+        merged.aiPolicyPath,
+        AI_POLICY_PATH
+      ),
+
+    aiPolicyStatePath:
+      p6ResolvePath(
+        merged.aiPolicyStatePath,
+        AI_POLICY_STATE_PATH
+      ),
+
+    aiDecisionEnginePath:
+      p6ResolvePath(
+        merged.aiDecisionEnginePath,
+        AI_DECISION_ENGINE_PATH
+      ),
+
+    aiSafetyGatePath:
+      p6ResolvePath(
+        merged.aiSafetyGatePath,
+        AI_SAFETY_GATE_PATH
+      ),
+
+    aiDecisionPreviewPath:
+      p6ResolvePath(
+        merged.aiDecisionPreviewPath,
+        AI_DECISION_PREVIEW_PATH
+      ),
+
+    aiDecisionLogPath:
+      p6ResolvePath(
+        merged.aiDecisionLogPath,
+        AI_DECISION_LOG_PATH
+      ),
+
+    aiDecisionStatePath:
+      p6ResolvePath(
+        merged.aiDecisionStatePath,
+        AI_DECISION_STATE_PATH
+      ),
+
+    aiSafetyPreviewPath:
+      p6ResolvePath(
+        merged.aiSafetyPreviewPath,
+        AI_SAFETY_PREVIEW_PATH
+      ),
+
+    aiSafetyLogPath:
+      p6ResolvePath(
+        merged.aiSafetyLogPath,
+        AI_SAFETY_LOG_PATH
+      ),
+
+    aiSafetyStatePath:
+      p6ResolvePath(
+        merged.aiSafetyStatePath,
+        AI_SAFETY_STATE_PATH
+      ),
+
+    aiSafetyPendingPath:
+      p6ResolvePath(
+        merged.aiSafetyPendingPath,
+        AI_SAFETY_PENDING_PATH
+      ),
   };
 }
 
@@ -15114,6 +16960,12 @@ function p6BuildRuntimeSummary(
     historyAppended:
       appendedHistoryCount,
 
+    autonomous:
+      p6Clone(
+        output?.autonomous ||
+        null
+      ),
+
     telegram: {
       sent:
         telegramResult.sentCount,
@@ -15455,6 +17307,13 @@ async function runLiveAnalysisRuntime(
           : "unknown",
     });
 
+  const autonomousResult =
+    applyAutonomousControlToOutput(
+      output,
+      pairBundles,
+      runtimeOptions
+    );
+
   output.runtime = {
     generatedAt:
       output.generatedAt,
@@ -15494,6 +17353,11 @@ async function runLiveAnalysisRuntime(
           : null,
     },
 
+    autonomous:
+      p6Clone(
+        autonomousResult.summary
+      ),
+
     inputs: {
       scalpSignals:
         runtimeOptions
@@ -15510,6 +17374,18 @@ async function runLiveAnalysisRuntime(
       dailyOhlc:
         runtimeOptions
           .dailyOhlcPath,
+
+      autonomousConfig:
+        runtimeOptions
+          .autonomousConfigPath,
+
+      aiPolicy:
+        runtimeOptions
+          .aiPolicyPath,
+
+      aiPolicyState:
+        runtimeOptions
+          .aiPolicyStatePath,
     },
 
     outputs: {
@@ -15524,6 +17400,22 @@ async function runLiveAnalysisRuntime(
       notifyState:
         runtimeOptions
           .notifyStatePath,
+
+      aiDecisionLog:
+        runtimeOptions
+          .aiDecisionLogPath,
+
+      aiDecisionState:
+        runtimeOptions
+          .aiDecisionStatePath,
+
+      aiSafetyLog:
+        runtimeOptions
+          .aiSafetyLogPath,
+
+      aiSafetyState:
+        runtimeOptions
+          .aiSafetyStatePath,
     },
   };
 
@@ -15753,6 +17645,9 @@ async function runLiveAnalysisRuntime(
     telegram:
       telegramResult,
 
+    autonomous:
+      autonomousResult,
+
     summary,
   };
 }
@@ -15858,6 +17753,10 @@ if (
   module.exports
 ) {
   module.exports = {
+    ENGINE_VERSION,
+    AUTONOMOUS_LIVE_VERSION,
+    STRATEGY_VERSION,
+
     runLiveAnalysisRuntime,
     runLiveAnalysis,
     executeLiveAnalysis,
@@ -15873,6 +17772,11 @@ if (
     buildMasterConsensus,
     buildPairEngineBundle,
     buildLiveAnalysisOutput,
+
+    p6AutonomousLatestClosedAt,
+    p6LoadAutonomousModules,
+    p6BuildAutonomousDecisionInput,
+    applyAutonomousControlToOutput,
 
     collectHistoryRecordsFromOutput,
     appendAnalysisHistoryRecords,

@@ -4303,6 +4303,30 @@ function analyze(
       .trim()
       .toUpperCase();
 
+  const executionRows =
+    Array.isArray(
+      context.executionRows
+    ) &&
+    context.executionRows.length > 0
+      ? context.executionRows
+      : rows;
+
+  const executionTimeframe =
+    String(
+      context.executionTimeframe ??
+      mode
+    )
+      .trim()
+      .toUpperCase();
+
+  const setupCandleAt =
+    latestRow(rows)?.date ??
+    null;
+
+  const executionCandleAt =
+    latestRow(executionRows)?.date ??
+    null;
+
   const result = {
     pair: pairLabel,
     signal: "WAIT",
@@ -4314,7 +4338,19 @@ function analyze(
       PROFESSIONAL_PIPELINE_VERSION,
     indicatorSnapshot: null,
     confluence: null,
-    riskDiagnostics: null
+    riskDiagnostics: null,
+    timeframe:
+      mode,
+    reason: null,
+    setupTimeframe:
+      mode,
+    confirmationTimeframe:
+      mode,
+    executionTimeframe,
+    entryTimeframe:
+      executionTimeframe,
+    setupCandleAt,
+    executionCandleAt
   };
 
   if (!hasEnoughRows(rows, 35)) {
@@ -4706,8 +4742,17 @@ function analyze(
     return result;
   }
 
+  /*
+   * Preserve the setup calculation on its own mode while executing the
+   * qualified trade from the latest fully closed execution candle. The
+   * worker passes the normalized M5 rows here for M15 and M30 setups.
+   * Direct analyze() callers that omit executionRows retain the original
+   * same-timeframe entry behavior.
+   */
   const entry =
-    lastClose(rows);
+    lastClose(
+      executionRows
+    );
 
   const tradePlanResult =
     buildProfessionalTradePlan({
@@ -4814,6 +4859,34 @@ function analyze(
 
   result.reasons.push(
     `${direction} professional confluence passed at score ${selection.winnerScore} with edge ${selection.edge}`
+  );
+
+  const setupTimeframeLabel =
+    mode === "M5"
+      ? "5M"
+      : mode === "M15"
+      ? "15M"
+      : mode === "M30"
+      ? "30M"
+      : mode;
+
+  const executionTimeframeLabel =
+    executionTimeframe === "M5"
+      ? "5M"
+      : executionTimeframe === "M15"
+      ? "15M"
+      : executionTimeframe === "M30"
+      ? "30M"
+      : executionTimeframe;
+
+  result.executionReason =
+    `${setupTimeframeLabel} setup executed on ${executionTimeframeLabel}`;
+
+  result.reason =
+    result.executionReason;
+
+  result.reasons.push(
+    result.executionReason
   );
 
   return result;
@@ -5357,6 +5430,43 @@ function createSignalLogEntry(
       signal.analyzedCandleAt ??
       null,
 
+    setupTimeframe:
+      signal.setupTimeframe ??
+      signal.mode ??
+      null,
+
+    confirmationTimeframe:
+      signal.confirmationTimeframe ??
+      signal.setupTimeframe ??
+      signal.mode ??
+      null,
+
+    executionTimeframe:
+      signal.executionTimeframe ??
+      signal.entryTimeframe ??
+      signal.mode ??
+      null,
+
+    entryTimeframe:
+      signal.entryTimeframe ??
+      signal.executionTimeframe ??
+      signal.mode ??
+      null,
+
+    setupCandleAt:
+      signal.setupCandleAt ??
+      signal.analyzedCandleAt ??
+      null,
+
+    executionCandleAt:
+      signal.executionCandleAt ??
+      signal.analyzedCandleAt ??
+      null,
+
+    executionReason:
+      signal.executionReason ??
+      null,
+
     logReason:
       reason
   };
@@ -5608,6 +5718,10 @@ function run() {
           pairNews,
           {
             mode,
+            executionRows:
+              scalp.rows,
+            executionTimeframe:
+              "M5",
             dataQuality:
               mode === "M5"
                 ? prepared.quality.m5

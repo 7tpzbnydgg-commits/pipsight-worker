@@ -2,10 +2,10 @@
   "version": 1,
   "engineName": "PipSight Pro Immutable AI Safety Gate",
   "engineVersion": "1.4.0",
-  "evaluatedAt": "2026-08-06T09:40:44.641Z",
+  "evaluatedAt": "2026-08-06T09:45:50.054Z",
   "decisionId": "live|1.4.0|GBPJPY|weekly|D1|SELL|212.502|2026-08-06T00:00:00.000Z",
-  "sourceDecisionHash": "c3637682cd61325e9f52b1aad47a50bb8df451f29ffd2789bbb930c6218f03f3",
-  "safetyResultHash": "c8d7f9f57418bd3bb037a3a8e675c00b62624fa712b51f869978341cb289b734",
+  "sourceDecisionHash": "2486b82f9cce7be9a97207741e93751859d7599c97f5f6f0a18cb0492ce04d6b",
+  "safetyResultHash": "5765c3b26ea6a16570e346f833305146d5d280873483145528ce3e8d11082b72",
   "signalFingerprint": "5464a1cc4a4fc2ecc6ad6e5864d47a9212fc3c8440c07efa05d06b0e3270d38c",
   "context": {
     "pair": "GBPJPY",
@@ -49,41 +49,45 @@
     ]
   },
   "finalDecision": {
-    "decision": "SELL",
-    "confidence": 88,
-    "tradePlan": {
-      "direction": "SELL",
-      "entry": 212.502,
-      "stop": 216.546,
-      "stopLoss": 216.546,
-      "targets": [
-        204.414,
-        200.37,
-        196.326
-      ],
-      "target1": 204.414,
-      "target2": 200.37,
-      "target3": 196.326,
-      "risk": 4.044,
-      "riskReward": 2,
-      "requestedRiskPercent": null,
-      "source": null
-    },
+    "decision": "HOLD",
+    "confidence": 0,
+    "tradePlan": null,
     "reasons": [
       "2 engine(s) confirm SELL",
       "Weighted consensus -0.475",
-      "Independent immutable Safety Gate approved the signal candidate."
+      "Pair signal cooldown is still active.",
+      "An identical signal fingerprint has already been approved.",
+      "Safety Gate converted the candidate to HOLD."
     ]
   },
   "approval": {
-    "status": "APPROVED",
-    "signalApproved": true,
+    "status": "REJECTED",
+    "signalApproved": false,
     "orderApproved": false,
-    "publishSignal": true,
+    "publishSignal": false,
     "executeOrder": false,
     "failClosed": true,
-    "blockerCount": 0,
-    "blockers": []
+    "blockerCount": 2,
+    "blockers": [
+      {
+        "id": "PAIR_SIGNAL_COOLDOWN",
+        "message": "Pair signal cooldown is still active.",
+        "details": {
+          "pair": "GBPJPY",
+          "lastApprovedSignalAt": "2026-08-06T09:40:44.641Z",
+          "minutesSincePrevious": 5.09,
+          "minimumMinutes": 60
+        }
+      },
+      {
+        "id": "DUPLICATE_SIGNAL_CLEAR",
+        "message": "An identical signal fingerprint has already been approved.",
+        "details": {
+          "fingerprint": "5464a1cc4a4fc2ecc6ad6e5864d47a9212fc3c8440c07efa05d06b0e3270d38c",
+          "duplicate": true
+        }
+      }
+    ]
   },
   "risk": {
     "requestedRiskPercent": 0.25,
@@ -100,7 +104,7 @@
     "maximumOpenPositionsPerPair": 1,
     "correlatedExposureCount": 0,
     "maximumCorrelatedExposure": 1,
-    "signalsForPairToday": 0,
+    "signalsForPairToday": 1,
     "maximumSignalsPerPairPerDay": 4
   },
   "checks": [
@@ -166,8 +170,8 @@
       "details": {
         "marketClass": "swing",
         "marketDataAt": "2026-08-06T00:00:00.000Z",
-        "evaluatedAt": "2026-08-06T09:40:44.641Z",
-        "marketAgeSeconds": 34844.641,
+        "evaluatedAt": "2026-08-06T09:45:50.054Z",
+        "marketAgeSeconds": 35150.054,
         "maximumAgeSeconds": 172800
       }
     },
@@ -307,30 +311,30 @@
       "message": "Daily pair-signal limit allows this candidate.",
       "details": {
         "pair": "GBPJPY",
-        "current": 0,
+        "current": 1,
         "maximum": 4
       }
     },
     {
       "id": "PAIR_SIGNAL_COOLDOWN",
-      "status": "SKIP",
+      "status": "FAIL",
       "blocking": true,
-      "message": "No prior pair signal requires a cooldown check.",
+      "message": "Pair signal cooldown is still active.",
       "details": {
         "pair": "GBPJPY",
-        "lastApprovedSignalAt": null,
-        "minutesSincePrevious": null,
+        "lastApprovedSignalAt": "2026-08-06T09:40:44.641Z",
+        "minutesSincePrevious": 5.09,
         "minimumMinutes": 60
       }
     },
     {
       "id": "DUPLICATE_SIGNAL_CLEAR",
-      "status": "PASS",
+      "status": "FAIL",
       "blocking": true,
-      "message": "No identical approved signal fingerprint was found.",
+      "message": "An identical signal fingerprint has already been approved.",
       "details": {
         "fingerprint": "5464a1cc4a4fc2ecc6ad6e5864d47a9212fc3c8440c07efa05d06b0e3270d38c",
-        "duplicate": false
+        "duplicate": true
       }
     },
     {
@@ -357,7 +361,10 @@
   ],
   "validation": {
     "valid": true,
-    "errors": [],
+    "errors": [
+      "Pair signal cooldown is still active.",
+      "An identical signal fingerprint has already been approved."
+    ],
     "warnings": [
       "Daily loss snapshot was unavailable; order execution remains prohibited.",
       "Weekly loss snapshot was unavailable; order execution remains prohibited."
@@ -381,6 +388,6 @@
     "configHash": "cb88a358b6dce078cf5aab4db5b682018bf9cfb413d98ac7947ba623463395b9",
     "marketClass": "swing",
     "inputExecutionContext": "SIGNAL_ONLY",
-    "nextConsumer": "Live Analysis Output / Telegram / History"
+    "nextConsumer": "HOLD / Audit Log"
   }
 }

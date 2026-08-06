@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-06T01:10:47.729Z",
+  "generatedAt": "2026-08-06T01:20:51.667Z",
   "engineVersion": "1.0.0",
   "strategyVersion": "scalp-lockstep-1.0",
   "signals": [
@@ -8,41 +8,42 @@
       "signal": "WAIT",
       "confidence": 0,
       "reasons": [
-        "RSI confirmation failed"
+        "MACD confirmation failed"
       ],
       "steps": [
         {
           "name": "EMA Trend",
           "pass": true,
-          "detail": "BUY full EMA alignment confirmed at 4/4: price 4298.19823, EMA20 4275.687455, EMA50 4265.28847, EMA100 4254.886207, EMA200 4228.041467"
+          "detail": "BUY full EMA alignment confirmed at 4/4: price 4285.0507, EMA20 4276.641685, EMA50 4266.450164, EMA100 4255.999882, EMA200 4229.135248"
         },
         {
           "name": "MACD",
-          "pass": true,
-          "detail": "BUY confirmed: MACD 9.729104 is above signal 8.501229; histogram 1.227875"
+          "pass": false,
+          "detail": "BUY not confirmed: MACD 7.776441 is not above signal 8.360785; histogram -0.584344"
         },
         {
           "name": "RSI",
-          "pass": false,
-          "detail": "BUY RSI confirmation failed at 67.3; required range 45–65"
+          "pass": null,
+          "status": "skip",
+          "detail": "Skipped because MACD did not pass"
         },
         {
           "name": "Higher TF",
           "pass": null,
           "status": "skip",
-          "detail": "Skipped because RSI did not pass"
+          "detail": "Skipped because MACD did not pass"
         },
         {
           "name": "News",
           "pass": null,
           "status": "skip",
-          "detail": "Skipped because RSI did not pass"
+          "detail": "Skipped because MACD did not pass"
         },
         {
           "name": "Risk Reward",
           "pass": null,
           "status": "skip",
-          "detail": "Skipped because RSI did not pass"
+          "detail": "Skipped because MACD did not pass"
         }
       ],
       "tradePlan": null,
@@ -135,8 +136,8 @@
         "reason": "No matching Learning Enrichment performance context was found."
       },
       "mode": "M5",
-      "generatedAt": "2026-08-06T01:10:47.729Z",
-      "analyzedCandleAt": "2026-08-06T01:05:00.000Z",
+      "generatedAt": "2026-08-06T01:20:51.667Z",
+      "analyzedCandleAt": "2026-08-06T01:15:00.000Z",
       "prepared": {
         "counts": {
           "m5": 1500,
@@ -149,8 +150,8 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-06T01:10:47.605Z",
-          "h1": "2026-08-06T01:00:50.024Z"
+          "m5": "2026-08-06T01:20:51.546Z",
+          "h1": "2026-08-06T01:15:42.609Z"
         },
         "quality": {
           "m5": {
@@ -160,8 +161,8 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-31T20:10:00.000Z",
-            "lastDate": "2026-08-06T01:05:00.000Z",
+            "firstDate": "2026-07-31T20:20:00.000Z",
+            "lastDate": "2026-08-06T01:15:00.000Z",
             "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
@@ -180,7 +181,7 @@
             "timeFilteredCandlesRemoved": 0,
             "firstDate": "2026-06-29T13:00:00.000Z",
             "lastDate": "2026-08-06T00:00:00.000Z",
-            "ageMinutes": 70,
+            "ageMinutes": 80,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,
@@ -197,41 +198,38 @@
       "signal": "WAIT",
       "confidence": 0,
       "reasons": [
-        "RSI confirmation failed"
+        "Risk Reward below 1:2"
       ],
       "steps": [
         {
           "name": "EMA Trend",
           "pass": true,
-          "detail": "BUY full EMA alignment confirmed at 4/4: price 4295.86705, EMA20 4256.157353, EMA50 4232.418582, EMA100 4203.428865, EMA200 4156.290731"
+          "detail": "BUY full EMA alignment confirmed at 4/4: price 4281.48907, EMA20 4257.791657, EMA50 4234.02745, EMA100 4204.974597, EMA200 4157.529772"
         },
         {
           "name": "MACD",
           "pass": true,
-          "detail": "BUY confirmed: MACD 11.549124 is above signal 8.449222; histogram 3.099901"
+          "detail": "BUY confirmed: MACD 11.556882 is above signal 9.070754; histogram 2.486128"
         },
         {
           "name": "RSI",
-          "pass": false,
-          "detail": "BUY RSI confirmation failed at 74.5; required range 45–65"
+          "pass": true,
+          "detail": "BUY RSI confirmation passed at 62.71; required range 45–65"
         },
         {
           "name": "Higher TF",
-          "pass": null,
-          "status": "skip",
-          "detail": "Skipped because RSI did not pass"
+          "pass": true,
+          "detail": "Higher timeframe confirms the same BUY direction"
         },
         {
           "name": "News",
-          "pass": null,
-          "status": "skip",
-          "detail": "Skipped because RSI did not pass"
+          "pass": true,
+          "detail": "No conflicting high-impact news found across 6 pair-specific item(s); net news score 70"
         },
         {
           "name": "Risk Reward",
-          "pass": null,
-          "status": "skip",
-          "detail": "Skipped because RSI did not pass"
+          "pass": false,
+          "detail": "Calculated R:R is 1:0.02 using entry 4281.48907, stop 4245.95111 and target 4282.28845; minimum required is 1:2"
         }
       ],
       "tradePlan": null,
@@ -324,8 +322,8 @@
         "reason": "No matching Learning Enrichment performance context was found."
       },
       "mode": "M15",
-      "generatedAt": "2026-08-06T01:10:47.729Z",
-      "analyzedCandleAt": "2026-08-06T00:45:00.000Z",
+      "generatedAt": "2026-08-06T01:20:51.667Z",
+      "analyzedCandleAt": "2026-08-06T01:00:00.000Z",
       "prepared": {
         "counts": {
           "m5": 1500,
@@ -338,8 +336,8 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-06T01:10:47.605Z",
-          "h1": "2026-08-06T01:00:50.024Z"
+          "m5": "2026-08-06T01:20:51.546Z",
+          "h1": "2026-08-06T01:15:42.609Z"
         },
         "quality": {
           "m5": {
@@ -349,8 +347,8 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-31T20:10:00.000Z",
-            "lastDate": "2026-08-06T01:05:00.000Z",
+            "firstDate": "2026-07-31T20:20:00.000Z",
+            "lastDate": "2026-08-06T01:15:00.000Z",
             "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
@@ -369,7 +367,7 @@
             "timeFilteredCandlesRemoved": 0,
             "firstDate": "2026-06-29T13:00:00.000Z",
             "lastDate": "2026-08-06T00:00:00.000Z",
-            "ageMinutes": 70,
+            "ageMinutes": 80,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,
@@ -513,7 +511,7 @@
         "reason": "No matching Learning Enrichment performance context was found."
       },
       "mode": "M30",
-      "generatedAt": "2026-08-06T01:10:47.729Z",
+      "generatedAt": "2026-08-06T01:20:51.667Z",
       "analyzedCandleAt": "2026-08-06T00:30:00.000Z",
       "prepared": {
         "counts": {
@@ -527,8 +525,8 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-06T01:10:47.605Z",
-          "h1": "2026-08-06T01:00:50.024Z"
+          "m5": "2026-08-06T01:20:51.546Z",
+          "h1": "2026-08-06T01:15:42.609Z"
         },
         "quality": {
           "m5": {
@@ -538,8 +536,8 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-31T20:10:00.000Z",
-            "lastDate": "2026-08-06T01:05:00.000Z",
+            "firstDate": "2026-07-31T20:20:00.000Z",
+            "lastDate": "2026-08-06T01:15:00.000Z",
             "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
@@ -558,7 +556,7 @@
             "timeFilteredCandlesRemoved": 0,
             "firstDate": "2026-06-29T13:00:00.000Z",
             "lastDate": "2026-08-06T00:00:00.000Z",
-            "ageMinutes": 70,
+            "ageMinutes": 80,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,
@@ -572,26 +570,24 @@
     },
     {
       "pair": "GBP/JPY",
-      "signal": "WAIT",
-      "confidence": 0,
-      "reasons": [
-        "Risk Reward below 1:2"
-      ],
+      "signal": "BUY",
+      "confidence": 74,
+      "reasons": [],
       "steps": [
         {
           "name": "EMA Trend",
           "pass": true,
-          "detail": "BUY qualified partial EMA alignment confirmed at 3/4 with EMA20–EMA50–EMA100 core structure; confidence penalty -10: price 212.37213, EMA20 212.372289, EMA50 212.369946, EMA100 212.361432, EMA200 212.31749"
+          "detail": "BUY full EMA alignment confirmed at 4/4: price 212.44891, EMA20 212.379122, EMA50 212.373602, EMA100 212.363983, EMA200 212.319646"
         },
         {
           "name": "MACD",
           "pass": true,
-          "detail": "BUY confirmed: MACD 0.012492 is above signal 0.008215; histogram 0.004277"
+          "detail": "BUY confirmed: MACD 0.016843 is above signal 0.010704; histogram 0.006139"
         },
         {
           "name": "RSI",
           "pass": true,
-          "detail": "BUY RSI confirmation passed at 49.83; required range 45–65"
+          "detail": "BUY RSI confirmation passed at 62.22; required range 45–65"
         },
         {
           "name": "Higher TF",
@@ -605,102 +601,128 @@
         },
         {
           "name": "Risk Reward",
-          "pass": false,
-          "detail": "Calculated R:R is 1:1.64 using entry 212.37213, stop 212.36767 and target 212.37946; minimum required is 1:2"
+          "pass": true,
+          "detail": "Risk:Reward passed at 1:4.04 using entry 212.44891, stop 212.44483 and target 212.46539"
+        },
+        {
+          "name": "AI Memory Confidence",
+          "pass": true,
+          "detail": "Base 80, adjustment -6, final 74; pairEngineDirection GBPJPY::scalp::BUY; 66 trades, 18.18% win rate, 0.3439 profit factor; Qualified historical profitability adjustment"
         }
       ],
-      "tradePlan": null,
+      "tradePlan": {
+        "entry": 212.44891,
+        "stopLoss": 212.44483,
+        "target1": 212.46539,
+        "target2": 212.46115000000006,
+        "target3": 212.46523000000008,
+        "riskReward": 4.04
+      },
       "confidenceExplainability": {
         "version": 1,
         "adjustmentOwner": "scalp-engine",
-        "baseConfidence": 0,
-        "aiAdjustment": 0,
-        "finalConfidence": 0,
+        "baseConfidence": 80,
+        "aiAdjustment": -6,
+        "finalConfidence": 74,
         "evaluated": true,
-        "matched": false,
-        "applied": false,
-        "status": "NOT_APPLICABLE",
-        "source": null,
-        "key": null,
-        "sampleSize": 0,
-        "winRate": null,
-        "profitFactor": null,
+        "matched": true,
+        "applied": true,
+        "status": "CAUTION",
+        "source": "pairEngineDirection",
+        "key": "GBPJPY::scalp::BUY",
+        "sampleSize": 66,
+        "winRate": 18.18,
+        "profitFactor": 0.3439,
         "reliability": null,
-        "reason": "Confidence adjustment requires a BUY or SELL decision",
+        "reason": "Qualified historical profitability adjustment",
         "enrichmentContext": {
           "version": 1,
           "advisoryOnly": true,
-          "available": false,
+          "available": true,
           "compatible": true,
           "evaluated": true,
-          "status": "NO_MATCH",
-          "source": null,
-          "key": null,
-          "sampleSize": 0,
-          "sampleSufficient": false,
-          "learningTrend": "unknown",
+          "generatedAt": "2026-08-06T00:14:31.136Z",
+          "status": "CAUTION",
+          "source": "pairStrategyDirection",
+          "key": "GBPJPY::scalp::BUY",
+          "sampleSize": 66,
+          "sampleSufficient": true,
+          "learningTrend": "improving",
+          "trendAvailable": true,
+          "trendReasons": [
+            "Recent average profit points improved.",
+            "Recent profit factor increased by 0.4573.",
+            "Recent win rate increased by 15 percentage points."
+          ],
           "recentPerformance": {
-            "window": null,
-            "availableTrades": 0,
-            "complete": false,
-            "winRate": null,
+            "window": 20,
+            "availableTrades": 1,
+            "complete": true,
+            "winRate": 15,
             "profitFactor": null,
             "averageProfitPoints": null
           },
           "recencyWeighted": {
-            "available": false,
+            "available": true,
             "winRate": null,
             "profitFactor": null,
             "averageProfitPoints": null
           },
           "overallPerformance": {
-            "winRate": null,
+            "winRate": 18.1818,
             "profitFactor": null,
             "averageProfitPoints": null
           },
           "calibration": null,
-          "advisorySignal": "NEUTRAL",
-          "reason": "No matching Learning Enrichment performance context was found."
+          "advisorySignal": "CAUTION",
+          "reason": "Recent enriched performance indicates declining or weak historical conditions."
         }
       },
       "enrichmentContext": {
         "version": 1,
         "advisoryOnly": true,
-        "available": false,
+        "available": true,
         "compatible": true,
         "evaluated": true,
-        "status": "NO_MATCH",
-        "source": null,
-        "key": null,
-        "sampleSize": 0,
-        "sampleSufficient": false,
-        "learningTrend": "unknown",
+        "generatedAt": "2026-08-06T00:14:31.136Z",
+        "status": "CAUTION",
+        "source": "pairStrategyDirection",
+        "key": "GBPJPY::scalp::BUY",
+        "sampleSize": 66,
+        "sampleSufficient": true,
+        "learningTrend": "improving",
+        "trendAvailable": true,
+        "trendReasons": [
+          "Recent average profit points improved.",
+          "Recent profit factor increased by 0.4573.",
+          "Recent win rate increased by 15 percentage points."
+        ],
         "recentPerformance": {
-          "window": null,
-          "availableTrades": 0,
-          "complete": false,
-          "winRate": null,
+          "window": 20,
+          "availableTrades": 1,
+          "complete": true,
+          "winRate": 15,
           "profitFactor": null,
           "averageProfitPoints": null
         },
         "recencyWeighted": {
-          "available": false,
+          "available": true,
           "winRate": null,
           "profitFactor": null,
           "averageProfitPoints": null
         },
         "overallPerformance": {
-          "winRate": null,
+          "winRate": 18.1818,
           "profitFactor": null,
           "averageProfitPoints": null
         },
         "calibration": null,
-        "advisorySignal": "NEUTRAL",
-        "reason": "No matching Learning Enrichment performance context was found."
+        "advisorySignal": "CAUTION",
+        "reason": "Recent enriched performance indicates declining or weak historical conditions."
       },
       "mode": "M5",
-      "generatedAt": "2026-08-06T01:10:47.729Z",
-      "analyzedCandleAt": "2026-08-06T01:05:00.000Z",
+      "generatedAt": "2026-08-06T01:20:51.667Z",
+      "analyzedCandleAt": "2026-08-06T01:15:00.000Z",
       "prepared": {
         "counts": {
           "m5": 1500,
@@ -713,8 +735,8 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-06T01:10:47.605Z",
-          "h1": "2026-08-06T01:00:50.024Z"
+          "m5": "2026-08-06T01:20:51.546Z",
+          "h1": "2026-08-06T01:15:42.609Z"
         },
         "quality": {
           "m5": {
@@ -724,8 +746,8 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-31T20:10:00.000Z",
-            "lastDate": "2026-08-06T01:05:00.000Z",
+            "firstDate": "2026-07-31T20:20:00.000Z",
+            "lastDate": "2026-08-06T01:15:00.000Z",
             "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
@@ -744,7 +766,7 @@
             "timeFilteredCandlesRemoved": 0,
             "firstDate": "2026-06-29T13:00:00.000Z",
             "lastDate": "2026-08-06T00:00:00.000Z",
-            "ageMinutes": 70,
+            "ageMinutes": 80,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,
@@ -767,17 +789,17 @@
         {
           "name": "EMA Trend",
           "pass": true,
-          "detail": "BUY full EMA alignment confirmed at 4/4: price 212.39796, EMA20 212.359459, EMA50 212.324952, EMA100 212.253726, EMA200 212.103535"
+          "detail": "BUY full EMA alignment confirmed at 4/4: price 212.4036, EMA20 212.362307, EMA50 212.32753, EMA100 212.25669, EMA200 212.106229"
         },
         {
           "name": "MACD",
           "pass": true,
-          "detail": "BUY confirmed: MACD 0.001812 is above signal 0.001752; histogram 0.00006"
+          "detail": "BUY confirmed: MACD 0.004866 is above signal 0.002375; histogram 0.002491"
         },
         {
           "name": "RSI",
           "pass": true,
-          "detail": "BUY RSI confirmation passed at 55.37; required range 45–65"
+          "detail": "BUY RSI confirmation passed at 56.1; required range 45–65"
         },
         {
           "name": "Higher TF",
@@ -792,7 +814,7 @@
         {
           "name": "Risk Reward",
           "pass": false,
-          "detail": "Calculated R:R is 1:1.34 using entry 212.39796, stop 212.38577 and target 212.4143; minimum required is 1:2"
+          "detail": "Calculated R:R is 1:0.6 using entry 212.4036, stop 212.38577 and target 212.4143; minimum required is 1:2"
         }
       ],
       "tradePlan": null,
@@ -885,8 +907,8 @@
         "reason": "No matching Learning Enrichment performance context was found."
       },
       "mode": "M15",
-      "generatedAt": "2026-08-06T01:10:47.729Z",
-      "analyzedCandleAt": "2026-08-06T00:45:00.000Z",
+      "generatedAt": "2026-08-06T01:20:51.667Z",
+      "analyzedCandleAt": "2026-08-06T01:00:00.000Z",
       "prepared": {
         "counts": {
           "m5": 1500,
@@ -899,8 +921,8 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-06T01:10:47.605Z",
-          "h1": "2026-08-06T01:00:50.024Z"
+          "m5": "2026-08-06T01:20:51.546Z",
+          "h1": "2026-08-06T01:15:42.609Z"
         },
         "quality": {
           "m5": {
@@ -910,8 +932,8 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-31T20:10:00.000Z",
-            "lastDate": "2026-08-06T01:05:00.000Z",
+            "firstDate": "2026-07-31T20:20:00.000Z",
+            "lastDate": "2026-08-06T01:15:00.000Z",
             "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
@@ -930,7 +952,7 @@
             "timeFilteredCandlesRemoved": 0,
             "firstDate": "2026-06-29T13:00:00.000Z",
             "lastDate": "2026-08-06T00:00:00.000Z",
-            "ageMinutes": 70,
+            "ageMinutes": 80,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,
@@ -1075,7 +1097,7 @@
         "reason": "No matching Learning Enrichment performance context was found."
       },
       "mode": "M30",
-      "generatedAt": "2026-08-06T01:10:47.729Z",
+      "generatedAt": "2026-08-06T01:20:51.667Z",
       "analyzedCandleAt": "2026-08-06T00:30:00.000Z",
       "prepared": {
         "counts": {
@@ -1089,8 +1111,8 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-06T01:10:47.605Z",
-          "h1": "2026-08-06T01:00:50.024Z"
+          "m5": "2026-08-06T01:20:51.546Z",
+          "h1": "2026-08-06T01:15:42.609Z"
         },
         "quality": {
           "m5": {
@@ -1100,8 +1122,8 @@
             "openCandlesRemoved": 0,
             "futureCandlesRemoved": 0,
             "timeFilteredCandlesRemoved": 0,
-            "firstDate": "2026-07-31T20:10:00.000Z",
-            "lastDate": "2026-08-06T01:05:00.000Z",
+            "firstDate": "2026-07-31T20:20:00.000Z",
+            "lastDate": "2026-08-06T01:15:00.000Z",
             "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "staleThresholdMinutes": 20,
@@ -1120,7 +1142,7 @@
             "timeFilteredCandlesRemoved": 0,
             "firstDate": "2026-06-29T13:00:00.000Z",
             "lastDate": "2026-08-06T00:00:00.000Z",
-            "ageMinutes": 70,
+            "ageMinutes": 80,
             "expectedIntervalMinutes": 60,
             "staleThresholdMinutes": 240,
             "hasOHLC": true,

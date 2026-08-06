@@ -10,6 +10,7 @@
    - Existing public methods preserved.
    - Existing signal and confidence structures preserved.
    - Exact immutable trade attribution; no approximate pending matching.
+   - Legacy external IDs reconcile through exact immutable opening identity.
    - Risk-normalized R feedback, context snapshots and correction revisions.
    - Works in Node.js and browser environments.
    ===================================================================== */
@@ -1423,6 +1424,179 @@ class PipSightLearner {
         };
     }
 
+    createOpeningIdentity(
+        source = {}
+    ) {
+        const payload =
+            this.buildOpeningIdentityPayload(
+                source
+            );
+
+        const identitySource = {
+            pair:
+                payload.pair,
+            strategy:
+                payload.strategy,
+            timeframe:
+                payload.timeframe,
+            direction:
+                payload.direction,
+            entry:
+                payload.entry,
+            openedAt:
+                payload.openedAt
+        };
+
+        const complete =
+            Boolean(
+                identitySource.pair &&
+                identitySource.strategy &&
+                identitySource.timeframe &&
+                (
+                    identitySource.direction ===
+                        "BUY" ||
+                    identitySource.direction ===
+                        "SELL"
+                ) &&
+                identitySource.entry !== null &&
+                identitySource.entry > 0 &&
+                identitySource.openedAt
+            );
+
+        return {
+            schemaVersion:
+                LearningConfig
+                    .AUTONOMOUS_SCHEMA_VERSION,
+
+            key:
+                complete
+                    ? `open_${createDeterministicHash(
+                        JSON.stringify(
+                            identitySource
+                        )
+                    )}`
+                    : null,
+
+            source:
+                identitySource,
+
+            complete
+        };
+    }
+
+    haveConflictingExternalIdentities(
+        leftSource = {},
+        rightSource = {}
+    ) {
+        const left =
+            this.buildOpeningIdentityPayload(
+                leftSource
+            );
+
+        const right =
+            this.buildOpeningIdentityPayload(
+                rightSource
+            );
+
+        const externalIdentityFields = [
+            "historyRecordId",
+            "sourceTradeKey",
+            "fingerprint"
+        ];
+
+        return externalIdentityFields.some(
+            field =>
+                Boolean(
+                    left[field] &&
+                    right[field] &&
+                    left[field] !==
+                        right[field]
+                )
+        );
+    }
+
+    haveMatchingExternalIdentity(
+        leftSource = {},
+        rightSource = {}
+    ) {
+        const left =
+            this.buildOpeningIdentityPayload(
+                leftSource
+            );
+
+        const right =
+            this.buildOpeningIdentityPayload(
+                rightSource
+            );
+
+        const externalIdentityFields = [
+            "historyRecordId",
+            "sourceTradeKey",
+            "fingerprint"
+        ];
+
+        return externalIdentityFields.some(
+            field =>
+                Boolean(
+                    left[field] &&
+                    right[field] &&
+                    left[field] ===
+                        right[field]
+                )
+        );
+    }
+
+    backfillExternalIdentity(
+        signal,
+        source = {}
+    ) {
+        if (!isPlainObject(signal)) {
+            return signal;
+        }
+
+        const payload =
+            this.buildOpeningIdentityPayload(
+                source
+            );
+
+        const externalIdentityFields = [
+            "historyRecordId",
+            "sourceTradeKey",
+            "fingerprint"
+        ];
+
+        let changed = false;
+
+        for (
+            const field of
+            externalIdentityFields
+        ) {
+            if (
+                !toTrimmedStringOrNull(
+                    signal[field]
+                ) &&
+                payload[field]
+            ) {
+                signal[field] =
+                    payload[field];
+
+                changed = true;
+            }
+        }
+
+        if (changed) {
+            this
+                .enrichSignalForAutonomousLearning(
+                    signal,
+                    {
+                        repair: true
+                    }
+                );
+        }
+
+        return signal;
+    }
+
     deriveSignalId(
         source = {}
     ) {
@@ -1796,39 +1970,108 @@ class PipSightLearner {
         sourceTradeKey,
         fingerprint
     } = {}) {
+        const identitySource = {
+            pair,
+            strategy,
+            timeframe,
+            direction,
+            entry,
+            openedAt,
+            historyRecordId,
+            sourceTradeKey,
+            fingerprint
+        };
+
         const query =
-            this.createLearningIdentity({
-                pair,
-                strategy,
-                timeframe,
-                direction,
-                entry,
-                openedAt,
-                historyRecordId,
-                sourceTradeKey,
-                fingerprint
-            });
+            this.createLearningIdentity(
+                identitySource
+            );
 
-        return this.data.signals.find(
-            signal => {
-                if (!isPlainObject(signal)) {
-                    return false;
-                }
+        const openingIdentity =
+            this.createOpeningIdentity(
+                identitySource
+            );
 
-                this
-                    .enrichSignalForAutonomousLearning(
+        let openingMatch = null;
+
+        for (
+            const signal of
+            this.data.signals
+        ) {
+            if (!isPlainObject(signal)) {
+                continue;
+            }
+
+            this
+                .enrichSignalForAutonomousLearning(
+                    signal,
+                    {
+                        repair: true
+                    }
+                );
+
+            if (
+                signal.learningIdentity ===
+                query.key
+            ) {
+                return this
+                    .backfillExternalIdentity(
                         signal,
-                        {
-                            repair: true
-                        }
+                        identitySource
+                    );
+            }
+
+            const externalIdentityConflict =
+                this
+                    .haveConflictingExternalIdentities(
+                        signal,
+                        identitySource
                     );
 
-                return (
-                    signal.learningIdentity ===
-                    query.key
-                );
+            if (externalIdentityConflict) {
+                continue;
             }
-        ) || null;
+
+            if (
+                this
+                    .haveMatchingExternalIdentity(
+                        signal,
+                        identitySource
+                    )
+            ) {
+                return this
+                    .backfillExternalIdentity(
+                        signal,
+                        identitySource
+                    );
+            }
+
+            if (
+                !openingMatch &&
+                openingIdentity.complete
+            ) {
+                const candidateOpeningIdentity =
+                    this.createOpeningIdentity(
+                        signal
+                    );
+
+                if (
+                    candidateOpeningIdentity.complete &&
+                    candidateOpeningIdentity.key ===
+                        openingIdentity.key
+                ) {
+                    openingMatch =
+                        signal;
+                }
+            }
+        }
+
+        return openingMatch
+            ? this.backfillExternalIdentity(
+                openingMatch,
+                identitySource
+            )
+            : null;
     }
 
     isEquivalentResolution(

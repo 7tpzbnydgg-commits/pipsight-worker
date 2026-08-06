@@ -3,14 +3,14 @@
 /**
  * fetch-intraday-h1.js
  *
- * Fetches 1-hour OHLC history for:
+ * Fetches validated, fully closed 1-hour OHLC history for:
  *   - XAU/USD
  *   - GBP/JPY
  *
  * Writes:
  *   data/intraday-h1.json
  *
- * Integration contract
+ * INTEGRATION CONTRACT
  * --------------------
  * Existing top-level candle arrays remain unchanged:
  *
@@ -21,24 +21,26 @@
  *
  * This preserves compatibility with:
  *   - run-live-analysis.js
- *   - Existing H4 aggregation logic
+ *   - Existing local H4 aggregation logic
  *   - Existing frontend consumers
  *   - Existing GitHub workflow validation
  *
- * FREE-TIER SAFETY
- * ----------------
- * - Exactly one Twelve Data request per symbol.
- * - Maximum two provider requests per execution.
- * - No automatic retries.
- * - H4 remains derived locally from H1 candles.
- * - Existing cached data is retained when a request fails.
- * - API credentials are never written to output or logs.
- *
- * Recommended cadence:
- *   Every 15 minutes
- *
- * Normal request usage:
- *   2 requests/run × 96 runs/day = 192 requests/day
+ * PROFESSIONAL H1 DATA LAYER
+ * --------------------------
+ * - Exact UTC H1 timestamp alignment (HH:00:00 only)
+ * - Fully closed candles only
+ * - Strict OHLC validation
+ * - Optional provider volume preservation
+ * - Duplicate removal and chronological sorting
+ * - Exact continuity and missing-interval diagnostics
+ * - One immutable reference time per execution
+ * - Authoritative fresh-window cache merging
+ * - Explicit provider-coverage regression diagnostics
+ * - Complete local H4 readiness diagnostics
+ * - Atomic JSON replacement
+ * - Maximum two provider requests per execution
+ * - No automatic provider retries
+ * - API credentials never written to output or logs
  */
 
 const fs = require("fs");
@@ -48,17 +50,17 @@ const path = require("path");
    Configuration
    ===================================================================== */
 
-const FILE_VERSION = "2.0.0";
+const FILE_VERSION = "2.1.0";
 const SOURCE_NAME = "Twelve Data";
 const INTERVAL = "1h";
+const INTERVAL_MINUTES = 60;
+const EXPECTED_INTERVAL_MS =
+  INTERVAL_MINUTES * 60 * 1000;
+const H4_INTERVAL_MS =
+  4 * EXPECTED_INTERVAL_MS;
 
 const API_BASE_URL =
   "https://api.twelvedata.com/time_series";
-
-const API_KEY =
-  typeof process.env.TWELVEDATA_API_KEY === "string"
-    ? process.env.TWELVEDATA_API_KEY.trim()
-    : "";
 
 const DATA_DIR =
   path.join(
@@ -87,60 +89,16 @@ const SYMBOLS = Object.freeze([
 ]);
 
 /*
- * 800 H1 candles provide approximately:
- *
- * - 33 calendar days for continuously traded markets
- * - Around 200 locally derived H4 candles
- *
- * The complete history remains one time_series request per symbol.
+ * Existing request/history settings are intentionally preserved.
  */
 const OUTPUT_SIZE = 800;
-
-/*
- * Hard provider-request budget:
- *
- * XAU/USD = one request
- * GBP/JPY = one request
- */
 const MAX_REQUESTS_PER_RUN =
   SYMBOLS.length;
-
-/*
- * No retries are used because another request may consume another
- * provider credit.
- */
 const REQUEST_TIMEOUT_MS = 20_000;
-
-/*
- * A short gap prevents both allowed requests from being sent as one burst.
- */
 const REQUEST_GAP_MS = 1_000;
-
-/*
- * H1 data normally refreshes frequently.
- *
- * Weekends, holidays and market closures may naturally create older bars.
- * Failed fetches are always explicitly marked stale regardless of age.
- */
 const STALE_AFTER_HOURS = 6;
-
-/*
- * Retain slightly more history than the provider request while preventing
- * uncontrolled output growth after cache merging.
- */
 const MAX_STORED_CANDLES = 900;
-
-/*
- * Used for diagnostics only.
- *
- * Missing candles are never fabricated because valid gaps may represent:
- * - Weekends
- * - Holidays
- * - Provider maintenance
- * - Market closures
- */
-const EXPECTED_INTERVAL_MS =
-  60 * 60 * 1000;
+const MAX_GAP_SAMPLES = 20;
 
 /* =====================================================================
    Runtime State
@@ -149,40 +107,126 @@ const EXPECTED_INTERVAL_MS =
 let requestsMade = 0;
 
 /* =====================================================================
+   Generic Helpers
+   ===================================================================== */
+
+function isRecord(value) {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value)
+  );
+}
+
+function isFiniteNumber(value) {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value)
+  );
+}
+
+function errorMessageOf(error) {
+  return error instanceof Error
+    ? error.message
+    : String(error);
+}
+
+function sleep(milliseconds) {
+  return new Promise(resolve => {
+    setTimeout(
+      resolve,
+      milliseconds
+    );
+  });
+}
+
+function parseNumber(value) {
+  if (
+    typeof value !== "number" &&
+    typeof value !== "string"
+  ) {
+    return null;
+  }
+
+  const normalized =
+    typeof value === "string"
+      ? value.trim()
+      : value;
+
+  if (normalized === "") {
+    return null;
+  }
+
+  const parsed =
+    Number(normalized);
+
+  return Number.isFinite(parsed)
+    ? parsed
+    : null;
+}
+
+function round(value, decimals = 2) {
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+
+  const multiplier =
+    10 ** decimals;
+
+  return (
+    Math.round(
+      value * multiplier
+    ) / multiplier
+  );
+}
+
+function pad2(value) {
+  return String(value)
+    .padStart(2, "0");
+}
+
+function getConfiguredApiKey() {
+  return typeof process.env.TWELVEDATA_API_KEY === "string"
+    ? process.env.TWELVEDATA_API_KEY.trim()
+    : "";
+}
+
+/* =====================================================================
    Startup Validation
    ===================================================================== */
 
-function validateStartupConfiguration() {
-  if (!API_KEY) {
+function validateStartupConfiguration(
+  apiKey = getConfiguredApiKey()
+) {
+  if (!apiKey) {
     throw new Error(
       "Missing TWELVEDATA_API_KEY environment variable."
     );
   }
 
-  if (
-    !Number.isInteger(OUTPUT_SIZE) ||
-    OUTPUT_SIZE <= 0
-  ) {
-    throw new Error(
-      "OUTPUT_SIZE must be a positive integer."
-    );
+  const positiveIntegers = [
+    ["OUTPUT_SIZE", OUTPUT_SIZE],
+    ["MAX_REQUESTS_PER_RUN", MAX_REQUESTS_PER_RUN],
+    ["REQUEST_TIMEOUT_MS", REQUEST_TIMEOUT_MS],
+    ["STALE_AFTER_HOURS", STALE_AFTER_HOURS],
+    ["MAX_STORED_CANDLES", MAX_STORED_CANDLES],
+    ["EXPECTED_INTERVAL_MS", EXPECTED_INTERVAL_MS]
+  ];
+
+  for (const [name, value] of positiveIntegers) {
+    if (
+      !Number.isInteger(value) ||
+      value <= 0
+    ) {
+      throw new Error(
+        `${name} must be a positive integer.`
+      );
+    }
   }
 
-  if (
-    !Number.isInteger(MAX_STORED_CANDLES) ||
-    MAX_STORED_CANDLES < OUTPUT_SIZE
-  ) {
+  if (MAX_STORED_CANDLES < OUTPUT_SIZE) {
     throw new Error(
       "MAX_STORED_CANDLES must be greater than or equal to OUTPUT_SIZE."
-    );
-  }
-
-  if (
-    !Number.isInteger(REQUEST_TIMEOUT_MS) ||
-    REQUEST_TIMEOUT_MS <= 0
-  ) {
-    throw new Error(
-      "REQUEST_TIMEOUT_MS must be a positive integer."
     );
   }
 
@@ -192,24 +236,6 @@ function validateStartupConfiguration() {
   ) {
     throw new Error(
       "REQUEST_GAP_MS must be a non-negative integer."
-    );
-  }
-
-  if (
-    !Number.isInteger(STALE_AFTER_HOURS) ||
-    STALE_AFTER_HOURS <= 0
-  ) {
-    throw new Error(
-      "STALE_AFTER_HOURS must be a positive integer."
-    );
-  }
-
-  if (
-    !Number.isInteger(EXPECTED_INTERVAL_MS) ||
-    EXPECTED_INTERVAL_MS <= 0
-  ) {
-    throw new Error(
-      "EXPECTED_INTERVAL_MS must be a positive integer."
     );
   }
 
@@ -244,88 +270,9 @@ function validateStartupConfiguration() {
 }
 
 /* =====================================================================
-   Generic Helpers
-   ===================================================================== */
-
-function isRecord(value) {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    !Array.isArray(value)
-  );
-}
-
-function isFiniteNumber(value) {
-  return (
-    typeof value === "number" &&
-    Number.isFinite(value)
-  );
-}
-
-function errorMessageOf(error) {
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  return String(error);
-}
-
-function sleep(milliseconds) {
-  return new Promise(resolve => {
-    setTimeout(
-      resolve,
-      milliseconds
-    );
-  });
-}
-
-function parsePrice(value) {
-  if (
-    typeof value !== "number" &&
-    typeof value !== "string"
-  ) {
-    return null;
-  }
-
-  const normalized =
-    typeof value === "string"
-      ? value.trim()
-      : value;
-
-  if (normalized === "") {
-    return null;
-  }
-
-  const parsed =
-    Number(normalized);
-
-  return Number.isFinite(parsed)
-    ? parsed
-    : null;
-}
-
-function pad2(value) {
-  return String(value)
-    .padStart(2, "0");
-}
-
-/* =====================================================================
    Timestamp Helpers
    ===================================================================== */
 
-/*
- * Twelve Data normally returns intraday timestamps as:
- *
- *   YYYY-MM-DD HH:mm:ss
- *
- * This exact backward-compatible format remains in the output.
- *
- * Provider timestamps are treated consistently as UTC for:
- * - Ordering
- * - Freshness calculations
- * - Duplicate detection
- * - Gap analysis
- */
 function normalizeTimestamp(value) {
   if (
     typeof value !== "string" ||
@@ -345,23 +292,12 @@ function normalizeTimestamp(value) {
     return null;
   }
 
-  const year =
-    Number(match[1]);
-
-  const month =
-    Number(match[2]);
-
-  const day =
-    Number(match[3]);
-
-  const hour =
-    Number(match[4]);
-
-  const minute =
-    Number(match[5]);
-
-  const second =
-    Number(match[6] ?? 0);
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6] ?? 0);
 
   if (
     !Number.isInteger(year) ||
@@ -397,10 +333,6 @@ function normalizeTimestamp(value) {
   const checked =
     new Date(timestamp);
 
-  /*
-   * Date.UTC normalizes impossible dates. Round-trip validation rejects
-   * invalid timestamps such as 2026-02-31 10:00:00.
-   */
   if (
     checked.getUTCFullYear() !== year ||
     checked.getUTCMonth() !== month - 1 ||
@@ -440,55 +372,153 @@ function timestampToMs(value) {
     : null;
 }
 
-function ageHours(value) {
+function timestampFromMs(timestamp) {
+  if (!Number.isFinite(timestamp)) {
+    return null;
+  }
+
+  const date =
+    new Date(timestamp);
+
+  return (
+    `${String(date.getUTCFullYear()).padStart(4, "0")}-` +
+    `${pad2(date.getUTCMonth() + 1)}-` +
+    `${pad2(date.getUTCDate())} ` +
+    `${pad2(date.getUTCHours())}:` +
+    `${pad2(date.getUTCMinutes())}:` +
+    `${pad2(date.getUTCSeconds())}`
+  );
+}
+
+function floorToIntervalMs(
+  timestamp,
+  intervalMs
+) {
+  if (
+    !Number.isFinite(timestamp) ||
+    !Number.isInteger(intervalMs) ||
+    intervalMs <= 0
+  ) {
+    return null;
+  }
+
+  return (
+    Math.floor(
+      timestamp / intervalMs
+    ) * intervalMs
+  );
+}
+
+function isAlignedH1Timestamp(value) {
   const timestamp =
     timestampToMs(value);
 
   if (!Number.isFinite(timestamp)) {
+    return false;
+  }
+
+  const date =
+    new Date(timestamp);
+
+  return (
+    date.getUTCMinutes() === 0 &&
+    date.getUTCSeconds() === 0 &&
+    date.getUTCMilliseconds() === 0
+  );
+}
+
+function getH1CandleTimeState(
+  timeValue,
+  referenceTimeMs = Date.now()
+) {
+  const candleStartMs =
+    timestampToMs(timeValue);
+
+  if (
+    !Number.isFinite(candleStartMs) ||
+    !Number.isFinite(referenceTimeMs)
+  ) {
+    return "invalid";
+  }
+
+  if (!isAlignedH1Timestamp(timeValue)) {
+    return "misaligned";
+  }
+
+  if (candleStartMs > referenceTimeMs) {
+    return "future";
+  }
+
+  if (
+    candleStartMs +
+      EXPECTED_INTERVAL_MS >
+    referenceTimeMs
+  ) {
+    return "open";
+  }
+
+  return "closed";
+}
+
+function ageHoursFromStart(
+  timeValue,
+  referenceTimeMs = Date.now()
+) {
+  const candleStartMs =
+    timestampToMs(timeValue);
+
+  if (
+    !Number.isFinite(candleStartMs) ||
+    !Number.isFinite(referenceTimeMs)
+  ) {
     return null;
   }
 
   return Math.max(
     0,
     (
-      Date.now() -
-      timestamp
-    ) /
-    EXPECTED_INTERVAL_MS
+      referenceTimeMs -
+      candleStartMs
+    ) / EXPECTED_INTERVAL_MS
   );
 }
 
-function floorToHourMs(timestamp) {
-  if (!Number.isFinite(timestamp)) {
+function closeAgeHours(
+  timeValue,
+  referenceTimeMs = Date.now()
+) {
+  const candleStartMs =
+    timestampToMs(timeValue);
+
+  if (
+    !Number.isFinite(candleStartMs) ||
+    !Number.isFinite(referenceTimeMs)
+  ) {
     return null;
   }
 
-  return (
-    Math.floor(
-      timestamp /
-      EXPECTED_INTERVAL_MS
-    ) *
-    EXPECTED_INTERVAL_MS
+  const candleCloseMs =
+    candleStartMs +
+    EXPECTED_INTERVAL_MS;
+
+  return Math.max(
+    0,
+    (
+      referenceTimeMs -
+      candleCloseMs
+    ) / EXPECTED_INTERVAL_MS
   );
 }
 
 function isPossiblyOpenLastCandle(
-  timeValue
+  timeValue,
+  referenceTimeMs = Date.now()
 ) {
-  const candleTimestamp =
-    timestampToMs(
-      timeValue
-    );
-
-  if (!Number.isFinite(candleTimestamp)) {
-    return false;
-  }
-
   return (
-    candleTimestamp ===
-    floorToHourMs(
-      Date.now()
-    )
+    getH1CandleTimeState(
+      timeValue,
+      referenceTimeMs
+    ) === "open"
   );
 }
 
@@ -561,19 +591,11 @@ function atomicWriteJson(
     );
   } catch (error) {
     try {
-      if (
-        fs.existsSync(
-          temporaryPath
-        )
-      ) {
-        fs.unlinkSync(
-          temporaryPath
-        );
+      if (fs.existsSync(temporaryPath)) {
+        fs.unlinkSync(temporaryPath);
       }
     } catch {
-      /*
-       * Preserve the original filesystem error.
-       */
+      // Preserve the original filesystem error.
     }
 
     throw error;
@@ -584,7 +606,31 @@ function atomicWriteJson(
    Candle Validation
    ===================================================================== */
 
-function normalizeCandle(raw) {
+function parseOptionalVolume(raw) {
+  if (!isRecord(raw)) {
+    return null;
+  }
+
+  const value =
+    raw.volume ??
+    raw.tick_volume ??
+    raw.tickVolume;
+
+  const parsed =
+    parseNumber(value);
+
+  return (
+    Number.isFinite(parsed) &&
+    parsed >= 0
+  )
+    ? parsed
+    : null;
+}
+
+function normalizeCandle(
+  raw,
+  referenceTimeMs = Date.now()
+) {
   if (!isRecord(raw)) {
     return {
       candle: null,
@@ -605,71 +651,44 @@ function normalizeCandle(raw) {
     };
   }
 
-    const candleTimestamp =
-    timestampToMs(
-      time
+  const timeState =
+    getH1CandleTimeState(
+      time,
+      referenceTimeMs
     );
 
-  const currentHourStart =
-    floorToHourMs(
-      Date.now()
-    );
-
-  if (
-    !Number.isFinite(
-      candleTimestamp
-    ) ||
-    !Number.isFinite(
-      currentHourStart
-    )
-  ) {
+  if (timeState === "misaligned") {
     return {
       candle: null,
-      reason: "invalid-time"
+      reason: "misaligned-h1-candle-time"
     };
   }
 
-  /*
-   * H1 timestamps represent candle opening times.
-   *
-   * A timestamp after the current UTC hour is future data and must never
-   * enter indicators, cache merging or downstream analysis.
-   */
-  if (
-    candleTimestamp >
-      currentHourStart
-  ) {
+  if (timeState === "future") {
     return {
       candle: null,
       reason: "future-candle"
     };
   }
 
-  /*
-   * A candle stamped with the current UTC hour is still forming.
-   * Only fully closed H1 candles are retained.
-   */
-  if (
-    candleTimestamp ===
-      currentHourStart
-  ) {
+  if (timeState === "open") {
     return {
       candle: null,
       reason: "open-candle"
     };
-  } 
+  }
 
-  const open =
-    parsePrice(raw.open);
+  if (timeState !== "closed") {
+    return {
+      candle: null,
+      reason: "invalid-time"
+    };
+  }
 
-  const high =
-    parsePrice(raw.high);
-
-  const low =
-    parsePrice(raw.low);
-
-  const close =
-    parsePrice(raw.close);
+  const open = parseNumber(raw.open);
+  const high = parseNumber(raw.high);
+  const low = parseNumber(raw.low);
+  const close = parseNumber(raw.close);
 
   if (
     !isFiniteNumber(open) ||
@@ -728,7 +747,9 @@ function normalizeCandle(raw) {
       open,
       high,
       low,
-      close
+      close,
+      volume:
+        parseOptionalVolume(raw)
     },
 
     reason: null
@@ -736,14 +757,20 @@ function normalizeCandle(raw) {
 }
 
 /* =====================================================================
-   Data Quality Analysis
+   Data Quality and Continuity Diagnostics
    ===================================================================== */
 
 function createEmptyGapAnalysis() {
   return {
+    expectedIntervalHours: 1,
+    evaluatedIntervals: 0,
     normalGapCount: 0,
+    continuousIntervals: 0,
+    irregularIntervalCount: 0,
     largeGapCount: 0,
+    missingIntervalEstimate: 0,
     largestGapHours: 0,
+    continuityPercent: null,
     sampleLargeGaps: []
   };
 }
@@ -756,8 +783,11 @@ function analyzeTimeGaps(rows) {
     return createEmptyGapAnalysis();
   }
 
-  let normalGapCount = 0;
+  let evaluatedIntervals = 0;
+  let continuousIntervals = 0;
+  let irregularIntervalCount = 0;
   let largeGapCount = 0;
+  let missingIntervalEstimate = 0;
   let largestGapHours = 0;
 
   const sampleLargeGaps = [];
@@ -769,12 +799,12 @@ function analyzeTimeGaps(rows) {
   ) {
     const previousTime =
       timestampToMs(
-        rows[index - 1].time
+        rows[index - 1]?.time
       );
 
     const currentTime =
       timestampToMs(
-        rows[index].time
+        rows[index]?.time
       );
 
     if (
@@ -792,6 +822,8 @@ function analyzeTimeGaps(rows) {
       continue;
     }
 
+    evaluatedIntervals++;
+
     const gapHours =
       gapMs /
       EXPECTED_INTERVAL_MS;
@@ -802,17 +834,29 @@ function analyzeTimeGaps(rows) {
         gapHours
       );
 
-    if (gapHours <= 1.5) {
-      normalGapCount++;
+    if (gapMs === EXPECTED_INTERVAL_MS) {
+      continuousIntervals++;
       continue;
     }
 
-    /*
-     * Gaps are recorded only. Missing bars are never created locally.
-     */
-    largeGapCount++;
+    irregularIntervalCount++;
 
-    if (sampleLargeGaps.length < 20) {
+    if (gapMs > EXPECTED_INTERVAL_MS) {
+      largeGapCount++;
+      missingIntervalEstimate +=
+        Math.max(
+          0,
+          Math.floor(
+            gapMs /
+            EXPECTED_INTERVAL_MS
+          ) - 1
+        );
+    }
+
+    if (
+      sampleLargeGaps.length <
+      MAX_GAP_SAMPLES
+    ) {
       sampleLargeGaps.push({
         from:
           rows[index - 1].time,
@@ -821,22 +865,48 @@ function analyzeTimeGaps(rows) {
           rows[index].time,
 
         hours:
-          Number(
-            gapHours.toFixed(2)
-          )
+          round(
+            gapHours,
+            2
+          ),
+
+        missingIntervals:
+          gapMs > EXPECTED_INTERVAL_MS
+            ? Math.max(
+                0,
+                Math.floor(
+                  gapMs /
+                  EXPECTED_INTERVAL_MS
+                ) - 1
+              )
+            : 0
       });
     }
   }
 
   return {
-    normalGapCount,
+    expectedIntervalHours: 1,
+    evaluatedIntervals,
+    normalGapCount:
+      continuousIntervals,
+    continuousIntervals,
+    irregularIntervalCount,
     largeGapCount,
-
+    missingIntervalEstimate,
     largestGapHours:
-      Number(
-        largestGapHours.toFixed(2)
+      round(
+        largestGapHours,
+        2
       ),
-
+    continuityPercent:
+      evaluatedIntervals > 0
+        ? round(
+            continuousIntervals /
+              evaluatedIntervals *
+              100,
+            2
+          )
+        : null,
     sampleLargeGaps
   };
 }
@@ -849,21 +919,27 @@ function buildEmptyQuality(
     validRows: 0,
     rejectedRows: 0,
     duplicateTimes: 0,
+    trimmedRows: 0,
+    volumeRows: 0,
+    missingVolumeRows: 0,
     rejectedReasons,
     firstTime: null,
     lastTime: null,
     ageHours: null,
+    closeAgeHours: null,
     stale: true,
     gaps:
       createEmptyGapAnalysis()
   };
 }
 
-function normalizeCandles(values) {
+function normalizeCandles(
+  values,
+  referenceTimeMs = Date.now()
+) {
   if (!Array.isArray(values)) {
     return {
       rows: [],
-
       quality:
         buildEmptyQuality({
           "values-not-array": 1
@@ -873,7 +949,6 @@ function normalizeCandles(values) {
 
   const candlesByTime =
     new Map();
-
   const rejectedReasons = {};
 
   let rejectedCount = 0;
@@ -881,7 +956,10 @@ function normalizeCandles(values) {
 
   for (const raw of values) {
     const result =
-      normalizeCandle(raw);
+      normalizeCandle(
+        raw,
+        referenceTimeMs
+      );
 
     if (!result.candle) {
       rejectedCount++;
@@ -906,9 +984,7 @@ function normalizeCandles(values) {
       duplicateCount++;
     }
 
-    /*
-     * The latest valid occurrence replaces an earlier duplicate time.
-     */
+    /* Latest valid duplicate occurrence wins. */
     candlesByTime.set(
       time,
       result.candle
@@ -924,6 +1000,13 @@ function normalizeCandles(values) {
         timestampToMs(right.time)
     );
 
+  const trimmedRows =
+    Math.max(
+      0,
+      uniqueRows.length -
+      MAX_STORED_CANDLES
+    );
+
   const rows =
     uniqueRows.slice(
       -MAX_STORED_CANDLES
@@ -937,9 +1020,28 @@ function normalizeCandles(values) {
     rows.at(-1)?.time ??
     null;
 
-  const latestAgeHours =
-    ageHours(
-      lastTime
+  const latestStartAgeHours =
+    ageHoursFromStart(
+      lastTime,
+      referenceTimeMs
+    );
+
+  const latestCloseAgeHours =
+    closeAgeHours(
+      lastTime,
+      referenceTimeMs
+    );
+
+  const volumeRows =
+    rows.reduce(
+      (count, row) =>
+        count +
+        (
+          Number.isFinite(row.volume)
+            ? 1
+            : 0
+        ),
+      0
     );
 
   return {
@@ -948,33 +1050,34 @@ function normalizeCandles(values) {
     quality: {
       receivedRows:
         values.length,
-
       validRows:
         rows.length,
-
       rejectedRows:
         rejectedCount,
-
       duplicateTimes:
         duplicateCount,
-
+      trimmedRows,
+      volumeRows,
+      missingVolumeRows:
+        rows.length -
+        volumeRows,
       rejectedReasons,
-
       firstTime,
       lastTime,
-
       ageHours:
-        latestAgeHours === null
-          ? null
-          : Number(
-              latestAgeHours.toFixed(2)
-            ),
-
+        round(
+          latestStartAgeHours,
+          2
+        ),
+      closeAgeHours:
+        round(
+          latestCloseAgeHours,
+          2
+        ),
       stale:
-        latestAgeHours === null ||
-        latestAgeHours >
+        latestCloseAgeHours === null ||
+        latestCloseAgeHours >
           STALE_AFTER_HOURS,
-
       gaps:
         analyzeTimeGaps(
           rows
@@ -989,41 +1092,24 @@ function normalizeCandles(values) {
 
 function getPreviousRows(
   previousOutput,
-  key
+  key,
+  referenceTimeMs = Date.now()
 ) {
   if (!isRecord(previousOutput)) {
     return [];
   }
 
-  /*
-   * Existing production format:
-   *
-   * {
-   *   XAUUSD: [...],
-   *   GBPJPY: [...]
-   * }
-   */
   if (
     Array.isArray(
       previousOutput[key]
     )
   ) {
     return normalizeCandles(
-      previousOutput[key]
+      previousOutput[key],
+      referenceTimeMs
     ).rows;
   }
 
-  /*
-   * Optional forward-compatible nested format:
-   *
-   * {
-   *   symbols: {
-   *     XAUUSD: {
-   *       candles: [...]
-   *     }
-   *   }
-   * }
-   */
   const nestedRows =
     previousOutput
       .symbols
@@ -1032,7 +1118,8 @@ function getPreviousRows(
 
   if (Array.isArray(nestedRows)) {
     return normalizeCandles(
-      nestedRows
+      nestedRows,
+      referenceTimeMs
     ).rows;
   }
 
@@ -1040,30 +1127,368 @@ function getPreviousRows(
 }
 
 /* =====================================================================
-   Cache Merge
+   Authoritative Fresh-Window Cache Merge
    ===================================================================== */
+
+function createEmptyMergeDiagnostics() {
+  return {
+    previousRowsReceived: 0,
+    previousRowsValid: 0,
+    freshRowsReceived: 0,
+    freshRowsValid: 0,
+    freshRowsStored: 0,
+    cachedRowsRetainedOlder: 0,
+    cachedRowsRetainedNewer: 0,
+    cachedRowsDiscardedOverlap: 0,
+    previousLatestTime: null,
+    freshWindowStart: null,
+    freshWindowEnd: null,
+    finalLatestTime: null,
+    providerCoverageRegressed: false,
+    mixedSource: false
+  };
+}
 
 function mergeCandleRows(
   previousRows,
-  freshRows
+  freshRows,
+  referenceTimeMs = Date.now()
 ) {
-  /*
-   * Cached candles are inserted first and fresh candles second.
-   * A fresh candle therefore replaces the cached candle for the same time.
-   */
-  return normalizeCandles([
-    ...(
-      Array.isArray(previousRows)
-        ? previousRows
-        : []
-    ),
+  const previousInput =
+    Array.isArray(previousRows)
+      ? previousRows
+      : [];
 
-    ...(
-      Array.isArray(freshRows)
-        ? freshRows
-        : []
-    )
-  ]);
+  const freshInput =
+    Array.isArray(freshRows)
+      ? freshRows
+      : [];
+
+  const normalizedPrevious =
+    normalizeCandles(
+      previousInput,
+      referenceTimeMs
+    );
+
+  const normalizedFresh =
+    normalizeCandles(
+      freshInput,
+      referenceTimeMs
+    );
+
+  const diagnostics = {
+    ...createEmptyMergeDiagnostics(),
+    previousRowsReceived:
+      previousInput.length,
+    previousRowsValid:
+      normalizedPrevious.rows.length,
+    freshRowsReceived:
+      freshInput.length,
+    freshRowsValid:
+      normalizedFresh.rows.length
+  };
+
+  if (normalizedFresh.rows.length === 0) {
+    return {
+      ...normalizedPrevious,
+      mergeDiagnostics: {
+        ...diagnostics,
+        finalLatestTime:
+          normalizedPrevious.rows.at(-1)?.time ??
+          null,
+        mixedSource: false
+      }
+    };
+  }
+
+  const firstFreshTime =
+    timestampToMs(
+      normalizedFresh.rows[0].time
+    );
+
+  const lastFreshTime =
+    timestampToMs(
+      normalizedFresh.rows.at(-1).time
+    );
+
+  const previousLatestTime =
+    normalizedPrevious.rows.at(-1)?.time ??
+    null;
+
+  const previousLatestMs =
+    timestampToMs(
+      previousLatestTime
+    );
+
+  const cachedOlder = [];
+  const cachedNewer = [];
+  let cachedOverlapCount = 0;
+
+  for (const row of normalizedPrevious.rows) {
+    const rowTime =
+      timestampToMs(row.time);
+
+    if (!Number.isFinite(rowTime)) {
+      continue;
+    }
+
+    if (rowTime < firstFreshTime) {
+      cachedOlder.push(row);
+      continue;
+    }
+
+    if (rowTime > lastFreshTime) {
+      cachedNewer.push(row);
+      continue;
+    }
+
+    cachedOverlapCount++;
+  }
+
+  const merged =
+    normalizeCandles(
+      [
+        ...cachedOlder,
+        ...normalizedFresh.rows,
+        ...cachedNewer
+      ],
+      referenceTimeMs
+    );
+
+  const providerCoverageRegressed =
+    Number.isFinite(previousLatestMs) &&
+    Number.isFinite(lastFreshTime) &&
+    previousLatestMs > lastFreshTime;
+
+  return {
+    ...merged,
+    mergeDiagnostics: {
+      ...diagnostics,
+      freshRowsStored:
+        normalizedFresh.rows.length,
+      cachedRowsRetainedOlder:
+        cachedOlder.length,
+      cachedRowsRetainedNewer:
+        cachedNewer.length,
+      cachedRowsDiscardedOverlap:
+        cachedOverlapCount,
+      previousLatestTime,
+      freshWindowStart:
+        normalizedFresh.rows[0].time,
+      freshWindowEnd:
+        normalizedFresh.rows.at(-1).time,
+      finalLatestTime:
+        merged.rows.at(-1)?.time ??
+        null,
+      providerCoverageRegressed,
+      mixedSource:
+        cachedOlder.length > 0 ||
+        cachedNewer.length > 0
+    }
+  };
+}
+
+/* =====================================================================
+   Complete Local H4 Diagnostics
+   ===================================================================== */
+
+function aggregateClosedH1ToH4(
+  rows,
+  referenceTimeMs = Date.now()
+) {
+  const normalized =
+    normalizeCandles(
+      Array.isArray(rows)
+        ? rows
+        : [],
+      referenceTimeMs
+    );
+
+  const groups =
+    new Map();
+
+  for (const row of normalized.rows) {
+    const timestamp =
+      timestampToMs(row.time);
+
+    if (!Number.isFinite(timestamp)) {
+      continue;
+    }
+
+    const bucketStart =
+      floorToIntervalMs(
+        timestamp,
+        H4_INTERVAL_MS
+      );
+
+    if (!groups.has(bucketStart)) {
+      groups.set(
+        bucketStart,
+        []
+      );
+    }
+
+    groups
+      .get(bucketStart)
+      .push({
+        row,
+        timestamp
+      });
+  }
+
+  const candles = [];
+
+  const diagnostics = {
+    sourceTimeframe: "H1",
+    targetTimeframe: "H4",
+    expectedSourceCount: 4,
+    sourceCandles: normalized.rows.length,
+    estimatedCandles:
+      Math.floor(
+        normalized.rows.length /
+        4
+      ),
+    totalBuckets:
+      groups.size,
+    actualCompleteCandles: 0,
+    incompleteBuckets: 0,
+    nonContiguousBuckets: 0,
+    formingBucketsSkipped: 0,
+    invalidOhlcBuckets: 0,
+    completeVolumeCandles: 0,
+    latestCompleteH4Time: null,
+    available: false
+  };
+
+  for (const [bucketStart, items] of groups.entries()) {
+    if (
+      bucketStart +
+        H4_INTERVAL_MS >
+      referenceTimeMs
+    ) {
+      diagnostics.formingBucketsSkipped++;
+      continue;
+    }
+
+    items.sort(
+      (left, right) =>
+        left.timestamp -
+        right.timestamp
+    );
+
+    if (items.length !== 4) {
+      diagnostics.incompleteBuckets++;
+      continue;
+    }
+
+    let contiguous = true;
+
+    for (
+      let index = 0;
+      index < items.length;
+      index++
+    ) {
+      const expectedTimestamp =
+        bucketStart +
+        index *
+          EXPECTED_INTERVAL_MS;
+
+      if (
+        items[index].timestamp !==
+        expectedTimestamp
+      ) {
+        contiguous = false;
+        break;
+      }
+    }
+
+    if (!contiguous) {
+      diagnostics.nonContiguousBuckets++;
+      continue;
+    }
+
+    const sourceCandles =
+      items.map(item => item.row);
+
+    const open =
+      sourceCandles[0].open;
+    const close =
+      sourceCandles.at(-1).close;
+    const high =
+      Math.max(
+        ...sourceCandles.map(
+          candle => candle.high
+        )
+      );
+    const low =
+      Math.min(
+        ...sourceCandles.map(
+          candle => candle.low
+        )
+      );
+
+    if (
+      !isFiniteNumber(open) ||
+      !isFiniteNumber(high) ||
+      !isFiniteNumber(low) ||
+      !isFiniteNumber(close) ||
+      high < low ||
+      high < open ||
+      high < close ||
+      low > open ||
+      low > close
+    ) {
+      diagnostics.invalidOhlcBuckets++;
+      continue;
+    }
+
+    const allVolumeAvailable =
+      sourceCandles.every(
+        candle =>
+          Number.isFinite(
+            candle.volume
+          )
+      );
+
+    const volume =
+      allVolumeAvailable
+        ? sourceCandles.reduce(
+            (total, candle) =>
+              total +
+              candle.volume,
+            0
+          )
+        : null;
+
+    if (allVolumeAvailable) {
+      diagnostics.completeVolumeCandles++;
+    }
+
+    candles.push({
+      time:
+        timestampFromMs(
+          bucketStart
+        ),
+      open,
+      high,
+      low,
+      close,
+      volume
+    });
+  }
+
+  diagnostics.actualCompleteCandles =
+    candles.length;
+  diagnostics.latestCompleteH4Time =
+    candles.at(-1)?.time ??
+    null;
+  diagnostics.available =
+    candles.length > 0;
+
+  return {
+    candles,
+    diagnostics
+  };
 }
 
 /* =====================================================================
@@ -1098,23 +1523,28 @@ function createProviderError(
 }
 
 function sanitizeRequestError(
-  error
+  error,
+  apiKey = getConfiguredApiKey()
 ) {
   const message =
     errorMessageOf(error);
 
-  if (!API_KEY) {
+  if (!apiKey) {
     return message;
   }
 
   return message
-    .split(API_KEY)
+    .split(apiKey)
     .join("[REDACTED]");
 }
 
 /* =====================================================================
    Free-Tier Request Control
    ===================================================================== */
+
+function resetRequestBudget() {
+  requestsMade = 0;
+}
 
 function reserveProviderRequest() {
   if (
@@ -1132,7 +1562,10 @@ function reserveProviderRequest() {
   return requestsMade;
 }
 
-function buildProviderUrl(symbol) {
+function buildProviderUrl(
+  symbol,
+  apiKey = getConfiguredApiKey()
+) {
   const url =
     new URL(
       API_BASE_URL
@@ -1141,25 +1574,14 @@ function buildProviderUrl(symbol) {
   url.search =
     new URLSearchParams({
       symbol,
-
       interval:
         INTERVAL,
-
       outputsize:
         String(OUTPUT_SIZE),
-
-      /*
-       * Force provider timestamps to UTC.
-       *
-       * Without this parameter, Twelve Data may return timestamps in
-       * an instrument/provider timezone while the downstream parser
-       * correctly treats the stored integration format as UTC.
-       */
       timezone:
         "UTC",
-
       apikey:
-        API_KEY
+        apiKey
     }).toString();
 
   return url;
@@ -1171,8 +1593,18 @@ function buildProviderUrl(symbol) {
 
 async function fetchJsonOnce(
   url,
-  timeoutMs = REQUEST_TIMEOUT_MS
+  {
+    timeoutMs = REQUEST_TIMEOUT_MS,
+    fetchImpl = globalThis.fetch,
+    apiKey = getConfiguredApiKey()
+  } = {}
 ) {
+  if (typeof fetchImpl !== "function") {
+    throw new Error(
+      "A compatible fetch implementation is required."
+    );
+  }
+
   reserveProviderRequest();
 
   const controller =
@@ -1180,22 +1612,18 @@ async function fetchJsonOnce(
 
   const timeoutHandle =
     setTimeout(
-      () => {
-        controller.abort();
-      },
+      () => controller.abort(),
       timeoutMs
     );
 
   try {
     const response =
-      await fetch(
+      await fetchImpl(
         url,
         {
           method: "GET",
-
           signal:
             controller.signal,
-
           headers: {
             Accept:
               "application/json"
@@ -1203,10 +1631,6 @@ async function fetchJsonOnce(
         }
       );
 
-    /*
-     * The response body is read exactly once. This avoids any accidental
-     * additional provider request while preserving API error details.
-     */
     const responseText =
       await response.text();
 
@@ -1256,7 +1680,10 @@ async function fetchJsonOnce(
     }
 
     throw new Error(
-      sanitizeRequestError(error)
+      sanitizeRequestError(
+        error,
+        apiKey
+      )
     );
   } finally {
     clearTimeout(
@@ -1270,19 +1697,26 @@ async function fetchJsonOnce(
    ===================================================================== */
 
 async function fetchH1(
-  config
+  config,
+  {
+    referenceTimeMs = Date.now(),
+    fetchImpl = globalThis.fetch,
+    apiKey = getConfiguredApiKey()
+  } = {}
 ) {
   const url =
     buildProviderUrl(
-      config.symbol
+      config.symbol,
+      apiKey
     );
 
-  /*
-   * Exactly one provider request is permitted for this symbol.
-   */
   const payload =
     await fetchJsonOnce(
-      url
+      url,
+      {
+        fetchImpl,
+        apiKey
+      }
     );
 
   if (!isRecord(payload)) {
@@ -1291,9 +1725,6 @@ async function fetchH1(
     );
   }
 
-  /*
-   * Twelve Data may return HTTP 200 with an API-level error payload.
-   */
   if (
     payload.status === "error" ||
     payload.code != null
@@ -1313,7 +1744,8 @@ async function fetchH1(
 
   const normalized =
     normalizeCandles(
-      payload.values
+      payload.values,
+      referenceTimeMs
     );
 
   if (normalized.rows.length === 0) {
@@ -1325,44 +1757,35 @@ async function fetchH1(
   return {
     rows:
       normalized.rows,
-
     quality:
       normalized.quality,
-
     provider: {
       name:
         SOURCE_NAME,
-
       symbol:
         typeof payload.meta?.symbol === "string"
           ? payload.meta.symbol
           : config.symbol,
-
       interval:
         typeof payload.meta?.interval === "string"
           ? payload.meta.interval
           : INTERVAL,
-
       currencyBase:
         typeof payload.meta?.currency_base === "string"
           ? payload.meta.currency_base
           : null,
-
       currencyQuote:
         typeof payload.meta?.currency_quote === "string"
           ? payload.meta.currency_quote
           : null,
-
       exchange:
         typeof payload.meta?.exchange === "string"
           ? payload.meta.exchange
           : null,
-
       exchangeTimezone:
         typeof payload.meta?.exchange_timezone === "string"
           ? payload.meta.exchange_timezone
           : null,
-
       instrumentType:
         typeof payload.meta?.type === "string"
           ? payload.meta.type
@@ -1384,7 +1807,10 @@ function buildSymbolMetadata({
   errorMessage,
   fetchedQuality,
   finalQuality,
-  provider
+  provider,
+  mergeDiagnostics,
+  h4Diagnostics,
+  referenceTimeMs
 }) {
   const firstTime =
     rows[0]?.time ??
@@ -1395,65 +1821,85 @@ function buildSymbolMetadata({
     null;
 
   const latestAgeHours =
-    ageHours(
-      lastTime
+    ageHoursFromStart(
+      lastTime,
+      referenceTimeMs
+    );
+
+  const latestCloseAgeHours =
+    closeAgeHours(
+      lastTime,
+      referenceTimeMs
     );
 
   return {
     symbol:
       config.symbol,
-
     key:
       config.key,
-
     label:
       config.label,
-
     interval:
       INTERVAL,
-
     source,
-
     fetchSucceeded:
       Boolean(fetchSucceeded),
-
     fallbackUsed:
       Boolean(fallbackUsed),
-
     error:
       errorMessage ||
       null,
-
     candleCount:
       rows.length,
-
     firstTime,
     lastTime,
-
     ageHours:
-      latestAgeHours === null
-        ? null
-        : Number(
-            latestAgeHours.toFixed(2)
-          ),
-
+      round(
+        latestAgeHours,
+        2
+      ),
+    closeAgeHours:
+      round(
+        latestCloseAgeHours,
+        2
+      ),
     stale:
       !fetchSucceeded ||
       rows.length === 0 ||
       finalQuality.stale,
-
     possiblyOpenLastCandle:
       isPossiblyOpenLastCandle(
-        lastTime
+        lastTime,
+        referenceTimeMs
       ),
-
+    sourceComposition: {
+      mixedSource:
+        mergeDiagnostics?.mixedSource === true,
+      providerCoverageRegressed:
+        mergeDiagnostics?.providerCoverageRegressed === true,
+      freshRowsStored:
+        mergeDiagnostics?.freshRowsStored ??
+        0,
+      cachedRowsRetained:
+        (
+          mergeDiagnostics?.cachedRowsRetainedOlder ??
+          0
+        ) +
+        (
+          mergeDiagnostics?.cachedRowsRetainedNewer ??
+          0
+        )
+    },
     fetchedQuality:
       fetchedQuality ||
       null,
-
     quality:
       finalQuality,
-
+    mergeDiagnostics:
+      mergeDiagnostics ||
+      createEmptyMergeDiagnostics(),
+    h4Readiness:
+      h4Diagnostics,
     provider:
       provider ||
       null
@@ -1470,54 +1916,61 @@ function createInitialOutput(
   return {
     updatedAt:
       startedAt.toISOString(),
-
     startedAt:
       startedAt.toISOString(),
-
     version:
       FILE_VERSION,
-
     source:
       SOURCE_NAME,
-
     interval:
       INTERVAL,
-
+    intervalMinutes:
+      INTERVAL_MINUTES,
     outputSizeRequested:
       OUTPUT_SIZE,
-
     derivedTimeframes: {
       H4: {
         source:
           "H1",
-
         grouping:
           4,
-
+        exactUtcAlignment:
+          true,
+        completeBucketsOnly:
+          true,
         extraApiRequests:
           0
       }
     },
-
     requestPolicy: {
       maximumRequestsPerRun:
         MAX_REQUESTS_PER_RUN,
-
       retries:
         0,
-
       timeoutMs:
         REQUEST_TIMEOUT_MS,
-
       requestGapMs:
         REQUEST_GAP_MS
     },
-
+    dataPolicy: {
+      utcTimestamps:
+        true,
+      exactH1Alignment:
+        true,
+      closedCandlesOnly:
+        true,
+      preserveOptionalVolume:
+        true,
+      authoritativeFreshWindowMerge:
+        true,
+      fabricateMissingCandles:
+        false
+    },
     stale: {},
-
     metadata: {},
-
-    errors: []
+    h4Diagnostics: {},
+    errors: [],
+    warnings: []
   };
 }
 
@@ -1525,12 +1978,20 @@ function storeSuccessfulResult(
   output,
   config,
   previousRows,
-  fetched
+  fetched,
+  referenceTimeMs
 ) {
   const merged =
     mergeCandleRows(
       previousRows,
-      fetched.rows
+      fetched.rows,
+      referenceTimeMs
+    );
+
+  const h4 =
+    aggregateClosedH1ToH4(
+      merged.rows,
+      referenceTimeMs
     );
 
   output[config.key] =
@@ -1539,34 +2000,56 @@ function storeSuccessfulResult(
   output.stale[config.key] =
     merged.quality.stale;
 
+  output.h4Diagnostics[config.key] =
+    h4.diagnostics;
+
   output.metadata[config.key] =
     buildSymbolMetadata({
       config,
-
       rows:
         merged.rows,
-
       source:
         SOURCE_NAME,
-
       fetchSucceeded:
         true,
-
       fallbackUsed:
         false,
-
       errorMessage:
         null,
-
       fetchedQuality:
         fetched.quality,
-
       finalQuality:
         merged.quality,
-
       provider:
-        fetched.provider
+        fetched.provider,
+      mergeDiagnostics:
+        merged.mergeDiagnostics,
+      h4Diagnostics:
+        h4.diagnostics,
+      referenceTimeMs
     });
+
+  if (
+    merged.mergeDiagnostics
+      .providerCoverageRegressed
+  ) {
+    output.warnings.push({
+      symbol:
+        config.symbol,
+      key:
+        config.key,
+      code:
+        "provider-coverage-regressed",
+      message:
+        "Fresh provider history ended before the previously cached latest candle; newer valid cache rows were retained and the mixed source is explicitly reported.",
+      previousLatestTime:
+        merged.mergeDiagnostics
+          .previousLatestTime,
+      freshWindowEnd:
+        merged.mergeDiagnostics
+          .freshWindowEnd
+    });
+  }
 
   return merged;
 }
@@ -1575,16 +2058,20 @@ function storeFailedResult(
   output,
   config,
   previousRows,
-  error
+  error,
+  referenceTimeMs,
+  apiKey
 ) {
   const message =
     sanitizeRequestError(
-      error
+      error,
+      apiKey
     );
 
   const cached =
     normalizeCandles(
-      previousRows
+      previousRows,
+      referenceTimeMs
     );
 
   const fallbackUsed =
@@ -1595,52 +2082,64 @@ function storeFailedResult(
     stale: true
   };
 
+  const h4 =
+    aggregateClosedH1ToH4(
+      cached.rows,
+      referenceTimeMs
+    );
+
+  const mergeDiagnostics = {
+    ...createEmptyMergeDiagnostics(),
+    previousRowsReceived:
+      Array.isArray(previousRows)
+        ? previousRows.length
+        : 0,
+    previousRowsValid:
+      cached.rows.length,
+    finalLatestTime:
+      cached.rows.at(-1)?.time ??
+      null
+  };
+
   output[config.key] =
     cached.rows;
-
   output.stale[config.key] =
     true;
+  output.h4Diagnostics[config.key] =
+    h4.diagnostics;
 
   output.metadata[config.key] =
     buildSymbolMetadata({
       config,
-
       rows:
         cached.rows,
-
       source:
         fallbackUsed
           ? "local-cache"
           : "unavailable",
-
       fetchSucceeded:
         false,
-
       fallbackUsed,
-
       errorMessage:
         message,
-
       fetchedQuality:
         null,
-
       finalQuality,
-
       provider:
-        null
+        null,
+      mergeDiagnostics,
+      h4Diagnostics:
+        h4.diagnostics,
+      referenceTimeMs
     });
 
   output.errors.push({
     symbol:
       config.symbol,
-
     key:
       config.key,
-
     message,
-
     fallbackUsed,
-
     cachedCandleCount:
       cached.rows.length
   });
@@ -1658,7 +2157,8 @@ function storeFailedResult(
    ===================================================================== */
 
 function validateCompletedOutput(
-  output
+  output,
+  referenceTimeMs
 ) {
   if (!isRecord(output)) {
     throw new Error(
@@ -1666,10 +2166,7 @@ function validateCompletedOutput(
     );
   }
 
-  if (
-    output.interval !==
-    INTERVAL
-  ) {
+  if (output.interval !== INTERVAL) {
     throw new Error(
       `Output interval must remain ${INTERVAL}.`
     );
@@ -1697,7 +2194,8 @@ function validateCompletedOutput(
 
     const normalized =
       normalizeCandles(
-        rows
+        rows,
+        referenceTimeMs
       );
 
     if (
@@ -1709,29 +2207,59 @@ function validateCompletedOutput(
       );
     }
 
-    for (
-      let index = 1;
-      index < rows.length;
-      index++
-    ) {
-      const previousTime =
-        timestampToMs(
-          rows[index - 1].time
-        );
+    for (let index = 0; index < rows.length; index++) {
+      const row =
+        rows[index];
 
-      const currentTime =
-        timestampToMs(
-          rows[index].time
+      if (!isAlignedH1Timestamp(row.time)) {
+        throw new Error(
+          `${config.key} contains a candle that is not aligned to HH:00:00 UTC.`
         );
+      }
 
       if (
-        !Number.isFinite(previousTime) ||
-        !Number.isFinite(currentTime) ||
-        currentTime <= previousTime
+        getH1CandleTimeState(
+          row.time,
+          referenceTimeMs
+        ) !== "closed"
       ) {
         throw new Error(
-          `${config.key} candles must be strictly chronological.`
+          `${config.key} contains an open, future or invalid H1 candle.`
         );
+      }
+
+      if (
+        row.volume !== null &&
+        (
+          !Number.isFinite(row.volume) ||
+          row.volume < 0
+        )
+      ) {
+        throw new Error(
+          `${config.key} contains invalid optional volume data.`
+        );
+      }
+
+      if (index > 0) {
+        const previousTime =
+          timestampToMs(
+            rows[index - 1].time
+          );
+
+        const currentTime =
+          timestampToMs(
+            row.time
+          );
+
+        if (
+          !Number.isFinite(previousTime) ||
+          !Number.isFinite(currentTime) ||
+          currentTime <= previousTime
+        ) {
+          throw new Error(
+            `${config.key} candles must be strictly chronological.`
+          );
+        }
       }
     }
 
@@ -1754,20 +2282,41 @@ function validateCompletedOutput(
     }
 
     if (
-      metadata.key !==
-      config.key
+      metadata.key !== config.key ||
+      metadata.symbol !== config.symbol
     ) {
       throw new Error(
-        `${config.key} metadata key does not match its integration key.`
+        `${config.key} metadata identity does not match its configured symbol.`
       );
     }
 
     if (
-      metadata.symbol !==
-      config.symbol
+      metadata.candleCount !==
+      rows.length
     ) {
       throw new Error(
-        `${config.key} metadata symbol does not match ${config.symbol}.`
+        `${config.key} metadata candle count does not match its output array.`
+      );
+    }
+
+    const recomputedH4 =
+      aggregateClosedH1ToH4(
+        rows,
+        referenceTimeMs
+      ).diagnostics;
+
+    const recordedH4 =
+      output.h4Diagnostics?.[config.key];
+
+    if (
+      !isRecord(recordedH4) ||
+      recordedH4.actualCompleteCandles !==
+        recomputedH4.actualCompleteCandles ||
+      recordedH4.latestCompleteH4Time !==
+        recomputedH4.latestCompleteH4Time
+    ) {
+      throw new Error(
+        `${config.key} H4 diagnostics are missing or inconsistent.`
       );
     }
   }
@@ -1775,6 +2324,12 @@ function validateCompletedOutput(
   if (!Array.isArray(output.errors)) {
     throw new Error(
       "Output errors must be an array."
+    );
+  }
+
+  if (!Array.isArray(output.warnings)) {
+    throw new Error(
+      "Output warnings must be an array."
     );
   }
 
@@ -1790,28 +2345,27 @@ function validateCompletedOutput(
   }
 
   if (
+    !isRecord(output.requestBudget) ||
+    output.requestBudget.maximum !==
+      MAX_REQUESTS_PER_RUN ||
+    output.requestBudget.used !==
+      output.requestsMade ||
+    output.requestBudget.exceeded !==
+      (
+        output.requestsMade >
+        MAX_REQUESTS_PER_RUN
+      )
+  ) {
+    throw new Error(
+      "Output request budget metadata is invalid."
+    );
+  }
+
+  if (
     !Number.isInteger(output.successCount) ||
-    output.successCount < 0 ||
-    output.successCount >
-      SYMBOLS.length
-  ) {
-    throw new Error(
-      "Output success count is invalid."
-    );
-  }
-
-  if (
     !Number.isInteger(output.failureCount) ||
+    output.successCount < 0 ||
     output.failureCount < 0 ||
-    output.failureCount >
-      SYMBOLS.length
-  ) {
-    throw new Error(
-      "Output failure count is invalid."
-    );
-  }
-
-  if (
     output.successCount +
       output.failureCount !==
     SYMBOLS.length
@@ -1829,12 +2383,16 @@ function validateCompletedOutput(
 async function processSymbol({
   output,
   previousOutput,
-  config
+  config,
+  referenceTimeMs,
+  fetchImpl,
+  apiKey
 }) {
   const previousRows =
     getPreviousRows(
       previousOutput,
-      config.key
+      config.key,
+      referenceTimeMs
     );
 
   console.log(
@@ -1845,7 +2403,12 @@ async function processSymbol({
   try {
     const fetched =
       await fetchH1(
-        config
+        config,
+        {
+          referenceTimeMs,
+          fetchImpl,
+          apiKey
+        }
       );
 
     const merged =
@@ -1853,7 +2416,8 @@ async function processSymbol({
         output,
         config,
         previousRows,
-        fetched
+        fetched,
+        referenceTimeMs
       );
 
     console.log(
@@ -1866,17 +2430,15 @@ async function processSymbol({
         output,
         config,
         previousRows,
-        error
+        error,
+        referenceTimeMs,
+        apiKey
       );
 
     console.error(
       `Failed to fetch ${config.symbol}: ${failed.message}`
     );
 
-    /*
-     * No retry is attempted. Cached candles are used immediately to keep
-     * execution within the fixed two-request provider budget.
-     */
     if (failed.fallbackUsed) {
       console.warn(
         `Using ${failed.cachedRows.length} cached H1 candles for ` +
@@ -1901,23 +2463,39 @@ function finalizeOutput(
 ) {
   output.startedAt =
     startedAt.toISOString();
-
   output.updatedAt =
     completedAt.toISOString();
-
   output.completedAt =
     completedAt.toISOString();
-
   output.durationMs =
     completedAt.getTime() -
     startedAt.getTime();
-
   output.requestsMade =
     requestsMade;
 
+  /* Legacy compatibility field. */
   output.requestLimitReached =
     requestsMade >=
     MAX_REQUESTS_PER_RUN;
+
+  output.requestBudget = {
+    maximum:
+      MAX_REQUESTS_PER_RUN,
+    used:
+      requestsMade,
+    remaining:
+      Math.max(
+        0,
+        MAX_REQUESTS_PER_RUN -
+        requestsMade
+      ),
+    exhausted:
+      requestsMade >=
+      MAX_REQUESTS_PER_RUN,
+    exceeded:
+      requestsMade >
+      MAX_REQUESTS_PER_RUN
+  };
 
   output.successCount =
     SYMBOLS.reduce(
@@ -1970,10 +2548,11 @@ function finalizeOutput(
    ===================================================================== */
 
 function logRunSummary(
-  output
+  output,
+  outputPath = OUTPUT_PATH
 ) {
   console.log(
-    `Wrote ${OUTPUT_PATH}`
+    `Wrote ${outputPath}`
   );
 
   console.log(
@@ -1993,6 +2572,12 @@ function logRunSummary(
     );
   }
 
+  if (output.warnings.length > 0) {
+    console.warn(
+      `Completed with ${output.warnings.length} data-quality warning(s).`
+    );
+  }
+
   if (output.failureCount > 0) {
     console.warn(
       `Completed with ${output.failureCount} fetch failure(s); ` +
@@ -2005,14 +2590,30 @@ function logRunSummary(
    Main Worker
    ===================================================================== */
 
-async function main() {
-  validateStartupConfiguration();
+async function main({
+  referenceTimeMs = Date.now(),
+  fetchImpl = globalThis.fetch,
+  apiKey = getConfiguredApiKey(),
+  outputPath = OUTPUT_PATH,
+  requestGapMs = REQUEST_GAP_MS
+} = {}) {
+  if (!Number.isFinite(referenceTimeMs)) {
+    throw new Error(
+      "referenceTimeMs must be a finite timestamp."
+    );
+  }
+
+  validateStartupConfiguration(
+    apiKey
+  );
+
+  resetRequestBudget();
 
   const startedAt =
-    new Date();
+    new Date(referenceTimeMs);
 
   fs.mkdirSync(
-    DATA_DIR,
+    path.dirname(outputPath),
     {
       recursive: true
     }
@@ -2020,14 +2621,10 @@ async function main() {
 
   const previousOutput =
     readJsonFile(
-      OUTPUT_PATH,
+      outputPath,
       {}
     );
 
-  /*
-   * Direct top-level XAUUSD and GBPJPY arrays remain the permanent
-   * integration contract for run-live-analysis.js and other consumers.
-   */
   const output =
     createInitialOutput(
       startedAt
@@ -2042,18 +2639,19 @@ async function main() {
       output,
       previousOutput,
       config:
-        SYMBOLS[index]
+        SYMBOLS[index],
+      referenceTimeMs,
+      fetchImpl,
+      apiKey
     });
 
-    /*
-     * Avoid a two-request burst. No delay occurs after the final symbol.
-     */
     if (
       index <
-      SYMBOLS.length - 1
+      SYMBOLS.length - 1 &&
+      requestGapMs > 0
     ) {
       await sleep(
-        REQUEST_GAP_MS
+        requestGapMs
       );
     }
   }
@@ -2068,28 +2666,28 @@ async function main() {
   );
 
   validateCompletedOutput(
-    output
+    output,
+    referenceTimeMs
   );
 
-  /*
-   * Atomic replacement prevents downstream workers from reading a
-   * partially written intraday-h1.json file.
-   */
   atomicWriteJson(
-    OUTPUT_PATH,
+    outputPath,
     output
   );
 
   logRunSummary(
-    output
+    output,
+    outputPath
   );
+
+  return output;
 }
 
 /* =====================================================================
-   Process-Level Error Handling
+   Process-Level Error Handling and Exports
    ===================================================================== */
 
-main().catch(error => {
+function handleFatalError(error) {
   console.error(
     "fetch-intraday-h1.js failed:",
     error instanceof Error
@@ -2099,4 +2697,39 @@ main().catch(error => {
   );
 
   process.exitCode = 1;
+}
+
+if (require.main === module) {
+  main().catch(
+    handleFatalError
+  );
+}
+
+module.exports = Object.freeze({
+  FILE_VERSION,
+  SOURCE_NAME,
+  INTERVAL,
+  OUTPUT_SIZE,
+  MAX_STORED_CANDLES,
+  MAX_REQUESTS_PER_RUN,
+  STALE_AFTER_HOURS,
+  SYMBOLS,
+  normalizeTimestamp,
+  timestampToMs,
+  timestampFromMs,
+  isAlignedH1Timestamp,
+  getH1CandleTimeState,
+  ageHoursFromStart,
+  closeAgeHours,
+  normalizeCandle,
+  normalizeCandles,
+  analyzeTimeGaps,
+  mergeCandleRows,
+  aggregateClosedH1ToH4,
+  buildProviderUrl,
+  fetchJsonOnce,
+  fetchH1,
+  validateCompletedOutput,
+  resetRequestBudget,
+  main
 });

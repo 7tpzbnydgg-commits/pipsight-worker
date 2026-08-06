@@ -33,6 +33,9 @@
  * - outputsize does not create additional requests.
  * - Existing cached data is preserved when a request fails.
  * - API credentials are never written to output or logs.
+ * - Missing required datasets fail the workflow after diagnostics are written.
+ * - Direct imports do not execute provider requests or overwrite output.
+ * - Runtime dependencies can be injected for deterministic tests.
  *
  * Recommended schedule:
  *   Every 4 hours = 6 runs/day
@@ -41,6 +44,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 
 /* =====================================================================
    Configuration
@@ -136,8 +140,15 @@ let requestsMade = 0;
    Startup Validation
    ===================================================================== */
 
-function validateStartupConfiguration() {
-  if (!API_KEY) {
+function validateStartupConfiguration(
+  options = {}
+) {
+  const apiKey =
+    typeof options.apiKey === "string"
+      ? options.apiKey.trim()
+      : API_KEY;
+
+  if (!apiKey) {
     throw new Error(
       "Missing TWELVEDATA_API_KEY environment variable."
     );
@@ -233,6 +244,71 @@ function errorMessageOf(error) {
   }
 
   return String(error);
+}
+
+
+function resolveRuntimeDate(
+  value,
+  label = "runtime date"
+) {
+  const date =
+    value instanceof Date
+      ? new Date(value.getTime())
+      : new Date(value);
+
+  if (!Number.isFinite(date.getTime())) {
+    throw new TypeError(
+      `${label} must be a valid Date-compatible value.`
+    );
+  }
+
+  return date;
+}
+
+function resolveFetchImplementation(
+  fetchImpl
+) {
+  const resolved =
+    typeof fetchImpl === "function"
+      ? fetchImpl
+      : globalThis.fetch;
+
+  if (typeof resolved !== "function") {
+    throw new Error(
+      "A Fetch API implementation is required."
+    );
+  }
+
+  return resolved;
+}
+
+function redactSensitiveText(
+  value,
+  apiKey = API_KEY
+) {
+  let text =
+    String(value ?? "Unknown error");
+
+  const normalizedKey =
+    typeof apiKey === "string"
+      ? apiKey.trim()
+      : "";
+
+  if (normalizedKey) {
+    text = text
+      .split(normalizedKey)
+      .join("[REDACTED]");
+  }
+
+  return text
+    .replace(
+      /([?&]apikey=)[^&\\s]+/gi,
+      "$1[REDACTED]"
+    )
+    .replace(
+      /(TWELVEDATA_API_KEY\\s*[=:]\\s*)[^\\s]+/gi,
+      "$1[REDACTED]"
+    );
 }
 
 function sleep(milliseconds) {
@@ -341,13 +417,21 @@ function safeIsoDate(value) {
   ].join("-");
 }
 
-function currentUtcDate() {
-  return new Date()
+function currentUtcDate(
+  now = new Date()
+) {
+  return resolveRuntimeDate(
+    now,
+    "Current UTC date"
+  )
     .toISOString()
     .slice(0, 10);
 }
 
-function calendarAgeDays(dateString) {
+function calendarAgeDays(
+  dateString,
+  now = new Date()
+) {
   const normalized =
     safeIsoDate(dateString);
 
@@ -364,14 +448,17 @@ function calendarAgeDays(dateString) {
     return null;
   }
 
-  const now =
-    new Date();
+  const current =
+    resolveRuntimeDate(
+      now,
+      "Calendar-age reference time"
+    );
 
   const todayUtc =
     Date.UTC(
-      now.getUTCFullYear(),
-      now.getUTCMonth(),
-      now.getUTCDate()
+      current.getUTCFullYear(),
+      current.getUTCMonth(),
+      current.getUTCDate()
     );
 
   return Math.max(
@@ -383,10 +470,13 @@ function calendarAgeDays(dateString) {
   );
 }
 
-function isPossiblyOpenCandle(dateString) {
+function isPossiblyOpenCandle(
+  dateString,
+  now = new Date()
+) {
   return (
     safeIsoDate(dateString) ===
-    currentUtcDate()
+    currentUtcDate(now)
   );
 }
 
@@ -437,8 +527,13 @@ function atomicWriteJson(
     }
   );
 
+  const randomSuffix =
+    crypto
+      .randomBytes(8)
+      .toString("hex");
+
   const temporaryPath =
-    `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    `${filePath}.${process.pid}.${Date.now()}.${randomSuffix}.tmp`;
 
   const serialized =
     `${JSON.stringify(value, null, 2)}\n`;
@@ -449,7 +544,8 @@ function atomicWriteJson(
       serialized,
       {
         encoding: "utf8",
-        mode: 0o600
+        mode: 0o600,
+        flag: "wx"
       }
     );
 
@@ -595,7 +691,16 @@ function buildEmptyQuality(
   };
 }
 
-function normalizeCandles(values) {
+function normalizeCandles(
+  values,
+  options = {}
+) {
+  const now =
+    resolveRuntimeDate(
+      options.now ?? new Date(),
+      "Candle normalization time"
+    );
+
   if (!Array.isArray(values)) {
     return {
       rows: [],
@@ -644,7 +749,8 @@ function normalizeCandles(values) {
      */
     if (
       isPossiblyOpenCandle(
-        result.candle.date
+        result.candle.date,
+        now
       )
     ) {
       rejectedCount++;
@@ -699,7 +805,8 @@ function normalizeCandles(values) {
 
   const ageDays =
     calendarAgeDays(
-      lastDate
+      lastDate,
+      now
     );
 
   return {
@@ -737,7 +844,8 @@ function normalizeCandles(values) {
 
 function getPreviousRows(
   previousOutput,
-  key
+  key,
+  options = {}
 ) {
   if (!isRecord(previousOutput)) {
     return [];
@@ -757,7 +865,8 @@ function getPreviousRows(
     )
   ) {
     return normalizeCandles(
-      previousOutput[key]
+      previousOutput[key],
+      options
     ).rows;
   }
 
@@ -780,7 +889,8 @@ function getPreviousRows(
 
   if (Array.isArray(nestedRows)) {
     return normalizeCandles(
-      nestedRows
+      nestedRows,
+      options
     ).rows;
   }
 
@@ -793,25 +903,29 @@ function getPreviousRows(
 
 function mergeCandleRows(
   previousRows,
-  freshRows
+  freshRows,
+  options = {}
 ) {
   /*
    * Cached rows are inserted first and fresh rows second.
    * A fresh candle therefore replaces the cached candle for the same date.
    */
-  return normalizeCandles([
-    ...(
-      Array.isArray(previousRows)
-        ? previousRows
-        : []
-    ),
+  return normalizeCandles(
+    [
+      ...(
+        Array.isArray(previousRows)
+          ? previousRows
+          : []
+      ),
 
-    ...(
-      Array.isArray(freshRows)
-        ? freshRows
-        : []
-    )
-  ]);
+      ...(
+        Array.isArray(freshRows)
+          ? freshRows
+          : []
+      )
+    ],
+    options
+  );
 }
 
 /* =====================================================================
@@ -846,18 +960,13 @@ function createProviderError(
 }
 
 function sanitizeRequestError(
-  error
+  error,
+  apiKey = API_KEY
 ) {
-  const message =
-    errorMessageOf(error);
-
-  if (!API_KEY) {
-    return message;
-  }
-
-  return message
-    .split(API_KEY)
-    .join("[REDACTED]");
+  return redactSensitiveText(
+    errorMessageOf(error),
+    apiKey
+  );
 }
 
 /* =====================================================================
@@ -880,7 +989,30 @@ function reserveProviderRequest() {
   return requestsMade;
 }
 
-function buildProviderUrl(symbol) {
+
+function resetRequestCounter() {
+  requestsMade = 0;
+}
+
+function getRequestsMade() {
+  return requestsMade;
+}
+
+function buildProviderUrl(
+  symbol,
+  apiKey = API_KEY
+) {
+  const normalizedKey =
+    typeof apiKey === "string"
+      ? apiKey.trim()
+      : "";
+
+  if (!normalizedKey) {
+    throw new Error(
+      "Cannot build Twelve Data URL without an API key."
+    );
+  }
+
   const url =
     new URL(API_BASE_URL);
 
@@ -891,7 +1023,7 @@ function buildProviderUrl(symbol) {
       outputsize:
         String(OUTPUT_SIZE),
       apikey:
-        API_KEY
+        normalizedKey
     }).toString();
 
   return url;
@@ -903,8 +1035,42 @@ function buildProviderUrl(symbol) {
 
 async function fetchJsonOnce(
   url,
-  timeoutMs = REQUEST_TIMEOUT_MS
+  timeoutOrOptions = REQUEST_TIMEOUT_MS,
+  legacyOptions = {}
 ) {
+  const options =
+    isRecord(timeoutOrOptions)
+      ? timeoutOrOptions
+      : legacyOptions;
+
+  const timeoutMs =
+    isRecord(timeoutOrOptions)
+      ? (
+          Number.isInteger(options.timeoutMs)
+            ? options.timeoutMs
+            : REQUEST_TIMEOUT_MS
+        )
+      : timeoutOrOptions;
+
+  if (
+    !Number.isInteger(timeoutMs) ||
+    timeoutMs <= 0
+  ) {
+    throw new TypeError(
+      "Request timeout must be a positive integer."
+    );
+  }
+
+  const fetchImpl =
+    resolveFetchImplementation(
+      options.fetchImpl
+    );
+
+  const apiKey =
+    typeof options.apiKey === "string"
+      ? options.apiKey.trim()
+      : API_KEY;
+
   reserveProviderRequest();
 
   const controller =
@@ -920,7 +1086,7 @@ async function fetchJsonOnce(
 
   try {
     const response =
-      await fetch(
+      await fetchImpl(
         url,
         {
           method: "GET",
@@ -934,6 +1100,16 @@ async function fetchJsonOnce(
           }
         }
       );
+
+    if (
+      !response ||
+      typeof response.text !== "function" ||
+      typeof response.ok !== "boolean"
+    ) {
+      throw new Error(
+        "Twelve Data returned an invalid HTTP response object."
+      );
+    }
 
     /*
      * The response body is read exactly once so provider errors can be
@@ -988,7 +1164,10 @@ async function fetchJsonOnce(
     }
 
     throw new Error(
-      sanitizeRequestError(error)
+      sanitizeRequestError(
+        error,
+        apiKey
+      )
     );
   } finally {
     clearTimeout(
@@ -1002,16 +1181,37 @@ async function fetchJsonOnce(
    ===================================================================== */
 
 async function fetchDaily(
-  config
+  config,
+  options = {}
 ) {
+  const apiKey =
+    typeof options.apiKey === "string"
+      ? options.apiKey.trim()
+      : API_KEY;
+
+  const now =
+    resolveRuntimeDate(
+      options.now ?? new Date(),
+      "Daily-fetch reference time"
+    );
+
   const url =
     buildProviderUrl(
-      config.symbol
+      config.symbol,
+      apiKey
     );
 
   const payload =
     await fetchJsonOnce(
-      url
+      url,
+      {
+        timeoutMs:
+          options.timeoutMs ??
+          REQUEST_TIMEOUT_MS,
+        fetchImpl:
+          options.fetchImpl,
+        apiKey
+      }
     );
 
   /*
@@ -1042,7 +1242,10 @@ async function fetchDaily(
 
   const normalized =
     normalizeCandles(
-      payload.values
+      payload.values,
+      {
+        now
+      }
     );
 
   if (normalized.rows.length === 0) {
@@ -1108,7 +1311,8 @@ function buildSymbolMetadata({
   errorMessage,
   fetchedQuality,
   finalQuality,
-  provider
+  provider,
+  now = new Date()
 }) {
   const firstDate =
     rows[0]?.date ??
@@ -1120,7 +1324,8 @@ function buildSymbolMetadata({
 
   const ageDays =
     calendarAgeDays(
-      lastDate
+      lastDate,
+      now
     );
 
   return {
@@ -1159,7 +1364,8 @@ function buildSymbolMetadata({
 
     possiblyOpenLastCandle:
       isPossiblyOpenCandle(
-        lastDate
+        lastDate,
+        now
       ),
 
     fetchedQuality:
@@ -1224,12 +1430,22 @@ function storeSuccessfulResult(
   output,
   config,
   previousRows,
-  fetched
+  fetched,
+  options = {}
 ) {
+  const now =
+    resolveRuntimeDate(
+      options.now ?? new Date(),
+      "Successful-result reference time"
+    );
+
   const merged =
     mergeCandleRows(
       previousRows,
-      fetched.rows
+      fetched.rows,
+      {
+        now
+      }
     );
 
   output[config.key] =
@@ -1264,7 +1480,9 @@ function storeSuccessfulResult(
         merged.quality,
 
       provider:
-        fetched.provider
+        fetched.provider,
+
+      now
     });
 
   return merged;
@@ -1274,16 +1492,32 @@ function storeFailedResult(
   output,
   config,
   previousRows,
-  error
+  error,
+  options = {}
 ) {
+  const apiKey =
+    typeof options.apiKey === "string"
+      ? options.apiKey.trim()
+      : API_KEY;
+
+  const now =
+    resolveRuntimeDate(
+      options.now ?? new Date(),
+      "Failed-result reference time"
+    );
+
   const message =
     sanitizeRequestError(
-      error
+      error,
+      apiKey
     );
 
   const cached =
     normalizeCandles(
-      previousRows
+      previousRows,
+      {
+        now
+      }
     );
 
   const fallbackUsed =
@@ -1326,7 +1560,9 @@ function storeFailedResult(
       finalQuality,
 
       provider:
-        null
+        null,
+
+      now
     });
 
   output.errors.push({
@@ -1357,8 +1593,15 @@ function storeFailedResult(
    ===================================================================== */
 
 function validateCompletedOutput(
-  output
+  output,
+  options = {}
 ) {
+  const now =
+    resolveRuntimeDate(
+      options.now ?? new Date(),
+      "Output-validation reference time"
+    );
+
   if (!isRecord(output)) {
     throw new Error(
       "Completed daily OHLC output must be a JSON object."
@@ -1377,7 +1620,10 @@ function validateCompletedOutput(
 
     const normalized =
       normalizeCandles(
-        rows
+        rows,
+        {
+          now
+        }
       );
 
     if (
@@ -1424,6 +1670,8 @@ function validateCompletedOutput(
       "Output request count is invalid."
     );
   }
+
+  return output;
 }
 
 /* =====================================================================
@@ -1433,12 +1681,25 @@ function validateCompletedOutput(
 async function processSymbol({
   output,
   previousOutput,
-  config
+  config,
+  fetchImpl,
+  apiKey = API_KEY,
+  now = new Date()
 }) {
+  const referenceTime =
+    resolveRuntimeDate(
+      now,
+      `${config.key} processing time`
+    );
+
   const previousRows =
     getPreviousRows(
       previousOutput,
-      config.key
+      config.key,
+      {
+        now:
+          referenceTime
+      }
     );
 
   console.log(
@@ -1452,7 +1713,13 @@ async function processSymbol({
      */
     const fetched =
       await fetchDaily(
-        config
+        config,
+        {
+          fetchImpl,
+          apiKey,
+          now:
+            referenceTime
+        }
       );
 
     const merged =
@@ -1460,7 +1727,11 @@ async function processSymbol({
         output,
         config,
         previousRows,
-        fetched
+        fetched,
+        {
+          now:
+            referenceTime
+        }
       );
 
     console.log(
@@ -1473,7 +1744,12 @@ async function processSymbol({
         output,
         config,
         previousRows,
-        error
+        error,
+        {
+          apiKey,
+          now:
+            referenceTime
+        }
       );
 
     console.error(
@@ -1570,10 +1846,11 @@ function finalizeOutput(
 }
 
 function logRunSummary(
-  output
+  output,
+  outputPath = OUTPUT_PATH
 ) {
   console.log(
-    `Wrote ${OUTPUT_PATH}`
+    `Wrote ${outputPath}`
   );
 
   console.log(
@@ -1601,18 +1878,87 @@ function logRunSummary(
   }
 }
 
+function assertRequiredDataAvailable(
+  output
+) {
+  const missingKeys =
+    SYMBOLS
+      .filter(
+        config =>
+          !Array.isArray(
+            output?.[config.key]
+          ) ||
+          output[config.key].length === 0
+      )
+      .map(
+        config =>
+          config.key
+      );
+
+  if (missingKeys.length > 0) {
+    throw new Error(
+      "Required daily OHLC data is unavailable for: " +
+      missingKeys.join(", ") +
+      ". Diagnostic output was written, but the workflow is failing closed."
+    );
+  }
+
+  return true;
+}
+
 /* =====================================================================
    Main Worker
    ===================================================================== */
 
-async function main() {
-  validateStartupConfiguration();
+async function main(
+  options = {}
+) {
+  const apiKey =
+    typeof options.apiKey === "string"
+      ? options.apiKey.trim()
+      : API_KEY;
+
+  const fetchImpl =
+    resolveFetchImplementation(
+      options.fetchImpl
+    );
+
+  const sleepImpl =
+    typeof options.sleepImpl === "function"
+      ? options.sleepImpl
+      : sleep;
+
+  const nowProvider =
+    typeof options.now === "function"
+      ? options.now
+      : () => new Date();
+
+  const outputPath =
+    typeof options.outputPath === "string" &&
+    options.outputPath.trim()
+      ? options.outputPath
+      : OUTPUT_PATH;
+
+  const dataDir =
+    typeof options.dataDir === "string" &&
+    options.dataDir.trim()
+      ? options.dataDir
+      : path.dirname(outputPath);
+
+  resetRequestCounter();
+
+  validateStartupConfiguration({
+    apiKey
+  });
 
   const startedAt =
-    new Date();
+    resolveRuntimeDate(
+      nowProvider(),
+      "Run start time"
+    );
 
   fs.mkdirSync(
-    DATA_DIR,
+    dataDir,
     {
       recursive: true
     }
@@ -1620,7 +1966,7 @@ async function main() {
 
   const previousOutput =
     readJsonFile(
-      OUTPUT_PATH,
+      outputPath,
       {}
     );
 
@@ -1638,11 +1984,21 @@ async function main() {
     index < SYMBOLS.length;
     index++
   ) {
+    const processingTime =
+      resolveRuntimeDate(
+        nowProvider(),
+        `${SYMBOLS[index].key} processing time`
+      );
+
     await processSymbol({
       output,
       previousOutput,
       config:
-        SYMBOLS[index]
+        SYMBOLS[index],
+      fetchImpl,
+      apiKey,
+      now:
+        processingTime
     });
 
     /*
@@ -1652,14 +2008,17 @@ async function main() {
       index <
       SYMBOLS.length - 1
     ) {
-      await sleep(
+      await sleepImpl(
         REQUEST_GAP_MS
       );
     }
   }
 
   const completedAt =
-    new Date();
+    resolveRuntimeDate(
+      nowProvider(),
+      "Run completion time"
+    );
 
   finalizeOutput(
     output,
@@ -1668,7 +2027,11 @@ async function main() {
   );
 
   validateCompletedOutput(
-    output
+    output,
+    {
+      now:
+        completedAt
+    }
   );
 
   /*
@@ -1676,27 +2039,127 @@ async function main() {
    * partially written daily-ohlc.json file.
    */
   atomicWriteJson(
-    OUTPUT_PATH,
+    outputPath,
     output
   );
 
   logRunSummary(
+    output,
+    outputPath
+  );
+
+  /*
+   * Preserve diagnostics, then fail closed when a required symbol has
+   * neither a successful fetch nor usable cached candles.
+   */
+  assertRequiredDataAvailable(
     output
   );
+
+  return output;
 }
 
 /* =====================================================================
    Process-Level Error Handling
    ===================================================================== */
 
-main().catch(error => {
-  console.error(
-    "fetch-daily-ohlc.js failed:",
+function logFatalError(
+  error,
+  options = {}
+) {
+  const apiKey =
+    typeof options.apiKey === "string"
+      ? options.apiKey.trim()
+      : API_KEY;
+
+  const rawMessage =
     error instanceof Error
       ? error.stack ||
         error.message
-      : String(error)
-  );
+      : String(error);
 
-  process.exitCode = 1;
+  console.error(
+    "fetch-daily-ohlc.js failed:",
+    redactSensitiveText(
+      rawMessage,
+      apiKey
+    )
+  );
+}
+
+/* =====================================================================
+   Direct-Execution Guard
+   ===================================================================== */
+
+if (require.main === module) {
+  main().catch(error => {
+    logFatalError(error);
+    process.exitCode = 1;
+  });
+}
+
+/* =====================================================================
+   Test and Integration Exports
+   ===================================================================== */
+
+module.exports = Object.freeze({
+  FILE_VERSION,
+  SOURCE_NAME,
+  INTERVAL,
+  API_BASE_URL,
+  DATA_DIR,
+  OUTPUT_PATH,
+  SYMBOLS,
+  OUTPUT_SIZE,
+  REQUEST_TIMEOUT_MS,
+  REQUEST_GAP_MS,
+  STALE_AFTER_DAYS,
+  MAX_STORED_CANDLES,
+  MAX_REQUESTS_PER_RUN,
+
+  validateStartupConfiguration,
+
+  isRecord,
+  isFiniteNumber,
+  errorMessageOf,
+  resolveRuntimeDate,
+  resolveFetchImplementation,
+  redactSensitiveText,
+  sleep,
+  parsePrice,
+
+  safeIsoDate,
+  currentUtcDate,
+  calendarAgeDays,
+  isPossiblyOpenCandle,
+
+  readJsonFile,
+  atomicWriteJson,
+
+  normalizeCandle,
+  buildEmptyQuality,
+  normalizeCandles,
+  getPreviousRows,
+  mergeCandleRows,
+
+  createProviderError,
+  sanitizeRequestError,
+  reserveProviderRequest,
+  resetRequestCounter,
+  getRequestsMade,
+  buildProviderUrl,
+  fetchJsonOnce,
+  fetchDaily,
+
+  buildSymbolMetadata,
+  createInitialOutput,
+  storeSuccessfulResult,
+  storeFailedResult,
+  validateCompletedOutput,
+  processSymbol,
+  finalizeOutput,
+  logRunSummary,
+  assertRequiredDataAvailable,
+  main,
+  logFatalError
 });

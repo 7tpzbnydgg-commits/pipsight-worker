@@ -24,7 +24,8 @@
 // • Broker order execution remains disabled in this signal-only runner
 //
 // Phase 4 compatibility:
-// • Existing BUY / SELL / HOLD decisions remain unchanged
+// • Existing BUY / SELL / HOLD JSON contracts remain compatible
+// • Professional confluence intentionally upgrades decision qualification
 // • Existing confidence-adjustment ownership remains unchanged
 // • Scalp confidence remains owned by the Scalp Engine
 // • Swing and Intraday AI Memory ownership remains unchanged
@@ -39,7 +40,7 @@ const path = require("path");
 
 const ENGINE_VERSION = "1.4.2-pro";
 const AUTONOMOUS_LIVE_VERSION = "1.4.0";
-const STRATEGY_VERSION = "legacy-compatible-1.1";
+const STRATEGY_VERSION = "professional-confluence-2.0.0";
 
 const TELEGRAM_TIMEOUT_MS = 15000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -4780,7 +4781,7 @@ function trendDirectionOf(
 // - Builds UTC daily and Monday-based UTC weekly candles.
 // - Preserves completed candles and optionally includes the active candle.
 // - Provides indicator calculations required by the live analysis engines.
-// - Produces a legacy-compatible analysis result.
+// - Produces a backward-compatible professional confluence result.
 // - Keeps WAIT/NEUTRAL-style decisions normalized to HOLD.
 // - Does not change Telegram, history, notification or output-writing logic.
 //
@@ -5650,22 +5651,17 @@ function aggregateLiveCandles(
     normalizeLiveTimeframe(
       timeframe
     );
-
   const intervalMs =
     liveTimeframeMs(
       normalizedTimeframe
     );
-
   const nowMs =
     candleNumber(
       options.nowMs,
       Date.now()
     );
-
   const includeActive =
-    options.includeActive !==
-    false;
-
+    options.includeActive !== false;
   const rows =
     normalizeLiveCandleArray(
       rawRows,
@@ -5675,12 +5671,17 @@ function aggregateLiveCandles(
       }
     );
 
-  if (
-    rows.length === 0
-  ) {
+  if (rows.length === 0) {
     return [];
   }
 
+  const sourceIntervalMs =
+    candleNumber(
+      options.sourceIntervalMs,
+      professionalLiveInferSourceIntervalMs(
+        rows
+      )
+    );
   const buckets =
     new Map();
 
@@ -5690,7 +5691,6 @@ function aggregateLiveCandles(
         row.timestamp,
         normalizedTimeframe
       );
-
     let bucket =
       buckets.get(
         bucketTimestamp
@@ -5700,42 +5700,29 @@ function aggregateLiveCandles(
       bucket = {
         timestamp:
           bucketTimestamp,
-
         time:
           new Date(
             bucketTimestamp
           ).toISOString(),
-
         open:
           row.open,
-
         high:
           row.high,
-
         low:
           row.low,
-
         close:
           row.close,
-
         volume:
           row.volume || 0,
-
-        sourceCount: 1,
-
-        firstSourceTimestamp:
-          row.timestamp,
-
-        lastSourceTimestamp:
-          row.timestamp,
+        sourceCount: 0,
+        sourceTimestamps: [],
+        explicitOpenSourceCount: 0,
       };
 
       buckets.set(
         bucketTimestamp,
         bucket
       );
-
-      continue;
     }
 
     bucket.high =
@@ -5743,98 +5730,189 @@ function aggregateLiveCandles(
         bucket.high,
         row.high
       );
-
     bucket.low =
       Math.min(
         bucket.low,
         row.low
       );
-
     bucket.close =
       row.close;
-
     bucket.volume +=
       row.volume || 0;
-
     bucket.sourceCount += 1;
+    bucket.sourceTimestamps.push(
+      row.timestamp
+    );
 
-    bucket.lastSourceTimestamp =
-      row.timestamp;
+    if (row.closed === false) {
+      bucket.explicitOpenSourceCount += 1;
+    }
   }
 
   let aggregated =
-    [
-      ...buckets.values(),
-    ].sort(
-      (left, right) =>
-        left.timestamp -
-        right.timestamp
-    );
+    [...buckets.values()]
+      .sort(
+        (left, right) =>
+          left.timestamp -
+          right.timestamp
+      )
+      .map(
+        bucket => {
+          const closeTimestamp =
+            bucket.timestamp +
+            intervalMs;
+          const closedByTime =
+            closeTimestamp <=
+            nowMs;
+          const sortedTimestamps =
+            [...bucket.sourceTimestamps]
+              .sort(
+                (left, right) =>
+                  left - right
+              );
+          let continuous = true;
 
-  aggregated =
-    aggregated.map(
-      bucket => {
-        const closeTimestamp =
-          bucket.timestamp +
-          intervalMs;
+          if (
+            Number.isFinite(
+              sourceIntervalMs
+            ) &&
+            sourceIntervalMs > 0
+          ) {
+            for (
+              let index = 1;
+              index <
+                sortedTimestamps.length;
+              index += 1
+            ) {
+              if (
+                sortedTimestamps[index] -
+                sortedTimestamps[index - 1] !==
+                sourceIntervalMs
+              ) {
+                continuous = false;
+                break;
+              }
+            }
+          }
 
-        const closed =
-          closeTimestamp <=
-          nowMs;
+          let expectedSourceCount = 1;
+          let complete = true;
+          let completenessReason =
+            "Source interval matches target timeframe";
 
-        return {
-          timestamp:
-            bucket.timestamp,
+          if (
+            Number.isFinite(
+              sourceIntervalMs
+            ) &&
+            sourceIntervalMs > 0 &&
+            sourceIntervalMs <
+              intervalMs
+          ) {
+            if (
+              normalizedTimeframe ===
+                "W1" &&
+              sourceIntervalMs ===
+                LIVE_TIMEFRAME_MS.D1
+            ) {
+              expectedSourceCount = 5;
+              complete =
+                bucket.sourceCount >= 4;
+              completenessReason =
+                complete
+                  ? "Completed trading week contains at least four closed daily candles"
+                  : "Weekly bucket does not contain enough closed trading days";
+            } else {
+              const exactRatio =
+                intervalMs /
+                sourceIntervalMs;
+              expectedSourceCount =
+                Number.isInteger(
+                  exactRatio
+                )
+                  ? exactRatio
+                  : 0;
+              const exactStart =
+                sortedTimestamps[0] ===
+                bucket.timestamp;
+              const exactEnd =
+                sortedTimestamps[
+                  sortedTimestamps.length - 1
+                ] +
+                sourceIntervalMs ===
+                closeTimestamp;
 
-          time:
-            bucket.time,
+              complete =
+                expectedSourceCount > 0 &&
+                bucket.sourceCount ===
+                  expectedSourceCount &&
+                exactStart &&
+                exactEnd &&
+                continuous;
+              completenessReason =
+                complete
+                  ? `Complete ${normalizedTimeframe} bucket from ${expectedSourceCount} continuous source candles`
+                  : `Incomplete ${normalizedTimeframe} bucket: ${bucket.sourceCount}/${expectedSourceCount || "unknown"} source candles`;
+            }
+          }
 
-          open:
-            bucket.open,
+          const closed =
+            closedByTime &&
+            bucket.explicitOpenSourceCount ===
+              0 &&
+            complete;
 
-          high:
-            bucket.high,
-
-          low:
-            bucket.low,
-
-          close:
-            bucket.close,
-
-          volume:
-            bucket.volume,
-
-          closeTimestamp,
-
-          closeTime:
-            new Date(
-              closeTimestamp
-            ).toISOString(),
-
-          closed,
-
-          timeframe:
-            normalizedTimeframe,
-
-          sourceCount:
-            bucket.sourceCount,
-
-          firstSourceTimestamp:
-            bucket
-              .firstSourceTimestamp,
-
-          lastSourceTimestamp:
-            bucket
-              .lastSourceTimestamp,
-        };
-      }
-    );
+          return {
+            timestamp:
+              bucket.timestamp,
+            time:
+              bucket.time,
+            open:
+              bucket.open,
+            high:
+              bucket.high,
+            low:
+              bucket.low,
+            close:
+              bucket.close,
+            volume:
+              bucket.volume,
+            closeTimestamp,
+            closeTime:
+              new Date(
+                closeTimestamp
+              ).toISOString(),
+            closed,
+            complete,
+            timeframe:
+              normalizedTimeframe,
+            sourceCount:
+              bucket.sourceCount,
+            expectedSourceCount,
+            sourceIntervalMs:
+              Number.isFinite(
+                sourceIntervalMs
+              )
+                ? sourceIntervalMs
+                : null,
+            firstSourceTimestamp:
+              sortedTimestamps[0] ||
+              null,
+            lastSourceTimestamp:
+              sortedTimestamps[
+                sortedTimestamps.length - 1
+              ] || null,
+            continuous,
+            completenessReason,
+          };
+        }
+      );
 
   if (!includeActive) {
     aggregated =
       aggregated.filter(
         row =>
-          row.closed
+          row.closed === true &&
+          row.complete === true
       );
   }
 
@@ -5853,9 +5931,7 @@ function aggregateLiveCandles(
       maxRows
   ) {
     aggregated =
-      aggregated.slice(
-        -maxRows
-      );
+      aggregated.slice(-maxRows);
   }
 
   return aggregated;
@@ -5969,193 +6045,160 @@ function prepareLiveAnalysisFrames(
       input.nowMs,
       Date.now()
     );
-
-  const currentUtcDayStart =
-    utcDayBucketStart(
-      nowMs
-    );
-
-  const scalpRows =
-    normalizeLiveCandleArray(
+  const directScalp =
+    professionalLiveClosedRows(
       input.scalpCandles ||
       input.scalpRows ||
       [],
-      {
-        source:
-          "scalp",
-
-        maxRows:
-          input.maxScalpRows ||
-          5000,
-      }
+      input.scalpTimeframe ||
+      "M5",
+      nowMs
     );
-
-  const intradayRows =
-    normalizeLiveCandleArray(
+  const directIntraday =
+    professionalLiveClosedRows(
       input.intradayCandles ||
       input.intradayRows ||
       input.h1Candles ||
       input.h1Rows ||
       [],
-      {
-        source:
-          "intraday",
-
-        maxRows:
-          input.maxIntradayRows ||
-          3000,
-      }
+      "H1",
+      nowMs
     );
-
-  /*
-   * Defensive closed-D1 boundary:
-   *
-   * Remove the current UTC day and any future daily rows even when an
-   * upstream or cached file still contains a forming candle.
-   */
-  const suppliedDailyRows =
-    normalizeLiveCandleArray(
+  const directDaily =
+    professionalLiveClosedRows(
       input.dailyCandles ||
       input.dailyRows ||
       input.dailyOhlc ||
       [],
-      {
-        source:
-          "daily",
-
-        maxRows:
-          input.maxDailyRows ||
-          1500,
-      }
-    ).filter(
-      row =>
-        row.timestamp <
-        currentUtcDayStart
+      "D1",
+      nowMs
     );
-
+  const scalpRows =
+    directScalp.rows.slice(
+      -(
+        input.maxScalpRows ||
+        5000
+      )
+    );
+  const suppliedIntradayRows =
+    directIntraday.rows.slice(
+      -(
+        input.maxIntradayRows ||
+        3000
+      )
+    );
+  const suppliedDailyRows =
+    directDaily.rows.slice(
+      -(
+        input.maxDailyRows ||
+        1500
+      )
+    );
   const derivedH1Rows =
-    intradayRows.length > 0
-      ? intradayRows
+    suppliedIntradayRows.length > 0
+      ? suppliedIntradayRows
       : aggregateLiveCandles(
           scalpRows,
           "H1",
           {
-            includeActive: true,
-
+            includeActive: false,
             nowMs,
-
             maxRows:
               input.maxIntradayRows ||
               3000,
-
             source:
               "scalp-derived-h1",
+            sourceIntervalMs:
+              LIVE_TIMEFRAME_MS.M5,
           }
         );
-
   const derivedDailyRows =
-    suppliedDailyRows.length >
-      0
+    suppliedDailyRows.length > 0
       ? suppliedDailyRows
       : aggregateDailyCandles(
           derivedH1Rows,
           {
-            includeActive:
-              false,
-
+            includeActive: false,
             nowMs,
-
             maxRows:
               input.maxDailyRows ||
               1500,
-
             source:
               "h1-derived-d1",
+            sourceIntervalMs:
+              LIVE_TIMEFRAME_MS.H1,
           }
         );
-
   const weeklyRows =
     buildLegacyWeeklyCandles(
       derivedDailyRows,
       {
-        includeActive:
-          false,
-
+        includeActive: false,
         nowMs,
-
         maxRows:
           input.maxWeeklyRows ||
           500,
-
         source:
           "daily-derived-w1",
+        sourceIntervalMs:
+          LIVE_TIMEFRAME_MS.D1,
       }
     );
 
   return {
     scalp:
       scalpRows,
-
     intraday:
       derivedH1Rows,
-
     daily:
       derivedDailyRows,
-
     weekly:
       weeklyRows,
-
     metadata: {
+      professionalPipelineVersion:
+        PROFESSIONAL_LIVE_PIPELINE_VERSION,
       scalpCount:
         scalpRows.length,
-
       intradayCount:
         derivedH1Rows.length,
-
       dailyCount:
         derivedDailyRows.length,
-
       weeklyCount:
         weeklyRows.length,
-
       intradayDerived:
-        intradayRows.length ===
-          0 &&
+        suppliedIntradayRows.length === 0 &&
         scalpRows.length > 0,
-
       dailyDerived:
-        suppliedDailyRows.length ===
-          0 &&
-        derivedH1Rows.length >
-          0,
-
+        suppliedDailyRows.length === 0 &&
+        derivedH1Rows.length > 0,
       weeklyDerived:
-        derivedDailyRows.length >
-        0,
-
-      // Exact completed-candle boundaries for the autonomous Safety Gate.
-      // No current-time fallback is used; missing evidence remains null.
+        derivedDailyRows.length > 0,
+      closedCandleDiagnostics: {
+        scalp:
+          directScalp.diagnostics,
+        intraday:
+          directIntraday.diagnostics,
+        daily:
+          directDaily.diagnostics,
+      },
       scalpLatestClosedAt:
         p6AutonomousLatestClosedAt(
           scalpRows,
           "5m",
           nowMs
         ),
-
       intradayLatestClosedAt:
         p6AutonomousLatestClosedAt(
           derivedH1Rows,
           "1H",
           nowMs
         ),
-
       dailyLatestClosedAt:
         p6AutonomousLatestClosedAt(
           derivedDailyRows,
           "D1",
           nowMs
         ),
-
       weeklyLatestClosedAt:
         p6AutonomousLatestClosedAt(
           weeklyRows,
@@ -7924,324 +7967,1402 @@ function livePairPriceDecimals(
 // Trade-plan builder
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Professional confluence / volatility helpers (strategy extension 2.0.0)
+// ---------------------------------------------------------------------------
+
+const PROFESSIONAL_LIVE_PIPELINE_VERSION = "2.0.0";
+
+const PROFESSIONAL_LIVE_CONFIG = Object.freeze({
+  M5: Object.freeze({
+    minimumCandles: 80,
+    minimumScore: 64,
+    minimumEdge: 12,
+    baseStopAtr: 1.35,
+    maximumStopAtr: 2.8,
+    minimumRiskReward: 2.0,
+    minimumBarrierR: 1.15,
+  }),
+  H1: Object.freeze({
+    minimumCandles: 80,
+    minimumScore: 62,
+    minimumEdge: 12,
+    baseStopAtr: 1.65,
+    maximumStopAtr: 3.2,
+    minimumRiskReward: 2.0,
+    minimumBarrierR: 1.20,
+  }),
+  D1: Object.freeze({
+    minimumCandles: 60,
+    minimumScore: 60,
+    minimumEdge: 12,
+    baseStopAtr: 2.20,
+    maximumStopAtr: 4.2,
+    minimumRiskReward: 2.0,
+    minimumBarrierR: 1.25,
+  }),
+  W1: Object.freeze({
+    minimumCandles: 35,
+    minimumScore: 58,
+    minimumEdge: 14,
+    baseStopAtr: 2.80,
+    maximumStopAtr: 5.2,
+    minimumRiskReward: 2.0,
+    minimumBarrierR: 1.25,
+  }),
+});
+
+const PROFESSIONAL_LIVE_WEIGHTS = Object.freeze({
+  ema: 24,
+  macd: 16,
+  rsi: 16,
+  dmiAdx: 16,
+  structure: 12,
+  candlePattern: 6,
+  volatility: 4,
+});
+
+const PROFESSIONAL_LIVE_TOTAL_WEIGHT =
+  Object.values(PROFESSIONAL_LIVE_WEIGHTS)
+    .reduce((sum, value) => sum + value, 0);
+
+const PROFESSIONAL_LIVE_PAIR_ATR_MODIFIER = Object.freeze({
+  XAUUSD: 1.10,
+  GBPJPY: 1.00,
+});
+
+function professionalLiveClamp(value, minimum, maximum) {
+  return Math.max(minimum, Math.min(maximum, value));
+}
+
+function professionalLiveRound(value, decimals = 6) {
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+
+  const factor = 10 ** decimals;
+  return Math.round(value * factor) / factor;
+}
+
+function professionalLiveTimeframeKey(value) {
+  const raw = String(value || "H1")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "");
+
+  if (
+    raw === "SCALP" ||
+    raw === "M5" ||
+    raw === "5M" ||
+    raw === "5MIN"
+  ) {
+    return "M5";
+  }
+
+  if (
+    raw === "H1" ||
+    raw === "1H" ||
+    raw === "60M" ||
+    raw === "60MIN" ||
+    raw === "INTRADAY"
+  ) {
+    return "H1";
+  }
+
+  if (
+    raw === "D1" ||
+    raw === "1D" ||
+    raw === "DAILY" ||
+    raw === "SWING"
+  ) {
+    return "D1";
+  }
+
+  if (
+    raw === "W1" ||
+    raw === "1W" ||
+    raw === "WEEKLY"
+  ) {
+    return "W1";
+  }
+
+  const normalized = normalizeLiveTimeframe(raw, "H1");
+
+  return Object.prototype.hasOwnProperty.call(
+    PROFESSIONAL_LIVE_CONFIG,
+    normalized
+  )
+    ? normalized
+    : "H1";
+}
+
+function professionalLiveConfigFor(timeframe) {
+  return PROFESSIONAL_LIVE_CONFIG[
+    professionalLiveTimeframeKey(timeframe)
+  ];
+}
+
+function professionalLivePairKey(value) {
+  return String(value || "")
+    .replace(/[^A-Za-z0-9]/g, "")
+    .toUpperCase();
+}
+
+function professionalLivePairAtrModifier(pair) {
+  return (
+    PROFESSIONAL_LIVE_PAIR_ATR_MODIFIER[
+      professionalLivePairKey(pair)
+    ] || 1
+  );
+}
+
+function professionalLiveLastFiniteIndex(values) {
+  if (!Array.isArray(values)) {
+    return -1;
+  }
+
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    if (Number.isFinite(values[index])) {
+      return index;
+    }
+  }
+
+  return -1;
+}
+
+function professionalLivePreviousFinite(values, fromIndex) {
+  if (!Array.isArray(values)) {
+    return null;
+  }
+
+  const start = Number.isInteger(fromIndex)
+    ? fromIndex - 1
+    : values.length - 2;
+
+  for (let index = start; index >= 0; index -= 1) {
+    if (Number.isFinite(values[index])) {
+      return values[index];
+    }
+  }
+
+  return null;
+}
+
+function professionalLiveMedian(values) {
+  const finite = (Array.isArray(values) ? values : [])
+    .filter(Number.isFinite)
+    .sort((left, right) => left - right);
+
+  if (finite.length === 0) {
+    return null;
+  }
+
+  const middle = Math.floor(finite.length / 2);
+
+  return finite.length % 2 === 0
+    ? (finite[middle - 1] + finite[middle]) / 2
+    : finite[middle];
+}
+
+function professionalLivePercentileRank(values, current) {
+  const finite = (Array.isArray(values) ? values : [])
+    .filter(Number.isFinite);
+
+  if (finite.length === 0 || !Number.isFinite(current)) {
+    return null;
+  }
+
+  const lessOrEqual = finite.filter(value => value <= current).length;
+  return (lessOrEqual / finite.length) * 100;
+}
+
+function professionalLiveInferSourceIntervalMs(rows) {
+  const source = Array.isArray(rows) ? rows : [];
+  const gaps = [];
+
+  for (let index = 1; index < source.length; index += 1) {
+    const gap = source[index].timestamp - source[index - 1].timestamp;
+
+    if (Number.isFinite(gap) && gap > 0) {
+      gaps.push(gap);
+    }
+  }
+
+  const medianGap = professionalLiveMedian(gaps);
+
+  return Number.isFinite(medianGap)
+    ? Math.round(medianGap / 1000) * 1000
+    : null;
+}
+
+function professionalLiveClosedRows(rawRows, timeframe, nowMs = Date.now()) {
+  const timeframeKey = professionalLiveTimeframeKey(timeframe);
+  const intervalMs = liveTimeframeMs(timeframeKey, timeframeKey);
+  const normalized = normalizeLiveCandleArray(rawRows, { maxRows: 10000 });
+  const rows = [];
+  let explicitOpenRemoved = 0;
+  let formingRemoved = 0;
+  let invalidCloseRemoved = 0;
+
+  for (const row of normalized) {
+    if (row.closed === false) {
+      explicitOpenRemoved += 1;
+      continue;
+    }
+
+    const closeTimestamp = Number.isFinite(row.closeTimestamp)
+      ? row.closeTimestamp
+      : row.timestamp + intervalMs;
+
+    if (!Number.isFinite(closeTimestamp)) {
+      invalidCloseRemoved += 1;
+      continue;
+    }
+
+    if (closeTimestamp > nowMs) {
+      formingRemoved += 1;
+      continue;
+    }
+
+    rows.push({
+      ...row,
+      closeTimestamp,
+      closeTime: new Date(closeTimestamp).toISOString(),
+      closed: true,
+      timeframe: timeframeKey,
+    });
+  }
+
+  const sourceIntervalMs = professionalLiveInferSourceIntervalMs(rows);
+  let gapCount = 0;
+  let expectedGapCount = 0;
+
+  if (Number.isFinite(sourceIntervalMs) && sourceIntervalMs > 0) {
+    for (let index = 1; index < rows.length; index += 1) {
+      const gap = rows[index].timestamp - rows[index - 1].timestamp;
+
+      if (gap > sourceIntervalMs * 1.5) {
+        gapCount += 1;
+        expectedGapCount += Math.max(
+          1,
+          Math.round(gap / sourceIntervalMs) - 1
+        );
+      }
+    }
+  }
+
+  const continuityRatio = rows.length > 1
+    ? professionalLiveClamp(
+        1 - gapCount / (rows.length - 1),
+        0,
+        1
+      )
+    : 0;
+
+  return {
+    rows,
+    diagnostics: {
+      inputRows: Array.isArray(rawRows) ? rawRows.length : 0,
+      normalizedRows: normalized.length,
+      closedRows: rows.length,
+      explicitOpenRemoved,
+      formingRemoved,
+      invalidCloseRemoved,
+      sourceIntervalMs,
+      gapCount,
+      missingIntervalEstimate: expectedGapCount,
+      continuityRatio: professionalLiveRound(continuityRatio, 4),
+      latestClosedAt: rows.length
+        ? rows[rows.length - 1].closeTime
+        : null,
+    },
+  };
+}
+
+function professionalLiveEmaSnapshot(rows) {
+  const closes = liveCloseValues(rows);
+  const periods = liveAdaptiveEmaPeriods(closes.length);
+
+  const empty = {
+    available: false,
+    direction: "NEUTRAL",
+    fullAlignment: false,
+    partialAlignment: false,
+    bullishCount: 0,
+    bearishCount: 0,
+    periods,
+    values: {
+      ema20: null,
+      ema50: null,
+      ema100: null,
+      ema200: null,
+    },
+    slopes: {
+      ema20: null,
+      ema50: null,
+      ema100: null,
+      ema200: null,
+    },
+    reason: "EMA values unavailable",
+  };
+
+  if (closes.length < 5 || !periods) {
+    return empty;
+  }
+
+  const series = {
+    ema20: liveEma(closes, periods.ema20),
+    ema50: liveEma(closes, periods.ema50),
+    ema100: liveEma(closes, periods.ema100),
+    ema200: liveEma(closes, periods.ema200),
+  };
+
+  const values = {};
+  const slopes = {};
+
+  for (const key of Object.keys(series)) {
+    const lastIndex = professionalLiveLastFiniteIndex(series[key]);
+    const current = lastIndex >= 0 ? series[key][lastIndex] : null;
+    const previous = professionalLivePreviousFinite(series[key], lastIndex);
+
+    values[key] = current;
+    slopes[key] = Number.isFinite(current) && Number.isFinite(previous)
+      ? current - previous
+      : null;
+  }
+
+  const price = closes[closes.length - 1];
+  const available = [
+    price,
+    values.ema20,
+    values.ema50,
+    values.ema100,
+    values.ema200,
+  ].every(Number.isFinite);
+
+  if (!available) {
+    return {
+      ...empty,
+      periods,
+      values,
+      slopes,
+    };
+  }
+
+  const bullishChecks = [
+    price > values.ema20,
+    values.ema20 > values.ema50,
+    values.ema50 > values.ema100,
+    values.ema100 > values.ema200,
+  ];
+
+  const bearishChecks = [
+    price < values.ema20,
+    values.ema20 < values.ema50,
+    values.ema50 < values.ema100,
+    values.ema100 < values.ema200,
+  ];
+
+  const bullishCount = bullishChecks.filter(Boolean).length;
+  const bearishCount = bearishChecks.filter(Boolean).length;
+  const bullishSlopeCount = [slopes.ema20, slopes.ema50]
+    .filter(value => Number.isFinite(value) && value > 0).length;
+  const bearishSlopeCount = [slopes.ema20, slopes.ema50]
+    .filter(value => Number.isFinite(value) && value < 0).length;
+
+  let direction = "NEUTRAL";
+
+  if (
+    bullishCount === 4 ||
+    (bullishCount >= 3 && bullishSlopeCount === 2)
+  ) {
+    direction = "BUY";
+  } else if (
+    bearishCount === 4 ||
+    (bearishCount >= 3 && bearishSlopeCount === 2)
+  ) {
+    direction = "SELL";
+  }
+
+  const fullAlignment = bullishCount === 4 || bearishCount === 4;
+  const partialAlignment = !fullAlignment && Math.max(bullishCount, bearishCount) >= 3;
+
+  return {
+    available: true,
+    direction,
+    legacyDirection: fullAlignment ? direction : null,
+    fullAlignment,
+    partialAlignment,
+    bullishCount,
+    bearishCount,
+    bullishSlopeCount,
+    bearishSlopeCount,
+    periods,
+    values,
+    slopes,
+    price,
+    reason: fullAlignment
+      ? `Full ${direction === "BUY" ? "bullish" : "bearish"} EMA alignment`
+      : partialAlignment
+        ? `Partial ${direction === "BUY" ? "bullish" : direction === "SELL" ? "bearish" : "mixed"} EMA alignment with slope confirmation`
+        : "EMA structure is mixed",
+  };
+}
+
+function professionalLiveRsiSnapshot(closes, period = 14) {
+  const series = liveRsi(closes, period);
+  const lastIndex = professionalLiveLastFiniteIndex(series);
+  const current = lastIndex >= 0 ? series[lastIndex] : null;
+  const previous = professionalLivePreviousFinite(series, lastIndex);
+  const thirdPrevious = professionalLivePreviousFinite(series, lastIndex - 1);
+  const slope = Number.isFinite(current) && Number.isFinite(previous)
+    ? current - previous
+    : null;
+  const momentum3 = Number.isFinite(current) && Number.isFinite(thirdPrevious)
+    ? current - thirdPrevious
+    : null;
+
+  const crossedAbove50 =
+    Number.isFinite(current) &&
+    Number.isFinite(previous) &&
+    previous <= 50 &&
+    current > 50;
+
+  const crossedBelow50 =
+    Number.isFinite(current) &&
+    Number.isFinite(previous) &&
+    previous >= 50 &&
+    current < 50;
+
+  let regime = "UNAVAILABLE";
+
+  if (Number.isFinite(current)) {
+    if (current >= 75) {
+      regime = "OVERBOUGHT_EXTREME";
+    } else if (current >= 60) {
+      regime = "BULLISH_MOMENTUM";
+    } else if (current > 50) {
+      regime = "BULLISH_CONTROL";
+    } else if (current <= 25) {
+      regime = "OVERSOLD_EXTREME";
+    } else if (current <= 40) {
+      regime = "BEARISH_MOMENTUM";
+    } else if (current < 50) {
+      regime = "BEARISH_CONTROL";
+    } else {
+      regime = "NEUTRAL";
+    }
+  }
+
+  return {
+    available: Number.isFinite(current),
+    period,
+    current,
+    previous,
+    slope,
+    momentum3,
+    crossedAbove50,
+    crossedBelow50,
+    regime,
+    series,
+  };
+}
+
+function professionalLiveMacdSnapshot(closes) {
+  const calculated = liveMacd(closes, 12, 26, 9);
+  const index = professionalLiveLastFiniteIndex(calculated.histogram);
+  const macd = index >= 0 ? calculated.macdLine[index] : null;
+  const signal = index >= 0 ? calculated.signalLine[index] : null;
+  const histogram = index >= 0 ? calculated.histogram[index] : null;
+  const previousHistogram = professionalLivePreviousFinite(
+    calculated.histogram,
+    index
+  );
+  const histogramSlope =
+    Number.isFinite(histogram) && Number.isFinite(previousHistogram)
+      ? histogram - previousHistogram
+      : null;
+
+  return {
+    available: [macd, signal, histogram].every(Number.isFinite),
+    macd,
+    signal,
+    histogram,
+    previousHistogram,
+    histogramSlope,
+    crossedBullish:
+      Number.isFinite(histogram) &&
+      Number.isFinite(previousHistogram) &&
+      previousHistogram <= 0 &&
+      histogram > 0,
+    crossedBearish:
+      Number.isFinite(histogram) &&
+      Number.isFinite(previousHistogram) &&
+      previousHistogram >= 0 &&
+      histogram < 0,
+    series: calculated,
+  };
+}
+
+function professionalLiveDmiAdx(rows, period = 14) {
+  const source = Array.isArray(rows) ? rows : [];
+  const length = source.length;
+  const plusDiSeries = Array(length).fill(null);
+  const minusDiSeries = Array(length).fill(null);
+  const dxSeries = Array(length).fill(null);
+  const adxSeries = Array(length).fill(null);
+
+  if (length < period * 2 + 1) {
+    return {
+      available: false,
+      period,
+      adx: null,
+      previousAdx: null,
+      adxSlope: null,
+      plusDI: null,
+      minusDI: null,
+      direction: "NEUTRAL",
+      regime: "UNAVAILABLE",
+      plusDiSeries,
+      minusDiSeries,
+      dxSeries,
+      adxSeries,
+    };
+  }
+
+  const trueRanges = Array(length).fill(null);
+  const plusDm = Array(length).fill(0);
+  const minusDm = Array(length).fill(0);
+
+  for (let index = 1; index < length; index += 1) {
+    const current = source[index];
+    const previous = source[index - 1];
+    const high = candleNumber(current.high);
+    const low = candleNumber(current.low);
+    const previousHigh = candleNumber(previous.high);
+    const previousLow = candleNumber(previous.low);
+    const previousClose = candleNumber(previous.close);
+
+    if (![high, low, previousHigh, previousLow, previousClose].every(Number.isFinite)) {
+      continue;
+    }
+
+    trueRanges[index] = Math.max(
+      high - low,
+      Math.abs(high - previousClose),
+      Math.abs(low - previousClose)
+    );
+
+    const upwardMove = high - previousHigh;
+    const downwardMove = previousLow - low;
+
+    plusDm[index] = upwardMove > downwardMove && upwardMove > 0
+      ? upwardMove
+      : 0;
+
+    minusDm[index] = downwardMove > upwardMove && downwardMove > 0
+      ? downwardMove
+      : 0;
+  }
+
+  let smoothedTr = 0;
+  let smoothedPlusDm = 0;
+  let smoothedMinusDm = 0;
+
+  for (let index = 1; index <= period; index += 1) {
+    if (!Number.isFinite(trueRanges[index])) {
+      return {
+        available: false,
+        period,
+        adx: null,
+        previousAdx: null,
+        adxSlope: null,
+        plusDI: null,
+        minusDI: null,
+        direction: "NEUTRAL",
+        regime: "UNAVAILABLE",
+        plusDiSeries,
+        minusDiSeries,
+        dxSeries,
+        adxSeries,
+      };
+    }
+
+    smoothedTr += trueRanges[index];
+    smoothedPlusDm += plusDm[index];
+    smoothedMinusDm += minusDm[index];
+  }
+
+  let previousAdxValue = null;
+  const dxSeed = [];
+
+  for (let index = period; index < length; index += 1) {
+    if (index > period) {
+      if (!Number.isFinite(trueRanges[index])) {
+        continue;
+      }
+
+      smoothedTr = smoothedTr - smoothedTr / period + trueRanges[index];
+      smoothedPlusDm = smoothedPlusDm - smoothedPlusDm / period + plusDm[index];
+      smoothedMinusDm = smoothedMinusDm - smoothedMinusDm / period + minusDm[index];
+    }
+
+    if (smoothedTr <= 0) {
+      continue;
+    }
+
+    const plusDI = 100 * smoothedPlusDm / smoothedTr;
+    const minusDI = 100 * smoothedMinusDm / smoothedTr;
+    const denominator = plusDI + minusDI;
+    const dx = denominator > 0
+      ? 100 * Math.abs(plusDI - minusDI) / denominator
+      : 0;
+
+    plusDiSeries[index] = plusDI;
+    minusDiSeries[index] = minusDI;
+    dxSeries[index] = dx;
+
+    if (dxSeed.length < period) {
+      dxSeed.push(dx);
+
+      if (dxSeed.length === period) {
+        previousAdxValue = dxSeed.reduce((sum, value) => sum + value, 0) / period;
+        adxSeries[index] = previousAdxValue;
+      }
+    } else if (Number.isFinite(previousAdxValue)) {
+      previousAdxValue = ((previousAdxValue * (period - 1)) + dx) / period;
+      adxSeries[index] = previousAdxValue;
+    }
+  }
+
+  const lastIndex = professionalLiveLastFiniteIndex(adxSeries);
+  const adx = lastIndex >= 0 ? adxSeries[lastIndex] : null;
+  const previousAdx = professionalLivePreviousFinite(adxSeries, lastIndex);
+  const plusDI = lastIndex >= 0 ? plusDiSeries[lastIndex] : null;
+  const minusDI = lastIndex >= 0 ? minusDiSeries[lastIndex] : null;
+  const adxSlope = Number.isFinite(adx) && Number.isFinite(previousAdx)
+    ? adx - previousAdx
+    : null;
+
+  let direction = "NEUTRAL";
+
+  if (Number.isFinite(plusDI) && Number.isFinite(minusDI)) {
+    if (plusDI > minusDI) {
+      direction = "BUY";
+    } else if (minusDI > plusDI) {
+      direction = "SELL";
+    }
+  }
+
+  let regime = "UNAVAILABLE";
+
+  if (Number.isFinite(adx)) {
+    if (adx >= 40) {
+      regime = "STRONG";
+    } else if (adx >= 25) {
+      regime = "TRENDING";
+    } else if (adx >= 18) {
+      regime = "DEVELOPING";
+    } else {
+      regime = "WEAK";
+    }
+  }
+
+  return {
+    available: [adx, plusDI, minusDI].every(Number.isFinite),
+    period,
+    adx,
+    previousAdx,
+    adxSlope,
+    plusDI,
+    minusDI,
+    direction,
+    regime,
+    plusDiSeries,
+    minusDiSeries,
+    dxSeries,
+    adxSeries,
+  };
+}
+
+function professionalLiveAtrSnapshot(rows, period = 14, percentileWindow = 100) {
+  const series = liveAtr(rows, period);
+  const lastIndex = professionalLiveLastFiniteIndex(series);
+  const current = lastIndex >= 0 ? series[lastIndex] : null;
+  const previous = professionalLivePreviousFinite(series, lastIndex);
+  const price = Array.isArray(rows) && rows.length
+    ? candleNumber(rows[rows.length - 1].close)
+    : null;
+  const finiteWindow = series
+    .filter(Number.isFinite)
+    .slice(-Math.max(20, percentileWindow));
+  const median = professionalLiveMedian(finiteWindow);
+  const percentile = professionalLivePercentileRank(finiteWindow, current);
+  const medianRatio =
+    Number.isFinite(current) && Number.isFinite(median) && median > 0
+      ? current / median
+      : null;
+  const atrPercent =
+    Number.isFinite(current) && Number.isFinite(price) && price > 0
+      ? current / price * 100
+      : null;
+  const slope =
+    Number.isFinite(current) && Number.isFinite(previous)
+      ? current - previous
+      : null;
+
+  let regime = "UNAVAILABLE";
+
+  if (Number.isFinite(current)) {
+    if (
+      (Number.isFinite(percentile) && percentile >= 95) &&
+      (Number.isFinite(medianRatio) && medianRatio >= 1.8)
+    ) {
+      regime = "EXTREME";
+    } else if (
+      (Number.isFinite(percentile) && percentile >= 75) ||
+      (Number.isFinite(medianRatio) && medianRatio >= 1.25)
+    ) {
+      regime = "HIGH";
+    } else if (
+      (Number.isFinite(percentile) && percentile <= 20) ||
+      (Number.isFinite(medianRatio) && medianRatio <= 0.70)
+    ) {
+      regime = "LOW";
+    } else {
+      regime = "NORMAL";
+    }
+  }
+
+  const hardBlock =
+    regime === "EXTREME" &&
+    Number.isFinite(percentile) &&
+    percentile >= 98 &&
+    Number.isFinite(medianRatio) &&
+    medianRatio >= 2.2;
+
+  const regimeStopFactor = {
+    LOW: 0.90,
+    NORMAL: 1.00,
+    HIGH: 1.15,
+    EXTREME: 1.30,
+  }[regime] || 1;
+
+  return {
+    available: Number.isFinite(current),
+    period,
+    current,
+    previous,
+    slope,
+    atrPercent,
+    percentile,
+    median,
+    medianRatio,
+    regime,
+    regimeStopFactor,
+    hardBlock,
+    series,
+  };
+}
+
+function professionalLiveCandleSnapshot(rows) {
+  const source = Array.isArray(rows) ? rows : [];
+  const last = source[source.length - 1] || null;
+  const previous = source[source.length - 2] || null;
+
+  if (!last || !previous) {
+    return {
+      available: false,
+      buy: { confirmed: false, detail: "Not enough candle history" },
+      sell: { confirmed: false, detail: "Not enough candle history" },
+      bodyRatio: null,
+      candleDirection: "NEUTRAL",
+    };
+  }
+
+  const buyPattern = detectCandlePattern(source, "BUY");
+  const sellPattern = detectCandlePattern(source, "SELL");
+  const range = candleNumber(last.high) - candleNumber(last.low);
+  const body = Math.abs(candleNumber(last.close) - candleNumber(last.open));
+  const bodyRatio = Number.isFinite(range) && range > 0 ? body / range : 0;
+  const candleDirection = last.close > last.open
+    ? "BUY"
+    : last.close < last.open
+      ? "SELL"
+      : "NEUTRAL";
+
+  return {
+    available: true,
+    buy: {
+      confirmed: buyPattern.ok === true,
+      detail: buyPattern.detail,
+    },
+    sell: {
+      confirmed: sellPattern.ok === true,
+      detail: sellPattern.detail,
+    },
+    bodyRatio,
+    candleDirection,
+  };
+}
+
+function professionalLiveScoreEma(snapshot, direction) {
+  if (!snapshot || snapshot.available !== true) {
+    return 0;
+  }
+
+  const bullish = direction === "BUY";
+  const comparisonCount = bullish
+    ? snapshot.bullishCount
+    : snapshot.bearishCount;
+  const slopeCount = bullish
+    ? snapshot.bullishSlopeCount
+    : snapshot.bearishSlopeCount;
+  const comparisonScore = comparisonCount / 4 * 18;
+  const slopeScore = slopeCount / 2 * 6;
+
+  return professionalLiveClamp(
+    comparisonScore + slopeScore,
+    0,
+    PROFESSIONAL_LIVE_WEIGHTS.ema
+  );
+}
+
+function professionalLiveScoreMacd(snapshot, direction) {
+  if (!snapshot || snapshot.available !== true) {
+    return 0;
+  }
+
+  const bullish = direction === "BUY";
+  let score = 0;
+
+  if (bullish ? snapshot.macd > snapshot.signal : snapshot.macd < snapshot.signal) {
+    score += 8;
+  }
+
+  if (bullish ? snapshot.histogram > 0 : snapshot.histogram < 0) {
+    score += 5;
+  }
+
+  if (
+    Number.isFinite(snapshot.histogramSlope) &&
+    (bullish ? snapshot.histogramSlope > 0 : snapshot.histogramSlope < 0)
+  ) {
+    score += 3;
+  }
+
+  return professionalLiveClamp(score, 0, PROFESSIONAL_LIVE_WEIGHTS.macd);
+}
+
+function professionalLiveScoreRsi(snapshot, direction) {
+  if (!snapshot || snapshot.available !== true) {
+    return 0;
+  }
+
+  const bullish = direction === "BUY";
+  let score = 0;
+
+  if (bullish ? snapshot.current > 50 : snapshot.current < 50) {
+    score += 8;
+  }
+
+  if (
+    Number.isFinite(snapshot.slope) &&
+    (bullish ? snapshot.slope > 0 : snapshot.slope < 0)
+  ) {
+    score += 4;
+  }
+
+  if (
+    Number.isFinite(snapshot.momentum3) &&
+    (bullish ? snapshot.momentum3 > 0 : snapshot.momentum3 < 0)
+  ) {
+    score += 2;
+  }
+
+  if (bullish ? snapshot.crossedAbove50 : snapshot.crossedBelow50) {
+    score += 2;
+  }
+
+  if (
+    (bullish && snapshot.current >= 78) ||
+    (!bullish && snapshot.current <= 22)
+  ) {
+    score -= 4;
+  }
+
+  return professionalLiveClamp(score, 0, PROFESSIONAL_LIVE_WEIGHTS.rsi);
+}
+
+function professionalLiveScoreDmi(snapshot, direction) {
+  if (!snapshot || snapshot.available !== true) {
+    return 0;
+  }
+
+  const bullish = direction === "BUY";
+  let score = 0;
+
+  if (bullish ? snapshot.plusDI > snapshot.minusDI : snapshot.minusDI > snapshot.plusDI) {
+    score += 8;
+  }
+
+  if (snapshot.adx >= 25) {
+    score += 4;
+  } else if (snapshot.adx >= 18) {
+    score += 2;
+  }
+
+  if (Number.isFinite(snapshot.adxSlope) && snapshot.adxSlope > 0) {
+    score += 2;
+  }
+
+  if (
+    snapshot.regime === "STRONG" ||
+    snapshot.regime === "TRENDING"
+  ) {
+    score += 2;
+  }
+
+  return professionalLiveClamp(score, 0, PROFESSIONAL_LIVE_WEIGHTS.dmiAdx);
+}
+
+function professionalLiveScoreStructure(snapshot, direction) {
+  if (!snapshot || typeof snapshot !== "object") {
+    return 0;
+  }
+
+  if (snapshot.direction === direction) {
+    return PROFESSIONAL_LIVE_WEIGHTS.structure;
+  }
+
+  if (snapshot.direction === "NEUTRAL") {
+    return 4;
+  }
+
+  return 0;
+}
+
+function professionalLiveScoreCandle(snapshot, direction) {
+  if (!snapshot || snapshot.available !== true) {
+    return 0;
+  }
+
+  const directional = direction === "BUY" ? snapshot.buy : snapshot.sell;
+
+  if (directional && directional.confirmed) {
+    return PROFESSIONAL_LIVE_WEIGHTS.candlePattern;
+  }
+
+  if (
+    snapshot.candleDirection === direction &&
+    Number.isFinite(snapshot.bodyRatio) &&
+    snapshot.bodyRatio >= 0.55
+  ) {
+    return 2;
+  }
+
+  return 0;
+}
+
+function professionalLiveScoreVolatility(snapshot) {
+  if (!snapshot || snapshot.available !== true) {
+    return 0;
+  }
+
+  return {
+    NORMAL: 4,
+    HIGH: 3,
+    LOW: 1,
+    EXTREME: 0,
+  }[snapshot.regime] || 0;
+}
+
+function professionalLiveScoreDirection({
+  direction,
+  ema,
+  macd,
+  rsi,
+  dmiAdx,
+  structure,
+  candlePattern,
+  atr,
+}) {
+  const components = {
+    ema: professionalLiveScoreEma(ema, direction),
+    macd: professionalLiveScoreMacd(macd, direction),
+    rsi: professionalLiveScoreRsi(rsi, direction),
+    dmiAdx: professionalLiveScoreDmi(dmiAdx, direction),
+    structure: professionalLiveScoreStructure(structure, direction),
+    candlePattern: professionalLiveScoreCandle(candlePattern, direction),
+    volatility: professionalLiveScoreVolatility(atr),
+  };
+
+  const rawScore = Object.values(components)
+    .reduce((sum, value) => sum + value, 0);
+  const normalizedScore = PROFESSIONAL_LIVE_TOTAL_WEIGHT > 0
+    ? rawScore / PROFESSIONAL_LIVE_TOTAL_WEIGHT * 100
+    : 0;
+
+  return {
+    direction,
+    components: Object.fromEntries(
+      Object.entries(components).map(([key, value]) => [
+        key,
+        professionalLiveRound(value, 4),
+      ])
+    ),
+    rawScore: professionalLiveRound(rawScore, 4),
+    score: professionalLiveRound(
+      professionalLiveClamp(normalizedScore, 0, 100),
+      2
+    ),
+  };
+}
+
+function professionalLiveSelectDirection(buyEvidence, sellEvidence, config) {
+  const buyScore = candleNumber(buyEvidence && buyEvidence.score, 0);
+  const sellScore = candleNumber(sellEvidence && sellEvidence.score, 0);
+  const winner = buyScore >= sellScore ? "BUY" : "SELL";
+  const winningScore = Math.max(buyScore, sellScore);
+  const losingScore = Math.min(buyScore, sellScore);
+  const edge = winningScore - losingScore;
+  const qualified =
+    winningScore >= config.minimumScore &&
+    edge >= config.minimumEdge;
+
+  return {
+    direction: qualified ? winner : "HOLD",
+    rawDirection: winner,
+    qualified,
+    winningScore: professionalLiveRound(winningScore, 2),
+    losingScore: professionalLiveRound(losingScore, 2),
+    edge: professionalLiveRound(edge, 2),
+    minimumScore: config.minimumScore,
+    minimumEdge: config.minimumEdge,
+    reason: qualified
+      ? `${winner} confluence qualified at ${winningScore.toFixed(2)} with ${edge.toFixed(2)} edge`
+      : `Confluence not qualified: best ${winningScore.toFixed(2)}, edge ${edge.toFixed(2)}`,
+  };
+}
+
+function professionalLiveRecentStructureLevel(rows, direction, lookback = 80) {
+  const source = (Array.isArray(rows) ? rows : []).slice(-lookback);
+
+  if (source.length < 5) {
+    return null;
+  }
+
+  const currentPrice = candleNumber(source[source.length - 1].close);
+  const levels = [];
+
+  for (let index = 2; index < source.length - 2; index += 1) {
+    const current = source[index];
+
+    if (direction === "BUY") {
+      const swingLow =
+        current.low <= source[index - 1].low &&
+        current.low <= source[index - 2].low &&
+        current.low <= source[index + 1].low &&
+        current.low <= source[index + 2].low;
+
+      if (swingLow && current.low < currentPrice) {
+        levels.push(current.low);
+      }
+    } else {
+      const swingHigh =
+        current.high >= source[index - 1].high &&
+        current.high >= source[index - 2].high &&
+        current.high >= source[index + 1].high &&
+        current.high >= source[index + 2].high;
+
+      if (swingHigh && current.high > currentPrice) {
+        levels.push(current.high);
+      }
+    }
+  }
+
+  if (levels.length === 0) {
+    return null;
+  }
+
+  return direction === "BUY"
+    ? Math.max(...levels)
+    : Math.min(...levels);
+}
+
+function professionalLiveConfirmedSwingLevels(rows, lookback = 160) {
+  const source = (Array.isArray(rows) ? rows : []).slice(-lookback);
+  const highs = [];
+  const lows = [];
+
+  for (let index = 2; index < source.length - 2; index += 1) {
+    const current = source[index];
+    const high = candleNumber(current.high);
+    const low = candleNumber(current.low);
+
+    if (![high, low].every(Number.isFinite)) {
+      continue;
+    }
+
+    const swingHigh =
+      high > candleNumber(source[index - 1].high, -Infinity) &&
+      high >= candleNumber(source[index - 2].high, -Infinity) &&
+      high > candleNumber(source[index + 1].high, -Infinity) &&
+      high >= candleNumber(source[index + 2].high, -Infinity);
+
+    const swingLow =
+      low < candleNumber(source[index - 1].low, Infinity) &&
+      low <= candleNumber(source[index - 2].low, Infinity) &&
+      low < candleNumber(source[index + 1].low, Infinity) &&
+      low <= candleNumber(source[index + 2].low, Infinity);
+
+    if (swingHigh) {
+      highs.push(high);
+    }
+
+    if (swingLow) {
+      lows.push(low);
+    }
+  }
+
+  return {
+    highs: [...new Set(highs)].sort((left, right) => left - right),
+    lows: [...new Set(lows)].sort((left, right) => left - right),
+  };
+}
+
 function buildLiveTradePlan({
   direction,
   price,
   atr,
+  atrSnapshot,
   supportResistance,
   pair,
+  timeframe = "H1",
+  rows = [],
 }) {
-  const normalizedDirection =
-    normalizePipelineDecision(
-      direction
-    );
-
-  const currentPrice =
-    candleNumber(
-      price
-    );
-
-  const currentAtr =
-    candleNumber(
-      atr
-    );
-
-  const decimals =
-    livePairPriceDecimals(
-      pair
-    );
+  const normalizedDirection = normalizePipelineDecision(direction);
+  const currentPrice = candleNumber(price);
+  const currentAtr = candleNumber(
+    atrSnapshot && atrSnapshot.current,
+    candleNumber(atr)
+  );
+  const config = professionalLiveConfigFor(timeframe);
+  const timeframeKey = professionalLiveTimeframeKey(timeframe);
+  const decimals = livePairPriceDecimals(pair);
 
   if (
-    normalizedDirection ===
-      "HOLD" ||
-    !Number.isFinite(
-      currentPrice
-    ) ||
-    currentPrice <= 0
+    normalizedDirection === "HOLD" ||
+    !Number.isFinite(currentPrice) ||
+    currentPrice <= 0 ||
+    !Number.isFinite(currentAtr) ||
+    currentAtr <= 0
   ) {
     return null;
   }
 
-  const volatilityBuffer =
-    Math.max(
-      Number.isFinite(
-        currentAtr
-      )
-        ? currentAtr * 0.5
-        : 0,
-
-      currentPrice *
-        0.0004
-    );
-
-  const nearestSupport =
-    candleNumber(
-      supportResistance &&
-      supportResistance
-        .nearestSupport
-    );
-
-  const nearestResistance =
-    candleNumber(
-      supportResistance &&
-      supportResistance
-        .nearestResistance
-    );
-
-  let stopLoss;
-  let takeProfit1;
-  let takeProfit2;
-  let takeProfit3;
-
-  if (
-    normalizedDirection ===
-    "BUY"
-  ) {
-    stopLoss =
-      Number.isFinite(
-        nearestSupport
-      ) &&
-      nearestSupport <
-        currentPrice
-        ? nearestSupport -
-          volatilityBuffer
-        : currentPrice -
-          volatilityBuffer *
-            3;
-
-    const risk =
-      currentPrice -
-      stopLoss;
-
-    if (
-      !Number.isFinite(risk) ||
-      risk <= 0
-    ) {
-      return null;
-    }
-
-    takeProfit1 =
-      Number.isFinite(
-        nearestResistance
-      ) &&
-      nearestResistance >
-        currentPrice
-        ? Math.max(
-            nearestResistance,
-
-            currentPrice +
-              risk * 2
-          )
-        : currentPrice +
-          risk * 2;
-
-    takeProfit2 =
-      Math.max(
-        takeProfit1,
-
-        currentPrice +
-          risk * 3
-      );
-
-    takeProfit3 =
-      Math.max(
-        takeProfit2,
-
-        currentPrice +
-          risk * 4
-      );
-  } else {
-    stopLoss =
-      Number.isFinite(
-        nearestResistance
-      ) &&
-      nearestResistance >
-        currentPrice
-        ? nearestResistance +
-          volatilityBuffer
-        : currentPrice +
-          volatilityBuffer *
-            3;
-
-    const risk =
-      stopLoss -
-      currentPrice;
-
-    if (
-      !Number.isFinite(risk) ||
-      risk <= 0
-    ) {
-      return null;
-    }
-
-    takeProfit1 =
-      Number.isFinite(
-        nearestSupport
-      ) &&
-      nearestSupport <
-        currentPrice
-        ? Math.min(
-            nearestSupport,
-
-            currentPrice -
-              risk * 2
-          )
-        : currentPrice -
-          risk * 2;
-
-    takeProfit2 =
-      Math.min(
-        takeProfit1,
-
-        currentPrice -
-          risk * 3
-      );
-
-    takeProfit3 =
-      Math.min(
-        takeProfit2,
-
-        currentPrice -
-          risk * 4
-      );
+  if (atrSnapshot && atrSnapshot.hardBlock === true) {
+    return null;
   }
 
-  const risk =
-    Math.abs(
-      currentPrice -
-      stopLoss
-    );
+  const regimeFactor = candleNumber(
+    atrSnapshot && atrSnapshot.regimeStopFactor,
+    1
+  );
+  const pairModifier = professionalLivePairAtrModifier(pair);
+  const baseDistance =
+    currentAtr *
+    config.baseStopAtr *
+    pairModifier *
+    regimeFactor;
+  const maximumDistance = currentAtr * config.maximumStopAtr;
+  const structureBuffer = currentAtr * 0.15;
+  const confirmedSwingLevels = professionalLiveConfirmedSwingLevels(
+    rows
+  );
+  const confirmedSupports = confirmedSwingLevels.lows
+    .filter(level => level < currentPrice);
+  const confirmedResistances = confirmedSwingLevels.highs
+    .filter(level => level > currentPrice);
+  const nearestSupport = confirmedSupports.length > 0
+    ? Math.max(...confirmedSupports)
+    : null;
+  const nearestResistance = confirmedResistances.length > 0
+    ? Math.min(...confirmedResistances)
+    : null;
+  const recentStructureLevel = professionalLiveRecentStructureLevel(
+    rows,
+    normalizedDirection
+  );
 
-  const reward1 =
-    Math.abs(
-      takeProfit1 -
-      currentPrice
-    );
+  const candidates = [];
 
-  const riskReward =
-    risk > 0
-      ? reward1 / risk
-      : 0;
+  if (normalizedDirection === "BUY") {
+    if (Number.isFinite(nearestSupport) && nearestSupport < currentPrice) {
+      candidates.push(nearestSupport);
+    }
+
+    if (
+      Number.isFinite(recentStructureLevel) &&
+      recentStructureLevel < currentPrice
+    ) {
+      candidates.push(recentStructureLevel);
+    }
+  } else {
+    if (
+      Number.isFinite(nearestResistance) &&
+      nearestResistance > currentPrice
+    ) {
+      candidates.push(nearestResistance);
+    }
+
+    if (
+      Number.isFinite(recentStructureLevel) &&
+      recentStructureLevel > currentPrice
+    ) {
+      candidates.push(recentStructureLevel);
+    }
+  }
+
+  const selectedStructureLevel = candidates.length > 0
+    ? normalizedDirection === "BUY"
+      ? Math.max(...candidates)
+      : Math.min(...candidates)
+    : null;
+
+  let stopDistance = baseDistance;
+  let structureUsed = false;
+  let structureDistance = null;
+
+  if (Number.isFinite(selectedStructureLevel)) {
+    const proposedStop = normalizedDirection === "BUY"
+      ? selectedStructureLevel - structureBuffer
+      : selectedStructureLevel + structureBuffer;
+
+    structureDistance = Math.abs(currentPrice - proposedStop);
+
+    if (
+      Number.isFinite(structureDistance) &&
+      structureDistance > 0 &&
+      structureDistance <= maximumDistance
+    ) {
+      stopDistance = Math.max(baseDistance, structureDistance);
+      structureUsed = true;
+    }
+  }
+
+  stopDistance = professionalLiveClamp(
+    stopDistance,
+    currentAtr * 0.75,
+    maximumDistance
+  );
+
+  const rawStop = normalizedDirection === "BUY"
+    ? currentPrice - stopDistance
+    : currentPrice + stopDistance;
+
+  const roundedEntry = liveRoundPrice(currentPrice, decimals);
+  const roundedStop = liveRoundPrice(rawStop, decimals);
+  const roundedRisk = Math.abs(roundedEntry - roundedStop);
+
+  if (!Number.isFinite(roundedRisk) || roundedRisk <= 0) {
+    return null;
+  }
+
+  const target1 = liveRoundPrice(
+    normalizedDirection === "BUY"
+      ? roundedEntry + roundedRisk * config.minimumRiskReward
+      : roundedEntry - roundedRisk * config.minimumRiskReward,
+    decimals
+  );
+  const target2 = liveRoundPrice(
+    normalizedDirection === "BUY"
+      ? roundedEntry + roundedRisk * 3
+      : roundedEntry - roundedRisk * 3,
+    decimals
+  );
+  const target3 = liveRoundPrice(
+    normalizedDirection === "BUY"
+      ? roundedEntry + roundedRisk * 4
+      : roundedEntry - roundedRisk * 4,
+    decimals
+  );
+
+  const opposingBarrier = normalizedDirection === "BUY"
+    ? nearestResistance
+    : nearestSupport;
+  const barrierDistance =
+    Number.isFinite(opposingBarrier) &&
+    (normalizedDirection === "BUY"
+      ? opposingBarrier > roundedEntry
+      : opposingBarrier < roundedEntry)
+      ? Math.abs(opposingBarrier - roundedEntry)
+      : null;
+  const barrierR =
+    Number.isFinite(barrierDistance) && roundedRisk > 0
+      ? barrierDistance / roundedRisk
+      : null;
+
+  const actualReward1 = Math.abs(target1 - roundedEntry);
+  const riskReward = actualReward1 / roundedRisk;
+
+  if (
+    !Number.isFinite(riskReward) ||
+    riskReward + 1e-9 < config.minimumRiskReward
+  ) {
+    return null;
+  }
+
+  const roundedAtr = liveRoundPrice(currentAtr, decimals);
 
   return {
-    direction:
-      normalizedDirection,
-
-    entry:
-      liveRoundPrice(
-        currentPrice,
-        decimals
-      ),
-
-    entryPrice:
-      liveRoundPrice(
-        currentPrice,
-        decimals
-      ),
-
-    stop:
-      liveRoundPrice(
-        stopLoss,
-        decimals
-      ),
-
-    stopLoss:
-      liveRoundPrice(
-        stopLoss,
-        decimals
-      ),
-
-    sl:
-      liveRoundPrice(
-        stopLoss,
-        decimals
-      ),
-
-    target1:
-      liveRoundPrice(
-        takeProfit1,
-        decimals
-      ),
-
-    target2:
-      liveRoundPrice(
-        takeProfit2,
-        decimals
-      ),
-
-    target3:
-      liveRoundPrice(
-        takeProfit3,
-        decimals
-      ),
-
-    takeProfit1:
-      liveRoundPrice(
-        takeProfit1,
-        decimals
-      ),
-
-    takeProfit2:
-      liveRoundPrice(
-        takeProfit2,
-        decimals
-      ),
-
-    takeProfit3:
-      liveRoundPrice(
-        takeProfit3,
-        decimals
-      ),
-
-    tp1:
-      liveRoundPrice(
-        takeProfit1,
-        decimals
-      ),
-
-    tp2:
-      liveRoundPrice(
-        takeProfit2,
-        decimals
-      ),
-
-    tp3:
-      liveRoundPrice(
-        takeProfit3,
-        decimals
-      ),
-
-    risk:
-      liveRoundPrice(
-        risk,
-        decimals
-      ),
-
-    reward:
-      liveRoundPrice(
-        reward1,
-        decimals
-      ),
-
-    riskReward:
-      Number(
-        riskReward.toFixed(2)
-      ),
-
-    rr:
-      Number(
-        riskReward.toFixed(2)
-      ),
-
-    atr:
-      Number.isFinite(
-        currentAtr
-      )
-        ? liveRoundPrice(
-            currentAtr,
-            decimals
-          )
-        : null,
+    direction: normalizedDirection,
+    entry: roundedEntry,
+    entryPrice: roundedEntry,
+    stop: roundedStop,
+    stopLoss: roundedStop,
+    sl: roundedStop,
+    target1,
+    target2,
+    target3,
+    takeProfit1: target1,
+    takeProfit2: target2,
+    takeProfit3: target3,
+    tp1: target1,
+    tp2: target2,
+    tp3: target3,
+    risk: liveRoundPrice(roundedRisk, decimals),
+    reward: liveRoundPrice(actualReward1, decimals),
+    riskReward: Number(riskReward.toFixed(2)),
+    rr: Number(riskReward.toFixed(2)),
+    atr: roundedAtr,
+    model: "ATR_REGIME_STRUCTURE",
+    timeframe: timeframeKey,
+    professionalPipelineVersion: PROFESSIONAL_LIVE_PIPELINE_VERSION,
+    riskDiagnostics: {
+      baseStopAtr: config.baseStopAtr,
+      maximumStopAtr: config.maximumStopAtr,
+      pairModifier,
+      atrRegime:
+        atrSnapshot && atrSnapshot.regime
+          ? atrSnapshot.regime
+          : "UNKNOWN",
+      regimeStopFactor: regimeFactor,
+      stopDistance: professionalLiveRound(stopDistance, decimals),
+      stopDistanceAtr: professionalLiveRound(stopDistance / currentAtr, 4),
+      selectedStructureLevel,
+      structureDistance,
+      structureUsed,
+      opposingBarrier:
+        Number.isFinite(opposingBarrier)
+          ? opposingBarrier
+          : null,
+      barrierR:
+        Number.isFinite(barrierR)
+          ? professionalLiveRound(barrierR, 4)
+          : null,
+      minimumBarrierR: config.minimumBarrierR,
+    },
   };
 }
 
@@ -8253,72 +9374,157 @@ function analyzeLiveTimeframe(
   rows,
   options = {}
 ) {
-  const normalizedRows =
-    normalizeLiveCandleArray(
-      rows,
-      {
-        maxRows:
-          options.maxRows ||
-          2000,
-      }
-    );
-
   const pair =
     options.pair ||
     options.symbol ||
     "UNKNOWN";
-
   const timeframe =
     options.timeframe ||
-    "unknown";
-
-  const steps = [];
+    "H1";
+  const timeframeKey =
+    professionalLiveTimeframeKey(timeframe);
+  const config =
+    professionalLiveConfigFor(timeframeKey);
+  const nowMs =
+    candleNumber(
+      options.nowMs,
+      Date.now()
+    );
+  const closedResult =
+    professionalLiveClosedRows(
+      rows,
+      timeframeKey,
+      nowMs
+    );
+  let normalizedRows =
+    closedResult.rows;
+  const maxRows = Math.max(
+    0,
+    candleInteger(
+      options.maxRows,
+      2000
+    ) || 0
+  );
 
   if (
-    normalizedRows.length < 5
+    maxRows > 0 &&
+    normalizedRows.length > maxRows
   ) {
-    steps.push(
-      livePipelineStep(
-        "Data Availability",
-        "fail",
-        `Only ${normalizedRows.length} usable candles available`
-      )
-    );
+    normalizedRows =
+      normalizedRows.slice(-maxRows);
+  }
+
+  const steps = [];
+  const minimumCandles = Math.max(
+    config.minimumCandles,
+    candleInteger(
+      options.minimumCandles,
+      config.minimumCandles
+    )
+  );
+  const enoughData =
+    normalizedRows.length >=
+    minimumCandles;
+
+  steps.push(
+    livePipelineStep(
+      "Data Availability",
+      enoughData ? "pass" : "fail",
+      `${normalizedRows.length} completed ${timeframeKey} candles available; minimum ${minimumCandles}`,
+      {
+        candleCount:
+          normalizedRows.length,
+        minimumCandles,
+      }
+    )
+  );
+
+  const integrity =
+    closedResult.diagnostics;
+  const integrityPassed =
+    integrity.formingRemoved >= 0 &&
+    integrity.explicitOpenRemoved >= 0 &&
+    integrity.closedRows ===
+      normalizedRows.length ||
+    maxRows > 0;
+
+  steps.push(
+    livePipelineStep(
+      "Closed Candle Integrity",
+      integrityPassed
+        ? "pass"
+        : "fail",
+      `Closed candles ${integrity.closedRows}; forming removed ${integrity.formingRemoved}; explicit open removed ${integrity.explicitOpenRemoved}; continuity ${(candleNumber(integrity.continuityRatio, 0) * 100).toFixed(1)}%`,
+      {
+        ...integrity,
+      }
+    )
+  );
+
+  if (!enoughData) {
+    const latest =
+      normalizedRows[
+        normalizedRows.length - 1
+      ] || null;
 
     return {
       pair,
       timeframe,
-
+      professionalTimeframe:
+        timeframeKey,
+      professionalPipelineVersion:
+        PROFESSIONAL_LIVE_PIPELINE_VERSION,
+      engineVersion:
+        ENGINE_VERSION,
+      strategyVersion:
+        STRATEGY_VERSION,
       decision: "HOLD",
       signal: "HOLD",
       action: "HOLD",
       direction: "HOLD",
-
+      rawDirection: "NEUTRAL",
       confidence: 0,
       score: 0,
-
       price:
-        normalizedRows.length
-          ? normalizedRows[
-              normalizedRows.length - 1
-            ].close
+        latest
+          ? latest.close
           : null,
-
+      currentPrice:
+        latest
+          ? latest.close
+          : null,
+      lastPrice:
+        latest
+          ? latest.close
+          : null,
+      timestamp:
+        latest
+          ? latest.timestamp
+          : null,
+      time:
+        latest
+          ? latest.time
+          : null,
       trend: "NEUTRAL",
       trendDirection:
         "NEUTRAL",
-
       tradePlan: null,
       plan: null,
-
       steps,
       pipeline: steps,
-
       candleCount:
         normalizedRows.length,
-
       reason:
-        "Insufficient candle history",
+        "Insufficient completed candle history for professional indicator warm-up",
+      confluence: {
+        qualified: false,
+        minimumScore:
+          config.minimumScore,
+        minimumEdge:
+          config.minimumEdge,
+      },
+      dataQuality:
+        integrity,
     };
   }
 
@@ -8326,139 +9532,258 @@ function analyzeLiveTimeframe(
     liveCloseValues(
       normalizedRows
     );
-
   const lastCandle =
     normalizedRows[
       normalizedRows.length - 1
     ];
-
   const currentPrice =
     candleNumber(
       lastCandle.close
     );
-
-  const trend =
-    liveTrendSnapshot(
+  const ema =
+    professionalLiveEmaSnapshot(
       normalizedRows
     );
-
+  const rsi =
+    professionalLiveRsiSnapshot(
+      closes,
+      14
+    );
+  const macd =
+    professionalLiveMacdSnapshot(
+      closes
+    );
+  const dmiAdx =
+    professionalLiveDmiAdx(
+      normalizedRows,
+      14
+    );
+  const atr =
+    professionalLiveAtrSnapshot(
+      normalizedRows,
+      14,
+      100
+    );
   const structure =
     liveMarketStructure(
       normalizedRows
     );
-
   const supportResistance =
     liveSupportResistance(
       normalizedRows,
       currentPrice
     );
-
-  const rsiSeries =
-    liveRsi(
-      closes,
-      Math.min(
-        14,
-        Math.max(
-          4,
-          closes.length - 2
-        )
-      )
+  const candlePattern =
+    professionalLiveCandleSnapshot(
+      normalizedRows
     );
-
-  const rsi =
-    liveLastFinite(
-      rsiSeries
+  const buyEvidence =
+    professionalLiveScoreDirection({
+      direction: "BUY",
+      ema,
+      macd,
+      rsi,
+      dmiAdx,
+      structure,
+      candlePattern,
+      atr,
+    });
+  const sellEvidence =
+    professionalLiveScoreDirection({
+      direction: "SELL",
+      ema,
+      macd,
+      rsi,
+      dmiAdx,
+      structure,
+      candlePattern,
+      atr,
+    });
+  const selection =
+    professionalLiveSelectDirection(
+      buyEvidence,
+      sellEvidence,
+      config
     );
+  const candidateDirection =
+    selection.rawDirection;
 
-  const macd =
-    liveMacd(
-      closes
-    );
-
-  const macdValue =
-    liveLastFinite(
-      macd.macdLine
-    );
-
-  const macdSignal =
-    liveLastFinite(
-      macd.signalLine
-    );
-
-  const macdHistogram =
-    liveLastFinite(
-      macd.histogram
-    );
-
-  const atrSeries =
-    liveAtr(
-      normalizedRows,
-      14
-    );
-
-  const atr =
-    liveLastFinite(
-      atrSeries
-    );
-
-  let alive = true;
-
-  let direction =
-    trend.legacyDirection;
+  const emaCandidateScore =
+    candidateDirection === "BUY"
+      ? buyEvidence.components.ema
+      : sellEvidence.components.ema;
+  const macdCandidateScore =
+    candidateDirection === "BUY"
+      ? buyEvidence.components.macd
+      : sellEvidence.components.macd;
+  const rsiCandidateScore =
+    candidateDirection === "BUY"
+      ? buyEvidence.components.rsi
+      : sellEvidence.components.rsi;
+  const dmiCandidateScore =
+    candidateDirection === "BUY"
+      ? buyEvidence.components.dmiAdx
+      : sellEvidence.components.dmiAdx;
+  const structureCandidateScore =
+    candidateDirection === "BUY"
+      ? buyEvidence.components.structure
+      : sellEvidence.components.structure;
+  const candleCandidateScore =
+    candidateDirection === "BUY"
+      ? buyEvidence.components.candlePattern
+      : sellEvidence.components.candlePattern;
 
   steps.push(
     livePipelineStep(
       "Trend",
-
-      trend.fullAlignment
+      emaCandidateScore >= 14
         ? "pass"
-        : "fail",
-
-      trend.reason,
-
+        : emaCandidateScore >= 8
+          ? "info"
+          : "fail",
+      `${ema.reason}; BUY checks ${ema.bullishCount}/4, SELL checks ${ema.bearishCount}/4`,
       {
         direction:
-          trend.direction,
-
+          ema.direction,
         periods:
-          trend.periods,
-
+          ema.periods,
         values:
-          trend.values,
+          ema.values,
+        slopes:
+          ema.slopes,
+        buyScore:
+          buyEvidence.components.ema,
+        sellScore:
+          sellEvidence.components.ema,
       }
     )
   );
 
-  if (
-    !trend.fullAlignment ||
-    !direction
-  ) {
-    alive = false;
-  }
-
   steps.push(
     livePipelineStep(
       "EMA Alignment",
-
-      trend.fullAlignment
+      ema.fullAlignment
         ? "pass"
-        : "fail",
-
-      trend.fullAlignment
-        ? `${direction} EMA stack confirmed`
-        : "Full EMA stack not confirmed"
+        : ema.partialAlignment
+          ? "info"
+          : "fail",
+      ema.fullAlignment
+        ? `Full ${ema.direction} EMA stack confirmed`
+        : ema.partialAlignment
+          ? `Partial ${ema.direction} EMA alignment retained as weighted evidence`
+          : "EMA stack is mixed; other indicators remain independently evaluated",
+      {
+        fullAlignment:
+          ema.fullAlignment,
+        partialAlignment:
+          ema.partialAlignment,
+        bullishCount:
+          ema.bullishCount,
+        bearishCount:
+          ema.bearishCount,
+      }
     )
   );
 
-  /*
-   * Retain legacy behavior:
-   * ADX remains informationally unavailable in this candle pipeline.
-   */
+  steps.push(
+    livePipelineStep(
+      "MACD Confirmation",
+      macdCandidateScore >= 10
+        ? "pass"
+        : macdCandidateScore > 0
+          ? "info"
+          : "fail",
+      macd.available
+        ? `MACD ${professionalLiveRound(macd.macd, 6)} vs signal ${professionalLiveRound(macd.signal, 6)}; histogram ${professionalLiveRound(macd.histogram, 6)}; slope ${professionalLiveRound(macd.histogramSlope, 6)}`
+        : "MACD unavailable after standard warm-up",
+      {
+        macd:
+          macd.macd,
+        signal:
+          macd.signal,
+        histogram:
+          macd.histogram,
+        previousHistogram:
+          macd.previousHistogram,
+        histogramSlope:
+          macd.histogramSlope,
+        crossedBullish:
+          macd.crossedBullish,
+        crossedBearish:
+          macd.crossedBearish,
+        buyScore:
+          buyEvidence.components.macd,
+        sellScore:
+          sellEvidence.components.macd,
+      }
+    )
+  );
+
+  steps.push(
+    livePipelineStep(
+      "RSI Confirmation",
+      rsiCandidateScore >= 10
+        ? "pass"
+        : rsiCandidateScore > 0
+          ? "info"
+          : "fail",
+      rsi.available
+        ? `RSI ${professionalLiveRound(rsi.current, 2)}; previous ${professionalLiveRound(rsi.previous, 2)}; slope ${professionalLiveRound(rsi.slope, 2)}; regime ${rsi.regime}`
+        : "RSI unavailable after Wilder warm-up",
+      {
+        rsi:
+          rsi.current,
+        previousRsi:
+          rsi.previous,
+        slope:
+          rsi.slope,
+        momentum3:
+          rsi.momentum3,
+        crossedAbove50:
+          rsi.crossedAbove50,
+        crossedBelow50:
+          rsi.crossedBelow50,
+        regime:
+          rsi.regime,
+        buyScore:
+          buyEvidence.components.rsi,
+        sellScore:
+          sellEvidence.components.rsi,
+      }
+    )
+  );
+
   steps.push(
     livePipelineStep(
       "ADX > 25?",
-      "na",
-      "ADX confirmation unavailable in the legacy-compatible candle pipeline"
+      dmiCandidateScore >= 10
+        ? "pass"
+        : dmiCandidateScore > 0
+          ? "info"
+          : "fail",
+      dmiAdx.available
+        ? `ADX ${professionalLiveRound(dmiAdx.adx, 2)} (${dmiAdx.regime}); +DI ${professionalLiveRound(dmiAdx.plusDI, 2)}, -DI ${professionalLiveRound(dmiAdx.minusDI, 2)}, slope ${professionalLiveRound(dmiAdx.adxSlope, 2)}`
+        : "ADX/DMI unavailable after Wilder warm-up",
+      {
+        adx:
+          dmiAdx.adx,
+        previousAdx:
+          dmiAdx.previousAdx,
+        adxSlope:
+          dmiAdx.adxSlope,
+        plusDI:
+          dmiAdx.plusDI,
+        minusDI:
+          dmiAdx.minusDI,
+        direction:
+          dmiAdx.direction,
+        regime:
+          dmiAdx.regime,
+        buyScore:
+          buyEvidence.components.dmiAdx,
+        sellScore:
+          sellEvidence.components.dmiAdx,
+      }
     )
   );
 
@@ -8474,716 +9799,655 @@ function analyzeLiveTimeframe(
   steps.push(
     livePipelineStep(
       "Volume Confirmed?",
-
       hasMeaningfulVolume
         ? "info"
         : "na",
-
       hasMeaningfulVolume
-        ? "Volume data present; retained as informational"
-        : "Reliable centralized volume unavailable"
+        ? "Volume/tick-volume data is present and retained as context; it is not treated as centralized exchange volume"
+        : "Reliable centralized volume is unavailable"
     )
   );
-
-  if (!alive) {
-    steps.push(
-      livePipelineStep(
-        "MACD Confirmation",
-        "skip",
-        "Skipped because trend alignment failed"
-      )
-    );
-  } else {
-    const macdPassed =
-      direction === "BUY"
-        ? (
-            Number.isFinite(
-              macdValue
-            ) &&
-            Number.isFinite(
-              macdSignal
-            ) &&
-            macdValue >
-              macdSignal
-          )
-        : (
-            Number.isFinite(
-              macdValue
-            ) &&
-            Number.isFinite(
-              macdSignal
-            ) &&
-            macdValue <
-              macdSignal
-          );
-
-    steps.push(
-      livePipelineStep(
-        "MACD Confirmation",
-
-        macdPassed
-          ? "pass"
-          : "fail",
-
-        Number.isFinite(
-          macdValue
-        ) &&
-        Number.isFinite(
-          macdSignal
-        )
-          ? `MACD ${macdValue.toFixed(6)} vs signal ${macdSignal.toFixed(6)}`
-          : "MACD values unavailable",
-
-        {
-          macd:
-            macdValue,
-
-          signal:
-            macdSignal,
-
-          histogram:
-            macdHistogram,
-        }
-      )
-    );
-
-    if (!macdPassed) {
-      alive = false;
-    }
-  }
-
-  if (!alive) {
-    steps.push(
-      livePipelineStep(
-        "RSI Confirmation",
-        "skip",
-        "Skipped because an earlier required confirmation failed"
-      )
-    );
-  } else {
-    const rsiPassed =
-      direction === "BUY"
-        ? (
-            Number.isFinite(
-              rsi
-            ) &&
-            rsi >= 45 &&
-            rsi <= 65
-          )
-        : (
-            Number.isFinite(
-              rsi
-            ) &&
-            rsi >= 35 &&
-            rsi <= 55
-          );
-
-    steps.push(
-      livePipelineStep(
-        "RSI Confirmation",
-
-        rsiPassed
-          ? "pass"
-          : "fail",
-
-        Number.isFinite(rsi)
-          ? `RSI ${rsi.toFixed(2)}`
-          : "RSI unavailable",
-
-        {
-          rsi,
-        }
-      )
-    );
-
-    if (!rsiPassed) {
-      alive = false;
-    }
-  }
 
   steps.push(
     livePipelineStep(
       "Market Structure",
-
-      structure.direction ===
-        direction
+      structureCandidateScore >= 10
         ? "pass"
-        : structure.direction ===
-            "NEUTRAL"
+        : structure.direction === "NEUTRAL"
           ? "info"
           : "fail",
-
       structure.label,
-
       {
         direction:
           structure.direction,
-
         score:
           structure.score,
+        buyScore:
+          buyEvidence.components.structure,
+        sellScore:
+          sellEvidence.components.structure,
       }
     )
   );
 
-  if (
-    alive &&
-    structure.direction !==
-      "NEUTRAL" &&
-    structure.direction !==
-      direction
-  ) {
-    alive = false;
+  steps.push(
+    livePipelineStep(
+      "Candle Pattern",
+      candleCandidateScore >= 4
+        ? "pass"
+        : candleCandidateScore > 0
+          ? "info"
+          : "na",
+      candidateDirection === "BUY"
+        ? candlePattern.buy.detail
+        : candlePattern.sell.detail,
+      {
+        direction:
+          candlePattern.candleDirection,
+        bodyRatio:
+          candlePattern.bodyRatio,
+        bullishConfirmed:
+          candlePattern.buy.confirmed,
+        bearishConfirmed:
+          candlePattern.sell.confirmed,
+        buyScore:
+          buyEvidence.components.candlePattern,
+        sellScore:
+          sellEvidence.components.candlePattern,
+      }
+    )
+  );
+
+  const hardBlocks = [];
+
+  if (atr.available !== true) {
+    hardBlocks.push(
+      "ATR unavailable"
+    );
   }
 
-  if (!alive) {
-    steps.push(
-      livePipelineStep(
-        "Support/Resistance",
-        "skip",
-        "Skipped because an earlier required confirmation failed"
-      )
+  if (atr.hardBlock === true) {
+    hardBlocks.push(
+      "Extreme ATR volatility regime"
     );
-  } else {
-    let distanceRatio = null;
-    let level = null;
+  }
 
-    if (
-      direction === "BUY"
-    ) {
-      level =
-        supportResistance
-          .nearestResistance;
-
-      if (
-        Number.isFinite(
-          level
-        ) &&
-        level >
-          currentPrice
-      ) {
-        distanceRatio =
-          (
-            level -
-            currentPrice
-          ) /
-          currentPrice;
-      }
-    } else {
-      level =
-        supportResistance
-          .nearestSupport;
-
-      if (
-        Number.isFinite(
-          level
-        ) &&
-        level <
-          currentPrice
-      ) {
-        distanceRatio =
-          (
-            currentPrice -
-            level
-          ) /
-          currentPrice;
-      }
-    }
-
-    const srPassed =
-      !Number.isFinite(
-        level
-      ) ||
-      !Number.isFinite(
-        distanceRatio
-      ) ||
-      distanceRatio >=
-        0.003;
-
-    steps.push(
-      livePipelineStep(
-        "Support/Resistance",
-
-        srPassed
-          ? "pass"
-          : "fail",
-
-        !Number.isFinite(
-          level
-        )
-          ? "No blocking nearby level detected"
-          : `${direction === "BUY" ? "Resistance" : "Support"} distance ${(distanceRatio * 100).toFixed(2)}%`,
-
-        {
-          level,
-          distanceRatio,
-
-          supports:
-            supportResistance
-              .supports,
-
-          resistances:
-            supportResistance
-              .resistances,
-        }
-      )
+  if (
+    options.sourceStale === true
+  ) {
+    hardBlocks.push(
+      "Source data is marked stale"
     );
-
-    if (!srPassed) {
-      alive = false;
-    }
   }
 
   steps.push(
     livePipelineStep(
       "ATR-style Stop Loss",
-
-      Number.isFinite(atr)
-        ? "info"
-        : "na",
-
-      Number.isFinite(atr)
-        ? `ATR ${atr.toFixed(livePairPriceDecimals(pair))}`
+      atr.available !== true ||
+      atr.hardBlock === true
+        ? "fail"
+        : "pass",
+      atr.available
+        ? `ATR ${professionalLiveRound(atr.current, livePairPriceDecimals(pair))}; ${professionalLiveRound(atr.atrPercent, 4)}% of price; percentile ${professionalLiveRound(atr.percentile, 2)}; regime ${atr.regime}; median ratio ${professionalLiveRound(atr.medianRatio, 3)}`
         : "ATR unavailable",
-
       {
-        atr,
+        atr:
+          atr.current,
+        previousAtr:
+          atr.previous,
+        atrSlope:
+          atr.slope,
+        atrPercent:
+          atr.atrPercent,
+        percentile:
+          atr.percentile,
+        median:
+          atr.median,
+        medianRatio:
+          atr.medianRatio,
+        regime:
+          atr.regime,
+        hardBlock:
+          atr.hardBlock,
       }
     )
   );
 
-  const preliminaryDecision =
-    alive
-      ? normalizePipelineDecision(
-          direction
-        )
-      : "HOLD";
+  steps.push(
+    livePipelineStep(
+      "Confluence Score",
+      selection.qualified
+        ? "pass"
+        : "fail",
+      `${selection.reason}; BUY ${buyEvidence.score}, SELL ${sellEvidence.score}`,
+      {
+        buyScore:
+          buyEvidence.score,
+        sellScore:
+          sellEvidence.score,
+        winningScore:
+          selection.winningScore,
+        edge:
+          selection.edge,
+        minimumScore:
+          selection.minimumScore,
+        minimumEdge:
+          selection.minimumEdge,
+      }
+    )
+  );
 
-  const tradePlan =
-    preliminaryDecision !==
-      "HOLD"
+  let preliminaryDecision =
+    selection.qualified &&
+    hardBlocks.length === 0
+      ? selection.direction
+      : "HOLD";
+  let tradePlan =
+    preliminaryDecision !== "HOLD"
       ? buildLiveTradePlan({
           direction:
             preliminaryDecision,
-
           price:
             currentPrice,
-
-          atr,
-
+          atr:
+            atr.current,
+          atrSnapshot:
+            atr,
           supportResistance,
-
           pair,
+          timeframe:
+            timeframeKey,
+          rows:
+            normalizedRows,
         })
       : null;
-
   let finalDecision =
     preliminaryDecision;
 
   if (
-    preliminaryDecision ===
-    "HOLD"
+    preliminaryDecision !== "HOLD" &&
+    !tradePlan
   ) {
-    steps.push(
-      livePipelineStep(
-        "Trade Plan + Risk:Reward",
-        "skip",
-        "No trade plan because required confirmations did not pass"
-      )
+    finalDecision = "HOLD";
+    hardBlocks.push(
+      "Professional ATR/structure trade-plan geometry failed"
     );
-  } else if (!tradePlan) {
-    finalDecision =
-      "HOLD";
+  }
 
-    steps.push(
-      livePipelineStep(
-        "Trade Plan + Risk:Reward",
-        "fail",
-        "A valid risk-managed trade plan could not be constructed"
-      )
+  const approximateBaseRisk =
+    atr.available
+      ? atr.current *
+        config.baseStopAtr *
+        professionalLivePairAtrModifier(pair) *
+        atr.regimeStopFactor
+      : null;
+  const confirmedSwingLevels =
+    professionalLiveConfirmedSwingLevels(
+      normalizedRows
     );
-  } else if (
-    tradePlan.riskReward < 2
-  ) {
-    finalDecision =
-      "HOLD";
+  const opposingBarrier =
+    candidateDirection === "BUY"
+      ? confirmedSwingLevels.highs
+          .filter(level => level > currentPrice)
+          .sort((left, right) => left - right)[0] ?? null
+      : confirmedSwingLevels.lows
+          .filter(level => level < currentPrice)
+          .sort((left, right) => right - left)[0] ?? null;
+  const barrierDistance =
+    Number.isFinite(opposingBarrier) &&
+    Number.isFinite(currentPrice) &&
+    (candidateDirection === "BUY"
+      ? opposingBarrier > currentPrice
+      : opposingBarrier < currentPrice)
+      ? Math.abs(opposingBarrier - currentPrice)
+      : null;
+  const approximateBarrierR =
+    Number.isFinite(barrierDistance) &&
+    Number.isFinite(approximateBaseRisk) &&
+    approximateBaseRisk > 0
+      ? barrierDistance / approximateBaseRisk
+      : null;
 
+  steps.push(
+    livePipelineStep(
+      "Support/Resistance",
+      Number.isFinite(approximateBarrierR) &&
+      approximateBarrierR < config.minimumBarrierR
+        ? "info"
+        : "pass",
+      !Number.isFinite(opposingBarrier)
+        ? "No confirmed opposing swing level was identified"
+        : Number.isFinite(approximateBarrierR) &&
+          approximateBarrierR < config.minimumBarrierR
+          ? `${candidateDirection === "BUY" ? "Resistance" : "Support"} ${professionalLiveRound(opposingBarrier, livePairPriceDecimals(pair))} is nearby at approximately ${professionalLiveRound(approximateBarrierR, 2)}R; retained as a caution, not a hard blocker`
+          : `${candidateDirection === "BUY" ? "Resistance" : "Support"} ${professionalLiveRound(opposingBarrier, livePairPriceDecimals(pair))}; approximate room ${professionalLiveRound(approximateBarrierR, 2)}R`,
+      {
+        level:
+          Number.isFinite(opposingBarrier)
+            ? opposingBarrier
+            : null,
+        approximateBarrierR,
+        minimumBarrierR:
+          config.minimumBarrierR,
+        supports:
+          supportResistance.supports,
+        resistances:
+          supportResistance.resistances,
+      }
+    )
+  );
+
+  if (finalDecision === "HOLD") {
     steps.push(
       livePipelineStep(
         "Trade Plan + Risk:Reward",
-
-        "fail",
-
-        `Risk:Reward ${tradePlan.riskReward.toFixed(2)} is below 2.00`,
-
-        {
-          riskReward:
-            tradePlan.riskReward,
-        }
+        selection.qualified &&
+        hardBlocks.length > 0
+          ? "fail"
+          : "skip",
+        hardBlocks.length > 0
+          ? hardBlocks.join("; ")
+          : "No trade plan because professional confluence thresholds were not met"
       )
     );
   } else {
     steps.push(
       livePipelineStep(
         "Trade Plan + Risk:Reward",
-
         "pass",
-
-        `Risk:Reward ${tradePlan.riskReward.toFixed(2)}`,
-
+        `ATR/structure plan passed at ${tradePlan.riskReward.toFixed(2)}R; stop ${tradePlan.riskDiagnostics.stopDistanceAtr} ATR`,
         {
           riskReward:
             tradePlan.riskReward,
+          model:
+            tradePlan.model,
+          riskDiagnostics:
+            tradePlan.riskDiagnostics,
         }
       )
     );
   }
 
-  const requiredSteps =
-    steps.filter(
-      step =>
-        step.status ===
-          "pass" ||
-        step.status ===
-          "fail"
-    );
-
-  const passedRequiredSteps =
-    requiredSteps.filter(
-      step =>
-        step.status ===
-        "pass"
-    ).length;
-
-  const failedRequiredSteps =
-    requiredSteps.filter(
-      step =>
-        step.status ===
-        "fail"
-    ).length;
-
-  const confirmationRatio =
-    requiredSteps.length > 0
-      ? passedRequiredSteps /
-        requiredSteps.length
-      : 0;
-
-  let score = 0;
-
-  if (
-    trend.direction ===
-    "BUY"
-  ) {
-    score += 30;
-  }
-
-  if (
-    trend.direction ===
-    "SELL"
-  ) {
-    score -= 30;
-  }
-
-  score +=
-    structure.score;
-
-  if (
-    Number.isFinite(
-      macdHistogram
-    ) &&
-    macdHistogram > 0
-  ) {
-    score += 15;
-  } else if (
-    Number.isFinite(
-      macdHistogram
-    ) &&
-    macdHistogram < 0
-  ) {
-    score -= 15;
-  }
-
-  if (
-    Number.isFinite(rsi)
-  ) {
-    if (
-      rsi >= 50 &&
-      rsi <= 65
-    ) {
-      score += 10;
-    } else if (
-      rsi >= 35 &&
-      rsi < 50
-    ) {
-      score -= 10;
-    }
-  }
-
-  score =
-    Math.max(
-      -100,
-      Math.min(
-        100,
-        score
-      )
-    );
-
   const confidence =
-    finalDecision ===
-      "HOLD"
-      ? Math.max(
+    finalDecision === "HOLD"
+      ? professionalLiveClamp(
+          Math.round(
+            selection.winningScore * 0.65
+          ),
           0,
-          Math.min(
-            69,
-            Math.round(
-              confirmationRatio *
-              70
-            )
-          )
+          69
         )
-      : Math.max(
-          50,
-          Math.min(
-            99,
-            Math.round(
-              60 +
-              confirmationRatio *
-                35
-            )
-          )
+      : professionalLiveClamp(
+          Math.round(
+            55 +
+            (selection.winningScore - config.minimumScore) * 0.75 +
+            selection.edge * 0.45
+          ),
+          55,
+          97
         );
-
+  const signedScore =
+    finalDecision === "BUY"
+      ? Math.round(selection.winningScore)
+      : finalDecision === "SELL"
+        ? -Math.round(selection.winningScore)
+        : Math.round(
+            buyEvidence.score -
+            sellEvidence.score
+          );
   const reason =
-    finalDecision ===
-      "HOLD"
-      ? failedRequiredSteps >
-          0
-        ? `${failedRequiredSteps} required confirmation(s) failed`
-        : "No fully confirmed directional setup"
-      : `${finalDecision} setup confirmed by the legacy-compatible pipeline`;
+    finalDecision !== "HOLD"
+      ? `${finalDecision} setup confirmed by professional multi-indicator confluence and ATR risk validation`
+      : hardBlocks.length > 0
+        ? hardBlocks.join("; ")
+        : selection.reason;
+  const tradePlanOutput =
+    finalDecision !== "HOLD"
+      ? tradePlan
+      : null;
+  const marketRegime =
+    `${dmiAdx.regime || "UNKNOWN"}_${atr.regime || "UNKNOWN"}`;
 
   return {
     pair,
     timeframe,
-
+    professionalTimeframe:
+      timeframeKey,
+    professionalPipelineVersion:
+      PROFESSIONAL_LIVE_PIPELINE_VERSION,
+    engineVersion:
+      ENGINE_VERSION,
+    strategyVersion:
+      STRATEGY_VERSION,
     decision:
       finalDecision,
-
     signal:
       finalDecision,
-
     action:
       finalDecision,
-
     direction:
       finalDecision,
-
     rawDirection:
-      direction ||
-      "NEUTRAL",
-
+      candidateDirection,
     trend:
-      trend.direction,
-
+      ema.direction,
     trendDirection:
-      trend.direction,
-
+      ema.direction,
     confidence,
-    score,
-
+    score:
+      signedScore,
     price:
       currentPrice,
-
     currentPrice,
-
     lastPrice:
       currentPrice,
-
     timestamp:
       lastCandle.timestamp,
-
     time:
       lastCandle.time,
-
+    generatedAt:
+      lastCandle.time,
     candleCount:
       normalizedRows.length,
-
+    marketRegime,
     indicators: {
-      rsi,
-
+      rsi:
+        rsi.current,
+      rsiPrevious:
+        rsi.previous,
+      rsiSlope:
+        rsi.slope,
+      rsiRegime:
+        rsi.regime,
       macd:
-        macdValue,
-
-      macdSignal,
-
-      macdHistogram,
-
-      atr,
-
+        macd.macd,
+      macdSignal:
+        macd.signal,
+      macdHistogram:
+        macd.histogram,
+      macdHistogramSlope:
+        macd.histogramSlope,
+      atr:
+        atr.current,
+      atrPrevious:
+        atr.previous,
+      atrSlope:
+        atr.slope,
+      atrPercent:
+        atr.atrPercent,
+      atrPercentile:
+        atr.percentile,
+      atrMedianRatio:
+        atr.medianRatio,
+      atrRegime:
+        atr.regime,
+      adx:
+        dmiAdx.adx,
+      adxPrevious:
+        dmiAdx.previousAdx,
+      adxSlope:
+        dmiAdx.adxSlope,
+      plusDI:
+        dmiAdx.plusDI,
+      minusDI:
+        dmiAdx.minusDI,
       ema20:
-        trend.values.ema20,
-
+        ema.values.ema20,
       ema50:
-        trend.values.ema50,
-
+        ema.values.ema50,
       ema100:
-        trend.values.ema100,
-
+        ema.values.ema100,
       ema200:
-        trend.values.ema200,
+        ema.values.ema200,
+      ema20Slope:
+        ema.slopes.ema20,
+      ema50Slope:
+        ema.slopes.ema50,
     },
-
-    rsi,
-
+    rsi:
+      rsi.current,
     macd:
-      macdValue,
-
-    macdSignal,
-
-    macdHistogram,
-
-    atr,
-
+      macd.macd,
+    macdSignal:
+      macd.signal,
+    macdHistogram:
+      macd.histogram,
+    atr:
+      atr.current,
+    adx:
+      dmiAdx.adx,
+    plusDI:
+      dmiAdx.plusDI,
+    minusDI:
+      dmiAdx.minusDI,
     ema20:
-      trend.values.ema20,
-
+      ema.values.ema20,
     ema50:
-      trend.values.ema50,
-
+      ema.values.ema50,
     ema100:
-      trend.values.ema100,
-
+      ema.values.ema100,
     ema200:
-      trend.values.ema200,
-
+      ema.values.ema200,
     marketStructure:
       structure,
-
     structure,
-
     supportResistance,
-
     supports:
-      supportResistance
-        .supports,
-
+      supportResistance.supports,
     resistances:
-      supportResistance
-        .resistances,
-
+      supportResistance.resistances,
     nearestSupport:
-      supportResistance
-        .nearestSupport,
-
+      supportResistance.nearestSupport,
     nearestResistance:
-      supportResistance
-        .nearestResistance,
-
+      supportResistance.nearestResistance,
     tradePlan:
-      finalDecision !==
-        "HOLD"
-        ? tradePlan
-        : null,
-
+      tradePlanOutput,
     plan:
-      finalDecision !==
-        "HOLD"
-        ? tradePlan
-        : null,
-
+      tradePlanOutput,
     entry:
-      finalDecision !==
-        "HOLD" &&
-      tradePlan
-        ? tradePlan.entry
+      tradePlanOutput
+        ? tradePlanOutput.entry
         : null,
-
     stop:
-      finalDecision !==
-        "HOLD" &&
-      tradePlan
-        ? tradePlan.stop
+      tradePlanOutput
+        ? tradePlanOutput.stop
         : null,
-
     stopLoss:
-      finalDecision !==
-        "HOLD" &&
-      tradePlan
-        ? tradePlan.stopLoss
+      tradePlanOutput
+        ? tradePlanOutput.stopLoss
         : null,
-
     target1:
-      finalDecision !==
-        "HOLD" &&
-      tradePlan
-        ? tradePlan.target1
+      tradePlanOutput
+        ? tradePlanOutput.target1
         : null,
-
     target2:
-      finalDecision !==
-        "HOLD" &&
-      tradePlan
-        ? tradePlan.target2
+      tradePlanOutput
+        ? tradePlanOutput.target2
         : null,
-
     target3:
-      finalDecision !==
-        "HOLD" &&
-      tradePlan
-        ? tradePlan.target3
+      tradePlanOutput
+        ? tradePlanOutput.target3
         : null,
-
     tp1:
-      finalDecision !==
-        "HOLD" &&
-      tradePlan
-        ? tradePlan.tp1
+      tradePlanOutput
+        ? tradePlanOutput.tp1
         : null,
-
     tp2:
-      finalDecision !==
-        "HOLD" &&
-      tradePlan
-        ? tradePlan.tp2
+      tradePlanOutput
+        ? tradePlanOutput.tp2
         : null,
-
     tp3:
-      finalDecision !==
-        "HOLD" &&
-      tradePlan
-        ? tradePlan.tp3
+      tradePlanOutput
+        ? tradePlanOutput.tp3
         : null,
-
     riskReward:
-      finalDecision !==
-        "HOLD" &&
-      tradePlan
-        ? tradePlan.riskReward
+      tradePlanOutput
+        ? tradePlanOutput.riskReward
         : null,
-
     rr:
-      finalDecision !==
-        "HOLD" &&
-      tradePlan
-        ? tradePlan.rr
+      tradePlanOutput
+        ? tradePlanOutput.rr
         : null,
-
     reason,
-
     steps,
     pipeline: steps,
-
+    indicatorSnapshot: {
+      ema,
+      macd: {
+        available:
+          macd.available,
+        macd:
+          macd.macd,
+        signal:
+          macd.signal,
+        histogram:
+          macd.histogram,
+        previousHistogram:
+          macd.previousHistogram,
+        histogramSlope:
+          macd.histogramSlope,
+        crossedBullish:
+          macd.crossedBullish,
+        crossedBearish:
+          macd.crossedBearish,
+      },
+      rsi: {
+        available:
+          rsi.available,
+        period:
+          rsi.period,
+        current:
+          rsi.current,
+        previous:
+          rsi.previous,
+        slope:
+          rsi.slope,
+        momentum3:
+          rsi.momentum3,
+        crossedAbove50:
+          rsi.crossedAbove50,
+        crossedBelow50:
+          rsi.crossedBelow50,
+        regime:
+          rsi.regime,
+      },
+      dmiAdx: {
+        available:
+          dmiAdx.available,
+        period:
+          dmiAdx.period,
+        adx:
+          dmiAdx.adx,
+        previousAdx:
+          dmiAdx.previousAdx,
+        adxSlope:
+          dmiAdx.adxSlope,
+        plusDI:
+          dmiAdx.plusDI,
+        minusDI:
+          dmiAdx.minusDI,
+        direction:
+          dmiAdx.direction,
+        regime:
+          dmiAdx.regime,
+      },
+      atr: {
+        available:
+          atr.available,
+        period:
+          atr.period,
+        current:
+          atr.current,
+        previous:
+          atr.previous,
+        slope:
+          atr.slope,
+        atrPercent:
+          atr.atrPercent,
+        percentile:
+          atr.percentile,
+        median:
+          atr.median,
+        medianRatio:
+          atr.medianRatio,
+        regime:
+          atr.regime,
+        hardBlock:
+          atr.hardBlock,
+      },
+      structure,
+      candlePattern,
+    },
+    confluence: {
+      version:
+        PROFESSIONAL_LIVE_PIPELINE_VERSION,
+      qualified:
+        finalDecision !== "HOLD",
+      selectedDirection:
+        finalDecision,
+      rawDirection:
+        candidateDirection,
+      buy:
+        buyEvidence,
+      sell:
+        sellEvidence,
+      winningScore:
+        selection.winningScore,
+      losingScore:
+        selection.losingScore,
+      edge:
+        selection.edge,
+      minimumScore:
+        selection.minimumScore,
+      minimumEdge:
+        selection.minimumEdge,
+      hardBlocks,
+    },
+    riskDiagnostics:
+      tradePlanOutput
+        ? tradePlanOutput.riskDiagnostics
+        : {
+            model:
+              "ATR_REGIME_STRUCTURE",
+            atrRegime:
+              atr.regime,
+            atrHardBlock:
+              atr.hardBlock,
+            approximateBarrierR,
+            minimumBarrierR:
+              config.minimumBarrierR,
+          },
+    dataQuality:
+      integrity,
     diagnostics: {
       requiredSteps:
-        requiredSteps.length,
-
-      passedRequiredSteps,
-
-      failedRequiredSteps,
-
+        steps.filter(
+          step =>
+            step.status === "pass" ||
+            step.status === "fail"
+        ).length,
+      passedRequiredSteps:
+        steps.filter(
+          step =>
+            step.status === "pass"
+        ).length,
+      failedRequiredSteps:
+        steps.filter(
+          step =>
+            step.status === "fail"
+        ).length,
       confirmationRatio:
-        Number(
-          confirmationRatio
-            .toFixed(4)
+        professionalLiveRound(
+          steps.filter(step => step.status === "pass").length /
+          Math.max(
+            1,
+            steps.filter(
+              step =>
+                step.status === "pass" ||
+                step.status === "fail"
+            ).length
+          ),
+          4
         ),
     },
   };
@@ -9200,8 +10464,7 @@ function applyLiveHigherTimeframeConfirmation(
 ) {
   const lower =
     lowerAnalysis &&
-    typeof lowerAnalysis ===
-      "object"
+    typeof lowerAnalysis === "object"
       ? {
           ...lowerAnalysis,
         }
@@ -9213,19 +10476,19 @@ function applyLiveHigherTimeframeConfirmation(
 
   const higher =
     higherAnalysis &&
-    typeof higherAnalysis ===
-      "object"
+    typeof higherAnalysis === "object"
       ? higherAnalysis
       : null;
-
   const steps =
-    Array.isArray(
-      lower.steps
-    )
+    Array.isArray(lower.steps)
       ? [
           ...lower.steps,
         ]
       : [];
+  const higherTimeframe =
+    options.higherTimeframe ||
+    (higher && higher.timeframe) ||
+    null;
 
   if (!higher) {
     steps.push(
@@ -9236,11 +10499,9 @@ function applyLiveHigherTimeframeConfirmation(
       )
     );
 
-    lower.steps =
-      steps;
-
-    lower.pipeline =
-      steps;
+    lower.steps = steps;
+    lower.pipeline = steps;
+    lower.mtfConfirmed = null;
 
     return lower;
   }
@@ -9250,174 +10511,312 @@ function applyLiveHigherTimeframeConfirmation(
       lower.decision ||
       lower.signal
     );
-
-  const higherTrend =
+  const higherDecision =
+    normalizePipelineDecision(
+      higher.decision ||
+      higher.signal
+    );
+  const higherRawDirection =
     normalizePipelineDecision(
       higher.rawDirection ||
       higher.trendDirection ||
-      higher.trend ||
-      higher.decision
+      higher.trend
     );
-
-  if (
-    lowerDecision ===
-    "HOLD"
-  ) {
-    steps.push(
-      livePipelineStep(
-        "Multi-Timeframe Confirmation",
-
-        "skip",
-
-        "Lower timeframe has no active directional setup",
-
-        {
-          higherTimeframe:
-            options
-              .higherTimeframe ||
-            higher.timeframe ||
-            null,
-
-          higherDirection:
-            higherTrend,
-        }
+  const higherDirection =
+    higherDecision !== "HOLD"
+      ? higherDecision
+      : higherRawDirection;
+  const higherWinningScore =
+    candleNumber(
+      higher.confluence &&
+      higher.confluence.winningScore,
+      Math.abs(
+        candleNumber(
+          higher.score,
+          0
+        )
       )
     );
-
-    lower.steps =
-      steps;
-
-    lower.pipeline =
-      steps;
-
-    return lower;
-  }
-
-  const confirmed =
-    higherTrend ===
-    lowerDecision;
-
-  steps.push(
-    livePipelineStep(
-      "Multi-Timeframe Confirmation",
-
-      confirmed
-        ? "pass"
-        : "fail",
-
-      confirmed
-        ? `${higher.timeframe || "Higher timeframe"} confirms ${lowerDecision}`
-        : `${higher.timeframe || "Higher timeframe"} does not confirm ${lowerDecision}`,
-
-      {
-        higherTimeframe:
-          options
-            .higherTimeframe ||
-          higher.timeframe ||
-          null,
-
-        higherDirection:
-          higherTrend,
-      }
-    )
-  );
-
-  lower.steps =
-    steps;
-
-  lower.pipeline =
-    steps;
+  const higherAdx =
+    candleNumber(
+      higher.indicators &&
+      higher.indicators.adx,
+      candleNumber(
+        higher.adx
+      )
+    );
+  const higherFullEma =
+    Boolean(
+      higher.indicatorSnapshot &&
+      higher.indicatorSnapshot.ema &&
+      higher.indicatorSnapshot.ema.fullAlignment
+    );
 
   lower.higherTimeframe = {
     timeframe:
-      options
-        .higherTimeframe ||
-      higher.timeframe ||
-      null,
-
+      higherTimeframe,
     decision:
-      normalizePipelineDecision(
-        higher.decision ||
-        higher.signal
-      ),
-
+      higherDecision,
     direction:
-      higherTrend,
-
+      higherDirection,
     confidence:
       candleNumber(
         higher.confidence,
         0
       ),
+    winningScore:
+      higherWinningScore,
+    adx:
+      higherAdx,
   };
 
-  lower.mtfConfirmed =
-    confirmed;
+  if (lowerDecision === "HOLD") {
+    steps.push(
+      livePipelineStep(
+        "Multi-Timeframe Confirmation",
+        "info",
+        `Lower timeframe has no qualified setup; ${higherTimeframe || "higher timeframe"} bias is ${higherDirection}`,
+        {
+          higherTimeframe,
+          higherDecision,
+          higherDirection,
+          higherWinningScore,
+          higherAdx,
+        }
+      )
+    );
 
-  if (!confirmed) {
-    lower.decision =
-      "HOLD";
+    lower.steps = steps;
+    lower.pipeline = steps;
+    lower.mtfConfirmed = null;
 
-    lower.signal =
-      "HOLD";
+    return lower;
+  }
 
-    lower.action =
-      "HOLD";
+  if (
+    higherDirection === "HOLD" ||
+    higherDirection === "NEUTRAL"
+  ) {
+    steps.push(
+      livePipelineStep(
+        "Multi-Timeframe Confirmation",
+        "info",
+        `${higherTimeframe || "Higher timeframe"} is neutral; lower-timeframe setup remains valid without a confirmation bonus`,
+        {
+          higherTimeframe,
+          higherDecision,
+          higherDirection,
+          higherWinningScore,
+          higherAdx,
+        }
+      )
+    );
 
-    lower.direction =
-      "HOLD";
+    lower.steps = steps;
+    lower.pipeline = steps;
+    lower.mtfConfirmed = false;
 
-    lower.tradePlan =
-      null;
+    return lower;
+  }
 
-    lower.plan =
-      null;
+  const confirmed =
+    higherDirection ===
+    lowerDecision;
 
-    lower.entry =
-      null;
-
-    lower.stop =
-      null;
-
-    lower.stopLoss =
-      null;
-
-    lower.target1 =
-      null;
-
-    lower.target2 =
-      null;
-
-    lower.target3 =
-      null;
-
-    lower.tp1 =
-      null;
-
-    lower.tp2 =
-      null;
-
-    lower.tp3 =
-      null;
-
-    lower.riskReward =
-      null;
-
-    lower.rr =
-      null;
+  if (confirmed) {
+    steps.push(
+      livePipelineStep(
+        "Multi-Timeframe Confirmation",
+        "pass",
+        `${higherTimeframe || "Higher timeframe"} confirms ${lowerDecision}`,
+        {
+          higherTimeframe,
+          higherDecision,
+          higherDirection,
+          higherWinningScore,
+          higherAdx,
+        }
+      )
+    );
 
     lower.confidence =
-      Math.min(
+      professionalLiveClamp(
         candleInteger(
           lower.confidence,
           0
-        ),
-        69
+        ) + 5,
+        0,
+        99
       );
 
-    lower.reason =
-      "Higher timeframe did not confirm the lower-timeframe setup";
+    if (
+      lower.confluence &&
+      typeof lower.confluence === "object"
+    ) {
+      lower.confluence = {
+        ...lower.confluence,
+        higherTimeframe: {
+          timeframe:
+            higherTimeframe,
+          status:
+            "CONFIRMED",
+          direction:
+            higherDirection,
+          score:
+            higherWinningScore,
+          adx:
+            higherAdx,
+          confidenceBonus:
+            5,
+        },
+      };
+    }
+
+    lower.steps = steps;
+    lower.pipeline = steps;
+    lower.mtfConfirmed = true;
+
+    return lower;
   }
+
+  const strongConflict =
+    (
+      higherDecision ===
+      higherDirection &&
+      higherDecision !== "HOLD" &&
+      candleNumber(
+        higher.confidence,
+        0
+      ) >= 60
+    ) ||
+    (
+      higherWinningScore >= 65 &&
+      Number.isFinite(higherAdx) &&
+      higherAdx >= 20
+    ) ||
+    (
+      higherFullEma &&
+      higherWinningScore >= 60
+    );
+
+  steps.push(
+    livePipelineStep(
+      "Multi-Timeframe Confirmation",
+      strongConflict
+        ? "fail"
+        : "info",
+      strongConflict
+        ? `${higherTimeframe || "Higher timeframe"} has a strong ${higherDirection} conflict; ${lowerDecision} setup blocked`
+        : `${higherTimeframe || "Higher timeframe"} has a weak ${higherDirection} lean; ${lowerDecision} setup retained with lower confidence`,
+      {
+        higherTimeframe,
+        higherDecision,
+        higherDirection,
+        higherWinningScore,
+        higherAdx,
+        strongConflict,
+      }
+    )
+  );
+
+  if (strongConflict) {
+    lower.decision = "HOLD";
+    lower.signal = "HOLD";
+    lower.action = "HOLD";
+    lower.direction = "HOLD";
+    lower.tradePlan = null;
+    lower.plan = null;
+    lower.entry = null;
+    lower.stop = null;
+    lower.stopLoss = null;
+    lower.target1 = null;
+    lower.target2 = null;
+    lower.target3 = null;
+    lower.tp1 = null;
+    lower.tp2 = null;
+    lower.tp3 = null;
+    lower.riskReward = null;
+    lower.rr = null;
+    lower.confidence = Math.min(
+      candleInteger(
+        lower.confidence,
+        0
+      ),
+      59
+    );
+    lower.reason =
+      "Strong higher-timeframe conflict blocked the lower-timeframe setup";
+
+    if (
+      lower.confluence &&
+      typeof lower.confluence === "object"
+    ) {
+      lower.confluence = {
+        ...lower.confluence,
+        qualified: false,
+        selectedDirection: "HOLD",
+        hardBlocks: [
+          ...(
+            Array.isArray(
+              lower.confluence.hardBlocks
+            )
+              ? lower.confluence.hardBlocks
+              : []
+          ),
+          "Strong higher-timeframe conflict",
+        ],
+        higherTimeframe: {
+          timeframe:
+            higherTimeframe,
+          status:
+            "BLOCKED",
+          direction:
+            higherDirection,
+          score:
+            higherWinningScore,
+          adx:
+            higherAdx,
+        },
+      };
+    }
+  } else {
+    lower.confidence =
+      professionalLiveClamp(
+        candleInteger(
+          lower.confidence,
+          0
+        ) - 8,
+        0,
+        99
+      );
+
+    if (
+      lower.confluence &&
+      typeof lower.confluence === "object"
+    ) {
+      lower.confluence = {
+        ...lower.confluence,
+        higherTimeframe: {
+          timeframe:
+            higherTimeframe,
+          status:
+            "CAUTION",
+          direction:
+            higherDirection,
+          score:
+            higherWinningScore,
+          adx:
+            higherAdx,
+          confidenceAdjustment:
+            -8,
+        },
+      };
+    }
+  }
+
+  lower.steps = steps;
+  lower.pipeline = steps;
+  lower.mtfConfirmed = false;
 
   return lower;
 }
@@ -9435,223 +10834,176 @@ function runLegacyCompatibleAnalysisPipeline(
     input.symbol ||
     input.pairLabel ||
     "UNKNOWN";
-
+  const nowMs =
+    candleNumber(
+      input.nowMs,
+      Date.now()
+    );
   const frames =
     input.frames &&
-    typeof input.frames ===
-      "object"
+    typeof input.frames === "object"
       ? input.frames
-      : prepareLiveAnalysisFrames(
-          input
-        );
+      : prepareLiveAnalysisFrames({
+          ...input,
+          nowMs,
+        });
 
-  const scalpAnalysis =
+  const weeklyAnalysis =
     analyzeLiveTimeframe(
-      frames.scalp ||
-      [],
+      frames.weekly || [],
       {
         pair,
-
-        timeframe:
-          input
-            .scalpTimeframe ||
-          input.timeframe ||
-          "SCALP",
-
+        timeframe: "W1",
+        nowMs,
         maxRows:
-          input
-            .maxScalpAnalysisRows ||
-          1200,
-      }
-    );
-
-  const intradayBase =
-    analyzeLiveTimeframe(
-      frames.intraday ||
-      [],
-      {
-        pair,
-
-        timeframe:
-          "H1",
-
-        maxRows:
-          input
-            .maxIntradayAnalysisRows ||
-          1000,
+          input.maxWeeklyAnalysisRows ||
+          300,
+        sourceStale:
+          input.weeklySourceStale === true,
       }
     );
 
   const dailyBase =
     analyzeLiveTimeframe(
-      frames.daily ||
-      [],
+      frames.daily || [],
       {
         pair,
-
-        timeframe:
-          "D1",
-
+        timeframe: "D1",
+        nowMs,
         maxRows:
-          input
-            .maxDailyAnalysisRows ||
+          input.maxDailyAnalysisRows ||
           600,
-      }
-    );
-
-  const weeklyAnalysis =
-    analyzeLiveTimeframe(
-      frames.weekly ||
-      [],
-      {
-        pair,
-
-        timeframe:
-          "W1",
-
-        maxRows:
-          input
-            .maxWeeklyAnalysisRows ||
-          300,
+        sourceStale:
+          input.dailySourceStale === true,
       }
     );
 
   const dailyAnalysis =
     frames.weekly &&
-    frames.weekly.length >
-      0
+    frames.weekly.length > 0
       ? applyLiveHigherTimeframeConfirmation(
           dailyBase,
           weeklyAnalysis,
           {
-            higherTimeframe:
-              "W1",
+            higherTimeframe: "W1",
           }
         )
       : dailyBase;
 
+  const intradayBase =
+    analyzeLiveTimeframe(
+      frames.intraday || [],
+      {
+        pair,
+        timeframe: "H1",
+        nowMs,
+        maxRows:
+          input.maxIntradayAnalysisRows ||
+          1000,
+        sourceStale:
+          input.intradaySourceStale === true ||
+          input.h1SourceStale === true,
+      }
+    );
+
   const intradayAnalysis =
     frames.daily &&
-    frames.daily.length >
-      0
+    frames.daily.length > 0
       ? applyLiveHigherTimeframeConfirmation(
           intradayBase,
           dailyAnalysis,
           {
-            higherTimeframe:
-              "D1",
+            higherTimeframe: "D1",
           }
         )
       : intradayBase;
 
+  const scalpAnalysis =
+    analyzeLiveTimeframe(
+      frames.scalp || [],
+      {
+        pair,
+        timeframe:
+          input.scalpTimeframe ||
+          input.timeframe ||
+          "M5",
+        nowMs,
+        maxRows:
+          input.maxScalpAnalysisRows ||
+          1200,
+        sourceStale:
+          input.scalpSourceStale === true,
+      }
+    );
+
   const confirmedScalpAnalysis =
     frames.intraday &&
-    frames.intraday.length >
-      0
+    frames.intraday.length > 0
       ? applyLiveHigherTimeframeConfirmation(
           scalpAnalysis,
           intradayAnalysis,
           {
-            higherTimeframe:
-              "H1",
+            higherTimeframe: "H1",
           }
         )
       : scalpAnalysis;
 
   return {
     pair,
-
     generatedAt:
-      new Date()
-        .toISOString(),
-
+      new Date(nowMs).toISOString(),
     timestamp:
-      Date.now(),
-
+      nowMs,
+    professionalPipelineVersion:
+      PROFESSIONAL_LIVE_PIPELINE_VERSION,
     scalp:
       confirmedScalpAnalysis,
-
     intraday:
       intradayAnalysis,
-
     daily:
       dailyAnalysis,
-
     weekly:
       weeklyAnalysis,
-
     analyses: {
       scalp:
         confirmedScalpAnalysis,
-
       intraday:
         intradayAnalysis,
-
       daily:
         dailyAnalysis,
-
       weekly:
         weeklyAnalysis,
     },
-
     frames: {
       scalp:
-        frames.scalp ||
-        [],
-
+        frames.scalp || [],
       intraday:
-        frames.intraday ||
-        [],
-
+        frames.intraday || [],
       daily:
-        frames.daily ||
-        [],
-
+        frames.daily || [],
       weekly:
-        frames.weekly ||
-        [],
+        frames.weekly || [],
     },
-
     frameMetadata:
       frames.metadata &&
-      typeof frames.metadata ===
-        "object"
+      typeof frames.metadata === "object"
         ? frames.metadata
         : {
             scalpCount:
-              Array.isArray(
-                frames.scalp
-              )
-                ? frames
-                    .scalp
-                    .length
+              Array.isArray(frames.scalp)
+                ? frames.scalp.length
                 : 0,
-
             intradayCount:
-              Array.isArray(
-                frames.intraday
-              )
-                ? frames
-                    .intraday
-                    .length
+              Array.isArray(frames.intraday)
+                ? frames.intraday.length
                 : 0,
-
             dailyCount:
-              Array.isArray(
-                frames.daily
-              )
-                ? frames
-                    .daily
-                    .length
+              Array.isArray(frames.daily)
+                ? frames.daily.length
                 : 0,
-
             weeklyCount:
-              Array.isArray(
-                frames.weekly
-              )
-                ? frames
-                    .weekly
-                    .length
+              Array.isArray(frames.weekly)
+                ? frames.weekly.length
                 : 0,
           },
   };
@@ -10334,6 +11686,30 @@ function normalizeLiveTradePlan(source, pair, decision) {
     rr: riskReward,
 
     atr: liveFiniteNumber(source.atr, null),
+
+    model:
+      liveNonEmptyString(
+        source.model,
+        null
+      ),
+
+    timeframe:
+      liveNonEmptyString(
+        source.timeframe,
+        null
+      ),
+
+    professionalPipelineVersion:
+      liveNonEmptyString(
+        source.professionalPipelineVersion,
+        null
+      ),
+
+    riskDiagnostics:
+      liveCloneValue(
+        source.riskDiagnostics ||
+        null
+      ),
   };
 }
 
@@ -10644,7 +12020,20 @@ function buildCanonicalEngineResult(
     "diagnostics",
     "metadata",
     "version",
+    "engineVersion",
     "strategyVersion",
+
+    // Professional indicator / risk extension 2.0.0.
+    "professionalPipelineVersion",
+    "professionalTimeframe",
+    "indicatorSnapshot",
+    "confluence",
+    "riskDiagnostics",
+    "dataQuality",
+    "marketRegime",
+    "adx",
+    "plusDI",
+    "minusDI",
 
     // Phase 4 controlled-confidence compatibility.
     "originalConfidence",
@@ -12377,6 +13766,22 @@ function liveHistoryRecordFromEngine(
 
     timeframeSource:
       canonical.timeframeSource ||
+      null,
+
+    engineVersion:
+      canonical.engineVersion ||
+      ENGINE_VERSION,
+
+    strategyVersion:
+      canonical.strategyVersion ||
+      STRATEGY_VERSION,
+
+    professionalPipelineVersion:
+      canonical.professionalPipelineVersion ||
+      null,
+
+    marketRegime:
+      canonical.marketRegime ||
       null,
 
     decision:
@@ -17756,6 +19161,7 @@ if (
     ENGINE_VERSION,
     AUTONOMOUS_LIVE_VERSION,
     STRATEGY_VERSION,
+    PROFESSIONAL_LIVE_PIPELINE_VERSION,
 
     runLiveAnalysisRuntime,
     runLiveAnalysis,
@@ -17764,6 +19170,16 @@ if (
 
     prepareLiveAnalysisFrames,
     runLegacyCompatibleAnalysisPipeline,
+    analyzeLiveTimeframe,
+    aggregateLiveCandles,
+    buildLiveTradePlan,
+    applyLiveHigherTimeframeConfirmation,
+    professionalLiveClosedRows,
+    professionalLiveEmaSnapshot,
+    professionalLiveRsiSnapshot,
+    professionalLiveMacdSnapshot,
+    professionalLiveDmiAdx,
+    professionalLiveAtrSnapshot,
 
     selectScalpEngineResult,
     selectSwingEngineResult,

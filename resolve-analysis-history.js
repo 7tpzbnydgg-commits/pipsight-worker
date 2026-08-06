@@ -27,6 +27,9 @@
 // - Existing Telegram logic remains unchanged.
 // - Existing Learning and AI Memory schemas remain unchanged.
 // - Existing legacy history records remain supported.
+// - Autonomous extension 1.4.0 adds immutable trade identity, evidence hashes,
+//   exact exit-price validation and correction-safe attribution without
+//   changing the established ENGINE_VERSION compatibility contract.
 
 "use strict";
 
@@ -35,6 +38,9 @@ const fs =
 
 const path =
   require("path");
+
+const crypto =
+  require("crypto");
 
 // ============================================================================
 // Engine metadata
@@ -45,6 +51,19 @@ const ENGINE_NAME =
 
 const ENGINE_VERSION =
   "1.0.2";
+
+/*
+ * Compatibility identity remains 1.0.2 because the current workflow validates
+ * it explicitly. Autonomous resolution evidence is versioned independently.
+ */
+const AUTONOMOUS_RESOLVER_VERSION =
+  "1.4.0";
+
+const RESOLUTION_EVIDENCE_SCHEMA_VERSION =
+  1;
+
+const MAX_RESOLUTION_CORRECTION_HISTORY =
+  20;
 
 const HISTORY_VERSION =
   1;
@@ -5022,6 +5041,1352 @@ function selectResolutionMarketSource(
 
 }
 
+
+// ============================================================================
+// Autonomous resolution identity, integrity and feedback extension (v1.4.0)
+// ============================================================================
+
+function canonicalizeForHash(
+  value
+) {
+
+  if (
+    value === null ||
+    value === undefined
+  ) {
+
+    return null;
+
+  }
+
+  if (
+    Array.isArray(
+      value
+    )
+  ) {
+
+    return value.map(
+      canonicalizeForHash
+    );
+
+  }
+
+  if (
+    isPlainObject(
+      value
+    )
+  ) {
+
+    const output = {};
+
+    for (
+      const key of Object.keys(
+        value
+      ).sort()
+    ) {
+
+      const normalized =
+        canonicalizeForHash(
+          value[key]
+        );
+
+      if (
+        normalized !==
+          undefined
+      ) {
+
+        output[key] =
+          normalized;
+
+      }
+
+    }
+
+    return output;
+
+  }
+
+  if (
+    typeof value ===
+      "number"
+  ) {
+
+    return Number.isFinite(
+      value
+    )
+      ? Number(
+          value.toFixed(
+            10
+          )
+        )
+      : null;
+
+  }
+
+  if (
+    typeof value ===
+      "boolean"
+  ) {
+
+    return value;
+
+  }
+
+  return String(
+    value
+  );
+
+}
+
+function createCanonicalHash(
+  value
+) {
+
+  return crypto
+    .createHash(
+      "sha256"
+    )
+    .update(
+      JSON.stringify(
+        canonicalizeForHash(
+          value
+        )
+      )
+    )
+    .digest(
+      "hex"
+    );
+
+}
+
+function getExistingSourceTradeKey(
+  record
+) {
+
+  if (
+    !isPlainObject(
+      record
+    )
+  ) {
+
+    return null;
+
+  }
+
+  return (
+    toTrimmedString(
+      record.sourceTradeKey ??
+      record.tradeIdentity ??
+      record.autonomousResolution
+        ?.sourceTradeKey ??
+      record.resolutionEvidence
+        ?.sourceTradeKey ??
+      record.autonomousFeedback
+        ?.sourceTradeKey
+    ) ||
+    null
+  );
+
+}
+
+function createSourceTradeKey(
+  record
+) {
+
+  const existing =
+    getExistingSourceTradeKey(
+      record
+    );
+
+  if (existing) {
+
+    return existing;
+
+  }
+
+  if (
+    !isPlainObject(
+      record
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const pairKey =
+    getRecordPairKey(
+      record
+    );
+
+  const engine =
+    getRecordEngine(
+      record
+    );
+
+  const timeframe =
+    getRecordTimeframe(
+      record
+    );
+
+  const direction =
+    getRecordDirection(
+      record
+    );
+
+  const entry =
+    getRecordEntry(
+      record
+    );
+
+  const openedTimestamp =
+    getRecordOpenedTimestamp(
+      record
+    );
+
+  if (
+    !pairKey ||
+    !engine ||
+    !direction ||
+    entry ===
+      null ||
+    openedTimestamp ===
+      null
+  ) {
+
+    return null;
+
+  }
+
+  const identity = {
+    schemaVersion:
+      1,
+
+    recordId:
+      getStableRecordId(
+        record
+      ),
+
+    setupIdentity:
+      getExistingSetupIdentity(
+        record
+      ) ||
+      buildStableSetupIdentity(
+        record
+      ),
+
+    pair:
+      pairKey,
+
+    engine,
+
+    timeframe:
+      timeframe ||
+      null,
+
+    direction,
+
+    entry:
+      normalizeIdentityNumber(
+        entry
+      ),
+
+    openedAt:
+      new Date(
+        openedTimestamp
+      ).toISOString()
+  };
+
+  return `trade_${
+    createCanonicalHash(
+      identity
+    )
+  }`;
+
+}
+
+function buildPreparedTradeSnapshot(
+  record
+) {
+
+  if (
+    !isPlainObject(
+      record
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const geometry =
+    validateTradeGeometry(
+      getRecordDirection(
+        record
+      ),
+      getRecordEntry(
+        record
+      ),
+      getRecordStop(
+        record
+      ),
+      getRecordTargets(
+        record
+      )
+    );
+
+  const openedTimestamp =
+    getRecordOpenedTimestamp(
+      record
+    );
+
+  const pairKey =
+    getRecordPairKey(
+      record
+    );
+
+  const engine =
+    getRecordEngine(
+      record
+    );
+
+  const timeframeMetadata =
+    getRecordTimeframeMetadata(
+      record
+    );
+
+  if (
+    geometry.valid !==
+      true ||
+    openedTimestamp ===
+      null ||
+    !pairKey ||
+    !engine
+  ) {
+
+    return null;
+
+  }
+
+  return {
+    pairKey,
+
+    pairLabel:
+      pairLabelFromKey(
+        pairKey
+      ),
+
+    direction:
+      geometry.direction,
+
+    engine,
+
+    timeframe:
+      timeframeMetadata
+        .timeframe,
+
+    timeframeSource:
+      timeframeMetadata
+        .source,
+
+    entry:
+      geometry.entry,
+
+    stop:
+      geometry.stop,
+
+    targets:
+      geometry.targets,
+
+    openedTimestamp,
+
+    openedAt:
+      new Date(
+        openedTimestamp
+      ).toISOString(),
+
+    setupIdentity:
+      getExistingSetupIdentity(
+        record
+      ) ||
+      buildStableSetupIdentity(
+        record
+      ),
+
+    sourceTradeKey:
+      createSourceTradeKey(
+        record
+      ),
+
+    record
+  };
+
+}
+
+function getExpectedExitPrice(
+  preparedTrade,
+  resolution
+) {
+
+  if (
+    !isPlainObject(
+      preparedTrade
+    ) ||
+    !isPlainObject(
+      resolution
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const exitReason =
+    toTrimmedString(
+      resolution.exitReason
+    ).toUpperCase();
+
+  if (
+    exitReason ===
+      "STOP_LOSS" ||
+    exitReason ===
+      "BREAKEVEN_STOP"
+  ) {
+
+    return preparedTrade.stop;
+
+  }
+
+  const targetMatch =
+    /^TARGET_(\d+)$/.exec(
+      exitReason
+    );
+
+  if (!targetMatch) {
+
+    return null;
+
+  }
+
+  const index =
+    Number(
+      targetMatch[1]
+    ) -
+    1;
+
+  if (
+    !Number.isInteger(
+      index
+    ) ||
+    index <
+      0 ||
+    index >=
+      preparedTrade.targets.length
+  ) {
+
+    return null;
+
+  }
+
+  return preparedTrade.targets[
+    index
+  ];
+
+}
+
+function validateResolutionIntegrity(
+  preparedTrade,
+  resolution,
+  nowMs = Date.now()
+) {
+
+  const errors = [];
+  const warnings = [];
+
+  if (
+    !isPlainObject(
+      preparedTrade
+    )
+  ) {
+
+    errors.push(
+      "Prepared trade is unavailable for resolution integrity validation"
+    );
+
+  }
+
+  if (
+    !isPlainObject(
+      resolution
+    ) ||
+    resolution.resolved !==
+      true
+  ) {
+
+    errors.push(
+      "Resolution is missing or unresolved"
+    );
+
+  }
+
+  if (
+    errors.length >
+      0
+  ) {
+
+    return {
+      valid:
+        false,
+
+      errors,
+
+      warnings,
+
+      expectedExitPrice:
+        null
+    };
+
+  }
+
+  const outcome =
+    normalizeOutcome(
+      resolution.outcome
+    );
+
+  const exitPrice =
+    getResolutionExitPrice(
+      resolution
+    );
+
+  const closedAt =
+    getResolutionClosedAt(
+      resolution
+    );
+
+  const closedTimestamp =
+    toTimestamp(
+      closedAt
+    );
+
+  const expectedExitPrice =
+    getExpectedExitPrice(
+      preparedTrade,
+      resolution
+    );
+
+  const exitReason =
+    toTrimmedString(
+      resolution.exitReason
+    ).toUpperCase();
+
+  if (!outcome) {
+
+    errors.push(
+      "Resolution outcome is invalid"
+    );
+
+  }
+
+  if (
+    exitPrice ===
+      null
+  ) {
+
+    errors.push(
+      "Resolution exit price is invalid"
+    );
+
+  }
+
+  if (
+    !closedAt ||
+    closedTimestamp ===
+      null
+  ) {
+
+    errors.push(
+      "Resolution closed timestamp is invalid"
+    );
+
+  } else {
+
+    if (
+      closedTimestamp <
+        preparedTrade
+          .openedTimestamp
+    ) {
+
+      errors.push(
+        "Resolution closed timestamp precedes the trade open timestamp"
+      );
+
+    }
+
+    const safeNow =
+      Number.isFinite(
+        nowMs
+      )
+        ? nowMs
+        : Date.now();
+
+    if (
+      closedTimestamp >
+        safeNow +
+        RECORD_CLOCK_SKEW_TOLERANCE_MS
+    ) {
+
+      errors.push(
+        "Resolution closed timestamp is in the future"
+      );
+
+    }
+
+  }
+
+  if (
+    expectedExitPrice ===
+      null
+  ) {
+
+    errors.push(
+      "Resolution exit reason does not map to a configured stop or target"
+    );
+
+  } else if (
+    exitPrice !==
+      null &&
+    !approximatelyEqual(
+      exitPrice,
+      expectedExitPrice,
+      1e-8
+    )
+  ) {
+
+    errors.push(
+      "Resolution exit price does not equal the price proven by its exit reason"
+    );
+
+  }
+
+  if (
+    exitReason ===
+      "STOP_LOSS" &&
+    outcome !==
+      "LOSS"
+  ) {
+
+    errors.push(
+      "STOP_LOSS must resolve as LOSS"
+    );
+
+  }
+
+  if (
+    exitReason ===
+      "BREAKEVEN_STOP" &&
+    (
+      outcome !==
+        "BREAKEVEN" ||
+      !approximatelyEqual(
+        preparedTrade.stop,
+        preparedTrade.entry,
+        1e-8
+      )
+    )
+  ) {
+
+    errors.push(
+      "BREAKEVEN_STOP requires a stop at entry and a BREAKEVEN outcome"
+    );
+
+  }
+
+  if (
+    /^TARGET_\d+$/.test(
+      exitReason
+    ) &&
+    outcome !==
+      "WIN"
+  ) {
+
+    errors.push(
+      "Target exit must resolve as WIN"
+    );
+
+  }
+
+  const resolvingCandle =
+    isPlainObject(
+      resolution.resolvingCandle
+    )
+      ? resolution
+          .resolvingCandle
+      : null;
+
+  if (!resolvingCandle) {
+
+    errors.push(
+      "Resolving candle evidence is missing"
+    );
+
+  } else {
+
+    const candleTimestamp =
+      toFiniteNumber(
+        resolvingCandle
+          .timestamp
+      );
+
+    const candleCloseTimestamp =
+      toFiniteNumber(
+        resolvingCandle
+          .closeTimestamp
+      );
+
+    if (
+      candleTimestamp ===
+        null ||
+      candleCloseTimestamp ===
+        null ||
+      candleCloseTimestamp <=
+        candleTimestamp
+    ) {
+
+      errors.push(
+        "Resolving candle timestamps are invalid"
+      );
+
+    }
+
+    if (
+      closedTimestamp !==
+        null &&
+      candleCloseTimestamp !==
+        null &&
+      Math.abs(
+        closedTimestamp -
+        candleCloseTimestamp
+      ) >
+        1000
+    ) {
+
+      errors.push(
+        "Resolution timestamp does not equal the verified candle close boundary"
+      );
+
+    }
+
+    if (
+      exitReason ===
+        "STOP_LOSS" ||
+      exitReason ===
+        "BREAKEVEN_STOP"
+    ) {
+
+      if (
+        !candleTouchesStop(
+          preparedTrade.direction,
+          resolvingCandle,
+          preparedTrade.stop
+        )
+      ) {
+
+        errors.push(
+          "Resolving candle does not prove the stop level was touched"
+        );
+
+      }
+
+    } else if (
+      /^TARGET_\d+$/.test(
+        exitReason
+      ) &&
+      expectedExitPrice !==
+        null &&
+      !candleTouchesTarget(
+        preparedTrade.direction,
+        resolvingCandle,
+        expectedExitPrice
+      )
+    ) {
+
+      errors.push(
+        "Resolving candle does not prove the target level was touched"
+      );
+
+    }
+
+  }
+
+  if (
+    resolution.sameCandleConflict ===
+      true &&
+    resolution.conflictPolicy !==
+      RESOLUTION_POLICY
+        .sameCandleConflict
+  ) {
+
+    errors.push(
+      "Same-candle conflict policy is invalid"
+    );
+
+  }
+
+  const expectedProfitPoints =
+    exitPrice ===
+      null
+      ? null
+      : calculateProfitPoints(
+          preparedTrade.direction,
+          preparedTrade.entry,
+          exitPrice
+        );
+
+  const expectedRealizedR =
+    exitPrice ===
+      null
+      ? null
+      : calculateRealizedR(
+          preparedTrade.direction,
+          preparedTrade.entry,
+          preparedTrade.stop,
+          exitPrice
+        );
+
+  const reportedProfitPoints =
+    toFiniteNumber(
+      resolution.profitPoints
+    );
+
+  const reportedRealizedR =
+    toFiniteNumber(
+      resolution.realizedR
+    );
+
+  if (
+    reportedProfitPoints !==
+      null &&
+    expectedProfitPoints !==
+      null &&
+    !approximatelyEqual(
+      reportedProfitPoints,
+      expectedProfitPoints,
+      1e-8
+    )
+  ) {
+
+    errors.push(
+      "Resolution profitPoints is inconsistent with entry and exit"
+    );
+
+  }
+
+  if (
+    reportedRealizedR !==
+      null &&
+    expectedRealizedR !==
+      null &&
+    !approximatelyEqual(
+      reportedRealizedR,
+      expectedRealizedR,
+      1e-8
+    )
+  ) {
+
+    errors.push(
+      "Resolution realizedR is inconsistent with initial risk and exit"
+    );
+
+  }
+
+  if (
+    toTrimmedString(
+      resolution.marketSource
+    ) ===
+      ""
+  ) {
+
+    errors.push(
+      "Resolution market source is missing"
+    );
+
+  }
+
+  return {
+    valid:
+      errors.length ===
+      0,
+
+    errors,
+
+    warnings,
+
+    expectedExitPrice
+  };
+
+}
+
+function buildResolutionEvidence(
+  preparedTrade,
+  resolution
+) {
+
+  const sourceTradeKey =
+    preparedTrade
+      ?.sourceTradeKey ||
+    createSourceTradeKey(
+      preparedTrade?.record
+    );
+
+  const resolvingCandle =
+    isPlainObject(
+      resolution?.resolvingCandle
+    )
+      ? resolution
+          .resolvingCandle
+      : null;
+
+  const evidencePayload = {
+    schemaVersion:
+      RESOLUTION_EVIDENCE_SCHEMA_VERSION,
+
+    autonomousResolverVersion:
+      AUTONOMOUS_RESOLVER_VERSION,
+
+    sourceTradeKey,
+
+    setupIdentity:
+      preparedTrade
+        ?.setupIdentity ||
+      getExistingSetupIdentity(
+        preparedTrade?.record
+      ) ||
+      buildStableSetupIdentity(
+        preparedTrade?.record
+      ),
+
+    pair:
+      preparedTrade?.pairKey ||
+      null,
+
+    engine:
+      preparedTrade?.engine ||
+      null,
+
+    timeframe:
+      preparedTrade?.timeframe ||
+      null,
+
+    direction:
+      preparedTrade?.direction ||
+      null,
+
+    entry:
+      preparedTrade?.entry ??
+      null,
+
+    stop:
+      preparedTrade?.stop ??
+      null,
+
+    targets:
+      asArray(
+        preparedTrade?.targets
+      ),
+
+    openedAt:
+      preparedTrade?.openedAt ||
+      null,
+
+    outcome:
+      normalizeOutcome(
+        resolution?.outcome
+      ),
+
+    exitPrice:
+      getResolutionExitPrice(
+        resolution
+      ),
+
+    exitReason:
+      toTrimmedString(
+        resolution?.exitReason
+      ) ||
+      null,
+
+    resolvedAt:
+      getResolutionClosedAt(
+        resolution
+      ),
+
+    marketSource:
+      toTrimmedString(
+        resolution?.marketSource
+      ) ||
+      null,
+
+    marketSourceName:
+      toTrimmedString(
+        resolution
+          ?.marketSourceName
+      ) ||
+      null,
+
+    sameCandleConflict:
+      resolution
+        ?.sameCandleConflict ===
+      true,
+
+    conflictPolicy:
+      toTrimmedString(
+        resolution
+          ?.conflictPolicy
+      ) ||
+      null,
+
+    resolvingCandle:
+      resolvingCandle
+        ? {
+            timestamp:
+              toFiniteNumber(
+                resolvingCandle
+                  .timestamp
+              ),
+
+            time:
+              toISOStringOrNull(
+                resolvingCandle
+                  .time
+              ),
+
+            closeTimestamp:
+              toFiniteNumber(
+                resolvingCandle
+                  .closeTimestamp
+              ),
+
+            closeTime:
+              toISOStringOrNull(
+                resolvingCandle
+                  .closeTime
+              ),
+
+            open:
+              toFiniteNumber(
+                resolvingCandle
+                  .open
+              ),
+
+            high:
+              toFiniteNumber(
+                resolvingCandle
+                  .high
+              ),
+
+            low:
+              toFiniteNumber(
+                resolvingCandle
+                  .low
+              ),
+
+            close:
+              toFiniteNumber(
+                resolvingCandle
+                  .close
+              )
+          }
+        : null,
+
+    pathMetrics:
+      isPlainObject(
+        resolution?.pathMetrics
+      )
+        ? canonicalizeForHash(
+            resolution
+              .pathMetrics
+          )
+        : null
+  };
+
+  const resolutionHash =
+    createCanonicalHash(
+      evidencePayload
+    );
+
+  return {
+    ...evidencePayload,
+
+    evidenceHash:
+      resolutionHash,
+
+    resolutionHash,
+
+    exactAttribution:
+      true,
+
+    exitPriceVerified:
+      true,
+
+    candleCloseVerified:
+      true,
+
+    correctionEligible:
+      true,
+
+    advisoryOnly:
+      true,
+
+    liveAuthorityPermitted:
+      false
+  };
+
+}
+
+function buildAutonomousFeedback(
+  record,
+  resolution,
+  evidence
+) {
+
+  const sourceTradeKey =
+    evidence
+      ?.sourceTradeKey ||
+    createSourceTradeKey(
+      record
+    );
+
+  const timeframeMetadata =
+    getRecordTimeframeMetadata(
+      record
+    );
+
+  const realizedR =
+    toFiniteNumber(
+      resolution?.realizedR
+    );
+
+  const initialRisk =
+    toFiniteNumber(
+      resolution?.initialRisk
+    );
+
+  return {
+    version:
+      1,
+
+    engineName:
+      "PipSight Pro Autonomous Resolver Feedback",
+
+    engineVersion:
+      AUTONOMOUS_RESOLVER_VERSION,
+
+    advisoryOnly:
+      true,
+
+    liveAuthorityPermitted:
+      false,
+
+    sourceTradeKey,
+
+    resolutionHash:
+      evidence
+        ?.resolutionHash ||
+      null,
+
+    outcome:
+      normalizeOutcome(
+        resolution?.outcome
+      ),
+
+    realizedR,
+
+    initialRisk,
+
+    mfeR:
+      toFiniteNumber(
+        resolution?.pathMetrics
+          ?.maximumFavorableR
+      ),
+
+    maeR:
+      toFiniteNumber(
+        resolution?.pathMetrics
+          ?.maximumAdverseR
+      ),
+
+    durationMinutes:
+      toFiniteNumber(
+        resolution
+          ?.durationMinutes
+      ),
+
+    highestTargetReached:
+      toFiniteNumber(
+        resolution
+          ?.highestTargetReached
+      ) ??
+      0,
+
+    attribution: {
+      exact:
+        true,
+
+      pair:
+        getRecordPairKey(
+          record
+        ),
+
+      engine:
+        getRecordEngine(
+          record
+        ),
+
+      timeframe:
+        timeframeMetadata
+          .timeframe,
+
+      timeframeSource:
+        timeframeMetadata
+          .source,
+
+      direction:
+        getRecordDirection(
+          record
+        ),
+
+      pattern:
+        toTrimmedString(
+          record.pattern ??
+          record.snapshot?.pattern
+        ) ||
+        null,
+
+      session:
+        toTrimmedString(
+          record.session ??
+          record.snapshot?.session
+        ) ||
+        null,
+
+      marketRegime:
+        toTrimmedString(
+          record.marketRegime ??
+          record.snapshot
+            ?.marketRegime
+        ) ||
+        null
+    },
+
+    evidence: {
+      marketSource:
+        evidence
+          ?.marketSource ||
+        null,
+
+      resolvingCandleCloseAt:
+        evidence
+          ?.resolvingCandle
+          ?.closeTime ||
+        null,
+
+      sameCandleConflict:
+        evidence
+          ?.sameCandleConflict ===
+        true,
+
+      conflictPolicy:
+        evidence
+          ?.conflictPolicy ||
+        null
+    },
+
+    learningEligibility: {
+      eligible:
+        Boolean(
+          sourceTradeKey &&
+          normalizeOutcome(
+            resolution?.outcome
+          ) &&
+          realizedR !==
+            null &&
+          initialRisk !==
+            null &&
+          initialRisk >
+            0
+        ),
+
+      reason:
+        sourceTradeKey &&
+        realizedR !==
+          null &&
+        initialRisk !==
+          null &&
+        initialRisk >
+          0
+          ? "VERIFIED_RISK_NORMALIZED_OUTCOME"
+          : "INSUFFICIENT_VERIFIED_RISK_DATA"
+    }
+  };
+
+}
+
+function capturePreviousResolution(
+  record
+) {
+
+  return {
+    revision:
+      Number.isInteger(
+        record.resolutionRevision
+      )
+        ? record
+            .resolutionRevision
+        : 1,
+
+    outcome:
+      getRecordOutcome(
+        record
+      ),
+
+    exitPrice:
+      toFiniteNumber(
+        record.exitPrice ??
+        record.exit
+      ),
+
+    exitReason:
+      toTrimmedString(
+        record.exitReason
+      ) ||
+      null,
+
+    resolvedAt:
+      toISOStringOrNull(
+        record.resolvedAt ??
+        record.closedAt
+      ),
+
+    realizedR:
+      toFiniteNumber(
+        record.realizedR
+      ),
+
+    resolutionHash:
+      toTrimmedString(
+        record.resolutionHash ??
+        record.resolutionEvidence
+          ?.resolutionHash ??
+        record.autonomousResolution
+          ?.resolutionHash
+      ) ||
+      null,
+
+    correctedAt:
+      new Date().toISOString()
+  };
+
+}
+
 // ============================================================================
 // Record evaluation preparation
 // ============================================================================
@@ -5195,6 +6560,27 @@ function prepareRecordForResolution(
 
   }
 
+  const setupIdentity =
+    getExistingSetupIdentity(
+      record
+    ) ||
+    buildStableSetupIdentity(
+      record
+    );
+
+  const sourceTradeKey =
+    createSourceTradeKey(
+      record
+    );
+
+  if (!sourceTradeKey) {
+
+    errors.push(
+      "Immutable source trade identity could not be created"
+    );
+
+  }
+
   return {
     valid:
       errors.length ===
@@ -5238,6 +6624,10 @@ function prepareRecordForResolution(
           : new Date(
               openedTimestamp
             ).toISOString(),
+
+      setupIdentity,
+
+      sourceTradeKey,
 
       record
     }
@@ -5298,6 +6688,10 @@ function evaluatePreparedTrade(
       reason:
         "No newer valid candles are available",
 
+      sourceTradeKey:
+        preparedTrade.sourceTradeKey ||
+        null,
+
       sourceSelection,
 
       pathMetrics:
@@ -5338,8 +6732,7 @@ function evaluatePreparedTrade(
 
     /*
      * OHLC data proves only that the level was touched during this completed
-     * candle. The candle close is the first verified resolution timestamp;
-     * assigning the candle-open time would invent an unsupported earlier exit.
+     * candle. The candle close is the first verified resolution timestamp.
      */
     const resolvedTimestamp =
       toFiniteNumber(
@@ -5394,12 +6787,16 @@ function evaluatePreparedTrade(
         preparedTrade.stop
       );
 
-    return {
+    const resolution = {
       resolved:
         true,
 
       eligible:
         true,
+
+      sourceTradeKey:
+        preparedTrade.sourceTradeKey ||
+        null,
 
       outcome:
         candleResult.outcome,
@@ -5456,6 +6853,10 @@ function evaluatePreparedTrade(
         closeTime:
           candle.closeTime,
 
+        closed:
+          candle.closed !==
+          false,
+
         open:
           candle.open,
 
@@ -5510,6 +6911,70 @@ function evaluatePreparedTrade(
       }
     };
 
+    const integrity =
+      validateResolutionIntegrity(
+        preparedTrade,
+        resolution
+      );
+
+    if (
+      integrity.valid !==
+        true
+    ) {
+
+      return {
+        resolved:
+          false,
+
+        eligible:
+          false,
+
+        sourceTradeKey:
+          preparedTrade
+            .sourceTradeKey ||
+          null,
+
+        reason:
+          "Resolution integrity validation failed",
+
+        errors:
+          integrity.errors,
+
+        sourceSelection:
+          sourceSelection.attempts,
+
+        pathMetrics
+      };
+
+    }
+
+    const resolutionEvidence =
+      buildResolutionEvidence(
+        preparedTrade,
+        resolution
+      );
+
+    return {
+      ...resolution,
+
+      integrity,
+
+      resolutionHash:
+        resolutionEvidence
+          .resolutionHash,
+
+      resolutionIdentity:
+        `resolution_${
+          resolutionEvidence
+            .resolutionHash
+        }`,
+
+      resolutionEvidence,
+
+      autonomousResolution:
+        resolutionEvidence
+    };
+
   }
 
   return {
@@ -5518,6 +6983,10 @@ function evaluatePreparedTrade(
 
     eligible:
       true,
+
+    sourceTradeKey:
+      preparedTrade.sourceTradeKey ||
+      null,
 
     reason:
       "Stop Loss and target1 have not been reached",
@@ -5830,6 +7299,36 @@ function recordsReferToSameTrade(
 
   }
 
+  const leftSourceTradeKey =
+    getExistingSourceTradeKey(
+      left
+    ) ||
+    createSourceTradeKey(
+      left
+    );
+
+  const rightSourceTradeKey =
+    getExistingSourceTradeKey(
+      right
+    ) ||
+    createSourceTradeKey(
+      right
+    );
+
+  /*
+   * Autonomous source-trade identities are immutable and authoritative.
+   * Different explicit keys must never collapse into one trade.
+   */
+  if (
+    leftSourceTradeKey &&
+    rightSourceTradeKey
+  ) {
+
+    return leftSourceTradeKey ===
+      rightSourceTradeKey;
+
+  }
+
   const leftId =
     getStableRecordId(
       left
@@ -5840,10 +7339,6 @@ function recordsReferToSameTrade(
       right
     );
 
-  /*
-   * Two explicit stable IDs are authoritative. Different IDs must never
-   * collapse merely because prices happen to be identical.
-   */
   if (
     leftId &&
     rightId
@@ -5890,11 +7385,6 @@ function recordsReferToSameTrade(
       right
     );
 
-  /*
-   * When both records have temporal identity, compare it before the legacy
-   * price-plan fingerprint. This keeps repeated setups at different times
-   * separate.
-   */
   if (
     leftMatchKey &&
     rightMatchKey
@@ -6014,6 +7504,37 @@ function applyResolutionToRichRecord(
 
   }
 
+  const preparedTrade =
+    isPlainObject(
+      resolution.trade
+    )
+      ? resolution.trade
+      : buildPreparedTradeSnapshot(
+          record
+        );
+
+  const integrity =
+    validateResolutionIntegrity(
+      preparedTrade,
+      resolution
+    );
+
+  if (
+    integrity.valid !==
+      true
+  ) {
+
+    throw new Error(
+      [
+        "Resolution integrity validation failed",
+        ...integrity.errors
+      ].join(
+        "; "
+      )
+    );
+
+  }
+
   const outcome =
     normalizeOutcome(
       resolution.outcome
@@ -6042,17 +7563,55 @@ function applyResolutionToRichRecord(
       record
     );
 
+  const sourceTradeKey =
+    getExistingSourceTradeKey(
+      record
+    ) ||
+    preparedTrade
+      ?.sourceTradeKey ||
+    createSourceTradeKey(
+      record
+    );
+
+  const resolutionEvidence =
+    isPlainObject(
+      resolution
+        .resolutionEvidence
+    )
+      ? resolution
+          .resolutionEvidence
+      : buildResolutionEvidence(
+          preparedTrade,
+          resolution
+        );
+
+  const resolutionHash =
+    toTrimmedString(
+      resolution
+        .resolutionHash ??
+      resolutionEvidence
+        .resolutionHash
+    );
+
   if (
     !outcome ||
     !closedAt ||
-    exitPrice === null
+    exitPrice ===
+      null ||
+    !sourceTradeKey ||
+    !resolutionHash
   ) {
 
     throw new Error(
-      "Resolution is missing outcome, closed time or exit price"
+      "Resolution is missing outcome, closed time, exit price, source identity or evidence hash"
     );
 
   }
+
+  const existingOutcome =
+    getRecordOutcome(
+      record
+    );
 
   const existingResolvedAt =
     toISOStringOrNull(
@@ -6060,20 +7619,91 @@ function applyResolutionToRichRecord(
       record.closedAt
     );
 
-  /*
-   * Idempotency:
-   * An already resolved record is returned unchanged.
-   */
+  const existingResolutionHash =
+    toTrimmedString(
+      record.resolutionHash ??
+      record.resolutionEvidence
+        ?.resolutionHash ??
+      record.autonomousResolution
+        ?.resolutionHash
+    ) ||
+    null;
+
+  const correctionRequested =
+    resolution.corrected ===
+      true ||
+    resolution.allowCorrection ===
+      true ||
+    resolution.correction
+      ?.approved ===
+      true;
+
   if (
-    getRecordOutcome(
-      record
-    ) &&
-    existingResolvedAt
+    existingOutcome &&
+    existingResolvedAt &&
+    (
+      !correctionRequested ||
+      existingResolutionHash ===
+        resolutionHash
+    )
   ) {
 
     return record;
 
   }
+
+  const existingRevision =
+    Number.isInteger(
+      record.resolutionRevision
+    ) &&
+    record.resolutionRevision >
+      0
+      ? record.resolutionRevision
+      : existingOutcome
+        ? 1
+        : 0;
+
+  const correctionHistory =
+    Array.isArray(
+      record
+        .resolutionCorrectionHistory
+    )
+      ? [
+          ...record
+            .resolutionCorrectionHistory
+        ]
+      : [];
+
+  if (
+    existingOutcome &&
+    correctionRequested
+  ) {
+
+    correctionHistory.push(
+      capturePreviousResolution(
+        record
+      )
+    );
+
+  }
+
+  const trimmedCorrectionHistory =
+    correctionHistory.slice(
+      -MAX_RESOLUTION_CORRECTION_HISTORY
+    );
+
+  const resolutionRevision =
+    existingOutcome
+      ? existingRevision +
+        1
+      : 1;
+
+  const autonomousFeedback =
+    buildAutonomousFeedback(
+      record,
+      resolution,
+      resolutionEvidence
+    );
 
   const updatedRecord = {
     ...record,
@@ -6092,7 +7722,9 @@ function applyResolutionToRichRecord(
     closedAt,
 
     updatedAt:
-      closedAt,
+      existingOutcome
+        ? new Date().toISOString()
+        : closedAt,
 
     exitPrice,
 
@@ -6131,7 +7763,63 @@ function applyResolutionToRichRecord(
         resolution
           .highestTargetReached
       ) ??
-      0
+      0,
+
+    sourceTradeKey,
+
+    tradeIdentity:
+      sourceTradeKey,
+
+    resolutionIdentity:
+      `resolution_${
+        resolutionHash
+      }`,
+
+    resolutionHash,
+
+    resolutionRevision,
+
+    resolutionCorrected:
+      Boolean(
+        existingOutcome &&
+        correctionRequested
+      ),
+
+    resolutionCorrectionReason:
+      existingOutcome &&
+      correctionRequested
+        ? (
+            toTrimmedString(
+              resolution
+                .correctionReason ??
+              resolution
+                .correction
+                ?.reason
+            ) ||
+            "EXPLICIT_VERIFIED_CORRECTION"
+          )
+        : null,
+
+    resolutionCorrectionHistory:
+      trimmedCorrectionHistory,
+
+    resolverVersion:
+      AUTONOMOUS_RESOLVER_VERSION,
+
+    resolutionEvidence:
+      cloneJSONValue(
+        resolutionEvidence
+      ),
+
+    autonomousResolution:
+      cloneJSONValue(
+        resolutionEvidence
+      ),
+
+    autonomousFeedback:
+      cloneJSONValue(
+        autonomousFeedback
+      )
   };
 
   if (setupIdentity) {
@@ -6154,10 +7842,6 @@ function applyResolutionToRichRecord(
 
   }
 
-  /*
-   * Preserve established optional evaluation fields only when values exist.
-   * No missing metadata is invented.
-   */
   if (
     toFiniteNumber(
       resolution.initialRisk
@@ -6810,6 +8494,173 @@ function createLegacyClosedTrade(
 
   }
 
+  const sourceTradeKey =
+    getExistingSourceTradeKey(
+      richRecord
+    ) ||
+    createSourceTradeKey(
+      richRecord
+    );
+
+  const resolutionEvidence =
+    isPlainObject(
+      richRecord
+        .resolutionEvidence
+    )
+      ? richRecord
+          .resolutionEvidence
+      : isPlainObject(
+          resolution
+            .resolutionEvidence
+        )
+        ? resolution
+            .resolutionEvidence
+        : null;
+
+  const resolutionHash =
+    toTrimmedString(
+      richRecord.resolutionHash ??
+      resolution
+        .resolutionHash ??
+      resolutionEvidence
+        ?.resolutionHash
+    ) ||
+    null;
+
+  if (sourceTradeKey) {
+
+    legacyTrade.sourceTradeKey =
+      sourceTradeKey;
+
+    legacyTrade.tradeIdentity =
+      sourceTradeKey;
+
+  }
+
+  if (resolutionHash) {
+
+    legacyTrade.resolutionHash =
+      resolutionHash;
+
+    legacyTrade.resolutionIdentity =
+      `resolution_${
+        resolutionHash
+      }`;
+
+  }
+
+  legacyTrade.resolutionRevision =
+    Number.isInteger(
+      richRecord
+        .resolutionRevision
+    )
+      ? richRecord
+          .resolutionRevision
+      : 1;
+
+  legacyTrade.resolutionCorrected =
+    richRecord
+      .resolutionCorrected ===
+    true;
+
+  legacyTrade.resolverVersion =
+    AUTONOMOUS_RESOLVER_VERSION;
+
+  if (resolutionEvidence) {
+
+    legacyTrade.resolutionEvidence =
+      cloneJSONValue(
+        resolutionEvidence
+      );
+
+    legacyTrade.autonomousResolution =
+      cloneJSONValue(
+        resolutionEvidence
+      );
+
+  }
+
+  if (
+    isPlainObject(
+      richRecord
+        .autonomousFeedback
+    )
+  ) {
+
+    legacyTrade.autonomousFeedback =
+      cloneJSONValue(
+        richRecord
+          .autonomousFeedback
+      );
+
+  }
+
+  if (
+    Array.isArray(
+      richRecord
+        .resolutionCorrectionHistory
+    ) &&
+    richRecord
+      .resolutionCorrectionHistory
+      .length >
+      0
+  ) {
+
+    legacyTrade
+      .resolutionCorrectionHistory =
+        cloneJSONValue(
+          richRecord
+            .resolutionCorrectionHistory
+        );
+
+  }
+
+  if (
+    toFiniteNumber(
+      resolution.initialRisk
+    ) !==
+      null
+  ) {
+
+    legacyTrade.initialRisk =
+      roundMetric(
+        resolution.initialRisk
+      );
+
+  }
+
+  if (
+    toFiniteNumber(
+      resolution.pathMetrics
+        ?.maximumFavorableR
+    ) !==
+      null
+  ) {
+
+    legacyTrade.mfeR =
+      roundMetric(
+        resolution.pathMetrics
+          .maximumFavorableR
+      );
+
+  }
+
+  if (
+    toFiniteNumber(
+      resolution.pathMetrics
+        ?.maximumAdverseR
+    ) !==
+      null
+  ) {
+
+    legacyTrade.maeR =
+      roundMetric(
+        resolution.pathMetrics
+          .maximumAdverseR
+      );
+
+  }
+
   return legacyTrade;
 
 }
@@ -6888,6 +8739,141 @@ function appendLegacyClosedTrade(
   };
 
 }
+
+function upsertLegacyClosedTrade(
+  closedTrades,
+  candidate,
+  options = {}
+) {
+
+  const normalizedClosed =
+    asArray(
+      closedTrades
+    );
+
+  if (
+    !isPlainObject(
+      candidate
+    )
+  ) {
+
+    return {
+      closed:
+        normalizedClosed,
+
+      appended:
+        false,
+
+      replaced:
+        false,
+
+      changed:
+        false
+    };
+
+  }
+
+  const index =
+    normalizedClosed.findIndex(
+      trade =>
+        recordsReferToSameTrade(
+          trade,
+          candidate
+        )
+    );
+
+  if (
+    index <
+      0
+  ) {
+
+    return {
+      closed: [
+        ...normalizedClosed,
+        candidate
+      ],
+
+      appended:
+        true,
+
+      replaced:
+        false,
+
+      changed:
+        true
+    };
+
+  }
+
+  if (
+    options.allowReplace !==
+      true
+  ) {
+
+    return {
+      closed:
+        normalizedClosed,
+
+      appended:
+        false,
+
+      replaced:
+        false,
+
+      changed:
+        false
+    };
+
+  }
+
+  if (
+    createCanonicalHash(
+      normalizedClosed[index]
+    ) ===
+    createCanonicalHash(
+      candidate
+    )
+  ) {
+
+    return {
+      closed:
+        normalizedClosed,
+
+      appended:
+        false,
+
+      replaced:
+        false,
+
+      changed:
+        false
+    };
+
+  }
+
+  const updated = [
+    ...normalizedClosed
+  ];
+
+  updated[index] =
+    candidate;
+
+  return {
+    closed:
+      updated,
+
+    appended:
+      false,
+
+    replaced:
+      true,
+
+    changed:
+      true
+  };
+
+}
+
 
 // ============================================================================
 // Legacy open collection traversal
@@ -8058,6 +10044,12 @@ function applyResolvedTradeToHistory(
       legacyClosedAppended:
         false,
 
+      legacyClosedReplaced:
+        false,
+
+      correctionApplied:
+        false,
+
       resolvedRecord:
         null,
 
@@ -8067,10 +10059,23 @@ function applyResolvedTradeToHistory(
 
   }
 
-  if (
+  const alreadyResolved =
     isRecordAlreadyResolved(
       originalRecord
-    )
+    );
+
+  const correctionRequested =
+    resolution.corrected ===
+      true ||
+    resolution.allowCorrection ===
+      true ||
+    resolution.correction
+      ?.approved ===
+      true;
+
+  if (
+    alreadyResolved &&
+    !correctionRequested
   ) {
 
     return {
@@ -8088,6 +10093,12 @@ function applyResolvedTradeToHistory(
       legacyClosedAppended:
         false,
 
+      legacyClosedReplaced:
+        false,
+
+      correctionApplied:
+        false,
+
       resolvedRecord:
         originalRecord,
 
@@ -8102,6 +10113,46 @@ function applyResolvedTradeToHistory(
       originalRecord,
       resolution
     );
+
+  const richChanged =
+    createCanonicalHash(
+      resolvedRecord
+    ) !==
+    createCanonicalHash(
+      originalRecord
+    );
+
+  if (!richChanged) {
+
+    return {
+      history,
+
+      changed:
+        false,
+
+      richRecordUpdated:
+        false,
+
+      legacyOpenRemoved:
+        0,
+
+      legacyClosedAppended:
+        false,
+
+      legacyClosedReplaced:
+        false,
+
+      correctionApplied:
+        false,
+
+      resolvedRecord:
+        originalRecord,
+
+      closedTrade:
+        null
+    };
+
+  }
 
   const richReplacement =
     replaceRichHistoryRecord(
@@ -8129,6 +10180,12 @@ function applyResolvedTradeToHistory(
       legacyClosedAppended:
         false,
 
+      legacyClosedReplaced:
+        false,
+
+      correctionApplied:
+        false,
+
       resolvedRecord:
         null,
 
@@ -8139,10 +10196,18 @@ function applyResolvedTradeToHistory(
   }
 
   const openRemoval =
-    removeLegacyOpenTrade(
-      history.open,
-      originalRecord
-    );
+    alreadyResolved
+      ? {
+          open:
+            history.open,
+
+          removedCount:
+            0
+        }
+      : removeLegacyOpenTrade(
+          history.open,
+          originalRecord
+        );
 
   const closedTrade =
     createLegacyClosedTrade(
@@ -8150,10 +10215,15 @@ function applyResolvedTradeToHistory(
       resolution
     );
 
-  const closedAppend =
-    appendLegacyClosedTrade(
+  const closedUpsert =
+    upsertLegacyClosedTrade(
       history.closed,
-      closedTrade
+      closedTrade,
+      {
+        allowReplace:
+          alreadyResolved &&
+          correctionRequested
+      }
     );
 
   const now =
@@ -8169,7 +10239,7 @@ function applyResolvedTradeToHistory(
       openRemoval.open,
 
     closed:
-      closedAppend.closed,
+      closedUpsert.closed,
 
     records:
       richReplacement.records,
@@ -8200,7 +10270,16 @@ function applyResolvedTradeToHistory(
       openRemoval.removedCount,
 
     legacyClosedAppended:
-      closedAppend.appended,
+      closedUpsert.appended,
+
+    legacyClosedReplaced:
+      closedUpsert.replaced,
+
+    correctionApplied:
+      Boolean(
+        alreadyResolved &&
+        correctionRequested
+      ),
 
     resolvedRecord,
 
@@ -8550,6 +10629,34 @@ function resolveAnalysisHistory(
           .sameCandleConflict ===
         true,
 
+      sourceTradeKey:
+        evaluation
+          .sourceTradeKey ||
+        mutation
+          .resolvedRecord
+          ?.sourceTradeKey ||
+        null,
+
+      resolutionHash:
+        evaluation
+          .resolutionHash ||
+        mutation
+          .resolvedRecord
+          ?.resolutionHash ||
+        null,
+
+      resolutionRevision:
+        mutation
+          .resolvedRecord
+          ?.resolutionRevision ||
+        1,
+
+      integrityValid:
+        evaluation
+          .integrity
+          ?.valid ===
+        true,
+
       legacyOpenRemoved:
         mutation
           .legacyOpenRemoved,
@@ -8706,7 +10813,11 @@ function logResolverHeader() {
   );
 
   console.log(
-    `Version: ${ENGINE_VERSION}`
+    `Compatibility version: ${ENGINE_VERSION}`
+  );
+
+  console.log(
+    `Autonomous extension: ${AUTONOMOUS_RESOLVER_VERSION}`
   );
 
   console.log(
@@ -9212,6 +11323,9 @@ function validateResolvedHistory(
       ? history.records
       : [];
 
+  const autonomousTradeKeys =
+    new Set();
+
   for (
     let index =
       0;
@@ -9222,9 +11336,7 @@ function validateResolvedHistory(
   ) {
 
     const record =
-      records[
-        index
-      ];
+      records[index];
 
     if (
       !isPlainObject(
@@ -9278,6 +11390,125 @@ function validateResolvedHistory(
 
       errors.push(
         `records[${index}] has an outcome but no resolvedAt/closedAt`
+      );
+
+    }
+
+    if (
+      record.resolverVersion !==
+        AUTONOMOUS_RESOLVER_VERSION
+    ) {
+
+      continue;
+
+    }
+
+    const sourceTradeKey =
+      getExistingSourceTradeKey(
+        record
+      );
+
+    const resolutionHash =
+      toTrimmedString(
+        record.resolutionHash ??
+        record.resolutionEvidence
+          ?.resolutionHash
+      );
+
+    if (!sourceTradeKey) {
+
+      errors.push(
+        `records[${index}] is missing autonomous sourceTradeKey`
+      );
+
+    } else if (
+      autonomousTradeKeys.has(
+        sourceTradeKey
+      )
+    ) {
+
+      errors.push(
+        `records[${index}] duplicates autonomous sourceTradeKey ${sourceTradeKey}`
+      );
+
+    } else {
+
+      autonomousTradeKeys.add(
+        sourceTradeKey
+      );
+
+    }
+
+    if (!resolutionHash) {
+
+      errors.push(
+        `records[${index}] is missing autonomous resolutionHash`
+      );
+
+    }
+
+    if (
+      !Number.isInteger(
+        record.resolutionRevision
+      ) ||
+      record.resolutionRevision <
+        1
+    ) {
+
+      errors.push(
+        `records[${index}] has invalid resolutionRevision`
+      );
+
+    }
+
+    if (
+      !isPlainObject(
+        record.resolutionEvidence
+      ) ||
+      record.resolutionEvidence
+        .schemaVersion !==
+        RESOLUTION_EVIDENCE_SCHEMA_VERSION ||
+      record.resolutionEvidence
+        .autonomousResolverVersion !==
+        AUTONOMOUS_RESOLVER_VERSION
+    ) {
+
+      errors.push(
+        `records[${index}] has invalid autonomous resolution evidence`
+      );
+
+    } else if (
+      record.resolutionEvidence
+        .resolutionHash !==
+        resolutionHash ||
+      record.resolutionEvidence
+        .sourceTradeKey !==
+        sourceTradeKey
+    ) {
+
+      errors.push(
+        `records[${index}] autonomous resolution evidence is inconsistent`
+      );
+
+    }
+
+    if (
+      !isPlainObject(
+        record.autonomousFeedback
+      ) ||
+      record.autonomousFeedback
+        .engineVersion !==
+        AUTONOMOUS_RESOLVER_VERSION ||
+      record.autonomousFeedback
+        .sourceTradeKey !==
+        sourceTradeKey ||
+      record.autonomousFeedback
+        .resolutionHash !==
+        resolutionHash
+    ) {
+
+      errors.push(
+        `records[${index}] autonomous feedback attribution is inconsistent`
       );
 
     }
@@ -9586,6 +11817,8 @@ if (
 module.exports = {
   ENGINE_NAME,
   ENGINE_VERSION,
+  AUTONOMOUS_RESOLVER_VERSION,
+  RESOLUTION_EVIDENCE_SCHEMA_VERSION,
   RESOLUTION_POLICY,
 
   loadAnalysisHistory,
@@ -9596,6 +11829,11 @@ module.exports = {
   normalizeCandles,
 
   validateTradeGeometry,
+  createSourceTradeKey,
+  buildPreparedTradeSnapshot,
+  validateResolutionIntegrity,
+  buildResolutionEvidence,
+  buildAutonomousFeedback,
   candleTouchesStop,
   candleTouchesTarget,
   getHighestTargetReached,
@@ -9607,6 +11845,7 @@ module.exports = {
 
   applyResolutionToRichRecord,
   createLegacyClosedTrade,
+  upsertLegacyClosedTrade,
   applyResolvedTradeToHistory,
   resolveAnalysisHistory,
 

@@ -3,17 +3,34 @@
 /* =====================================================================
    PipSight Pro AI
    Learning and Confidence Engine
-   Version: 2.1.0
+   Public compatibility version: 2.1.0
+   Autonomous learning extension: 1.4.0
 
    Compatibility:
    - Existing public methods preserved.
    - Existing signal and confidence structures preserved.
+   - Exact immutable trade attribution; no approximate pending matching.
+   - Risk-normalized R feedback, context snapshots and correction revisions.
    - Works in Node.js and browser environments.
    ===================================================================== */
 
 class LearningConfig {
     static VERSION = "2.1.0";
     static ENGINE_NAME = "PipSight Pro AI";
+
+    /*
+     * Autonomous learning extension.
+     *
+     * VERSION remains 2.1.0 because existing workflows and integrations
+     * validate that public compatibility contract. AUTONOMOUS_VERSION identifies
+     * the additive policy-grade learning layer introduced for the autonomous
+     * stack.
+     */
+    static AUTONOMOUS_VERSION = "1.4.0";
+    static AUTONOMOUS_SCHEMA_VERSION = 1;
+    static MAX_ABSOLUTE_REALIZED_R = 20;
+    static MAX_CORRECTION_HISTORY = 20;
+    static MAX_CONTEXT_VALUE_LENGTH = 120;
 
     static DEBUG = false;
     static MAX_HISTORY = 5000;
@@ -111,71 +128,265 @@ function round(value, decimals = 2) {
     return Math.round(value * multiplier) / multiplier;
 }
 
-function getSignalChronologyTimestamp(signal) {
-    if (!isPlainObject(signal)) {
+
+function toFiniteNumber(value) {
+    if (
+        value === null ||
+        value === undefined ||
+        value === ""
+    ) {
         return null;
     }
 
-    const candidates = [
-        signal.closedAt,
-        signal.resolvedAt,
-        signal.openedAt,
-        signal.timestamp
-    ];
+    const numeric = Number(value);
 
-    for (const candidate of candidates) {
-        if (
-            typeof candidate !== "string" ||
-            !candidate.trim()
-        ) {
+    return Number.isFinite(numeric)
+        ? numeric
+        : null;
+}
+
+function toISOStringOrNull(value) {
+    if (
+        value === null ||
+        value === undefined ||
+        value === ""
+    ) {
+        return null;
+    }
+
+    const date = new Date(value);
+
+    return Number.isFinite(date.getTime())
+        ? date.toISOString()
+        : null;
+}
+
+function toTrimmedStringOrNull(
+    value,
+    maximumLength =
+        LearningConfig.MAX_CONTEXT_VALUE_LENGTH
+) {
+    if (
+        value === null ||
+        value === undefined
+    ) {
+        return null;
+    }
+
+    const normalized =
+        String(value)
+            .trim();
+
+    if (!normalized) {
+        return null;
+    }
+
+    return normalized.slice(
+        0,
+        Math.max(1, maximumLength)
+    );
+}
+
+function stableIdentityNumber(value) {
+    const numeric =
+        toFiniteNumber(value);
+
+    return numeric === null
+        ? null
+        : Number(
+            numeric.toFixed(10)
+        );
+}
+
+function fnv1a64(value) {
+    const input =
+        String(value ?? "");
+
+    let hash =
+        0xcbf29ce484222325n;
+
+    const prime =
+        0x100000001b3n;
+
+    for (
+        let index = 0;
+        index < input.length;
+        index += 1
+    ) {
+        hash ^=
+            BigInt(
+                input.charCodeAt(index)
+            );
+
+        hash =
+            BigInt.asUintN(
+                64,
+                hash * prime
+            );
+    }
+
+    return hash
+        .toString(16)
+        .padStart(16, "0");
+}
+
+
+function createDeterministicHash(value) {
+    const input =
+        String(value ?? "");
+
+    /*
+     * Node.js production uses SHA-256. The browser compatibility fallback is
+     * deterministic FNV-1a 64-bit because learner.js must remain dependency-free
+     * and usable without a bundler.
+     */
+    if (
+        typeof module !== "undefined" &&
+        module.exports &&
+        typeof require === "function"
+    ) {
+        try {
+            const crypto =
+                require("crypto");
+
+            return crypto
+                .createHash("sha256")
+                .update(
+                    input,
+                    "utf8"
+                )
+                .digest("hex");
+        } catch (error) {
+            // Fall through to the deterministic browser-safe hash.
+        }
+    }
+
+    return fnv1a64(input);
+}
+
+function calculateInitialRiskPoints(signal) {
+    const entry =
+        toFiniteNumber(
+            signal?.entry
+        );
+
+    const stopLoss =
+        toFiniteNumber(
+            signal?.stopLoss ??
+            signal?.stop
+        );
+
+    if (
+        entry === null ||
+        stopLoss === null
+    ) {
+        return null;
+    }
+
+    const risk =
+        Math.abs(
+            entry - stopLoss
+        );
+
+    return risk > 0
+        ? round(risk, 10)
+        : null;
+}
+
+function calculatePlannedRewardPoints(signal) {
+    const entry =
+        toFiniteNumber(
+            signal?.entry
+        );
+
+    const takeProfit =
+        toFiniteNumber(
+            signal?.takeProfit ??
+            signal?.takeProfit1 ??
+            signal?.target
+        );
+
+    if (
+        entry === null ||
+        takeProfit === null
+    ) {
+        return null;
+    }
+
+    const reward =
+        Math.abs(
+            takeProfit - entry
+        );
+
+    return reward > 0
+        ? round(reward, 10)
+        : null;
+}
+
+function calculateRealizedR(
+    profitPoints,
+    initialRiskPoints
+) {
+    const profit =
+        toFiniteNumber(
+            profitPoints
+        );
+
+    const risk =
+        toFiniteNumber(
+            initialRiskPoints
+        );
+
+    if (
+        profit === null ||
+        risk === null ||
+        risk <= 0
+    ) {
+        return null;
+    }
+
+    const realizedR =
+        profit / risk;
+
+    if (
+        !Number.isFinite(realizedR) ||
+        Math.abs(realizedR) >
+            LearningConfig
+                .MAX_ABSOLUTE_REALIZED_R
+    ) {
+        return null;
+    }
+
+    return round(
+        realizedR,
+        6
+    );
+}
+
+function buildMaximumDrawdownR(values) {
+    let equity = 0;
+    let peak = 0;
+    let maximumDrawdown = 0;
+
+    for (const value of values) {
+        if (!isFiniteNumber(value)) {
             continue;
         }
 
-        const timestamp = Date.parse(candidate);
+        equity += value;
+        peak = Math.max(peak, equity);
 
-        if (Number.isFinite(timestamp)) {
-            return timestamp;
-        }
+        maximumDrawdown =
+            Math.max(
+                maximumDrawdown,
+                peak - equity
+            );
     }
 
-    return null;
-}
-
-function sortSignalsChronologically(signals) {
-    if (!Array.isArray(signals)) {
-        return [];
-    }
-
-    return signals
-        .map((signal, index) => ({
-            signal,
-            index,
-            timestamp:
-                getSignalChronologyTimestamp(signal)
-        }))
-        .sort((left, right) => {
-            if (
-                left.timestamp === null &&
-                right.timestamp === null
-            ) {
-                return left.index - right.index;
-            }
-
-            if (left.timestamp === null) {
-                return 1;
-            }
-
-            if (right.timestamp === null) {
-                return -1;
-            }
-
-            if (left.timestamp !== right.timestamp) {
-                return left.timestamp - right.timestamp;
-            }
-
-            return left.index - right.index;
-        })
-        .map(item => item.signal);
+    return round(
+        maximumDrawdown,
+        6
+    );
 }
 
 function createEmptyStats() {
@@ -212,7 +423,20 @@ function createEmptyLearningData() {
         updatedAt: new Date().toISOString(),
         metadata: {
             engine: LearningConfig.ENGINE_NAME,
-            version: LearningConfig.VERSION
+            version: LearningConfig.VERSION,
+            autonomousLearning: {
+                schemaVersion:
+                    LearningConfig
+                        .AUTONOMOUS_SCHEMA_VERSION,
+                version:
+                    LearningConfig
+                        .AUTONOMOUS_VERSION,
+                deterministicIdentity: true,
+                exactOutcomeAttribution: true,
+                correctedRecordSafe: true,
+                advisoryOnly: true,
+                liveAuthorityPermitted: false
+            }
         }
     };
 }
@@ -231,7 +455,20 @@ function createEmptyConfidenceData() {
         updatedAt: new Date().toISOString(),
         metadata: {
             engine: LearningConfig.ENGINE_NAME,
-            version: LearningConfig.VERSION
+            version: LearningConfig.VERSION,
+            autonomousLearning: {
+                schemaVersion:
+                    LearningConfig
+                        .AUTONOMOUS_SCHEMA_VERSION,
+                version:
+                    LearningConfig
+                        .AUTONOMOUS_VERSION,
+                deterministicIdentity: true,
+                exactOutcomeAttribution: true,
+                correctedRecordSafe: true,
+                advisoryOnly: true,
+                liveAuthorityPermitted: false
+            }
         }
     };
 }
@@ -494,6 +731,20 @@ class MemoryManager {
         learner.data.metadata.version =
             LearningConfig.VERSION;
 
+        learner.data.metadata.autonomousLearning = {
+            schemaVersion:
+                LearningConfig
+                    .AUTONOMOUS_SCHEMA_VERSION,
+            version:
+                LearningConfig
+                    .AUTONOMOUS_VERSION,
+            deterministicIdentity: true,
+            exactOutcomeAttribution: true,
+            correctedRecordSafe: true,
+            advisoryOnly: true,
+            liveAuthorityPermitted: false
+        };
+
         MemoryManager.repairSignals(learner);
         MemoryManager.repairOutcomes(learner);
         MemoryManager.cleanup(learner);
@@ -543,7 +794,23 @@ class MemoryManager {
             }
 
             if (!signal.timestamp) {
-                signal.timestamp = new Date().toISOString();
+                signal.timestamp =
+                    new Date().toISOString();
+            }
+
+            if (
+                learner &&
+                typeof learner
+                    .enrichSignalForAutonomousLearning ===
+                    "function"
+            ) {
+                learner
+                    .enrichSignalForAutonomousLearning(
+                        signal,
+                        {
+                            repair: true
+                        }
+                    );
             }
 
             repairedSignals.push(signal);
@@ -627,14 +894,6 @@ class MemoryManager {
                 LearningConfig.SUPPORTED_RESULTS.includes(
                     signal.outcome
                 )
-        );
-    }
-
-    static getDecisiveSignals(learner) {
-        return learner.data.signals.filter(
-            signal =>
-                signal.outcome === "WIN" ||
-                signal.outcome === "LOSS"
         );
     }
 
@@ -910,39 +1169,989 @@ class PipSightLearner {
         );
     }
 
+    normalizeAutonomousContext(
+        source = {}
+    ) {
+        if (!isPlainObject(source)) {
+            return {};
+        }
+
+        const context = {};
+
+        const stringFields = {
+            engine:
+                source.engine ??
+                source.strategy,
+
+            source:
+                source.source,
+
+            session:
+                source.session ??
+                source.marketSession,
+
+            pattern:
+                source.pattern ??
+                source.patternName,
+
+            marketRegime:
+                source.marketRegime ??
+                source.regime ??
+                source.marketState,
+
+            marketState:
+                source.marketState,
+
+            historyRecordId:
+                source.historyRecordId,
+
+            fingerprint:
+                source.fingerprint,
+
+            sourceTradeKey:
+                source.sourceTradeKey ??
+                source.tradeKey,
+
+            reason:
+                source.reason
+        };
+
+        for (
+            const [
+                field,
+                value
+            ] of Object.entries(
+                stringFields
+            )
+        ) {
+            const normalized =
+                toTrimmedStringOrNull(
+                    value
+                );
+
+            if (normalized) {
+                context[field] =
+                    normalized;
+            }
+        }
+
+        const numericFields = {
+            originalConfidence:
+                source.originalConfidence ??
+                source.confidence,
+
+            legacyConfidence:
+                source.legacyConfidence,
+
+            aiScore:
+                source.aiScore ??
+                source.score,
+
+            durationMinutes:
+                source.durationMinutes ??
+                source.tradeDurationMinutes
+        };
+
+        for (
+            const [
+                field,
+                value
+            ] of Object.entries(
+                numericFields
+            )
+        ) {
+            const normalized =
+                toFiniteNumber(
+                    value
+                );
+
+            if (normalized !== null) {
+                context[field] =
+                    normalized;
+            }
+        }
+
+        return context;
+    }
+
+    buildOpeningIdentityPayload(
+        source = {}
+    ) {
+        const context =
+            this.normalizeAutonomousContext(
+                source
+            );
+
+        const openedAt =
+            toISOStringOrNull(
+                source.openedAt ??
+                source.signalTime ??
+                source.timestamp
+            );
+
+        return {
+            historyRecordId:
+                context.historyRecordId ||
+                null,
+
+            sourceTradeKey:
+                context.sourceTradeKey ||
+                null,
+
+            fingerprint:
+                context.fingerprint ||
+                null,
+
+            pair:
+                this.normalizeLegacyPair(
+                    source.pair
+                ) || null,
+
+            strategy:
+                this.normalizeLegacyStrategy(
+                    source.strategy ??
+                    source.engine
+                ),
+
+            timeframe:
+                this.normalizeLegacyTimeframe(
+                    source.timeframe,
+                    this.normalizeLegacyStrategy(
+                        source.strategy ??
+                        source.engine
+                    )
+                ),
+
+            direction:
+                this.normalizeLegacyDirection(
+                    source.direction ??
+                    source.signal
+                ),
+
+            entry:
+                stableIdentityNumber(
+                    source.entry ??
+                    source.entryPrice
+                ),
+
+            openedAt
+        };
+    }
+
+    createLearningIdentity(
+        source = {}
+    ) {
+        const payload =
+            this.buildOpeningIdentityPayload(
+                source
+            );
+
+        let identitySource;
+
+        if (payload.historyRecordId) {
+            identitySource = {
+                historyRecordId:
+                    payload.historyRecordId
+            };
+        } else if (
+            payload.sourceTradeKey
+        ) {
+            identitySource = {
+                sourceTradeKey:
+                    payload.sourceTradeKey
+            };
+        } else if (
+            payload.fingerprint
+        ) {
+            identitySource = {
+                fingerprint:
+                    payload.fingerprint
+            };
+        } else {
+            identitySource = {
+                pair:
+                    payload.pair,
+                strategy:
+                    payload.strategy,
+                timeframe:
+                    payload.timeframe,
+                direction:
+                    payload.direction,
+                entry:
+                    payload.entry,
+                openedAt:
+                    payload.openedAt
+            };
+        }
+
+        const serialized =
+            JSON.stringify(
+                identitySource
+            );
+
+        return {
+            schemaVersion:
+                LearningConfig
+                    .AUTONOMOUS_SCHEMA_VERSION,
+
+            key:
+                `learn_${createDeterministicHash(serialized)}`,
+
+            source:
+                identitySource,
+
+            complete:
+                Boolean(
+                    payload.pair &&
+                    payload.strategy &&
+                    payload.timeframe &&
+                    (
+                        payload.direction ===
+                            "BUY" ||
+                        payload.direction ===
+                            "SELL"
+                    ) &&
+                    payload.entry !== null &&
+                    payload.entry > 0 &&
+                    payload.openedAt
+                ) ||
+                Boolean(
+                    payload.historyRecordId ||
+                    payload.sourceTradeKey ||
+                    payload.fingerprint
+                )
+        };
+    }
+
+    deriveSignalId(
+        source = {}
+    ) {
+        const explicitId =
+            toTrimmedStringOrNull(
+                source.id
+            );
+
+        if (
+            explicitId &&
+            !this.getSignalById(
+                explicitId
+            )
+        ) {
+            return explicitId;
+        }
+
+        const identity =
+            this.createLearningIdentity(
+                source
+            );
+
+        if (
+            identity.complete
+        ) {
+            const deterministicId =
+                `signal_${identity.key.slice(6)}`;
+
+            if (
+                !this.getSignalById(
+                    deterministicId
+                )
+            ) {
+                return deterministicId;
+            }
+        }
+
+        return this.generateId();
+    }
+
+    buildAttributionQuality(
+        signal
+    ) {
+        const reasons = [];
+        let score = 100;
+
+        const identity =
+            this.createLearningIdentity(
+                signal
+            );
+
+        if (!identity.complete) {
+            score -= 35;
+            reasons.push(
+                "INCOMPLETE_OPENING_IDENTITY"
+            );
+        }
+
+        const initialRiskPoints =
+            calculateInitialRiskPoints(
+                signal
+            );
+
+        if (
+            initialRiskPoints === null
+        ) {
+            score -= 25;
+            reasons.push(
+                "INVALID_OR_MISSING_INITIAL_RISK"
+            );
+        }
+
+        const openedAt =
+            toISOStringOrNull(
+                signal.openedAt ??
+                signal.timestamp
+            );
+
+        if (!openedAt) {
+            score -= 15;
+            reasons.push(
+                "MISSING_OPENED_AT"
+            );
+        }
+
+        const context =
+            this.normalizeAutonomousContext(
+                signal
+            );
+
+        if (!context.engine) {
+            score -= 5;
+            reasons.push(
+                "MISSING_ENGINE"
+            );
+        }
+
+        if (
+            !context.historyRecordId &&
+            !context.sourceTradeKey &&
+            !context.fingerprint
+        ) {
+            score -= 5;
+            reasons.push(
+                "NO_EXTERNAL_SOURCE_ID"
+            );
+        }
+
+        score =
+            clamp(
+                score,
+                0,
+                100
+            );
+
+        return {
+            score,
+            grade:
+                score >= 90
+                    ? "A"
+                    : score >= 75
+                        ? "B"
+                        : score >= 60
+                            ? "C"
+                            : "D",
+            reasons
+        };
+    }
+
+    enrichSignalForAutonomousLearning(
+        signal,
+        options = {}
+    ) {
+        if (!isPlainObject(signal)) {
+            return signal;
+        }
+
+        const context =
+            this.normalizeAutonomousContext(
+                signal
+            );
+
+        for (
+            const [
+                field,
+                value
+            ] of Object.entries(
+                context
+            )
+        ) {
+            if (
+                signal[field] === undefined ||
+                signal[field] === null ||
+                signal[field] === ""
+            ) {
+                signal[field] =
+                    value;
+            }
+        }
+
+        if (!signal.engine) {
+            signal.engine =
+                signal.strategy || null;
+        }
+
+        const openedAt =
+            toISOStringOrNull(
+                signal.openedAt ??
+                signal.signalTime ??
+                signal.timestamp
+            );
+
+        if (openedAt) {
+            signal.openedAt =
+                openedAt;
+
+            if (!signal.timestamp) {
+                signal.timestamp =
+                    openedAt;
+            }
+        }
+
+        const closedAt =
+            toISOStringOrNull(
+                signal.closedAt ??
+                signal.resolvedAt
+            );
+
+        if (closedAt) {
+            signal.closedAt =
+                closedAt;
+        }
+
+        const initialRiskPoints =
+            calculateInitialRiskPoints(
+                signal
+            );
+
+        const plannedRewardPoints =
+            calculatePlannedRewardPoints(
+                signal
+            );
+
+        const plannedRiskReward =
+            (
+                initialRiskPoints !== null &&
+                plannedRewardPoints !== null &&
+                initialRiskPoints > 0
+            )
+                ? round(
+                    plannedRewardPoints /
+                        initialRiskPoints,
+                    6
+                )
+                : null;
+
+        const realizedR =
+            calculateRealizedR(
+                signal.profitPoints,
+                initialRiskPoints
+            );
+
+        signal.initialRiskPoints =
+            initialRiskPoints;
+
+        signal.plannedRewardPoints =
+            plannedRewardPoints;
+
+        signal.plannedRiskReward =
+            plannedRiskReward;
+
+        signal.realizedR =
+            realizedR;
+
+        if (
+            initialRiskPoints !== null
+        ) {
+            signal.initialRisk =
+                initialRiskPoints;
+
+            signal.risk =
+                initialRiskPoints;
+        }
+
+        if (
+            plannedRewardPoints !== null
+        ) {
+            signal.plannedReward =
+                plannedRewardPoints;
+
+            signal.reward =
+                plannedRewardPoints;
+        }
+
+        if (
+            plannedRiskReward !== null
+        ) {
+            signal.riskReward =
+                plannedRiskReward;
+        }
+
+        const identity =
+            this.createLearningIdentity(
+                signal
+            );
+
+        signal.learningIdentity =
+            identity.key;
+
+        if (
+            !Number.isInteger(
+                signal.learningRevision
+            ) ||
+            signal.learningRevision < 1
+        ) {
+            signal.learningRevision = 1;
+        }
+
+        if (
+            !Array.isArray(
+                signal.correctionHistory
+            )
+        ) {
+            signal.correctionHistory = [];
+        }
+
+        if (
+            signal.correctionHistory.length >
+            LearningConfig
+                .MAX_CORRECTION_HISTORY
+        ) {
+            signal.correctionHistory =
+                signal.correctionHistory.slice(
+                    -LearningConfig
+                        .MAX_CORRECTION_HISTORY
+                );
+        }
+
+        const attribution =
+            this.buildAttributionQuality(
+                signal
+            );
+
+        signal.autonomousLearning = {
+            schemaVersion:
+                LearningConfig
+                    .AUTONOMOUS_SCHEMA_VERSION,
+
+            version:
+                LearningConfig
+                    .AUTONOMOUS_VERSION,
+
+            advisoryOnly: true,
+            liveAuthorityPermitted: false,
+
+            identity: {
+                key:
+                    identity.key,
+                complete:
+                    identity.complete
+            },
+
+            context: {
+                engine:
+                    signal.engine || null,
+                marketRegime:
+                    signal.marketRegime || null,
+                marketState:
+                    signal.marketState || null,
+                session:
+                    signal.session || null,
+                pattern:
+                    signal.pattern || null,
+                source:
+                    signal.source || null
+            },
+
+            risk: {
+                initialRiskPoints,
+                plannedRewardPoints,
+                plannedRiskReward,
+                realizedR,
+                eligible:
+                    initialRiskPoints !== null &&
+                    realizedR !== null
+            },
+
+            attribution,
+
+            revision:
+                signal.learningRevision,
+
+            corrected:
+                signal.learningRevision > 1,
+
+            repaired:
+                options.repair === true
+        };
+
+        return signal;
+    }
+
+    findExistingLegacySignal({
+        pair,
+        strategy,
+        timeframe,
+        direction,
+        entry,
+        openedAt,
+        historyRecordId,
+        sourceTradeKey,
+        fingerprint
+    } = {}) {
+        const query =
+            this.createLearningIdentity({
+                pair,
+                strategy,
+                timeframe,
+                direction,
+                entry,
+                openedAt,
+                historyRecordId,
+                sourceTradeKey,
+                fingerprint
+            });
+
+        return this.data.signals.find(
+            signal => {
+                if (!isPlainObject(signal)) {
+                    return false;
+                }
+
+                this
+                    .enrichSignalForAutonomousLearning(
+                        signal,
+                        {
+                            repair: true
+                        }
+                    );
+
+                return (
+                    signal.learningIdentity ===
+                    query.key
+                );
+            }
+        ) || null;
+    }
+
+    isEquivalentResolution(
+        signal,
+        {
+            outcome,
+            profitPoints,
+            closePrice,
+            closedAt
+        } = {}
+    ) {
+        if (!isPlainObject(signal)) {
+            return false;
+        }
+
+        const sameOutcome =
+            signal.outcome === outcome;
+
+        const existingProfit =
+            toFiniteNumber(
+                signal.profitPoints
+            );
+
+        const candidateProfit =
+            toFiniteNumber(
+                profitPoints
+            );
+
+        const sameProfit =
+            existingProfit !== null &&
+            candidateProfit !== null &&
+            Math.abs(
+                existingProfit -
+                candidateProfit
+            ) <= 1e-9;
+
+        const existingClose =
+            toFiniteNumber(
+                signal.closePrice
+            );
+
+        const candidateClose =
+            toFiniteNumber(
+                closePrice
+            );
+
+        const sameClose =
+            (
+                existingClose === null &&
+                candidateClose === null
+            ) ||
+            (
+                existingClose !== null &&
+                candidateClose !== null &&
+                Math.abs(
+                    existingClose -
+                    candidateClose
+                ) <= 1e-9
+            );
+
+        const existingClosedAt =
+            toISOStringOrNull(
+                signal.closedAt ??
+                signal.resolvedAt
+            );
+
+        const candidateClosedAt =
+            toISOStringOrNull(
+                closedAt
+            );
+
+        const sameClosedAt =
+            !candidateClosedAt ||
+            existingClosedAt ===
+                candidateClosedAt;
+
+        return (
+            sameOutcome &&
+            sameProfit &&
+            sameClose &&
+            sameClosedAt
+        );
+    }
+
+    correctSignalOutcome(
+        signalId,
+        correction = {}
+    ) {
+        const signal =
+            this.getSignalById(
+                signalId
+            );
+
+        if (
+            !signal ||
+            !isPlainObject(correction)
+        ) {
+            return false;
+        }
+
+        const outcome =
+            this.normalizeLegacyOutcome(
+                correction.outcome ??
+                correction.result
+            );
+
+        const profitPoints =
+            toFiniteNumber(
+                correction.profitPoints
+            );
+
+        const validation =
+            SignalValidator
+                .validateOutcome(
+                    outcome,
+                    profitPoints
+                );
+
+        if (!validation.valid) {
+            console.warn(
+                "Outcome correction failed:",
+                validation.errors
+            );
+
+            return false;
+        }
+
+        const correctedAt =
+            new Date().toISOString();
+
+        if (
+            !Array.isArray(
+                signal.correctionHistory
+            )
+        ) {
+            signal.correctionHistory = [];
+        }
+
+        signal.correctionHistory.push({
+            revision:
+                Number.isInteger(
+                    signal.learningRevision
+                )
+                    ? signal.learningRevision
+                    : 1,
+
+            outcome:
+                signal.outcome,
+
+            profitPoints:
+                signal.profitPoints,
+
+            closePrice:
+                signal.closePrice ?? null,
+
+            closedAt:
+                signal.closedAt ??
+                signal.resolvedAt ??
+                null,
+
+            correctedAt,
+
+            reason:
+                toTrimmedStringOrNull(
+                    correction.correctionReason ??
+                    correction.reason
+                ) ||
+                "SOURCE_RECORD_CORRECTION"
+        });
+
+        signal.correctionHistory =
+            signal.correctionHistory.slice(
+                -LearningConfig
+                    .MAX_CORRECTION_HISTORY
+            );
+
+        signal.learningRevision =
+            (
+                Number.isInteger(
+                    signal.learningRevision
+                )
+                    ? signal.learningRevision
+                    : 1
+            ) + 1;
+
+        signal.outcome =
+            outcome;
+
+        signal.profitPoints =
+            profitPoints;
+
+        const closePrice =
+            toFiniteNumber(
+                correction.closePrice
+            );
+
+        if (
+            closePrice !== null &&
+            closePrice > 0
+        ) {
+            signal.closePrice =
+                closePrice;
+        }
+
+        const closedAt =
+            toISOStringOrNull(
+                correction.closedAt ??
+                correction.resolvedAt
+            );
+
+        if (closedAt) {
+            signal.closedAt =
+                closedAt;
+
+            signal.resolvedAt =
+                closedAt;
+        } else if (
+            !signal.resolvedAt
+        ) {
+            signal.resolvedAt =
+                correctedAt;
+        }
+
+        if (
+            isFiniteNumber(
+                signal.entry
+            ) &&
+            signal.entry !== 0
+        ) {
+            signal.resultPercentage =
+                round(
+                    (
+                        profitPoints /
+                        Math.abs(
+                            signal.entry
+                        )
+                    ) * 100,
+                    4
+                );
+        } else {
+            signal.resultPercentage =
+                null;
+        }
+
+        const outcomeRecord =
+            this.data.outcomes.find(
+                record =>
+                    record.signalId ===
+                    signalId
+            );
+
+        if (outcomeRecord) {
+            outcomeRecord.outcome =
+                outcome;
+
+            outcomeRecord.profitPoints =
+                profitPoints;
+
+            outcomeRecord.timestamp =
+                signal.resolvedAt ||
+                correctedAt;
+
+            outcomeRecord.revision =
+                signal.learningRevision;
+
+            outcomeRecord.correctedAt =
+                correctedAt;
+        } else {
+            this.data.outcomes.push({
+                signalId,
+                outcome,
+                profitPoints,
+                timestamp:
+                    signal.resolvedAt ||
+                    correctedAt,
+                revision:
+                    signal.learningRevision,
+                correctedAt
+            });
+        }
+
+        this
+            .enrichSignalForAutonomousLearning(
+                signal
+            );
+
+        this.updateStats();
+        this.refreshPendingConfidence();
+        MemoryManager.updateTimestamp(this);
+
+        return signal.id;
+    }
+
     findPendingLegacySignal({
         pair,
         strategy,
         timeframe,
         direction,
-        entry
+        entry,
+        openedAt,
+        historyRecordId,
+        sourceTradeKey,
+        fingerprint
     } = {}) {
-        const safeEntry =
-            Number(entry);
-
-        const exactMatch =
-            this.data.signals.find(signal => {
-                return (
-                    signal &&
-                    signal.outcome === null &&
-                    signal.pair === pair &&
-                    signal.strategy === strategy &&
-                    signal.timeframe === timeframe &&
-                    signal.direction === direction &&
-                    Number(signal.entry) === safeEntry
-                );
+        const exactSignal =
+            this.findExistingLegacySignal({
+                pair,
+                strategy,
+                timeframe,
+                direction,
+                entry,
+                openedAt,
+                historyRecordId,
+                sourceTradeKey,
+                fingerprint
             });
 
-        if (exactMatch) {
-            return exactMatch;
-        }
-
-        /*
-         * Object-style outcome data supplies timeframe and entry. Falling back
-         * to pair/strategy/direction alone can resolve a different open trade.
-         * No approximate match is safe here; create a new exact signal instead.
-         */
-        return null;
+        return (
+            exactSignal &&
+            exactSignal.outcome === null
+        )
+            ? exactSignal
+            : null;
     }
 
     /* -----------------------------------------------------------------
@@ -962,9 +2171,37 @@ class PipSightLearner {
             return false;
         }
 
+        const normalizedSignal = {
+            ...signal
+        };
+
+        const openedAt =
+            toISOStringOrNull(
+                signal.openedAt ??
+                signal.signalTime ??
+                signal.timestamp
+            ) ||
+            new Date().toISOString();
+
+        normalizedSignal.timestamp =
+            openedAt;
+
+        normalizedSignal.openedAt =
+            openedAt;
+
+        const context =
+            this.normalizeAutonomousContext(
+                signal
+            );
+
+        Object.assign(
+            normalizedSignal,
+            context
+        );
+
         if (
             SignalValidator.isDuplicate(
-                signal,
+                normalizedSignal,
                 this.data.signals
             )
         ) {
@@ -975,23 +2212,68 @@ class PipSightLearner {
             return false;
         }
 
-        const now = new Date().toISOString();
+        const existingIdentity =
+            this.findExistingLegacySignal({
+                pair:
+                    normalizedSignal.pair,
+                strategy:
+                    normalizedSignal.strategy,
+                timeframe:
+                    normalizedSignal.timeframe,
+                direction:
+                    normalizedSignal.direction,
+                entry:
+                    normalizedSignal.entry,
+                openedAt:
+                    normalizedSignal.openedAt,
+                historyRecordId:
+                    normalizedSignal
+                        .historyRecordId,
+                sourceTradeKey:
+                    normalizedSignal
+                        .sourceTradeKey,
+                fingerprint:
+                    normalizedSignal
+                        .fingerprint
+            });
+
+        if (existingIdentity) {
+            console.warn(
+                "Duplicate immutable trade identity ignored."
+            );
+
+            return false;
+        }
 
         const recordedSignal = {
-            ...signal,
+            ...normalizedSignal,
 
-            id: this.generateId(),
+            id:
+                this.deriveSignalId(
+                    normalizedSignal
+                ),
 
-            indicators: Array.isArray(signal.indicators)
-                ? [...new Set(signal.indicators)]
-                : [],
-
-            timestamp: signal.timestamp || now,
+            indicators:
+                Array.isArray(
+                    normalizedSignal.indicators
+                )
+                    ? [
+                        ...new Set(
+                            normalizedSignal
+                                .indicators
+                        )
+                    ]
+                    : [],
 
             outcome: null,
             profitPoints: null,
             resultPercentage: null,
-            resolvedAt: null
+            resolvedAt: null,
+            closedAt: null,
+            closePrice: null,
+            realizedR: null,
+            learningRevision: 1,
+            correctionHistory: []
         };
 
         recordedSignal.confidence =
@@ -999,12 +2281,17 @@ class PipSightLearner {
                 recordedSignal
             );
 
-        const decisiveCount =
-            MemoryManager.getDecisiveSignals(this).length;
+        const resolvedCount =
+            MemoryManager
+                .getResolvedSignals(
+                    this
+                )
+                .length;
 
         const enoughDataToFilter =
-            decisiveCount >=
-            LearningConfig.MIN_SIGNALS_FOR_CONFIDENCE;
+            resolvedCount >=
+            LearningConfig
+                .MIN_SIGNALS_FOR_CONFIDENCE;
 
         recordedSignal.status =
             !enoughDataToFilter ||
@@ -1014,12 +2301,23 @@ class PipSightLearner {
                 ? "actionable"
                 : "filtered";
 
-        this.data.signals.push(recordedSignal);
+        this
+            .enrichSignalForAutonomousLearning(
+                recordedSignal
+            );
+
+        this.data.signals.push(
+            recordedSignal
+        );
 
         MemoryManager.cleanup(this);
         MemoryManager.updateTimestamp(this);
 
-        if (LearningConfig.AUTO_UPDATE_STATS !== false) {
+        if (
+            LearningConfig
+                .AUTO_UPDATE_STATS !==
+            false
+        ) {
             this.updateStats();
         }
 
@@ -1057,7 +2355,8 @@ class PipSightLearner {
     resolveSignal(
         signalId,
         outcome,
-        profitPoints = 0
+        profitPoints = 0,
+        resolutionMetadata = {}
     ) {
         const signal =
             this.getSignalById(signalId);
@@ -1072,6 +2371,24 @@ class PipSightLearner {
         }
 
         if (signal.outcome !== null) {
+            if (
+                this.isEquivalentResolution(
+                    signal,
+                    {
+                        outcome,
+                        profitPoints,
+                        closePrice:
+                            resolutionMetadata
+                                ?.closePrice,
+                        closedAt:
+                            resolutionMetadata
+                                ?.closedAt
+                    }
+                )
+            ) {
+                return true;
+            }
+
             console.warn(
                 "Signal has already been resolved:",
                 signalId
@@ -1096,30 +2413,85 @@ class PipSightLearner {
         }
 
         const resolvedAt =
+            toISOStringOrNull(
+                resolutionMetadata.closedAt ??
+                resolutionMetadata.resolvedAt
+            ) ||
             new Date().toISOString();
 
-        signal.outcome = outcome;
-        signal.profitPoints = profitPoints;
-        signal.resolvedAt = resolvedAt;
+        signal.outcome =
+            outcome;
+
+        signal.profitPoints =
+            profitPoints;
+
+        signal.resolvedAt =
+            resolvedAt;
+
+        signal.closedAt =
+            resolvedAt;
+
+        const closePrice =
+            toFiniteNumber(
+                resolutionMetadata.closePrice
+            );
+
+        if (
+            closePrice !== null &&
+            closePrice > 0
+        ) {
+            signal.closePrice =
+                closePrice;
+        }
+
+        const openedAt =
+            toISOStringOrNull(
+                resolutionMetadata.openedAt
+            );
+
+        if (openedAt) {
+            signal.openedAt =
+                openedAt;
+
+            signal.timestamp =
+                signal.timestamp ||
+                openedAt;
+        }
+
+        const context =
+            this.normalizeAutonomousContext(
+                resolutionMetadata
+            );
+
+        Object.assign(
+            signal,
+            context
+        );
 
         if (
             isFiniteNumber(signal.entry) &&
             signal.entry !== 0
         ) {
-            signal.resultPercentage = round(
-                (profitPoints /
-                    Math.abs(signal.entry)) *
-                    100,
-                4
-            );
+            signal.resultPercentage =
+                round(
+                    (
+                        profitPoints /
+                        Math.abs(
+                            signal.entry
+                        )
+                    ) * 100,
+                    4
+                );
         } else {
-            signal.resultPercentage = null;
+            signal.resultPercentage =
+                null;
         }
 
         const existingOutcome =
             this.data.outcomes.find(
                 record =>
-                    record.signalId === signalId
+                    record.signalId ===
+                    signalId
             );
 
         if (!existingOutcome) {
@@ -1127,9 +2499,31 @@ class PipSightLearner {
                 signalId,
                 outcome,
                 profitPoints,
-                timestamp: resolvedAt
+                timestamp:
+                    resolvedAt,
+                revision:
+                    signal.learningRevision ||
+                    1
             });
+        } else {
+            existingOutcome.outcome =
+                outcome;
+
+            existingOutcome.profitPoints =
+                profitPoints;
+
+            existingOutcome.timestamp =
+                resolvedAt;
+
+            existingOutcome.revision =
+                signal.learningRevision ||
+                1;
         }
+
+        this
+            .enrichSignalForAutonomousLearning(
+                signal
+            );
 
         this.updateStats();
         this.refreshPendingConfidence();
@@ -1153,7 +2547,8 @@ class PipSightLearner {
 
         const strategy =
             this.normalizeLegacyStrategy(
-                outcomeData.strategy
+                outcomeData.strategy ??
+                outcomeData.engine
             );
 
         const pair =
@@ -1169,41 +2564,58 @@ class PipSightLearner {
 
         const direction =
             this.normalizeLegacyDirection(
-                outcomeData.signal ||
+                outcomeData.signal ??
                 outcomeData.direction
             );
 
         const outcome =
             this.normalizeLegacyOutcome(
-                outcomeData.result ||
+                outcomeData.result ??
                 outcomeData.outcome
             );
 
         const entry =
-            Number(outcomeData.entry);
+            toFiniteNumber(
+                outcomeData.entry ??
+                outcomeData.entryPrice
+            );
 
         const stopLoss =
-            Number(
+            toFiniteNumber(
                 outcomeData.stopLoss ??
                 outcomeData.stop
             );
 
         const takeProfit =
-            Number(
+            toFiniteNumber(
                 outcomeData.takeProfit ??
+                outcomeData.takeProfit1 ??
                 outcomeData.target
             );
 
         const closePrice =
-            Number(
+            toFiniteNumber(
                 outcomeData.closePrice ??
                 outcomeData.close
             );
 
+        const openedAt =
+            toISOStringOrNull(
+                outcomeData.openedAt ??
+                outcomeData.signalTime ??
+                outcomeData.timestamp
+            );
+
+        const closedAt =
+            toISOStringOrNull(
+                outcomeData.closedAt ??
+                outcomeData.resolvedAt
+            );
+
         if (
-            !LearningConfig.SUPPORTED_PAIRS.includes(
-                pair
-            )
+            !LearningConfig
+                .SUPPORTED_PAIRS
+                .includes(pair)
         ) {
             console.warn(
                 "Legacy outcome recording failed: unsupported pair.",
@@ -1214,9 +2626,9 @@ class PipSightLearner {
         }
 
         if (
-            !LearningConfig.SUPPORTED_STRATEGIES.includes(
-                strategy
-            )
+            !LearningConfig
+                .SUPPORTED_STRATEGIES
+                .includes(strategy)
         ) {
             console.warn(
                 "Legacy outcome recording failed: unsupported strategy.",
@@ -1227,9 +2639,9 @@ class PipSightLearner {
         }
 
         if (
-            !LearningConfig.SUPPORTED_TIMEFRAMES.includes(
-                timeframe
-            )
+            !LearningConfig
+                .SUPPORTED_TIMEFRAMES
+                .includes(timeframe)
         ) {
             console.warn(
                 "Legacy outcome recording failed: unsupported timeframe.",
@@ -1254,7 +2666,7 @@ class PipSightLearner {
         if (!outcome) {
             console.warn(
                 "Legacy outcome recording failed: invalid result.",
-                outcomeData.result ||
+                outcomeData.result ??
                 outcomeData.outcome
             );
 
@@ -1262,7 +2674,7 @@ class PipSightLearner {
         }
 
         if (
-            !Number.isFinite(entry) ||
+            entry === null ||
             entry <= 0
         ) {
             console.warn(
@@ -1282,16 +2694,91 @@ class PipSightLearner {
                 takeProfit
             });
 
-        let pendingSignal =
-            this.findPendingLegacySignal({
-                pair,
-                strategy,
-                timeframe,
-                direction,
-                entry
-            });
+        const identityQuery = {
+            pair,
+            strategy,
+            timeframe,
+            direction,
+            entry,
+            openedAt,
+            historyRecordId:
+                outcomeData.historyRecordId,
+            sourceTradeKey:
+                outcomeData.sourceTradeKey ??
+                outcomeData.tradeKey,
+            fingerprint:
+                outcomeData.fingerprint
+        };
 
-        if (!pendingSignal) {
+        let signal =
+            this.findExistingLegacySignal(
+                identityQuery
+            );
+
+        if (
+            signal &&
+            signal.outcome !== null
+        ) {
+            if (
+                this.isEquivalentResolution(
+                    signal,
+                    {
+                        outcome,
+                        profitPoints,
+                        closePrice,
+                        closedAt
+                    }
+                )
+            ) {
+                return signal.id;
+            }
+
+            const correctionAllowed =
+                outcomeData.corrected === true ||
+                outcomeData.correction === true ||
+                outcomeData.allowCorrection === true ||
+                (
+                    Number.isInteger(
+                        Number(
+                            outcomeData.revision
+                        )
+                    ) &&
+                    Number(
+                        outcomeData.revision
+                    ) >
+                    (
+                        Number.isInteger(
+                            signal.learningRevision
+                        )
+                            ? signal.learningRevision
+                            : 1
+                    )
+                );
+
+            if (!correctionAllowed) {
+                console.warn(
+                    "Legacy outcome recording rejected: immutable trade identity is already resolved with different mutable fields. Mark the source as a correction."
+                );
+
+                return false;
+            }
+
+            return this.correctSignalOutcome(
+                signal.id,
+                {
+                    outcome,
+                    profitPoints,
+                    closePrice,
+                    closedAt,
+                    correctionReason:
+                        outcomeData
+                            .correctionReason ??
+                        outcomeData.reason
+                }
+            );
+        }
+
+        if (!signal) {
             const signalPayload = {
                 pair,
                 strategy,
@@ -1307,13 +2794,79 @@ class PipSightLearner {
                         : [],
 
                 timestamp:
-                    outcomeData.openedAt ||
-                    outcomeData.timestamp ||
-                    new Date().toISOString()
+                    openedAt ||
+                    new Date().toISOString(),
+
+                openedAt:
+                    openedAt ||
+                    undefined,
+
+                engine:
+                    toTrimmedStringOrNull(
+                        outcomeData.engine
+                    ) ||
+                    strategy,
+
+                source:
+                    toTrimmedStringOrNull(
+                        outcomeData.source
+                    ) ||
+                    "legacy-outcome-adapter",
+
+                historyRecordId:
+                    toTrimmedStringOrNull(
+                        outcomeData
+                            .historyRecordId
+                    ),
+
+                sourceTradeKey:
+                    toTrimmedStringOrNull(
+                        outcomeData
+                            .sourceTradeKey ??
+                        outcomeData.tradeKey
+                    ),
+
+                fingerprint:
+                    toTrimmedStringOrNull(
+                        outcomeData.fingerprint
+                    ),
+
+                session:
+                    toTrimmedStringOrNull(
+                        outcomeData.session ??
+                        outcomeData
+                            .marketSession
+                    ),
+
+                pattern:
+                    toTrimmedStringOrNull(
+                        outcomeData.pattern ??
+                        outcomeData
+                            .patternName
+                    ),
+
+                marketRegime:
+                    toTrimmedStringOrNull(
+                        outcomeData
+                            .marketRegime ??
+                        outcomeData.regime ??
+                        outcomeData
+                            .marketState
+                    ),
+
+                marketState:
+                    toTrimmedStringOrNull(
+                        outcomeData.marketState
+                    ),
+
+                reason:
+                    toTrimmedStringOrNull(
+                        outcomeData.reason
+                    )
             };
 
             if (
-                Number.isFinite(stopLoss) &&
+                stopLoss !== null &&
                 stopLoss > 0
             ) {
                 signalPayload.stopLoss =
@@ -1321,26 +2874,55 @@ class PipSightLearner {
             }
 
             if (
-                Number.isFinite(takeProfit) &&
+                takeProfit !== null &&
                 takeProfit > 0
             ) {
                 signalPayload.takeProfit =
                     takeProfit;
             }
 
-            if (
-                Number.isFinite(
-                    Number(outcomeData.confidence)
-                )
-            ) {
+            const confidence =
+                toFiniteNumber(
+                    outcomeData.confidence ??
+                    outcomeData
+                        .originalConfidence
+                );
+
+            if (confidence !== null) {
                 signalPayload.confidence =
                     clamp(
-                        Number(
-                            outcomeData.confidence
-                        ),
+                        confidence,
                         0,
                         100
                     );
+            }
+
+            const aiScore =
+                toFiniteNumber(
+                    outcomeData.aiScore ??
+                    outcomeData.score
+                );
+
+            if (aiScore !== null) {
+                signalPayload.aiScore =
+                    aiScore;
+            }
+
+            const durationMinutes =
+                toFiniteNumber(
+                    outcomeData
+                        .durationMinutes ??
+                    outcomeData
+                        .tradeDurationMinutes
+                );
+
+            if (
+                durationMinutes !== null &&
+                durationMinutes >= 0
+            ) {
+                signalPayload
+                    .durationMinutes =
+                    durationMinutes;
             }
 
             const signalId =
@@ -1349,86 +2931,95 @@ class PipSightLearner {
                 );
 
             if (signalId === false) {
-                console.warn(
-                    "Legacy outcome recording failed: signal could not be created."
-               );
+                signal =
+                    this.findExistingLegacySignal(
+                        identityQuery
+                    );
 
-                return false;
-            }
+                if (!signal) {
+                    console.warn(
+                        "Legacy outcome recording failed: signal could not be created."
+                    );
 
-            pendingSignal =
-                this.findPendingLegacySignal({
-                    pair,
-                    strategy,
-                    timeframe,
-                    direction,
-                    entry
-                });
-
-            if (!pendingSignal) {
-                console.warn(
-                    "Legacy outcome recording failed: pending signal not found."
-                );
-
-                return false;
+                    return false;
+                }
+            } else {
+                signal =
+                    this.getSignalById(
+                        signalId
+                    );
             }
         }
 
-        if (!pendingSignal) {
+        if (
+            !signal ||
+            signal.outcome !== null
+        ) {
             return false;
         }
 
+        const resolvedClosePrice =
+            closePrice !== null &&
+            closePrice > 0
+                ? closePrice
+                : outcome === "WIN" &&
+                  takeProfit !== null &&
+                  takeProfit > 0
+                    ? takeProfit
+                    : outcome === "LOSS" &&
+                      stopLoss !== null &&
+                      stopLoss > 0
+                        ? stopLoss
+                        : entry;
+
         const resolved =
             this.resolveSignal(
-                pendingSignal.id,
+                signal.id,
                 outcome,
-                profitPoints
+                profitPoints,
+                {
+                    ...outcomeData,
+                    openedAt:
+                        openedAt ||
+                        signal.openedAt ||
+                        signal.timestamp,
+                    closedAt:
+                        closedAt ||
+                        new Date().toISOString(),
+                    closePrice:
+                        resolvedClosePrice,
+                    engine:
+                        outcomeData.engine ||
+                        strategy
+                }
             );
 
         if (!resolved) {
             return false;
         }
 
-        pendingSignal.openedAt =
-            outcomeData.openedAt ||
-            pendingSignal.timestamp ||
-            null;
+        const legacyConfidence =
+            toFiniteNumber(
+                outcomeData.confidence
+            );
 
-        pendingSignal.closedAt =
-            outcomeData.closedAt ||
-            pendingSignal.resolvedAt ||
-            null;
-
-        pendingSignal.closePrice =
-            Number.isFinite(closePrice) &&
-            closePrice > 0
-                ? closePrice
-                : outcome === "WIN" &&
-                  Number.isFinite(takeProfit) &&
-                  takeProfit > 0
-                    ? takeProfit
-                    : outcome === "LOSS" &&
-                      Number.isFinite(stopLoss) &&
-                      stopLoss > 0
-                        ? stopLoss
-                        : entry;
-
-        pendingSignal.legacyConfidence =
-            Number.isFinite(
-                Number(outcomeData.confidence)
-            )
+        signal.legacyConfidence =
+            legacyConfidence !== null
                 ? clamp(
-                    Number(
-                        outcomeData.confidence
-                    ),
+                    legacyConfidence,
                     0,
                     100
                 )
                 : null;
 
+        this
+            .enrichSignalForAutonomousLearning(
+                signal
+            );
+
         MemoryManager.updateTimestamp(this);
 
-        return pendingSignal.id;
+        return signal.id;
     }
 
     /* -----------------------------------------------------------------
@@ -1721,6 +3312,167 @@ class PipSightLearner {
         };
     }
 
+    buildAutonomousStats(
+        signals = []
+    ) {
+        const resolved =
+            signals.filter(
+                signal =>
+                    isPlainObject(signal) &&
+                    LearningConfig
+                        .SUPPORTED_RESULTS
+                        .includes(
+                            signal.outcome
+                        )
+            );
+
+        const eligible =
+            resolved.filter(
+                signal =>
+                    isFiniteNumber(
+                        signal.realizedR
+                    )
+            );
+
+        const decisiveEligible =
+            eligible.filter(
+                signal =>
+                    signal.outcome === "WIN" ||
+                    signal.outcome === "LOSS"
+            );
+
+        const values =
+            eligible.map(
+                signal =>
+                    signal.realizedR
+            );
+
+        const grossProfitR =
+            round(
+                values
+                    .filter(
+                        value =>
+                            value > 0
+                    )
+                    .reduce(
+                        (
+                            sum,
+                            value
+                        ) =>
+                            sum + value,
+                        0
+                    ),
+                6
+            );
+
+        const grossLossR =
+            round(
+                Math.abs(
+                    values
+                        .filter(
+                            value =>
+                                value < 0
+                        )
+                        .reduce(
+                            (
+                                sum,
+                                value
+                            ) =>
+                                sum + value,
+                            0
+                        )
+                ),
+                6
+            );
+
+        return {
+            schemaVersion:
+                LearningConfig
+                    .AUTONOMOUS_SCHEMA_VERSION,
+
+            version:
+                LearningConfig
+                    .AUTONOMOUS_VERSION,
+
+            resolvedSignals:
+                resolved.length,
+
+            riskNormalizedSignals:
+                eligible.length,
+
+            excludedFromRiskNormalization:
+                resolved.length -
+                eligible.length,
+
+            decisiveRiskNormalizedSignals:
+                decisiveEligible.length,
+
+            totalRealizedR:
+                round(
+                    values.reduce(
+                        (
+                            sum,
+                            value
+                        ) =>
+                            sum + value,
+                        0
+                    ),
+                    6
+                ),
+
+            averageRealizedR:
+                values.length > 0
+                    ? round(
+                        values.reduce(
+                            (
+                                sum,
+                                value
+                            ) =>
+                                sum + value,
+                            0
+                        ) /
+                        values.length,
+                        6
+                    )
+                    : 0,
+
+            grossProfitR,
+
+            grossLossR,
+
+            profitFactorR:
+                grossLossR > 0
+                    ? round(
+                        grossProfitR /
+                            grossLossR,
+                        6
+                    )
+                    : grossProfitR > 0
+                        ? "Infinity"
+                        : null,
+
+            maximumDrawdownR:
+                buildMaximumDrawdownR(
+                    values
+                ),
+
+            correctedSignals:
+                resolved.filter(
+                    signal =>
+                        Number.isInteger(
+                            signal
+                                .learningRevision
+                        ) &&
+                        signal
+                            .learningRevision >
+                            1
+                ).length,
+
+            advisoryOnly: true,
+            liveAuthorityPermitted: false
+        };
+    }
+
     updateStats() {
         const allSignals =
             this.data.signals;
@@ -1947,6 +3699,23 @@ class PipSightLearner {
             }
         }
 
+        for (
+            const signal of allSignals
+        ) {
+            this
+                .enrichSignalForAutonomousLearning(
+                    signal,
+                    {
+                        repair: true
+                    }
+                );
+        }
+
+        stats.autonomous =
+            this.buildAutonomousStats(
+                allSignals
+            );
+
         stats.updatedAt =
             new Date().toISOString();
 
@@ -2014,24 +3783,22 @@ class PipSightLearner {
                 )
             );
 
-        const decisiveOutcomes =
-            sortSignalsChronologically(
-                outcomes.filter(
-                    signal =>
-                        signal.outcome === "WIN" ||
-                        signal.outcome === "LOSS"
-                )
-            );
-
-        /*
-         * BREAKEVEN records are valid resolved outcomes, but they do not prove
-         * a WIN/LOSS edge. Require the configured sample size from decisive
-         * outcomes before adaptive confidence can move away from the default.
-         */
         if (
-            decisiveOutcomes.length <
+            outcomes.length <
             LearningConfig.MIN_SIGNALS_FOR_LEARNING
         ) {
+            return LearningConfig
+                .DEFAULT_CONFIDENCE;
+        }
+
+        const decisiveOutcomes =
+            outcomes.filter(
+                signal =>
+                    signal.outcome === "WIN" ||
+                    signal.outcome === "LOSS"
+            );
+
+        if (decisiveOutcomes.length === 0) {
             return LearningConfig
                 .DEFAULT_CONFIDENCE;
         }
@@ -2157,8 +3924,8 @@ class PipSightLearner {
         }
 
         const recentSignals =
-            sortSignalsChronologically(
-                this.data.signals.filter(
+            this.data.signals
+                .filter(
                     existing =>
                         (
                             existing.outcome ===
@@ -2171,10 +3938,10 @@ class PipSightLearner {
                         existing.pair ===
                             signal.pair
                 )
-            ).slice(
-                -LearningConfig
-                    .PERFORMANCE_WINDOW
-            );
+                .slice(
+                    -LearningConfig
+                        .PERFORMANCE_WINDOW
+                );
 
         if (recentSignals.length >= 10) {
             const recentWins =
@@ -2217,15 +3984,7 @@ class PipSightLearner {
                 signal
             );
 
-        const decisiveCount =
-            MemoryManager.getDecisiveSignals(this).length;
-
-        const enoughDataToFilter =
-            decisiveCount >=
-            LearningConfig.MIN_SIGNALS_FOR_CONFIDENCE;
-
         signal.status =
-            !enoughDataToFilter ||
             signal.confidence >=
             LearningConfig
                 .ACTIONABLE_CONFIDENCE_THRESHOLD
@@ -2236,13 +3995,13 @@ class PipSightLearner {
     }
 
     refreshPendingConfidence() {
-        const decisiveCount =
+        const resolvedCount =
             MemoryManager
-                .getDecisiveSignals(this)
+                .getResolvedSignals(this)
                 .length;
 
         const enoughDataToFilter =
-            decisiveCount >=
+            resolvedCount >=
             LearningConfig.MIN_SIGNALS_FOR_CONFIDENCE;
 
         for (
@@ -2299,14 +4058,10 @@ class PipSightLearner {
             const entries = Object.entries(
                 source || {}
             ).filter(([, value]) => {
-                const decisiveSamples =
-                    Number(value?.wins || 0) +
-                    Number(value?.losses || 0);
-
                 return (
                     value &&
                     isFiniteNumber(value.winRate) &&
-                    decisiveSamples >=
+                    Number(value.resolved || 0) >=
                         minimumResolved
                 );
             });
@@ -2428,12 +4183,10 @@ class PipSightLearner {
 
     getPerformanceTrend() {
         const decisiveSignals =
-            sortSignalsChronologically(
-                this.data.signals.filter(
-                    signal =>
-                        signal.outcome === "WIN" ||
-                        signal.outcome === "LOSS"
-                )
+            this.data.signals.filter(
+                signal =>
+                    signal.outcome === "WIN" ||
+                    signal.outcome === "LOSS"
             );
 
         const windowSize =
@@ -2511,14 +4264,10 @@ class PipSightLearner {
             const [strategy, values] of
             Object.entries(strategies)
         ) {
-            const decisiveSamples =
-                Number(values?.wins || 0) +
-                Number(values?.losses || 0);
-
             if (
                 !values ||
                 !isFiniteNumber(values.winRate) ||
-                decisiveSamples <
+                Number(values.resolved || 0) <
                     LearningConfig.MIN_SIGNALS_FOR_LEARNING
             ) {
                 continue;
@@ -2550,14 +4299,10 @@ class PipSightLearner {
             const [indicator, values] of
             Object.entries(indicators)
         ) {
-            const decisiveSamples =
-                Number(values?.wins || 0) +
-                Number(values?.losses || 0);
-
             if (
                 !values ||
                 !isFiniteNumber(values.winRate) ||
-                decisiveSamples <
+                Number(values.resolved || 0) <
                     LearningConfig.MIN_SIGNALS_FOR_LEARNING
             ) {
                 continue;
@@ -2776,7 +4521,11 @@ class PipSightLearner {
 
                 profitFactor:
                     this.data.stats
-                        .profitFactor ?? null
+                        .profitFactor ?? null,
+
+                autonomous:
+                    this.data.stats
+                        .autonomous || null
             },
 
             updatedAt:
@@ -2787,11 +4536,72 @@ class PipSightLearner {
                     LearningConfig.ENGINE_NAME,
 
                 version:
-                    LearningConfig.VERSION
+                    LearningConfig.VERSION,
+
+                autonomousLearning: {
+                    schemaVersion:
+                        LearningConfig
+                            .AUTONOMOUS_SCHEMA_VERSION,
+
+                    version:
+                        LearningConfig
+                            .AUTONOMOUS_VERSION,
+
+                    advisoryOnly: true,
+                    liveAuthorityPermitted: false
+                }
             }
         };
 
         return this.confidence;
+    }
+
+    getAutonomousLearningData() {
+        if (
+            !this.data.stats ||
+            !isPlainObject(
+                this.data.stats
+            )
+        ) {
+            this.updateStats();
+        }
+
+        return {
+            schemaVersion:
+                LearningConfig
+                    .AUTONOMOUS_SCHEMA_VERSION,
+
+            version:
+                LearningConfig
+                    .AUTONOMOUS_VERSION,
+
+            advisoryOnly: true,
+            liveAuthorityPermitted: false,
+
+            stats:
+                this.data.stats
+                    .autonomous || null,
+
+            signals:
+                this.data.signals.map(
+                    signal => ({
+                        id:
+                            signal.id,
+                        learningIdentity:
+                            signal
+                                .learningIdentity ||
+                            null,
+                        learningRevision:
+                            signal
+                                .learningRevision ||
+                            1,
+                        autonomousLearning:
+                            signal
+                                .autonomousLearning ||
+                            null
+                    })
+                )
+        };
     }
 
     /* -----------------------------------------------------------------
@@ -2816,6 +4626,9 @@ class PipSightLearner {
             confidence:
                 this.getConfidenceData(),
 
+            autonomousLearning:
+                this.getAutonomousLearningData(),
+
             exportedAt:
                 new Date().toISOString(),
 
@@ -2824,7 +4637,20 @@ class PipSightLearner {
                     LearningConfig.ENGINE_NAME,
 
                 version:
-                    LearningConfig.VERSION
+                    LearningConfig.VERSION,
+
+                autonomousLearning: {
+                    schemaVersion:
+                        LearningConfig
+                            .AUTONOMOUS_SCHEMA_VERSION,
+
+                    version:
+                        LearningConfig
+                            .AUTONOMOUS_VERSION,
+
+                    advisoryOnly: true,
+                    liveAuthorityPermitted: false
+                }
             }
         };
     }
@@ -2896,7 +4722,10 @@ if (
         PipSightLearner,
         LearningConfig,
         SignalValidator,
-        MemoryManager
+        MemoryManager,
+        AUTONOMOUS_LEARNING_VERSION:
+            LearningConfig
+                .AUTONOMOUS_VERSION
     };
 }
 /* =====================================================================

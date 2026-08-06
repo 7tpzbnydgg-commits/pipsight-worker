@@ -48,6 +48,7 @@ const FETCH_TIMEOUT_MS = 15000;
 const MAX_SIGNAL_LOG = 5000;
 const MIN_DAILY_ROWS = 10;
 const MIN_WEEKLY_ROWS = 8;
+const NEWS_MAX_AGE_HOURS = 72;
 
 const PAIRS = Object.freeze([
   {
@@ -119,22 +120,31 @@ function safeIsoDate(value) {
     return null;
   }
 
-  const normalized = value.slice(0, 10);
+  const normalized =
+    value.trim().slice(0, 10);
 
-  if (
-    !/^\d{4}-\d{2}-\d{2}$/.test(
-      normalized
-    )
-  ) {
+  const match = normalized.match(
+    /^(\d{4})-(\d{2})-(\d{2})$/
+  );
+
+  if (!match) {
     return null;
   }
 
-  const parsed = new Date(
-    normalized + "T00:00:00Z"
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const timestamp = Date.UTC(
+    year,
+    month - 1,
+    day
   );
+  const parsed = new Date(timestamp);
 
   if (
-    Number.isNaN(parsed.getTime())
+    parsed.getUTCFullYear() !== year ||
+    parsed.getUTCMonth() !== month - 1 ||
+    parsed.getUTCDate() !== day
   ) {
     return null;
   }
@@ -142,18 +152,37 @@ function safeIsoDate(value) {
   return normalized;
 }
 
+function utcDateString(value = new Date()) {
+  const date =
+    value instanceof Date
+      ? value
+      : new Date(value);
+
+  if (!Number.isFinite(date.getTime())) {
+    throw new TypeError(
+      "A valid reference date is required"
+    );
+  }
+
+  return date.toISOString().slice(0, 10);
+}
+
 function daysBetween(dateA, dateB) {
-  const a = new Date(
-    dateA + "T00:00:00Z"
+  const normalizedA = safeIsoDate(dateA);
+  const normalizedB = safeIsoDate(dateB);
+
+  if (!normalizedA || !normalizedB) {
+    return null;
+  }
+
+  const a = Date.parse(
+    normalizedA + "T00:00:00.000Z"
+  );
+  const b = Date.parse(
+    normalizedB + "T00:00:00.000Z"
   );
 
-  const b = new Date(
-    dateB + "T00:00:00Z"
-  );
-
-  return Math.floor(
-    Math.abs(b - a) / 86400000
-  );
+  return Math.floor((b - a) / 86400000);
 }
 
 /* =====================================================================
@@ -190,49 +219,160 @@ function readJsonFile(
   }
 }
 
-function atomicWriteJson(
-  filePath,
-  value
-) {
+function serializeJson(value) {
+  return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+function createTemporaryPath(filePath) {
+  return (
+    `${filePath}.${process.pid}.${Date.now()}.` +
+    `${Math.random().toString(36).slice(2, 12)}.tmp`
+  );
+}
+
+function stageJsonWrite(filePath, value) {
   fs.mkdirSync(
     path.dirname(filePath),
     { recursive: true }
   );
 
   const tempPath =
-    `${filePath}.${process.pid}.${Date.now()}.tmp`;
-
-  const serialized =
-    JSON.stringify(value, null, 2);
+    createTemporaryPath(filePath);
 
   fs.writeFileSync(
     tempPath,
-    serialized,
-    "utf8"
+    serializeJson(value),
+    {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600
+    }
   );
 
+  return tempPath;
+}
+
+function replaceFileFromStage(
+  filePath,
+  tempPath
+) {
+  fs.renameSync(tempPath, filePath);
+}
+
+function atomicWriteJson(filePath, value) {
+  const tempPath =
+    stageJsonWrite(filePath, value);
+
   try {
-    fs.renameSync(
-      tempPath,
-      filePath
+    replaceFileFromStage(
+      filePath,
+      tempPath
     );
   } catch (error) {
     try {
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-      }
-
-      fs.renameSync(
-        tempPath,
-        filePath
-      );
-    } catch (renameError) {
       if (fs.existsSync(tempPath)) {
         fs.unlinkSync(tempPath);
       }
-
-      throw renameError;
+    } catch {
+      // Preserve the original filesystem failure.
     }
+
+    throw error;
+  }
+}
+
+function atomicWriteJsonTransaction(entries) {
+  const staged = [];
+  const backups = [];
+  const committed = [];
+
+  try {
+    for (const entry of entries) {
+      staged.push({
+        filePath: entry.filePath,
+        tempPath:
+          stageJsonWrite(
+            entry.filePath,
+            entry.value
+          )
+      });
+    }
+
+    for (const item of staged) {
+      let backupPath = null;
+
+      if (fs.existsSync(item.filePath)) {
+        backupPath =
+          `${item.filePath}.backup-${process.pid}-` +
+          `${Date.now()}-${Math.random()
+            .toString(36)
+            .slice(2, 10)}`;
+
+        fs.renameSync(
+          item.filePath,
+          backupPath
+        );
+      }
+
+      backups.push({
+        filePath: item.filePath,
+        backupPath
+      });
+
+      fs.renameSync(
+        item.tempPath,
+        item.filePath
+      );
+
+      committed.push(item.filePath);
+    }
+
+    for (const backup of backups) {
+      if (
+        backup.backupPath &&
+        fs.existsSync(backup.backupPath)
+      ) {
+        fs.unlinkSync(backup.backupPath);
+      }
+    }
+  } catch (error) {
+    for (const item of staged) {
+      try {
+        if (fs.existsSync(item.tempPath)) {
+          fs.unlinkSync(item.tempPath);
+        }
+      } catch {
+        // Preserve the transaction error.
+      }
+    }
+
+    for (const filePath of committed.reverse()) {
+      try {
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
+      } catch {
+        // Continue rollback.
+      }
+    }
+
+    for (const backup of backups.reverse()) {
+      try {
+        if (
+          backup.backupPath &&
+          fs.existsSync(backup.backupPath)
+        ) {
+          fs.renameSync(
+            backup.backupPath,
+            backup.filePath
+          );
+        }
+      } catch {
+        // Preserve the original transaction error.
+      }
+    }
+
+    throw error;
   }
 }
 
@@ -307,7 +447,13 @@ function normalizeCandle(raw) {
   };
 }
 
-function normalizeRows(input) {
+function normalizeRows(
+  input,
+  {
+    referenceDate = utcDateString(),
+    excludeOpenOrFuture = true
+  } = {}
+) {
   if (!Array.isArray(input)) {
     return {
       rows: [],
@@ -326,6 +472,14 @@ function normalizeRows(input) {
       normalizeCandle(raw);
 
     if (!candle) {
+      rejected++;
+      continue;
+    }
+
+    if (
+      excludeOpenOrFuture &&
+      candle.date >= referenceDate
+    ) {
       rejected++;
       continue;
     }
@@ -360,7 +514,8 @@ function normalizeRows(input) {
 }
 
 function candleDataQuality(
-  normalized
+  normalized,
+  referenceDate = utcDateString()
 ) {
   const rows = normalized.rows;
 
@@ -379,9 +534,7 @@ function candleDataQuality(
   if (lastDate) {
     ageDays = daysBetween(
       lastDate,
-      new Date()
-        .toISOString()
-        .slice(0, 10)
+      referenceDate
     );
   }
 
@@ -401,7 +554,8 @@ function candleDataQuality(
       normalized.hasOHLC,
 
     stale:
-      ageDays !== null &&
+      ageDays === null ||
+      ageDays < 0 ||
       ageDays > 7
   };
 }
@@ -1883,7 +2037,13 @@ function isoWeekKey(dateString) {
   );
 }
 
-function resampleWeekly(rows) {
+function resampleWeekly(
+  rows,
+  {
+    referenceDate = utcDateString(),
+    includeIncomplete = false
+  } = {}
+) {
   const weeks =
     new Map();
 
@@ -1935,23 +2095,35 @@ function resampleWeekly(rows) {
       row.hasOHLC;
   }
 
+  const currentWeekKey =
+    isoWeekKey(referenceDate);
+
   return Array.from(
-    weeks.values()
-  ).map(week => ({
-    date: week.date,
-    open: week.open,
-    high: week.high,
-    low: week.low,
-    close: week.close,
-    hasOHLC: week.hasOHLC,
-    firstDate: week.firstDate,
-    lastDate: week.lastDate
-  }));
+    weeks.entries()
+  )
+    .filter(([key]) =>
+      includeIncomplete ||
+      key !== currentWeekKey
+    )
+    .map(([, week]) => ({
+      date: week.date,
+      open: week.open,
+      high: week.high,
+      low: week.low,
+      close: week.close,
+      hasOHLC: week.hasOHLC,
+      firstDate: week.firstDate,
+      lastDate: week.lastDate
+    }));
 }
 
-function rowsForMode(rows, mode) {
+function rowsForMode(
+  rows,
+  mode,
+  options = {}
+) {
   return mode === "weekly"
-    ? resampleWeekly(rows)
+    ? resampleWeekly(rows, options)
     : rows;
 }
 
@@ -1959,7 +2131,9 @@ function rowsForMode(rows, mode) {
    News Feed
    ===================================================================== */
 
-function readNewsFeed() {
+function readNewsFeed(
+  referenceTime = new Date()
+) {
   const raw =
     readJsonFile(
       NEWS_FEED_PATH,
@@ -2019,6 +2193,29 @@ function readNewsFeed() {
                 ? item.timestamp
                 : null
         };
+      })
+      .filter(item => {
+        if (!item.publishedAt) {
+          return false;
+        }
+
+        const publishedMs =
+          Date.parse(item.publishedAt);
+        const referenceMs =
+          referenceTime.getTime();
+
+        if (
+          !Number.isFinite(publishedMs) ||
+          !Number.isFinite(referenceMs) ||
+          publishedMs > referenceMs
+        ) {
+          return false;
+        }
+
+        return (
+          referenceMs - publishedMs <=
+          NEWS_MAX_AGE_HOURS * 3600000
+        );
       });
 
   const sentimentByPair = {};
@@ -3034,39 +3231,75 @@ function analyze(
    Source Selection
    ===================================================================== */
 
-async function loadPairRows(pair) {
+async function loadPairRows(
+  pair,
+  referenceDate = utcDateString()
+) {
   const dailyOHLC =
     readDailyOHLC(pair);
+  const dailyQuality =
+    candleDataQuality(
+      dailyOHLC,
+      referenceDate
+    );
 
   if (
     dailyOHLC.rows.length >=
-    MIN_DAILY_ROWS
+      MIN_DAILY_ROWS &&
+    !dailyQuality.stale
   ) {
     return {
       ...dailyOHLC,
-      source:
-        "daily-ohlc.json"
+      source: "daily-ohlc.json"
     };
   }
 
   if (pair.type === "metal") {
     const goldHistory =
       readGoldHistory();
+    const goldQuality =
+      candleDataQuality(
+        goldHistory,
+        referenceDate
+      );
+
+    if (
+      goldHistory.rows.length <
+        MIN_DAILY_ROWS ||
+      goldQuality.stale
+    ) {
+      throw new Error(
+        `No fresh daily history is available for ${pair.label}`
+      );
+    }
 
     return {
       ...goldHistory,
-      source:
-        "xau-usd-history.json"
+      source: "xau-usd-history.json"
     };
   }
 
   const forexRows =
     await fetchForexRows(pair);
+  const forexQuality =
+    candleDataQuality(
+      forexRows,
+      referenceDate
+    );
+
+  if (
+    forexRows.rows.length <
+      MIN_DAILY_ROWS ||
+    forexQuality.stale
+  ) {
+    throw new Error(
+      `No fresh daily history is available for ${pair.label}`
+    );
+  }
 
   return {
     ...forexRows,
-    source:
-      "frankfurter.dev"
+    source: "frankfurter.dev"
   };
 }
 
@@ -3156,19 +3389,15 @@ function logSignalIfNew(
     );
 
   const existingOpenSignal =
-    [...log]
-      .reverse()
-      .find(entry =>
-        entry.pair === pairLabel &&
-        entry.mode === mode &&
-        !entry.status
-      );
+    log.find(entry =>
+      entry.pair === pairLabel &&
+      entry.mode === mode &&
+      !entry.status &&
+      entry.signal ===
+        analysis.tradePlan.direction
+    );
 
-  if (
-    existingOpenSignal &&
-    existingOpenSignal.signal ===
-      analysis.tradePlan.direction
-  ) {
+  if (existingOpenSignal) {
     return log;
   }
 
@@ -3609,6 +3838,8 @@ function buildSnapshotEntry(
 async function main() {
   const startedAt =
     new Date();
+  const referenceDate =
+    utcDateString(startedAt);
 
   fs.mkdirSync(
     DATA_DIR,
@@ -3616,7 +3847,7 @@ async function main() {
   );
 
   const newsFeed =
-    readNewsFeed();
+    readNewsFeed(startedAt);
 
   let log =
     normalizeSignalLog(
@@ -3634,7 +3865,10 @@ async function main() {
 
     try {
       loaded =
-        await loadPairRows(pair);
+        await loadPairRows(
+          pair,
+          referenceDate
+        );
     } catch (error) {
       const message =
         `Data load failed for ${pair.label}: ` +
@@ -3660,7 +3894,10 @@ async function main() {
       loaded.rows;
 
     const quality =
-      candleDataQuality(loaded);
+      candleDataQuality(
+        loaded,
+        referenceDate
+      );
 
     if (
       rawRows.length <
@@ -3690,7 +3927,8 @@ async function main() {
       const rows =
         rowsForMode(
           rawRows,
-          mode
+          mode,
+          { referenceDate }
         );
 
       if (
@@ -3709,7 +3947,8 @@ async function main() {
       const htfRows =
         mode === "daily"
           ? resampleWeekly(
-              rawRows
+              rawRows,
+              { referenceDate }
             )
           : null;
 
@@ -3840,15 +4079,29 @@ async function main() {
       snapshot
   };
 
-  atomicWriteJson(
-    SIGNALS_OUT_PATH,
-    output
-  );
+  const requiredSnapshotCount =
+    PAIRS.length * MODES.length;
 
-  atomicWriteJson(
-    LOG_OUT_PATH,
-    log
-  );
+  if (
+    snapshot.length !==
+      requiredSnapshotCount
+  ) {
+    throw new Error(
+      `Signal snapshot is incomplete: expected ${requiredSnapshotCount}, ` +
+      `received ${snapshot.length}. Existing outputs were preserved.`
+    );
+  }
+
+  atomicWriteJsonTransaction([
+    {
+      filePath: SIGNALS_OUT_PATH,
+      value: output
+    },
+    {
+      filePath: LOG_OUT_PATH,
+      value: log
+    }
+  ]);
 
   console.log(
     `PipSight signal engine ${ENGINE_VERSION} completed.`
@@ -3871,37 +4124,69 @@ async function main() {
    Process-Level Error Handling
    ===================================================================== */
 
-process.on(
-  "unhandledRejection",
-  error => {
+function installProcessErrorHandlers() {
+  process.on(
+    "unhandledRejection",
+    error => {
+      console.error(
+        "Unhandled promise rejection:",
+        error
+      );
+
+      process.exitCode = 1;
+    }
+  );
+
+  process.on(
+    "uncaughtException",
+    error => {
+      console.error(
+        "Uncaught exception:",
+        error
+      );
+
+      process.exit(1);
+    }
+  );
+}
+
+if (require.main === module) {
+  installProcessErrorHandlers();
+
+  main().catch(error => {
     console.error(
-      "Unhandled promise rejection:",
+      "PipSight signal engine failed:",
       error
     );
 
     process.exitCode = 1;
-  }
-);
+  });
+}
 
-process.on(
-  "uncaughtException",
-  error => {
-    console.error(
-      "Uncaught exception:",
-      error
-    );
-
-    process.exit(1);
-  }
-);
-
-main().catch(error => {
-  console.error(
-    "PipSight signal engine failed:",
-    error
-  );
-
-  process.exitCode = 1;
+module.exports = Object.freeze({
+  ENGINE_VERSION,
+  STRATEGY_VERSION,
+  PAIRS,
+  MODES,
+  safeIsoDate,
+  utcDateString,
+  daysBetween,
+  normalizeCandle,
+  normalizeRows,
+  candleDataQuality,
+  isoWeekKey,
+  resampleWeekly,
+  rowsForMode,
+  readNewsFeed,
+  analyze,
+  loadPairRows,
+  normalizeSignalLog,
+  createSignalIdentity,
+  logSignalIfNew,
+  resolveSingleOutcome,
+  resolveLogOutcomes,
+  buildSnapshotEntry,
+  atomicWriteJson,
+  atomicWriteJsonTransaction,
+  main
 });
-
-

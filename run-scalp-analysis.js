@@ -18,17 +18,14 @@
    - Only closed candles are analyzed.
    - OHLC features remain enabled when valid OHLC exists.
    - No additional market-data API request is made.
-   - Existing AI Memory confidence ownership remains unchanged.
-   - Learning Enrichment is consumed as advisory context only.
-   - Learning Enrichment never changes signal direction, eligibility,
-     confidence, ATR, entry, stop loss or take-profit calculations.
    ===================================================================== */
 
 const fs = require("fs");
 const path = require("path");
 
-const ENGINE_VERSION = "1.0.0";
-const STRATEGY_VERSION = "scalp-lockstep-1.0";
+const ENGINE_VERSION = "1.0.1";
+const STRATEGY_VERSION = "scalp-professional-confluence-2.0.0";
+const PROFESSIONAL_PIPELINE_VERSION = "2.0.0";
 
 const DATA_DIR = path.join(
   __dirname,
@@ -60,24 +57,7 @@ const LOG_OUT_PATH = path.join(
   "scalp-signal-log.json"
 );
 
-const AI_MEMORY_PATH = path.join(
-  DATA_DIR,
-  "ai-memory.json"
-);
-
-/*
- * Phase 4 advisory source.
- *
- * This file is read-only. Missing, malformed or incompatible enrichment
- * must never block Scalp Analysis or change its existing behavior.
- */
-const LEARNING_ENRICHMENT_PATH = path.join(
-  DATA_DIR,
-  "learning-enrichment.json"
-);
-
 const MAX_SIGNAL_LOG = 5000;
-
 /*
  * Duplicate suppression:
  *
@@ -93,36 +73,6 @@ const MIN_M5_ROWS = 40;
 const MIN_M15_ROWS = 35;
 const MIN_M30_ROWS = 35;
 const MIN_H1_ROWS = 20;
-
-/*
- * AI Memory confidence safety:
- *
- * - Memory remains advisory.
- * - Direction, eligibility and trade-plan logic are never changed.
- * - Small samples are ignored.
- * - Final adjustment is strictly bounded.
- */
-const AI_MEMORY_MIN_TRADES = 20;
-const AI_MEMORY_MAX_ADJUSTMENT = 6;
-
-/*
- * Phase 4 Learning Enrichment compatibility lock.
- *
- * These values validate the optional advisory source only.
- * They do not modify the existing AI Memory adjustment calculation.
- */
-const LEARNING_ENRICHMENT_SCHEMA_VERSION = 1;
-
-const LEARNING_ENRICHMENT_ENGINE_NAME =
-  "PipSight Pro Learning Enrichment Engine";
-
-const LEARNING_ENRICHMENT_ENGINE_VERSION =
-  "1.0.0";
-
-const LEARNING_ENRICHMENT_MODE =
-  "advisory";
-
-const LEARNING_ENRICHMENT_MIN_TRADES = 20;
 
 const PAIRS = Object.freeze([
   {
@@ -146,6 +96,87 @@ const MODES = Object.freeze([
   "M15",
   "M30"
 ]);
+
+/*
+ * Central ATR-based scalp risk configuration.
+ *
+ * Pair keys intentionally match the canonical PAIRS keys above. Pair labels
+ * such as XAU/USD and GBP/JPY are normalized before lookup, so existing
+ * upstream and downstream symbol formats remain compatible.
+ */
+const ATR_RISK_CONFIG = Object.freeze({
+  XAUUSD: Object.freeze({
+    period: 14,
+    stopMultiplier: 1.0,
+    target1Multiplier: 2.0,
+    target2Multiplier: 3.0,
+    target3Multiplier: 4.0,
+    minimumRiskReward: 2.0
+  }),
+
+  GBPJPY: Object.freeze({
+    period: 14,
+    stopMultiplier: 1.0,
+    target1Multiplier: 2.0,
+    target2Multiplier: 3.0,
+    target3Multiplier: 4.0,
+    minimumRiskReward: 2.0
+  })
+});
+
+/*
+ * Professional confluence and volatility controls.
+ *
+ * These settings do not permit a single indicator to create a signal. Every
+ * indicator is evaluated independently, then BUY and SELL evidence is scored.
+ * Hard blockers remain limited to data integrity, strong HTF conflict, fresh
+ * high-impact news conflict, and invalid risk geometry.
+ */
+const PROFESSIONAL_CONFLUENCE_CONFIG = Object.freeze({
+  M5: Object.freeze({
+    minimumScore: 63,
+    minimumEdge: 11,
+    baseStopAtr: 1.25,
+    minimumRiskReward: 2.0,
+    maximumStopAtr: 2.6
+  }),
+  M15: Object.freeze({
+    minimumScore: 61,
+    minimumEdge: 11,
+    baseStopAtr: 1.45,
+    minimumRiskReward: 2.0,
+    maximumStopAtr: 2.8
+  }),
+  M30: Object.freeze({
+    minimumScore: 60,
+    minimumEdge: 12,
+    baseStopAtr: 1.65,
+    minimumRiskReward: 2.0,
+    maximumStopAtr: 3.0
+  })
+});
+
+const PAIR_ATR_MODIFIERS = Object.freeze({
+  XAUUSD: 1.08,
+  GBPJPY: 1.0
+});
+
+const INDICATOR_WEIGHTS = Object.freeze({
+  ema: 24,
+  macd: 18,
+  rsi: 18,
+  dmiAdx: 16,
+  structure: 10,
+  higherTimeframe: 10,
+  candlePattern: 4
+});
+
+const SOURCE_INTERVAL_MINUTES = 5;
+const RSI_PERIOD = 14;
+const ADX_PERIOD = 14;
+const ATR_PERCENTILE_WINDOW = 100;
+const ATR_STRUCTURE_BUFFER = 0.15;
+
 
 /* =====================================================================
    General Helpers
@@ -212,6 +243,18 @@ function normalizePairKey(value) {
     .replace(/_/g, "")
     .replace(/\s+/g, "")
     .toUpperCase();
+}
+
+function atrRiskConfigFor(pairValue) {
+  const key =
+    normalizePairKey(pairValue);
+
+  return (
+    key &&
+    ATR_RISK_CONFIG[key]
+  )
+    ? ATR_RISK_CONFIG[key]
+    : null;
 }
 
 function parseTimestamp(value) {
@@ -766,224 +809,8 @@ function extractPairRows(
 }
 
 /* =====================================================================
-   Defensive Closed-Candle Time Filtering
-   ===================================================================== */
-
-function normalizeClosedIntervalRows(
-  input,
-  intervalMinutes,
-  nowMs = Date.now()
-) {
-  const normalized =
-    normalizeRows(input);
-
-  const safeNowMs =
-    Number.isFinite(nowMs)
-      ? nowMs
-      : Date.now();
-
-  const intervalMs =
-    intervalMinutes *
-    60 *
-    1000;
-
-  let openTimeFilteredCount = 0;
-  let futureTimeFilteredCount = 0;
-
-  const rows =
-    normalized.rows.filter(row => {
-      if (
-        !Number.isFinite(
-          row?.timestamp
-        )
-      ) {
-        futureTimeFilteredCount++;
-        return false;
-      }
-
-      /*
-       * A timestamp after the current clock is future data.
-       */
-      if (
-        row.timestamp >
-        safeNowMs
-      ) {
-        futureTimeFilteredCount++;
-        return false;
-      }
-
-      /*
-       * Candle timestamps represent interval start time.
-       * The complete interval must have elapsed before analysis.
-       */
-      if (
-        row.timestamp +
-          intervalMs >
-        safeNowMs
-      ) {
-        openTimeFilteredCount++;
-        return false;
-      }
-
-      return true;
-    });
-
-  const totalTimeFilteredCount =
-    openTimeFilteredCount +
-    futureTimeFilteredCount;
-
-  return {
-    ...normalized,
-
-    rows,
-
-    /*
-     * Preserve existing telemetry semantics. This field continues to
-     * represent all candles removed for not being safely completed.
-     */
-    openCandlesRemoved:
-      normalized.openCandlesRemoved +
-      totalTimeFilteredCount,
-
-    /*
-     * Additive diagnostics for exact future-time visibility.
-     */
-    futureCandlesRemoved:
-      futureTimeFilteredCount,
-
-    timeFilteredCandlesRemoved:
-      totalTimeFilteredCount,
-
-    hasOHLC:
-      rows.length > 0 &&
-      rows.every(
-        row => row.hasOHLC
-      )
-  };
-}
-
-function normalizeClosedM5Rows(
-  input,
-  nowMs = Date.now()
-) {
-  return normalizeClosedIntervalRows(
-    input,
-    5,
-    nowMs
-  );
-}
-
-function normalizeClosedH1Rows(
-  input,
-  nowMs = Date.now()
-) {
-  return normalizeClosedIntervalRows(
-    input,
-    60,
-    nowMs
-  );
-}
-
-/* =====================================================================
    Source Readers
    ===================================================================== */
-
-function sourceValueForPair(
-  container,
-  pair
-) {
-  if (
-    !container ||
-    typeof container !== "object"
-  ) {
-    return undefined;
-  }
-
-  const expectedKey =
-    normalizePairKey(
-      pair.key
-    );
-
-  const possibleKeys = [
-    pair.key,
-    pair.label,
-    pair.label.replace("/", "-"),
-    pair.label.replace("/", "_"),
-    pair.label.replace("/", ""),
-    pair.key.toLowerCase()
-  ];
-
-  for (const key of possibleKeys) {
-    if (
-      Object.prototype.hasOwnProperty.call(
-        container,
-        key
-      )
-    ) {
-      return container[key];
-    }
-  }
-
-  for (
-    const [
-      sourceKey,
-      sourceValue
-    ] of Object.entries(container)
-  ) {
-    if (
-      normalizePairKey(sourceKey) ===
-      expectedKey
-    ) {
-      return sourceValue;
-    }
-  }
-
-  return undefined;
-}
-
-function readSourceSafety(
-  source,
-  pair
-) {
-  const metadata =
-    sourceValueForPair(
-      source?.metadata,
-      pair
-    );
-
-  const pairStale =
-    sourceValueForPair(
-      source?.stale,
-      pair
-    );
-
-  const fetchSucceeded =
-    typeof metadata?.fetchSucceeded ===
-    "boolean"
-      ? metadata.fetchSucceeded
-      : null;
-
-  const fallbackUsed =
-    metadata?.fallbackUsed === true ||
-    metadata?.source === "local-cache";
-
-  const sourceMarkedStale =
-    source?.stale === true ||
-    pairStale === true ||
-    metadata?.stale === true ||
-    metadata?.quality?.stale === true;
-
-  return {
-    fetchSucceeded,
-    fallbackUsed,
-    sourceMarkedStale,
-
-    stale:
-      sourceMarkedStale ||
-      fallbackUsed ||
-      fetchSucceeded === false
-  };
-}
 
 function readScalpRows(pair) {
   const source =
@@ -998,20 +825,8 @@ function readScalpRows(pair) {
       pair
     );
 
-  const sourceSafety =
-    readSourceSafety(
-      source,
-      pair
-    );
-
   return {
-    /*
-     * Independent defensive protection even when the collector has already
-     * removed current and future M5 candles.
-     */
-    ...normalizeClosedM5Rows(
-      extracted
-    ),
+    ...normalizeRows(extracted),
 
     source:
       "scalp-candles.json",
@@ -1022,16 +837,7 @@ function readScalpRows(pair) {
         : null,
 
     sourceStale:
-      sourceSafety.stale,
-
-    sourceMarkedStale:
-      sourceSafety.sourceMarkedStale,
-
-    sourceFallbackUsed:
-      sourceSafety.fallbackUsed,
-
-    sourceFetchSucceeded:
-      sourceSafety.fetchSucceeded
+      source?.stale === true
   };
 }
 
@@ -1048,16 +854,8 @@ function readH1Rows(pair) {
       pair
     );
 
-  const sourceSafety =
-    readSourceSafety(
-      source,
-      pair
-    );
-
   return {
-    ...normalizeClosedH1Rows(
-      extracted
-    ),
+    ...normalizeRows(extracted),
 
     source:
       "intraday-h1.json",
@@ -1068,16 +866,7 @@ function readH1Rows(pair) {
         : null,
 
     sourceStale:
-      sourceSafety.stale,
-
-    sourceMarkedStale:
-      sourceSafety.sourceMarkedStale,
-
-    sourceFallbackUsed:
-      sourceSafety.fallbackUsed,
-
-    sourceFetchSucceeded:
-      sourceSafety.fetchSucceeded
+      source?.stale === true
   };
 }
 
@@ -1090,9 +879,7 @@ function candleDataQuality(
   expectedIntervalMinutes
 ) {
   const rows =
-    Array.isArray(normalized?.rows)
-      ? normalized.rows
-      : [];
+    normalized.rows;
 
   const firstDate =
     rows.length > 0
@@ -1126,63 +913,23 @@ function candleDataQuality(
     }
   }
 
-  /*
-   * Existing four-interval freshness policy is preserved:
-   * M5 = 20 minutes
-   * H1 = 240 minutes
-   */
   const staleThresholdMinutes =
     expectedIntervalMinutes * 4;
-
-  const sourceMarkedStale =
-    normalized?.sourceMarkedStale ===
-    true;
-
-  const fallbackUsed =
-    normalized?.sourceFallbackUsed ===
-    true;
-
-  const fetchSucceeded =
-    typeof normalized?.sourceFetchSucceeded ===
-    "boolean"
-      ? normalized.sourceFetchSucceeded
-      : null;
-
-  const stale =
-    normalized?.sourceStale === true ||
-    sourceMarkedStale ||
-    fallbackUsed ||
-    fetchSucceeded === false ||
-    ageMinutes === null ||
-    ageMinutes >
-      staleThresholdMinutes;
 
   return {
     validRows:
       rows.length,
 
     rejectedRows:
-      normalized?.rejected ?? 0,
+      normalized.rejected,
 
     duplicateTimestamps:
       normalized
-        ?.duplicateTimestamps ??
-      0,
+        .duplicateTimestamps,
 
     openCandlesRemoved:
       normalized
-        ?.openCandlesRemoved ??
-      0,
-
-    futureCandlesRemoved:
-      normalized
-        ?.futureCandlesRemoved ??
-      0,
-
-    timeFilteredCandlesRemoved:
-      normalized
-        ?.timeFilteredCandlesRemoved ??
-      0,
+        .openCandlesRemoved,
 
     firstDate,
     lastDate,
@@ -1190,18 +937,16 @@ function candleDataQuality(
 
     expectedIntervalMinutes,
 
-    staleThresholdMinutes,
-
     hasOHLC:
-      normalized?.hasOHLC === true,
+      normalized.hasOHLC,
 
-    sourceMarkedStale,
-
-    fallbackUsed,
-
-    fetchSucceeded,
-
-    stale
+    stale:
+      normalized.sourceStale === true ||
+      (
+        ageMinutes !== null &&
+        ageMinutes >
+          staleThresholdMinutes
+      )
   };
 }
 
@@ -1237,25 +982,25 @@ function aggregateCandles(
 ) {
   if (
     !Array.isArray(rows) ||
-    rows.length === 0
+    rows.length === 0 ||
+    !Number.isInteger(timeframeMinutes) ||
+    timeframeMinutes < SOURCE_INTERVAL_MINUTES ||
+    timeframeMinutes % SOURCE_INTERVAL_MINUTES !== 0
   ) {
     return [];
   }
 
-  const sourceIntervalMinutes = 5;
-
-  const expectedCandleCount =
-    timeframeMinutes %
-      sourceIntervalMinutes ===
-      0
-      ? timeframeMinutes /
-        sourceIntervalMinutes
-      : 1;
+  const expectedSourceCandles =
+    timeframeMinutes /
+    SOURCE_INTERVAL_MINUTES;
 
   const sourceIntervalMs =
-    sourceIntervalMinutes *
-    60 *
-    1000;
+    SOURCE_INTERVAL_MINUTES *
+    60 * 1000;
+
+  const timeframeMs =
+    timeframeMinutes *
+    60 * 1000;
 
   const buckets =
     new Map();
@@ -1263,17 +1008,21 @@ function aggregateCandles(
   for (const row of rows) {
     if (
       !row ||
-      !row.isClosed ||
-      !Number.isFinite(
-        row.timestamp
-      )
+      row.isClosed !== true ||
+      !isFiniteNumber(row.timestamp) ||
+      ![
+        row.open,
+        row.high,
+        row.low,
+        row.close
+      ].every(isFiniteNumber)
     ) {
       continue;
     }
 
     const bucketTime =
       floorToBucket(
-        row.date,
+        row.timestamp,
         timeframeMinutes
       );
 
@@ -1286,47 +1035,29 @@ function aggregateCandles(
 
     if (!buckets.has(key)) {
       buckets.set(key, {
-        candle: {
-          date: key,
-
-          timestamp:
-            bucketTime.getTime(),
-
-          open:
-            row.open,
-
-          high:
-            row.high,
-
-          low:
-            row.low,
-
-          close:
-            row.close,
-
-          volume:
-            row.volume || 0,
-
-          hasOHLC:
-            row.hasOHLC,
-
-          isClosed: true
-        },
-
-        sourceTimestamps:
-          new Set()
+        date: key,
+        timestamp:
+          bucketTime.getTime(),
+        open: row.open,
+        high: row.high,
+        low: row.low,
+        close: row.close,
+        volume:
+          isFiniteNumber(row.volume)
+            ? row.volume
+            : 0,
+        hasOHLC:
+          row.hasOHLC === true,
+        isClosed: false,
+        sourceTimestamps: [],
+        sourceCount: 0,
+        expectedSourceCandles,
+        timeframeMinutes
       });
     }
 
-    const bucket =
-      buckets.get(key);
-
     const candle =
-      bucket.candle;
-
-    bucket.sourceTimestamps.add(
-      row.timestamp
-    );
+      buckets.get(key);
 
     candle.high =
       Math.max(
@@ -1344,46 +1075,78 @@ function aggregateCandles(
       row.close;
 
     candle.volume +=
-      row.volume || 0;
+      isFiniteNumber(row.volume)
+        ? row.volume
+        : 0;
 
     candle.hasOHLC =
       candle.hasOHLC &&
-      row.hasOHLC;
+      row.hasOHLC === true;
+
+    candle.sourceTimestamps.push(
+      row.timestamp
+    );
   }
 
   const completed = [];
 
-  for (const bucket of buckets.values()) {
-    const bucketStart =
-      bucket.candle.timestamp;
-
-    let complete = true;
-
-    for (
-      let index = 0;
-      index <
-        expectedCandleCount;
-      index++
-    ) {
-      const expectedTimestamp =
-        bucketStart +
-        index *
-          sourceIntervalMs;
-
-      if (
-        !bucket.sourceTimestamps.has(
-          expectedTimestamp
+  for (const candle of buckets.values()) {
+    const timestamps =
+      Array.from(
+        new Set(
+          candle.sourceTimestamps
         )
+      ).sort(
+        (a, b) => a - b
+      );
+
+    candle.sourceCount =
+      timestamps.length;
+
+    const expectedFirst =
+      candle.timestamp;
+
+    const expectedLast =
+      candle.timestamp +
+      timeframeMs -
+      sourceIntervalMs;
+
+    const correctBoundaries =
+      timestamps.length ===
+        expectedSourceCandles &&
+      timestamps[0] ===
+        expectedFirst &&
+      timestamps[
+        timestamps.length - 1
+      ] === expectedLast;
+
+    let contiguous =
+      correctBoundaries;
+
+    if (contiguous) {
+      for (
+        let index = 1;
+        index < timestamps.length;
+        index += 1
       ) {
-        complete = false;
-        break;
+        if (
+          timestamps[index] -
+          timestamps[index - 1] !==
+          sourceIntervalMs
+        ) {
+          contiguous = false;
+          break;
+        }
       }
     }
 
-    if (complete) {
-      completed.push(
-        bucket.candle
-      );
+    candle.isClosed =
+      contiguous;
+
+    delete candle.sourceTimestamps;
+
+    if (candle.isClosed) {
+      completed.push(candle);
     }
   }
 
@@ -1583,6 +1346,7 @@ function normalizeNewsItem(item) {
       "",
 
     raw: item
+
   };
 
 }
@@ -2249,6 +2013,7 @@ function getEMAState(rows) {
   const unavailable = {
     available: false,
     direction: null,
+    biasDirection: null,
     alignmentCount: 0,
     fullAlignment: false,
     partialAlignment: false,
@@ -2259,7 +2024,17 @@ function getEMAState(rows) {
       ema50: null,
       ema100: null,
       ema200: null
-    }
+    },
+    slopes: {
+      ema20: null,
+      ema50: null,
+      ema100: null,
+      ema200: null
+    },
+    bullishChecks: [],
+    bearishChecks: [],
+    bullishCount: 0,
+    bearishCount: 0
   };
 
   if (
@@ -2277,55 +2052,59 @@ function getEMAState(rows) {
       rows.length
     );
 
-  const ema20 =
-    emaSeries(
-      closes,
-      periods.p20
-    );
-
-  const ema50 =
-    emaSeries(
-      closes,
-      periods.p50
-    );
-
-  const ema100 =
-    emaSeries(
-      closes,
-      periods.p100
-    );
-
-  const ema200 =
-    emaSeries(
-      closes,
-      periods.p200
-    );
+  const series = {
+    ema20:
+      emaSeries(
+        closes,
+        periods.p20
+      ),
+    ema50:
+      emaSeries(
+        closes,
+        periods.p50
+      ),
+    ema100:
+      emaSeries(
+        closes,
+        periods.p100
+      ),
+    ema200:
+      emaSeries(
+        closes,
+        periods.p200
+      )
+  };
 
   const lastIndex =
     closes.length - 1;
 
+  const previousIndex =
+    Math.max(
+      0,
+      lastIndex - 3
+    );
+
   const lastCloseValue =
     closes[lastIndex];
 
-  const v20 =
-    ema20[lastIndex];
-
-  const v50 =
-    ema50[lastIndex];
-
-  const v100 =
-    ema100[lastIndex];
-
-  const v200 =
-    ema200[lastIndex];
+  const values = {
+    ema20:
+      series.ema20[lastIndex],
+    ema50:
+      series.ema50[lastIndex],
+    ema100:
+      series.ema100[lastIndex],
+    ema200:
+      series.ema200[lastIndex]
+  };
 
   if (
     ![
       lastCloseValue,
-      v20,
-      v50,
-      v100,
-      v200
+      values.ema20,
+      values.ema50,
+      values.ema100,
+      values.ema200
     ].every(isFiniteNumber)
   ) {
     return {
@@ -2334,22 +2113,40 @@ function getEMAState(rows) {
         isFiniteNumber(lastCloseValue)
           ? lastCloseValue
           : null,
-      periods
+      periods,
+      values
     };
   }
 
+  const slopes = {};
+
+  for (const key of Object.keys(series)) {
+    const previous =
+      series[key][previousIndex];
+
+    slopes[key] =
+      isFiniteNumber(previous) &&
+      lastCloseValue !== 0
+        ? (
+            values[key] -
+            previous
+          ) /
+          Math.abs(lastCloseValue)
+        : null;
+  }
+
   const bullishChecks = [
-    lastCloseValue > v20,
-    v20 > v50,
-    v50 > v100,
-    v100 > v200
+    lastCloseValue > values.ema20,
+    values.ema20 > values.ema50,
+    values.ema50 > values.ema100,
+    values.ema100 > values.ema200
   ];
 
   const bearishChecks = [
-    lastCloseValue < v20,
-    v20 < v50,
-    v50 < v100,
-    v100 < v200
+    lastCloseValue < values.ema20,
+    values.ema20 < values.ema50,
+    values.ema50 < values.ema100,
+    values.ema100 < values.ema200
   ];
 
   const bullishCount =
@@ -2360,59 +2157,85 @@ function getEMAState(rows) {
     bearishChecks.filter(Boolean)
       .length;
 
+  const bullishSlopeCount =
+    [
+      slopes.ema20,
+      slopes.ema50
+    ].filter(
+      value =>
+        isFiniteNumber(value) &&
+        value > 0
+    ).length;
+
+  const bearishSlopeCount =
+    [
+      slopes.ema20,
+      slopes.ema50
+    ].filter(
+      value =>
+        isFiniteNumber(value) &&
+        value < 0
+    ).length;
+
   let direction = null;
-  let alignmentCount = 0;
 
   if (bullishCount === 4) {
     direction = "BUY";
-    alignmentCount = 4;
   } else if (bearishCount === 4) {
     direction = "SELL";
-    alignmentCount = 4;
-  } else if (
-    bullishCount >
-    bearishCount
-  ) {
-    alignmentCount =
-      bullishCount;
-  } else if (
-    bearishCount >
-    bullishCount
-  ) {
-    alignmentCount =
-      bearishCount;
-  } else {
-    alignmentCount =
-      bullishCount;
   }
+
+  let biasDirection = null;
+
+  const bullishEvidence =
+    bullishCount +
+    bullishSlopeCount;
+
+  const bearishEvidence =
+    bearishCount +
+    bearishSlopeCount;
+
+  if (
+    bullishEvidence >= 4 &&
+    bullishEvidence >
+      bearishEvidence
+  ) {
+    biasDirection = "BUY";
+  } else if (
+    bearishEvidence >= 4 &&
+    bearishEvidence >
+      bullishEvidence
+  ) {
+    biasDirection = "SELL";
+  }
+
+  const alignmentCount =
+    Math.max(
+      bullishCount,
+      bearishCount
+    );
 
   return {
     available: true,
     direction,
+    biasDirection,
     alignmentCount,
-
     fullAlignment:
-      alignmentCount === 4 &&
       direction !== null,
-
     partialAlignment:
-      alignmentCount === 3 &&
-      direction === null,
-
+      direction === null &&
+      alignmentCount >= 3,
     lastClose:
       lastCloseValue,
-
     periods,
-
-    values: {
-      ema20: v20,
-      ema50: v50,
-      ema100: v100,
-      ema200: v200
-    },
-
+    values,
+    slopes,
+    bullishChecks,
+    bearishChecks,
     bullishCount,
-    bearishCount
+    bearishCount,
+    bullishSlopeCount,
+    bearishSlopeCount
   };
 }
 
@@ -2736,471 +2559,1708 @@ function calculateRiskReward(
 }
 
 /* =====================================================================
-   ATR Dynamic TP/SL Extension
-   Additive only — existing analysis gates, pair names, JSON fields,
-   logging, frontend and evaluator contracts remain unchanged.
-
-   Supported canonical pairs:
-   - XAUUSD / XAU/USD
-   - GBPJPY / GBP/JPY
+   Professional Indicator Diagnostics and Confluence
    ===================================================================== */
 
-const ATR_DYNAMIC_TRADE_PLAN_CONFIG = Object.freeze({
-
-  XAUUSD: Object.freeze({
-
-    atrPeriod:
-      14,
-
-    stopMultiplier:
-      1.0,
-
-    target1Multiplier:
-      2.0,
-
-    target2Multiplier:
-      3.0,
-
-    target3Multiplier:
-      4.0
-
-  }),
-
-  GBPJPY: Object.freeze({
-
-    atrPeriod:
-      14,
-
-    stopMultiplier:
-      1.0,
-
-    target1Multiplier:
-      2.0,
-
-    target2Multiplier:
-      3.0,
-
-    target3Multiplier:
-      4.0
-
-  })
-
-});
-
-
-function atrDynamicConfigFor(
-  pairLabel
+function lastFiniteValue(
+  values,
+  offset = 0
 ) {
-
-  const normalized =
-    normalizePairKey(
-      pairLabel
-    );
-
-  return (
-    ATR_DYNAMIC_TRADE_PLAN_CONFIG[
-      normalized
-    ] ||
-    null
-  );
-
-}
-
-
-function latestFiniteValue(
-  values
-) {
-
-  if (
-    !Array.isArray(
-      values
-    )
-  ) {
-
+  if (!Array.isArray(values)) {
     return null;
-
   }
 
+  let remaining =
+    Math.max(
+      0,
+      Math.trunc(offset)
+    );
+
   for (
-    let index =
-      values.length - 1;
-
+    let index = values.length - 1;
     index >= 0;
-
-    index--
+    index -= 1
   ) {
-
-    if (
-      isFiniteNumber(
-        values[index]
-      )
-    ) {
-
-      return values[index];
-
+    if (!isFiniteNumber(values[index])) {
+      continue;
     }
 
+    if (remaining === 0) {
+      return values[index];
+    }
+
+    remaining -= 1;
   }
 
   return null;
-
 }
 
-
-function applyAtrDynamicTradePlan(
-  analysis,
-  rows,
-  pairLabel
+function percentileRank(
+  values,
+  current
 ) {
-
-  /*
-   * Safe fallback:
-   * If the existing engine did not produce an actionable trade plan,
-   * nothing is changed.
-   */
+  const finite =
+    Array.isArray(values)
+      ? values.filter(isFiniteNumber)
+      : [];
 
   if (
-    !analysis ||
-    typeof analysis !== "object" ||
-    !analysis.tradePlan ||
-    typeof analysis.tradePlan !== "object"
+    finite.length === 0 ||
+    !isFiniteNumber(current)
   ) {
-
-    return analysis;
-
+    return null;
   }
 
-  const direction =
-    normalizeSignalDirection(
-      analysis.signal
+  const lower =
+    finite.filter(
+      value => value < current
+    ).length;
+
+  const equal =
+    finite.filter(
+      value => value === current
+    ).length;
+
+  return (
+    (
+      lower +
+      equal * 0.5
+    ) /
+    finite.length
+  ) * 100;
+}
+
+function median(values) {
+  const finite =
+    Array.isArray(values)
+      ? values
+          .filter(isFiniteNumber)
+          .sort((a, b) => a - b)
+      : [];
+
+  if (finite.length === 0) {
+    return null;
+  }
+
+  const middle =
+    Math.floor(
+      finite.length / 2
     );
+
+  if (finite.length % 2 === 1) {
+    return finite[middle];
+  }
+
+  return (
+    finite[middle - 1] +
+    finite[middle]
+  ) / 2;
+}
+
+function buildRsiSnapshot(
+  values,
+  period = RSI_PERIOD
+) {
+  const series =
+    rsiSeries(
+      values,
+      period
+    );
+
+  const current =
+    lastFiniteValue(series, 0);
+
+  const previous =
+    lastFiniteValue(series, 1);
+
+  const threeBarsAgo =
+    lastFiniteValue(series, 3);
+
+  const slope =
+    isFiniteNumber(current) &&
+    isFiniteNumber(previous)
+      ? current - previous
+      : null;
+
+  const momentum =
+    isFiniteNumber(current) &&
+    isFiniteNumber(threeBarsAgo)
+      ? current - threeBarsAgo
+      : null;
+
+  const crossedAbove50 =
+    isFiniteNumber(current) &&
+    isFiniteNumber(previous) &&
+    previous <= 50 &&
+    current > 50;
+
+  const crossedBelow50 =
+    isFiniteNumber(current) &&
+    isFiniteNumber(previous) &&
+    previous >= 50 &&
+    current < 50;
+
+  let direction = null;
 
   if (
-    direction !== "BUY" &&
-    direction !== "SELL"
+    isFiniteNumber(current) &&
+    (
+      crossedAbove50 ||
+      (
+        current >= 50 &&
+        isFiniteNumber(slope) &&
+        slope > 0
+      )
+    )
   ) {
-
-    return analysis;
-
+    direction = "BUY";
+  } else if (
+    isFiniteNumber(current) &&
+    (
+      crossedBelow50 ||
+      (
+        current <= 50 &&
+        isFiniteNumber(slope) &&
+        slope < 0
+      )
+    )
+  ) {
+    direction = "SELL";
   }
 
-  const config =
-    atrDynamicConfigFor(
-      pairLabel
+  return {
+    available:
+      isFiniteNumber(current),
+    period,
+    current,
+    previous,
+    threeBarsAgo,
+    slope,
+    momentum,
+    crossedAbove50,
+    crossedBelow50,
+    overbought:
+      isFiniteNumber(current) &&
+      current >= 72,
+    oversold:
+      isFiniteNumber(current) &&
+      current <= 28,
+    direction,
+    series
+  };
+}
+
+function buildMacdSnapshot(values) {
+  const macd =
+    computeMACD(values);
+
+  const previousMacd =
+    lastFiniteValue(
+      macd.macdSeries,
+      1
     );
+
+  const previousSignal =
+    lastFiniteValue(
+      macd.signalSeries,
+      1
+    );
+
+  const previousHistogram =
+    lastFiniteValue(
+      macd.histogramSeries,
+      1
+    );
+
+  const histogramSlope =
+    isFiniteNumber(macd.histogram) &&
+    isFiniteNumber(previousHistogram)
+      ? macd.histogram -
+        previousHistogram
+      : null;
+
+  const crossedBullish =
+    macd.available &&
+    isFiniteNumber(previousMacd) &&
+    isFiniteNumber(previousSignal) &&
+    previousMacd <= previousSignal &&
+    macd.macd > macd.signal;
+
+  const crossedBearish =
+    macd.available &&
+    isFiniteNumber(previousMacd) &&
+    isFiniteNumber(previousSignal) &&
+    previousMacd >= previousSignal &&
+    macd.macd < macd.signal;
+
+  let direction = null;
 
   if (
-    !config
+    macd.available &&
+    macd.macd > macd.signal
   ) {
-
-    return analysis;
-
+    direction = "BUY";
+  } else if (
+    macd.available &&
+    macd.macd < macd.signal
+  ) {
+    direction = "SELL";
   }
+
+  return {
+    ...macd,
+    previousMacd,
+    previousSignal,
+    previousHistogram,
+    histogramSlope,
+    crossedBullish,
+    crossedBearish,
+    direction
+  };
+}
+
+function computeDmiAdx(
+  rows,
+  period = ADX_PERIOD
+) {
+  const unavailable = {
+    available: false,
+    period,
+    plusDI: null,
+    minusDI: null,
+    adx: null,
+    previousAdx: null,
+    adxSlope: null,
+    direction: null,
+    trendStrength: "UNAVAILABLE"
+  };
 
   if (
-    !Array.isArray(
-      rows
-    ) ||
-    rows.length <=
-      config.atrPeriod
+    !Array.isArray(rows) ||
+    rows.length <
+      period * 2 + 1
   ) {
-
-    return analysis;
-
+    return unavailable;
   }
 
-  const pair =
-    findPairConfiguration(
-      pairLabel
-    );
+  const trueRanges =
+    new Array(rows.length)
+      .fill(null);
 
-  if (
-    !pair
+  const plusDm =
+    new Array(rows.length)
+      .fill(0);
+
+  const minusDm =
+    new Array(rows.length)
+      .fill(0);
+
+  for (
+    let index = 1;
+    index < rows.length;
+    index += 1
   ) {
+    const current =
+      rows[index];
 
-    return analysis;
+    const previous =
+      rows[index - 1];
 
+    trueRanges[index] =
+      trueRange(
+        current,
+        previous
+      );
+
+    const upwardMove =
+      current.high -
+      previous.high;
+
+    const downwardMove =
+      previous.low -
+      current.low;
+
+    plusDm[index] =
+      upwardMove > downwardMove &&
+      upwardMove > 0
+        ? upwardMove
+        : 0;
+
+    minusDm[index] =
+      downwardMove > upwardMove &&
+      downwardMove > 0
+        ? downwardMove
+        : 0;
   }
 
-  const entry =
-    numericValue(
-      analysis.tradePlan.entry
-    );
+  let smoothedTr = 0;
+  let smoothedPlus = 0;
+  let smoothedMinus = 0;
 
-  if (
-    entry === null ||
-    entry <= 0
+  for (
+    let index = 1;
+    index <= period;
+    index += 1
   ) {
-
-    return analysis;
-
+    smoothedTr +=
+      trueRanges[index];
+    smoothedPlus +=
+      plusDm[index];
+    smoothedMinus +=
+      minusDm[index];
   }
 
-  const atrValues =
-    atrSeries(
-      rows,
-      config.atrPeriod
-    );
+  const plusSeries =
+    new Array(rows.length)
+      .fill(null);
 
-  const atr =
-    latestFiniteValue(
-      atrValues
-    );
+  const minusSeries =
+    new Array(rows.length)
+      .fill(null);
 
-  if (
-    !isFiniteNumber(
-      atr
-    ) ||
-    atr <= 0
-  ) {
+  const dxSeries =
+    new Array(rows.length)
+      .fill(null);
 
-    return analysis;
+  function writeDirectionalIndex(index) {
+    if (
+      !isFiniteNumber(smoothedTr) ||
+      smoothedTr <= 0
+    ) {
+      return;
+    }
 
+    const plus =
+      100 *
+      smoothedPlus /
+      smoothedTr;
+
+    const minus =
+      100 *
+      smoothedMinus /
+      smoothedTr;
+
+    plusSeries[index] = plus;
+    minusSeries[index] = minus;
+
+    const denominator =
+      plus + minus;
+
+    dxSeries[index] =
+      denominator > 0
+        ? 100 *
+          Math.abs(
+            plus - minus
+          ) /
+          denominator
+        : 0;
   }
 
-  const decimals =
-    decimalsFor(
-      pair
+  writeDirectionalIndex(period);
+
+  for (
+    let index = period + 1;
+    index < rows.length;
+    index += 1
+  ) {
+    smoothedTr =
+      smoothedTr -
+      smoothedTr / period +
+      trueRanges[index];
+
+    smoothedPlus =
+      smoothedPlus -
+      smoothedPlus / period +
+      plusDm[index];
+
+    smoothedMinus =
+      smoothedMinus -
+      smoothedMinus / period +
+      minusDm[index];
+
+    writeDirectionalIndex(index);
+  }
+
+  const adxSeries =
+    new Array(rows.length)
+      .fill(null);
+
+  const firstAdxIndex =
+    period * 2 - 1;
+
+  let dxSum = 0;
+  let dxCount = 0;
+
+  for (
+    let index = period;
+    index <= firstAdxIndex;
+    index += 1
+  ) {
+    if (isFiniteNumber(dxSeries[index])) {
+      dxSum += dxSeries[index];
+      dxCount += 1;
+    }
+  }
+
+  if (dxCount !== period) {
+    return unavailable;
+  }
+
+  adxSeries[firstAdxIndex] =
+    dxSum / period;
+
+  for (
+    let index = firstAdxIndex + 1;
+    index < rows.length;
+    index += 1
+  ) {
+    if (!isFiniteNumber(dxSeries[index])) {
+      adxSeries[index] =
+        adxSeries[index - 1];
+      continue;
+    }
+
+    adxSeries[index] =
+      (
+        adxSeries[index - 1] *
+        (period - 1) +
+        dxSeries[index]
+      ) /
+      period;
+  }
+
+  const plusDI =
+    lastFiniteValue(
+      plusSeries,
+      0
     );
 
-  const stopDistance =
-    atr *
-    config.stopMultiplier;
-
-  const target1Distance =
-    atr *
-    config.target1Multiplier;
-
-  const target2Distance =
-    atr *
-    config.target2Multiplier;
-
-  const target3Distance =
-    atr *
-    config.target3Multiplier;
-
-  const stopLoss =
-    direction === "BUY"
-      ? entry - stopDistance
-      : entry + stopDistance;
-
-  const target1 =
-    direction === "BUY"
-      ? entry + target1Distance
-      : entry - target1Distance;
-
-  const target2 =
-    direction === "BUY"
-      ? entry + target2Distance
-      : entry - target2Distance;
-
-  const target3 =
-    direction === "BUY"
-      ? entry + target3Distance
-      : entry - target3Distance;
-
-  const roundedEntry =
-    round(
-      entry,
-      decimals
+  const minusDI =
+    lastFiniteValue(
+      minusSeries,
+      0
     );
 
-  const roundedStopLoss =
-    round(
-      stopLoss,
-      decimals
+  const adx =
+    lastFiniteValue(
+      adxSeries,
+      0
     );
 
-  const roundedTarget1 =
-    round(
-      target1,
-      decimals
-    );
-
-  const roundedTarget2 =
-    round(
-      target2,
-      decimals
-    );
-
-  const roundedTarget3 =
-    round(
-      target3,
-      decimals
+  const previousAdx =
+    lastFiniteValue(
+      adxSeries,
+      1
     );
 
   if (
     ![
-      roundedEntry,
-      roundedStopLoss,
-      roundedTarget1,
-      roundedTarget2,
-      roundedTarget3
-    ].every(
-      isFiniteNumber
-    )
+      plusDI,
+      minusDI,
+      adx
+    ].every(isFiniteNumber)
   ) {
-
-    return analysis;
-
+    return unavailable;
   }
 
-  /*
-   * Direction safety:
-   * Never publish inverted Stop Loss or Take Profit levels.
-   */
+  let direction = null;
 
-  const validDirection =
-    direction === "BUY"
-      ? (
-          roundedStopLoss <
-            roundedEntry &&
-          roundedTarget1 >
-            roundedEntry &&
-          roundedTarget2 >
-            roundedTarget1 &&
-          roundedTarget3 >
-            roundedTarget2
-        )
-      : (
-          roundedStopLoss >
-            roundedEntry &&
-          roundedTarget1 <
-            roundedEntry &&
-          roundedTarget2 <
-            roundedTarget1 &&
-          roundedTarget3 <
-            roundedTarget2
-        );
-
-  if (
-    !validDirection
-  ) {
-
-    return analysis;
-
+  if (plusDI > minusDI) {
+    direction = "BUY";
+  } else if (minusDI > plusDI) {
+    direction = "SELL";
   }
 
-const dynamicRiskReward =
-  calculateRiskReward(
-    roundedEntry,
-    roundedStopLoss,
-    roundedTarget1
-  );
+  const trendStrength =
+    adx >= 35
+      ? "STRONG"
+      : adx >= 25
+      ? "TRENDING"
+      : adx >= 18
+      ? "DEVELOPING"
+      : "WEAK";
 
-/*
- * Floating-point safety:
- * A mathematically valid 2.00R trade can evaluate as
- * 1.999999999 due to IEEE-754 precision.
- * Use a tiny tolerance so genuine 2R ATR plans are not rejected.
- */
-const MIN_DYNAMIC_RISK_REWARD = 2.0;
-const RISK_REWARD_EPSILON = 1e-9;
-
-if (
-  !isFiniteNumber(dynamicRiskReward) ||
-  dynamicRiskReward <
-    (MIN_DYNAMIC_RISK_REWARD - RISK_REWARD_EPSILON)
-) {
-
-  return analysis;
-
+  return {
+    available: true,
+    period,
+    plusDI,
+    minusDI,
+    adx,
+    previousAdx,
+    adxSlope:
+      isFiniteNumber(previousAdx)
+        ? adx - previousAdx
+        : null,
+    direction,
+    trendStrength,
+    plusSeries,
+    minusSeries,
+    adxSeries
+  };
 }
 
-  /*
-   * Preserve the existing tradePlan schema.
-   * Only calculated price levels are updated.
-   */
+function buildAtrSnapshot(
+  rows,
+  period = 14
+) {
+  const series =
+    atrSeries(
+      rows,
+      period
+    );
 
-  analysis.tradePlan = {
+  const atr =
+    lastFiniteValue(series, 0);
 
-    ...analysis.tradePlan,
+  const previousAtr =
+    lastFiniteValue(series, 1);
 
-    entry:
-      roundedEntry,
+  const currentPrice =
+    lastClose(rows);
 
-    stopLoss:
-      roundedStopLoss,
+  const finiteTail =
+    series
+      .filter(isFiniteNumber)
+      .slice(
+        -ATR_PERCENTILE_WINDOW
+      );
 
-    target1:
-      roundedTarget1,
+  const atrMedian =
+    median(finiteTail);
 
-    target2:
-      roundedTarget2,
+  const percentile =
+    percentileRank(
+      finiteTail,
+      atr
+    );
 
-    target3:
-      roundedTarget3,
+  const atrPercent =
+    isFiniteNumber(atr) &&
+    isFiniteNumber(currentPrice) &&
+    currentPrice !== 0
+      ? atr /
+        Math.abs(currentPrice) *
+        100
+      : null;
 
-    riskReward:
-      round(
-        dynamicRiskReward,
-        2
+  const medianRatio =
+    isFiniteNumber(atr) &&
+    isFiniteNumber(atrMedian) &&
+    atrMedian > 0
+      ? atr / atrMedian
+      : null;
+
+  let regime =
+    "UNAVAILABLE";
+
+  if (isFiniteNumber(percentile)) {
+    regime =
+      percentile >= 95 ||
+      (
+        isFiniteNumber(medianRatio) &&
+        medianRatio >= 1.75
       )
-
-  };
-
-  /*
-   * Optional diagnostics.
-   * Existing pipeline steps remain untouched.
-   */
-
-  if (
-    Array.isArray(
-      analysis.steps
-    )
-  ) {
-
-    analysis.steps.push({
-
-      name:
-        "ATR Dynamic TP/SL",
-
-      pass:
-        true,
-
-      detail:
-        `${pair.label} ${direction} ` +
-        `ATR(${config.atrPeriod})=${round(atr, decimals)} ` +
-        `SL ${config.stopMultiplier}x ATR, ` +
-        `TP1 ${config.target1Multiplier}x ATR, ` +
-        `TP2 ${config.target2Multiplier}x ATR, ` +
-        `TP3 ${config.target3Multiplier}x ATR`
-
-    });
-
+        ? "EXTREME"
+        : percentile >= 80 ||
+          (
+            isFiniteNumber(medianRatio) &&
+            medianRatio >= 1.3
+          )
+        ? "HIGH"
+        : percentile <= 20 ||
+          (
+            isFiniteNumber(medianRatio) &&
+            medianRatio <= 0.7
+          )
+        ? "LOW"
+        : "NORMAL";
   }
 
-  /*
-   * Optional metadata for future AI learning.
-   * Existing JSON consumers will ignore these fields safely.
-   */
-
-  analysis.tradePlan.atr = round(
+  return {
+    available:
+      isFiniteNumber(atr) &&
+      atr > 0,
+    period,
     atr,
-    decimals
+    previousAtr,
+    atrSlope:
+      isFiniteNumber(atr) &&
+      isFiniteNumber(previousAtr)
+        ? atr - previousAtr
+        : null,
+    atrPercent,
+    medianAtr: atrMedian,
+    medianRatio,
+    percentile,
+    regime,
+    series
+  };
+}
+
+function scoreEmaDirection(
+  state,
+  direction
+) {
+  if (!state.available) {
+    return {
+      available: false,
+      score: 0,
+      weight:
+        INDICATOR_WEIGHTS.ema,
+      detail:
+        "EMA values unavailable"
+    };
+  }
+
+  const checks =
+    direction === "BUY"
+      ? state.bullishChecks
+      : state.bearishChecks;
+
+  const slopeValues =
+    [
+      state.slopes.ema20,
+      state.slopes.ema50
+    ];
+
+  const aligned =
+    checks.filter(Boolean)
+      .length;
+
+  const supportiveSlopes =
+    slopeValues.filter(
+      value =>
+        isFiniteNumber(value) &&
+        (
+          direction === "BUY"
+            ? value > 0
+            : value < 0
+        )
+    ).length;
+
+  const score =
+    clamp(
+      aligned * 4.5 +
+      supportiveSlopes * 3,
+      0,
+      INDICATOR_WEIGHTS.ema
+    );
+
+  return {
+    available: true,
+    score,
+    weight:
+      INDICATOR_WEIGHTS.ema,
+    alignedChecks: aligned,
+    supportiveSlopes,
+    detail:
+      `${direction} EMA checks ${aligned}/4; fast/medium slopes ${supportiveSlopes}/2`
+  };
+}
+
+function scoreMacdDirection(
+  snapshot,
+  direction
+) {
+  if (!snapshot.available) {
+    return {
+      available: false,
+      score: 0,
+      weight:
+        INDICATOR_WEIGHTS.macd,
+      detail:
+        "MACD values unavailable"
+    };
+  }
+
+  const relation =
+    direction === "BUY"
+      ? snapshot.macd >
+        snapshot.signal
+      : snapshot.macd <
+        snapshot.signal;
+
+  const histogram =
+    direction === "BUY"
+      ? snapshot.histogram > 0
+      : snapshot.histogram < 0;
+
+  const acceleration =
+    isFiniteNumber(
+      snapshot.histogramSlope
+    ) &&
+    (
+      direction === "BUY"
+        ? snapshot.histogramSlope > 0
+        : snapshot.histogramSlope < 0
+    );
+
+  const crossed =
+    direction === "BUY"
+      ? snapshot.crossedBullish
+      : snapshot.crossedBearish;
+
+  const score =
+    (
+      relation ? 8 : 0
+    ) +
+    (
+      histogram ? 4 : 0
+    ) +
+    (
+      acceleration ? 4 : 0
+    ) +
+    (
+      crossed ? 2 : 0
+    );
+
+  return {
+    available: true,
+    score,
+    weight:
+      INDICATOR_WEIGHTS.macd,
+    relation,
+    histogram,
+    acceleration,
+    crossed,
+    detail:
+      `${direction} MACD relation ${relation ? "supportive" : "opposed"}; histogram ${histogram ? "supportive" : "opposed"}; acceleration ${acceleration ? "supportive" : "not supportive"}`
+  };
+}
+
+function scoreRsiDirection(
+  snapshot,
+  direction
+) {
+  if (!snapshot.available) {
+    return {
+      available: false,
+      score: 0,
+      weight:
+        INDICATOR_WEIGHTS.rsi,
+      detail:
+        "RSI unavailable"
+    };
+  }
+
+  const directionalZone =
+    direction === "BUY"
+      ? snapshot.current >= 50
+      : snapshot.current <= 50;
+
+  const slopeSupport =
+    isFiniteNumber(snapshot.slope) &&
+    (
+      direction === "BUY"
+        ? snapshot.slope > 0
+        : snapshot.slope < 0
+    );
+
+  const momentumSupport =
+    isFiniteNumber(snapshot.momentum) &&
+    (
+      direction === "BUY"
+        ? snapshot.momentum > 0
+        : snapshot.momentum < 0
+    );
+
+  const crossed =
+    direction === "BUY"
+      ? snapshot.crossedAbove50
+      : snapshot.crossedBelow50;
+
+  const exhausted =
+    direction === "BUY"
+      ? snapshot.current >= 78
+      : snapshot.current <= 22;
+
+  let score =
+    (
+      directionalZone ? 7 : 0
+    ) +
+    (
+      slopeSupport ? 4 : 0
+    ) +
+    (
+      momentumSupport ? 3 : 0
+    ) +
+    (
+      crossed ? 4 : 0
+    );
+
+  if (exhausted) {
+    score -= 3;
+  }
+
+  score =
+    clamp(
+      score,
+      0,
+      INDICATOR_WEIGHTS.rsi
+    );
+
+  return {
+    available: true,
+    score,
+    weight:
+      INDICATOR_WEIGHTS.rsi,
+    directionalZone,
+    slopeSupport,
+    momentumSupport,
+    crossed,
+    exhausted,
+    detail:
+      `RSI ${round(snapshot.current, 2)}; slope ${round(snapshot.slope, 2)}; three-bar momentum ${round(snapshot.momentum, 2)}`
+  };
+}
+
+function scoreDmiDirection(
+  snapshot,
+  direction
+) {
+  if (!snapshot.available) {
+    return {
+      available: false,
+      score: 0,
+      weight:
+        INDICATOR_WEIGHTS.dmiAdx,
+      detail:
+        "ADX/DMI unavailable"
+    };
+  }
+
+  const directional =
+    direction === "BUY"
+      ? snapshot.plusDI >
+        snapshot.minusDI
+      : snapshot.minusDI >
+        snapshot.plusDI;
+
+  const diGap =
+    Math.abs(
+      snapshot.plusDI -
+      snapshot.minusDI
+    );
+
+  const trending =
+    snapshot.adx >= 25;
+
+  const developing =
+    snapshot.adx >= 18;
+
+  const rising =
+    isFiniteNumber(snapshot.adxSlope) &&
+    snapshot.adxSlope > 0;
+
+  const score =
+    (
+      directional ? 7 : 0
+    ) +
+    (
+      trending ? 5 :
+      developing ? 2 : 0
+    ) +
+    (
+      rising ? 2 : 0
+    ) +
+    (
+      directional &&
+      diGap >= 8
+        ? 2
+        : 0
+    );
+
+  return {
+    available: true,
+    score:
+      clamp(
+        score,
+        0,
+        INDICATOR_WEIGHTS.dmiAdx
+      ),
+    weight:
+      INDICATOR_WEIGHTS.dmiAdx,
+    directional,
+    trending,
+    rising,
+    diGap,
+    detail:
+      `ADX ${round(snapshot.adx, 2)} (${snapshot.trendStrength}); +DI ${round(snapshot.plusDI, 2)}, -DI ${round(snapshot.minusDI, 2)}`
+  };
+}
+
+function inferHigherTimeframeBias(rows) {
+  if (
+    !Array.isArray(rows) ||
+    rows.length < 20
+  ) {
+    return {
+      available: false,
+      direction: null,
+      strength: 0,
+      buyVotes: 0,
+      sellVotes: 0,
+      detail:
+        "Higher timeframe data unavailable"
+    };
+  }
+
+  const closes =
+    closeSeries(rows);
+
+  const ema =
+    getEMAState(rows);
+
+  const macd =
+    buildMacdSnapshot(closes);
+
+  const rsi =
+    buildRsiSnapshot(closes);
+
+  const dmi =
+    computeDmiAdx(rows);
+
+  const structure =
+    computeMarketStructure(rows);
+
+  let buyVotes = 0;
+  let sellVotes = 0;
+  let possibleVotes = 0;
+
+  if (ema.available) {
+    possibleVotes += 4;
+    if (
+      ema.direction === "BUY"
+    ) {
+      buyVotes += 4;
+    } else if (
+      ema.direction === "SELL"
+    ) {
+      sellVotes += 4;
+    } else if (
+      ema.biasDirection === "BUY"
+    ) {
+      buyVotes += 2.5;
+    } else if (
+      ema.biasDirection === "SELL"
+    ) {
+      sellVotes += 2.5;
+    }
+  }
+
+  if (macd.available) {
+    possibleVotes += 2;
+    if (macd.direction === "BUY") {
+      buyVotes += 2;
+    } else if (macd.direction === "SELL") {
+      sellVotes += 2;
+    }
+  }
+
+  if (rsi.available) {
+    possibleVotes += 1.5;
+    if (rsi.direction === "BUY") {
+      buyVotes += 1.5;
+    } else if (rsi.direction === "SELL") {
+      sellVotes += 1.5;
+    }
+  }
+
+  if (dmi.available) {
+    possibleVotes += 2.5;
+    if (dmi.direction === "BUY") {
+      buyVotes += 2.5;
+    } else if (dmi.direction === "SELL") {
+      sellVotes += 2.5;
+    }
+  }
+
+  if (structure.direction) {
+    possibleVotes += 1;
+    if (structure.direction === "BUY") {
+      buyVotes += 1;
+    } else if (structure.direction === "SELL") {
+      sellVotes += 1;
+    }
+  }
+
+  let direction = null;
+
+  if (
+    buyVotes >= 4 &&
+    buyVotes > sellVotes
+  ) {
+    direction = "BUY";
+  } else if (
+    sellVotes >= 4 &&
+    sellVotes > buyVotes
+  ) {
+    direction = "SELL";
+  }
+
+  const winningVotes =
+    Math.max(
+      buyVotes,
+      sellVotes
+    );
+
+  const strength =
+    possibleVotes > 0
+      ? winningVotes /
+        possibleVotes *
+        100
+      : 0;
+
+  return {
+    available:
+      possibleVotes > 0,
+    direction,
+    strength,
+    buyVotes,
+    sellVotes,
+    possibleVotes,
+    detail:
+      `HTF votes BUY ${round(buyVotes, 2)}, SELL ${round(sellVotes, 2)}; strength ${round(strength, 2)}%`,
+    indicators: {
+      ema,
+      macd: {
+        available: macd.available,
+        direction: macd.direction,
+        macd: macd.macd,
+        signal: macd.signal,
+        histogram: macd.histogram
+      },
+      rsi: {
+        available: rsi.available,
+        direction: rsi.direction,
+        current: rsi.current,
+        slope: rsi.slope
+      },
+      dmi: {
+        available: dmi.available,
+        direction: dmi.direction,
+        adx: dmi.adx,
+        plusDI: dmi.plusDI,
+        minusDI: dmi.minusDI
+      },
+      structure
+    }
+  };
+}
+
+function scoreDirection({
+  direction,
+  ema,
+  macd,
+  rsi,
+  dmi,
+  structure,
+  higherTimeframe,
+  candlePattern
+}) {
+  const components = {
+    ema:
+      scoreEmaDirection(
+        ema,
+        direction
+      ),
+    macd:
+      scoreMacdDirection(
+        macd,
+        direction
+      ),
+    rsi:
+      scoreRsiDirection(
+        rsi,
+        direction
+      ),
+    dmiAdx:
+      scoreDmiDirection(
+        dmi,
+        direction
+      )
+  };
+
+  const structureAvailable =
+    Boolean(
+      structure &&
+      structure.direction
+    );
+
+  components.structure = {
+    available:
+      structureAvailable,
+    weight:
+      INDICATOR_WEIGHTS.structure,
+    score:
+      structureAvailable &&
+      structure.direction === direction
+        ? INDICATOR_WEIGHTS.structure
+        : 0,
+    detail:
+      structure?.label ??
+      "Market structure unavailable"
+  };
+
+  const htfAvailable =
+    higherTimeframe?.available === true &&
+    Boolean(
+      higherTimeframe.direction
+    );
+
+  components.higherTimeframe = {
+    available:
+      htfAvailable,
+    weight:
+      INDICATOR_WEIGHTS.higherTimeframe,
+    score:
+      htfAvailable &&
+      higherTimeframe.direction === direction
+        ? INDICATOR_WEIGHTS.higherTimeframe *
+          clamp(
+            higherTimeframe.strength /
+            70,
+            0.55,
+            1
+          )
+        : 0,
+    detail:
+      higherTimeframe?.detail ??
+      "Higher timeframe unavailable"
+  };
+
+  const bullishPattern =
+    candlePattern ===
+    "Bullish Engulfing";
+
+  const bearishPattern =
+    candlePattern ===
+    "Bearish Engulfing";
+
+  const patternAvailable =
+    bullishPattern ||
+    bearishPattern;
+
+  components.candlePattern = {
+    available:
+      patternAvailable,
+    weight:
+      INDICATOR_WEIGHTS.candlePattern,
+    score:
+      (
+        direction === "BUY" &&
+        bullishPattern
+      ) ||
+      (
+        direction === "SELL" &&
+        bearishPattern
+      )
+        ? INDICATOR_WEIGHTS.candlePattern
+        : 0,
+    detail:
+      candlePattern ??
+      "No directional candle pattern"
+  };
+
+  let rawScore = 0;
+  let availableWeight = 0;
+
+  for (const component of Object.values(components)) {
+    if (!component.available) {
+      continue;
+    }
+
+    rawScore +=
+      component.score;
+
+    availableWeight +=
+      component.weight;
+  }
+
+  const normalizedScore =
+    availableWeight >= 60
+      ? rawScore /
+        availableWeight *
+        100
+      : 0;
+
+  return {
+    direction,
+    rawScore:
+      round(rawScore, 4),
+    availableWeight:
+      round(availableWeight, 4),
+    score:
+      round(
+        clamp(
+          normalizedScore,
+          0,
+          100
+        ),
+        2
+      ),
+    components
+  };
+}
+
+function modeConfluenceConfig(mode) {
+  return (
+    PROFESSIONAL_CONFLUENCE_CONFIG[
+      String(mode ?? "M5")
+        .trim()
+        .toUpperCase()
+    ] ||
+    PROFESSIONAL_CONFLUENCE_CONFIG.M5
   );
+}
 
-  analysis.tradePlan.atrPeriod =
-    config.atrPeriod;
+function selectDirection(
+  buy,
+  sell,
+  mode
+) {
+  const config =
+    modeConfluenceConfig(mode);
 
-  analysis.tradePlan.riskModel =
-    "ATR_DYNAMIC";
+  const winner =
+    buy.score >= sell.score
+      ? buy
+      : sell;
 
-  analysis.tradePlan.stopAtrMultiplier =
-    config.stopMultiplier;
+  const loser =
+    winner === buy
+      ? sell
+      : buy;
 
-  analysis.tradePlan.targetAtrMultipliers = [
+  const edge =
+    winner.score -
+    loser.score;
 
-    config.target1Multiplier,
+  const qualified =
+    winner.score >=
+      config.minimumScore &&
+    edge >=
+      config.minimumEdge;
 
-    config.target2Multiplier,
+  return {
+    direction:
+      qualified
+        ? winner.direction
+        : null,
+    qualified,
+    winnerScore:
+      winner.score,
+    opposingScore:
+      loser.score,
+    edge:
+      round(edge, 2),
+    requiredScore:
+      config.minimumScore,
+    requiredEdge:
+      config.minimumEdge,
+    config
+  };
+}
 
-    config.target3Multiplier
+function selectStructureLevel(
+  direction,
+  entry,
+  supportResistance,
+  structure
+) {
+  const candidates = [];
 
-  ];
+  if (direction === "BUY") {
+    for (
+      const value of supportResistance.supports || []
+    ) {
+      if (
+        isFiniteNumber(value) &&
+        value < entry
+      ) {
+        candidates.push(value);
+      }
+    }
 
-  return analysis;
+    const swingLow =
+      structure?.latestLow?.price;
 
+    if (
+      isFiniteNumber(swingLow) &&
+      swingLow < entry
+    ) {
+      candidates.push(swingLow);
+    }
+
+    return candidates.length > 0
+      ? Math.max(...candidates)
+      : null;
+  }
+
+  for (
+    const value of supportResistance.resistances || []
+  ) {
+    if (
+      isFiniteNumber(value) &&
+      value > entry
+    ) {
+      candidates.push(value);
+    }
+  }
+
+  const swingHigh =
+    structure?.latestHigh?.price;
+
+  if (
+    isFiniteNumber(swingHigh) &&
+    swingHigh > entry
+  ) {
+    candidates.push(swingHigh);
+  }
+
+  return candidates.length > 0
+    ? Math.min(...candidates)
+    : null;
+}
+
+function buildProfessionalTradePlan({
+  direction,
+  entry,
+  pairLabel,
+  mode,
+  atrSnapshot,
+  supportResistance,
+  structure
+}) {
+  const config =
+    modeConfluenceConfig(mode);
+
+  const pairKey =
+    normalizePairKey(pairLabel);
+
+  const pairModifier =
+    PAIR_ATR_MODIFIERS[
+      pairKey
+    ] ?? 1;
+
+  const regimeMultiplier =
+    atrSnapshot.regime === "LOW"
+      ? 0.9
+      : atrSnapshot.regime === "HIGH"
+      ? 1.15
+      : atrSnapshot.regime === "EXTREME"
+      ? 1.3
+      : 1;
+
+  const atr =
+    atrSnapshot.atr;
+
+  if (
+    !isFiniteNumber(entry) ||
+    !isFiniteNumber(atr) ||
+    atr <= 0
+  ) {
+    return {
+      valid: false,
+      reason:
+        "ATR or entry is unavailable"
+    };
+  }
+
+  const baseMultiplier =
+    config.baseStopAtr *
+    pairModifier *
+    regimeMultiplier;
+
+  const baseRiskDistance =
+    atr *
+    baseMultiplier;
+
+  const structureLevel =
+    selectStructureLevel(
+      direction,
+      entry,
+      supportResistance,
+      structure
+    );
+
+  let structureRiskDistance = null;
+
+  if (isFiniteNumber(structureLevel)) {
+    structureRiskDistance =
+      direction === "BUY"
+        ? entry -
+          structureLevel +
+          atr *
+          ATR_STRUCTURE_BUFFER
+        : structureLevel -
+          entry +
+          atr *
+          ATR_STRUCTURE_BUFFER;
+  }
+
+  const riskDistance =
+    Math.max(
+      baseRiskDistance,
+      isFiniteNumber(
+        structureRiskDistance
+      )
+        ? structureRiskDistance
+        : 0
+    );
+
+  const riskAtrMultiple =
+    riskDistance / atr;
+
+  if (
+    riskAtrMultiple >
+      config.maximumStopAtr
+  ) {
+    return {
+      valid: false,
+      reason:
+        `Required structural stop is ${round(riskAtrMultiple, 2)} ATR; maximum is ${config.maximumStopAtr} ATR`,
+      atr,
+      structureLevel,
+      riskAtrMultiple
+    };
+  }
+
+  const priceDecimals =
+    pairKey === "XAUUSD"
+      ? 2
+      : pairKey === "GBPJPY"
+      ? 3
+      : 6;
+
+  const roundedEntry =
+    round(
+      entry,
+      priceDecimals
+    );
+
+  const stopLoss =
+    round(
+      direction === "BUY"
+        ? roundedEntry - riskDistance
+        : roundedEntry + riskDistance,
+      priceDecimals
+    );
+
+  const roundedRiskDistance =
+    Math.abs(
+      roundedEntry -
+      stopLoss
+    );
+
+  if (
+    !isFiniteNumber(roundedRiskDistance) ||
+    roundedRiskDistance <= 0
+  ) {
+    return {
+      valid: false,
+      reason:
+        "Rounded ATR stop distance is zero or invalid"
+    };
+  }
+
+  const target1 =
+    round(
+      direction === "BUY"
+        ? roundedEntry +
+          roundedRiskDistance *
+          config.minimumRiskReward
+        : roundedEntry -
+          roundedRiskDistance *
+          config.minimumRiskReward,
+      priceDecimals
+    );
+
+  const target2 =
+    round(
+      direction === "BUY"
+        ? roundedEntry +
+          roundedRiskDistance * 3
+        : roundedEntry -
+          roundedRiskDistance * 3,
+      priceDecimals
+    );
+
+  const target3 =
+    round(
+      direction === "BUY"
+        ? roundedEntry +
+          roundedRiskDistance * 4
+        : roundedEntry -
+          roundedRiskDistance * 4,
+      priceDecimals
+    );
+
+  const blockingLevel =
+    direction === "BUY"
+      ? supportResistance
+          .resistances?.[0]
+      : supportResistance
+          .supports?.[0];
+
+  let roomToLevelR = null;
+
+  if (isFiniteNumber(blockingLevel)) {
+    const room =
+      direction === "BUY"
+        ? blockingLevel - entry
+        : entry - blockingLevel;
+
+    if (room > 0) {
+      roomToLevelR =
+        room / riskDistance;
+    }
+  }
+
+  if (
+    isFiniteNumber(roomToLevelR) &&
+    roomToLevelR <
+      config.minimumRiskReward
+  ) {
+    return {
+      valid: false,
+      reason:
+        `Nearest opposing level provides only ${round(roomToLevelR, 2)}R room; ${config.minimumRiskReward}R is required`,
+      atr,
+      structureLevel,
+      blockingLevel,
+      roomToLevelR,
+      riskAtrMultiple
+    };
+  }
+
+  const riskReward =
+    calculateRiskReward(
+      roundedEntry,
+      stopLoss,
+      target1
+    );
+
+  const geometryValid =
+    direction === "BUY"
+      ? stopLoss < entry &&
+        entry < target1 &&
+        target1 < target2 &&
+        target2 < target3
+      : target3 < target2 &&
+        target2 < target1 &&
+        target1 < entry &&
+        entry < stopLoss;
+
+  if (
+    !geometryValid ||
+    riskReward <
+      config.minimumRiskReward
+  ) {
+    return {
+      valid: false,
+      reason:
+        "Generated ATR trade-plan geometry is invalid"
+    };
+  }
+
+  return {
+    valid: true,
+    reason: null,
+    plan: {
+      entry:
+        roundedEntry,
+      stopLoss,
+      target1,
+      target2,
+      target3,
+      riskReward:
+        round(riskReward, 2),
+      atr:
+        round(
+          atr,
+          priceDecimals
+        ),
+      atrPeriod:
+        atrSnapshot.period,
+      atrPercent:
+        round(
+          atrSnapshot.atrPercent,
+          6
+        ),
+      atrPercentile:
+        round(
+          atrSnapshot.percentile,
+          2
+        ),
+      atrRegime:
+        atrSnapshot.regime,
+      riskModel:
+        "ATR_REGIME_STRUCTURE",
+      stopAtrMultiplier:
+        round(
+          riskAtrMultiple,
+          4
+        ),
+      baseStopAtrMultiplier:
+        round(
+          baseMultiplier,
+          4
+        ),
+      structureLevel:
+        isFiniteNumber(structureLevel)
+          ? round(
+              structureLevel,
+              priceDecimals
+            )
+          : null,
+      opposingLevel:
+        isFiniteNumber(blockingLevel)
+          ? round(
+              blockingLevel,
+              priceDecimals
+            )
+          : null,
+      roomToOpposingLevelR:
+        round(
+          roomToLevelR,
+          4
+        ),
+      targetAtrMultipliers: {
+        target1:
+          round(
+            riskDistance *
+            config.minimumRiskReward /
+            atr,
+            4
+          ),
+        target2:
+          round(
+            riskDistance * 3 /
+            atr,
+            4
+          ),
+        target3:
+          round(
+            riskDistance * 4 /
+            atr,
+            4
+          )
+      }
+    },
+    diagnostics: {
+      baseMultiplier,
+      regimeMultiplier,
+      pairModifier,
+      baseRiskDistance,
+      structureRiskDistance,
+      riskDistance,
+      riskAtrMultiple,
+      structureLevel,
+      blockingLevel,
+      roomToLevelR
+    }
+  };
 }
 
 /* =====================================================================
@@ -3227,177 +4287,21 @@ function appendSkippedPipelineSteps(
 
 }
 
-function describeUnsafeDataSource(
-  label,
-  quality
-) {
-  const details = [];
-
-  if (
-    quality?.fetchSucceeded ===
-    false
-  ) {
-    details.push(
-      "latest fetch failed"
-    );
-  }
-
-  if (
-    quality?.fallbackUsed ===
-    true
-  ) {
-    details.push(
-      "cache fallback is active"
-    );
-  }
-
-  if (
-    quality?.sourceMarkedStale ===
-    true
-  ) {
-    details.push(
-      "source is marked stale"
-    );
-  }
-
-  if (
-    quality?.ageMinutes ===
-    null ||
-    quality?.ageMinutes ===
-    undefined
-  ) {
-    details.push(
-      "latest candle age is unavailable"
-    );
-  } else if (
-    Number.isFinite(
-      quality.ageMinutes
-    ) &&
-    Number.isFinite(
-      quality.staleThresholdMinutes
-    ) &&
-    quality.ageMinutes >
-      quality.staleThresholdMinutes
-  ) {
-    details.push(
-      `latest candle is ${quality.ageMinutes} minute(s) old; ` +
-      `maximum allowed age is ${quality.staleThresholdMinutes} minute(s)`
-    );
-  }
-
-  if (details.length === 0) {
-    details.push(
-      "source failed freshness validation"
-    );
-  }
-
-  return (
-    `${label}: ` +
-    details.join(", ")
-  );
-}
-
-function buildModeDataSafetyIssues(
-  mode,
-  prepared
-) {
-  const issues = [];
-
-  const m5Quality =
-    prepared?.quality?.m5;
-
-  /*
-   * Every scalp mode is ultimately generated from M5 candles.
-   * Unsafe M5 therefore blocks M5, M15 and M30.
-   */
-  if (
-    !m5Quality ||
-    m5Quality.stale === true
-  ) {
-    issues.push(
-      describeUnsafeDataSource(
-        "M5 market data",
-        m5Quality
-      )
-    );
-  }
-
-  /*
-   * M5 and M15 higher-timeframe confirmation is derived from the same
-   * fresh M5 snapshot. M30 alone depends on the external H1 source.
-   */
-  if (mode === "M30") {
-    const h1Quality =
-      prepared?.quality?.h1;
-
-    if (
-      !h1Quality ||
-      h1Quality.stale === true
-    ) {
-      issues.push(
-        describeUnsafeDataSource(
-          "H1 confirmation data",
-          h1Quality
-        )
-      );
-    }
-  }
-
-  return issues;
-}
-
-function createDataSafetyBlockedAnalysis(
-  pairLabel,
-  issues
-) {
-  const result = {
-    pair: pairLabel,
-    signal: "WAIT",
-    confidence: 0,
-    reasons: [
-      "Market data safety block"
-    ],
-    steps: [],
-    tradePlan: null
-  };
-
-  result.steps.push({
-    name:
-      "Market Data Safety",
-
-    pass:
-      false,
-
-    detail:
-      Array.isArray(issues) &&
-      issues.length > 0
-        ? issues.join("; ")
-        : "Required market data failed freshness validation"
-  });
-
-  appendSkippedPipelineSteps(
-    result,
-    [
-      "EMA Trend",
-      "MACD",
-      "RSI",
-      "Higher TF",
-      "News",
-      "Risk Reward"
-    ],
-    "Market Data Safety"
-  );
-
-  return result;
-}
-
 function analyze(
   rows,
   pairLabel,
   newsScoreRaw,
   htfRows,
-  newsItems
+  newsItems,
+  context = {}
 ) {
+  const mode =
+    String(
+      context.mode ??
+      "M5"
+    )
+      .trim()
+      .toUpperCase();
 
   const result = {
     pair: pairLabel,
@@ -3405,7 +4309,12 @@ function analyze(
     confidence: 0,
     reasons: [],
     steps: [],
-    tradePlan: null
+    tradePlan: null,
+    professionalPipelineVersion:
+      PROFESSIONAL_PIPELINE_VERSION,
+    indicatorSnapshot: null,
+    confluence: null,
+    riskDiagnostics: null
   };
 
   if (!hasEnoughRows(rows, 35)) {
@@ -3416,325 +4325,356 @@ function analyze(
     result.steps.push({
       name: "Data Availability",
       pass: false,
+      status: "fail",
       detail:
-        `Only ${Array.isArray(rows) ? rows.length : 0} closed candles are available; at least 35 are required`
+        `Only ${Array.isArray(rows) ? rows.length : 0} complete closed candles are available; at least 35 are required`
     });
 
+    return result;
+  }
+
+  const sourceQuality =
+    context.dataQuality;
+
+  const stale =
+    sourceQuality?.stale === true;
+
+  result.steps.push({
+    name: "Data Availability",
+    pass: !stale,
+    status:
+      stale
+        ? "fail"
+        : "pass",
+    detail:
+      stale
+        ? "Market data is stale; no live signal is permitted"
+        : `${rows.length} complete closed ${mode} candles available; latest ${latestRow(rows)?.date ?? "unknown"}`
+  });
+
+  if (stale) {
+    result.reasons.push(
+      "Stale market data"
+    );
     return result;
   }
 
   const closes =
     closeSeries(rows);
 
-  const emaState =
+  const ema =
     getEMAState(rows);
 
   const macd =
-    computeMACD(closes);
+    buildMacdSnapshot(closes);
 
   const rsi =
-    rsiSeries(closes);
+    buildRsiSnapshot(closes);
 
-  const lastRSI =
-    rsi[rsi.length - 1];
+  const dmi =
+    computeDmiAdx(rows);
 
-  const market =
+  const atr =
+    buildAtrSnapshot(
+      rows,
+      atrRiskConfigFor(pairLabel)
+        ?.period ?? 14
+    );
+
+  const structure =
     computeMarketStructure(rows);
 
-  const sr =
+  const supportResistance =
     computeSupportResistance(rows);
 
   const candlePattern =
     detectCandlePattern(rows);
 
-  /* =============================
-     STEP 1 : EMA Trend
-     ============================= */
-
-  /*
-   * Primary Scalp EMA gate only:
-   *
-   * - Existing 4/4 alignment remains fully accepted.
-   * - A controlled 3/4 alignment is accepted only when the core
-   *   EMA20 -> EMA50 -> EMA100 structure agrees with the direction.
-   * - Higher-timeframe confirmation remains strict because
-   *   trendDirectionOf() and getEMAState() are unchanged.
-   */
-
-  const qualifiedBullishPartial =
-    emaState.available === true &&
-    emaState.bullishCount === 3 &&
-    emaState.values.ema20 >
-      emaState.values.ema50 &&
-    emaState.values.ema50 >
-      emaState.values.ema100;
-
-  const qualifiedBearishPartial =
-    emaState.available === true &&
-    emaState.bearishCount === 3 &&
-    emaState.values.ema20 <
-      emaState.values.ema50 &&
-    emaState.values.ema50 <
-      emaState.values.ema100;
-
-  const qualifiedPartialAlignment =
-    !emaState.fullAlignment &&
-    (
-      qualifiedBullishPartial ||
-      qualifiedBearishPartial
+  const higherTimeframe =
+    inferHigherTimeframeBias(
+      htfRows
     );
 
-  const emaAlignmentAccepted =
-    emaState.fullAlignment ||
-    qualifiedPartialAlignment;
+  const buy =
+    scoreDirection({
+      direction: "BUY",
+      ema,
+      macd,
+      rsi,
+      dmi,
+      structure,
+      higherTimeframe,
+      candlePattern
+    });
+
+  const sell =
+    scoreDirection({
+      direction: "SELL",
+      ema,
+      macd,
+      rsi,
+      dmi,
+      structure,
+      higherTimeframe,
+      candlePattern
+    });
+
+  const selection =
+    selectDirection(
+      buy,
+      sell,
+      mode
+    );
+
+  result.indicatorSnapshot = {
+    timeframe: mode,
+    analyzedCandleAt:
+      latestRow(rows)?.date ??
+      null,
+    ema,
+    macd: {
+      available: macd.available,
+      macd: macd.macd,
+      signal: macd.signal,
+      histogram: macd.histogram,
+      previousHistogram:
+        macd.previousHistogram,
+      histogramSlope:
+        macd.histogramSlope,
+      crossedBullish:
+        macd.crossedBullish,
+      crossedBearish:
+        macd.crossedBearish,
+      direction:
+        macd.direction
+    },
+    rsi: {
+      available: rsi.available,
+      period: rsi.period,
+      current: rsi.current,
+      previous: rsi.previous,
+      slope: rsi.slope,
+      momentum: rsi.momentum,
+      crossedAbove50:
+        rsi.crossedAbove50,
+      crossedBelow50:
+        rsi.crossedBelow50,
+      overbought:
+        rsi.overbought,
+      oversold:
+        rsi.oversold,
+      direction:
+        rsi.direction
+    },
+    dmiAdx: {
+      available: dmi.available,
+      period: dmi.period,
+      plusDI: dmi.plusDI,
+      minusDI: dmi.minusDI,
+      adx: dmi.adx,
+      previousAdx:
+        dmi.previousAdx,
+      adxSlope:
+        dmi.adxSlope,
+      direction:
+        dmi.direction,
+      trendStrength:
+        dmi.trendStrength
+    },
+    atr: {
+      available: atr.available,
+      period: atr.period,
+      value: atr.atr,
+      previous: atr.previousAtr,
+      slope: atr.atrSlope,
+      percent: atr.atrPercent,
+      percentile: atr.percentile,
+      median: atr.medianAtr,
+      medianRatio:
+        atr.medianRatio,
+      regime: atr.regime
+    },
+    structure,
+    supportResistance,
+    candlePattern,
+    higherTimeframe
+  };
+
+  result.confluence = {
+    version:
+      PROFESSIONAL_PIPELINE_VERSION,
+    buy,
+    sell,
+    selection
+  };
+
+  const provisionalDirection =
+    selection.direction ||
+    (
+      buy.score >= sell.score
+        ? "BUY"
+        : "SELL"
+    );
+
+  const provisionalScore =
+    provisionalDirection === "BUY"
+      ? buy
+      : sell;
+
+  function componentStep(
+    name,
+    component
+  ) {
+    const ratio =
+      component.available &&
+      component.weight > 0
+        ? component.score /
+          component.weight
+        : null;
+
+    result.steps.push({
+      name,
+      pass:
+        ratio === null
+          ? null
+          : ratio >= 0.55,
+      status:
+        ratio === null
+          ? "na"
+          : ratio >= 0.55
+          ? "pass"
+          : ratio > 0
+          ? "info"
+          : "fail",
+      detail:
+        `${provisionalDirection} evidence ${round(component.score, 2)}/${component.weight}. ${component.detail}`,
+      direction:
+        provisionalDirection,
+      score:
+        round(component.score, 2),
+      maximumScore:
+        component.weight
+    });
+  }
+
+  componentStep(
+    "EMA Trend",
+    provisionalScore.components.ema
+  );
+
+  componentStep(
+    "MACD",
+    provisionalScore.components.macd
+  );
+
+  componentStep(
+    "RSI",
+    provisionalScore.components.rsi
+  );
+
+  componentStep(
+    "ADX / DMI",
+    provisionalScore.components.dmiAdx
+  );
+
+  componentStep(
+    "Market Structure",
+    provisionalScore.components.structure
+  );
+
+  componentStep(
+    "Higher TF",
+    provisionalScore
+      .components
+      .higherTimeframe
+  );
+
+  result.steps.push({
+    name: "Candle Pattern",
+    pass:
+      provisionalScore
+        .components
+        .candlePattern
+        .available
+        ? provisionalScore
+            .components
+            .candlePattern
+            .score > 0
+        : null,
+    status:
+      provisionalScore
+        .components
+        .candlePattern
+        .available
+        ? provisionalScore
+            .components
+            .candlePattern
+            .score > 0
+          ? "pass"
+          : "info"
+        : "na",
+    detail:
+      candlePattern ??
+      "No directional engulfing pattern on the latest complete candle"
+  });
+
+  result.steps.push({
+    name: "ATR Volatility",
+    pass:
+      atr.available,
+    status:
+      atr.available
+        ? atr.regime === "EXTREME"
+          ? "info"
+          : "pass"
+        : "fail",
+    detail:
+      atr.available
+        ? `ATR(${atr.period}) ${round(atr.atr, 6)}; ${round(atr.atrPercent, 4)}% of price; percentile ${round(atr.percentile, 2)}; regime ${atr.regime}`
+        : "ATR is unavailable"
+  });
+
+  if (!selection.qualified) {
+    result.steps.push({
+      name: "Confluence Decision",
+      pass: false,
+      status: "fail",
+      detail:
+        `No qualified edge: BUY ${buy.score}, SELL ${sell.score}; winner requires score ${selection.requiredScore} and edge ${selection.requiredEdge}, observed edge ${selection.edge}`
+    });
+
+    result.reasons.push(
+      `No qualified confluence: BUY ${buy.score}, SELL ${sell.score}, edge ${selection.edge}`
+    );
+
+    return result;
+  }
 
   const direction =
-    emaState.fullAlignment
-      ? emaState.direction
-      : qualifiedBullishPartial
-        ? "BUY"
-        : qualifiedBearishPartial
-          ? "SELL"
-          : null;
+    selection.direction;
 
-  if (
-    !emaAlignmentAccepted ||
-    !direction
-  ) {
+  const strongHtfConflict =
+    higherTimeframe.available &&
+    higherTimeframe.direction &&
+    higherTimeframe.direction !==
+      direction &&
+    higherTimeframe.strength >= 70;
 
+  if (strongHtfConflict) {
     result.steps.push({
-      name: "EMA Trend",
+      name: "Confluence Decision",
       pass: false,
+      status: "fail",
       detail:
-        !emaState.available
-          ? "EMA trend values are unavailable because there are not enough valid candles"
-          : `EMA alignment failed; bullish checks ${emaState.bullishCount ?? 0}/4, bearish checks ${emaState.bearishCount ?? 0}/4; qualified 3/4 core alignment not confirmed`
+        `${direction} score qualified, but strong higher-timeframe ${higherTimeframe.direction} conflict (${round(higherTimeframe.strength, 2)}%) blocks entry`
     });
 
     result.reasons.push(
-      "EMA alignment failed"
-    );
-
-    appendSkippedPipelineSteps(
-      result,
-      [
-        "MACD",
-        "RSI",
-        "Higher TF",
-        "News",
-        "Risk Reward"
-      ],
-      "EMA Trend"
+      "Strong higher timeframe conflict"
     );
 
     return result;
   }
-
-  result.steps.push({
-    name: "EMA Trend",
-    pass: true,
-    detail:
-      qualifiedPartialAlignment
-        ? `${direction} qualified partial EMA alignment confirmed at 3/4 with EMA20–EMA50–EMA100 core structure; confidence penalty -10: price ${round(emaState.lastClose, 6)}, ` +
-          `EMA20 ${round(emaState.values.ema20, 6)}, ` +
-          `EMA50 ${round(emaState.values.ema50, 6)}, ` +
-          `EMA100 ${round(emaState.values.ema100, 6)}, ` +
-          `EMA200 ${round(emaState.values.ema200, 6)}`
-        : `${direction} full EMA alignment confirmed at 4/4: price ${round(emaState.lastClose, 6)}, ` +
-          `EMA20 ${round(emaState.values.ema20, 6)}, ` +
-          `EMA50 ${round(emaState.values.ema50, 6)}, ` +
-          `EMA100 ${round(emaState.values.ema100, 6)}, ` +
-          `EMA200 ${round(emaState.values.ema200, 6)}`
-  });
-
-  /* =============================
-     STEP 2 : MACD
-     ============================= */
-
-  let macdPass = false;
-
-  if (
-    direction === "BUY" &&
-    macd.available &&
-    macd.macd > macd.signal
-  ) {
-    macdPass = true;
-  }
-
-  if (
-    direction === "SELL" &&
-    macd.available &&
-    macd.macd < macd.signal
-  ) {
-    macdPass = true;
-  }
-
-  result.steps.push({
-    name: "MACD",
-    pass: macdPass,
-    detail:
-      !macd.available
-        ? "MACD is unavailable because there are not enough valid candles"
-        : macdPass
-          ? `${direction} confirmed: MACD ${round(macd.macd, 6)} is ${
-              direction === "BUY"
-                ? "above"
-                : "below"
-            } signal ${round(macd.signal, 6)}; histogram ${round(macd.histogram, 6)}`
-          : `${direction} not confirmed: MACD ${round(macd.macd, 6)} is not ${
-              direction === "BUY"
-                ? "above"
-                : "below"
-            } signal ${round(macd.signal, 6)}; histogram ${round(macd.histogram, 6)}`
-  });
-
-  if (!macdPass) {
-    result.reasons.push(
-      "MACD confirmation failed"
-    );
-
-    appendSkippedPipelineSteps(
-      result,
-      [
-        "RSI",
-        "Higher TF",
-        "News",
-        "Risk Reward"
-      ],
-      "MACD"
-    );
-
-    return result;
-  }
-
-  /* =============================
-     STEP 3 : RSI
-     ============================= */
-
-  let rsiPass = false;
-
-  if (
-    direction === "BUY" &&
-    isFiniteNumber(lastRSI) &&
-    lastRSI >= 45 &&
-    lastRSI <= 65
-  ) {
-    rsiPass = true;
-  }
-
-  if (
-    direction === "SELL" &&
-    isFiniteNumber(lastRSI) &&
-    lastRSI >= 35 &&
-    lastRSI <= 55
-  ) {
-    rsiPass = true;
-  }
-
-  const expectedRsiRange =
-    direction === "BUY"
-      ? "45–65"
-      : "35–55";
-
-  result.steps.push({
-    name: "RSI",
-    pass: rsiPass,
-    detail:
-      !isFiniteNumber(lastRSI)
-        ? "RSI is unavailable because there are not enough valid candles"
-        : rsiPass
-          ? `${direction} RSI confirmation passed at ${round(lastRSI, 2)}; required range ${expectedRsiRange}`
-          : `${direction} RSI confirmation failed at ${round(lastRSI, 2)}; required range ${expectedRsiRange}`
-  });
-
-  if (!rsiPass) {
-
-    result.reasons.push(
-      "RSI confirmation failed"
-    );
-
-    appendSkippedPipelineSteps(
-      result,
-      [
-        "Higher TF",
-        "News",
-        "Risk Reward"
-      ],
-      "RSI"
-    );
-
-    return result;
-  }
-
-  /* =============================
-     STEP 4 : Higher TF
-     ============================= */
-
-  if (
-    Array.isArray(htfRows) &&
-    htfRows.length > 0
-  ) {
-
-    const htfTrend =
-      trendDirectionOf(htfRows);
-
-    if (!htfTrend) {
-      result.steps.push({
-        name: "Higher TF",
-        pass: true,
-        detail:
-          "Higher timeframe has no full EMA direction, so no conflicting trend was found"
-      });
-    } else if (
-      htfTrend !== direction
-    ) {
-
-      result.steps.push({
-        name: "Higher TF",
-        pass: false,
-        detail:
-          `Higher timeframe mismatch: lower timeframe is ${direction}, higher timeframe is ${htfTrend}`
-      });
-
-      result.reasons.push(
-        "Higher timeframe mismatch"
-      );
-
-      appendSkippedPipelineSteps(
-        result,
-        [
-          "News",
-          "Risk Reward"
-        ],
-        "Higher TF"
-      );
-
-      return result;
-    } else {
-
-      result.steps.push({
-        name: "Higher TF",
-        pass: true,
-        detail:
-          `Higher timeframe confirms the same ${direction} direction`
-      });
-
-    }
-
-  } else {
-
-    result.steps.push({
-      name: "Higher TF",
-      pass: true,
-      detail:
-        "Higher timeframe data is unavailable; no conflicting confirmation was detected"
-    });
-
-  }
-
-  /* =============================
-     STEP 5 : News Filter
-     ============================= */
 
   const conflict =
     conflictingHighImpactNews(
@@ -3742,211 +4682,141 @@ function analyze(
       newsItems
     );
 
+  result.steps.push({
+    name: "News",
+    pass:
+      !conflict,
+    status:
+      conflict
+        ? "fail"
+        : "pass",
+    detail:
+      conflict
+        ? `Conflicting high-impact news: ${conflict.title || "Untitled news item"}; sentiment ${round(conflict.sentiment, 2)}`
+        : Array.isArray(newsItems) &&
+          newsItems.length > 0
+        ? `No conflicting high-impact news across ${newsItems.length} pair-specific item(s); net score ${round(newsScoreRaw, 2)}`
+        : `No pair-specific conflicting high-impact news; net score ${round(newsScoreRaw, 2)}`
+  });
+
   if (conflict) {
-
-    result.steps.push({
-      name: "News",
-      pass: false,
-      detail:
-        `Conflicting high-impact news detected: ${
-          conflict.title ||
-          "Untitled news item"
-        } with sentiment ${round(conflict.sentiment, 2)}`
-    });
-
     result.reasons.push(
       "High impact news conflict"
     );
-
-    appendSkippedPipelineSteps(
-      result,
-      [
-        "Risk Reward"
-      ],
-      "News"
-    );
-
     return result;
-
   }
-
-  result.steps.push({
-    name: "News",
-    pass: true,
-    detail:
-      Array.isArray(newsItems) &&
-      newsItems.length > 0
-        ? `No conflicting high-impact news found across ${newsItems.length} pair-specific item(s); net news score ${round(newsScoreRaw, 2)}`
-        : `No pair-specific conflicting news found; net news score ${round(newsScoreRaw, 2)}`
-  });
-
-  /* =============================
-     STEP 6 : Support / Resistance
-     ============================= */
 
   const entry =
     lastClose(rows);
 
-  let stop;
-  let target;
-
-  if (direction === "BUY") {
-
-    const support =
-      sr.supports[0];
-
-    const resistance =
-      sr.resistances[0];
-
-    if (
-      !isFiniteNumber(support) ||
-      !isFiniteNumber(resistance)
-    ) {
-      result.steps.push({
-        name: "Risk Reward",
-        pass: false,
-        detail:
-          `Trade plan unavailable because support or resistance could not be determined; support ${support ?? "missing"}, resistance ${resistance ?? "missing"}`
-      });
-
-      result.reasons.push(
-        "Support/Resistance unavailable"
-      );
-
-      return result;
-    }
-
-    stop = support;
-    target = resistance;
-
-  } else {
-
-    const resistance =
-      sr.resistances[0];
-
-    const support =
-      sr.supports[0];
-
-    if (
-      !isFiniteNumber(support) ||
-      !isFiniteNumber(resistance)
-    ) {
-      result.steps.push({
-        name: "Risk Reward",
-        pass: false,
-        detail:
-          `Trade plan unavailable because support or resistance could not be determined; support ${support ?? "missing"}, resistance ${resistance ?? "missing"}`
-      });
-
-      result.reasons.push(
-        "Support/Resistance unavailable"
-      );
-
-      return result;
-    }
-
-    stop = resistance;
-    target = support;
-
-  }
-
-  const rr =
-    calculateRiskReward(
+  const tradePlanResult =
+    buildProfessionalTradePlan({
+      direction,
       entry,
-      stop,
-      target
-    );
-
-  if (rr < 2) {
-
-    result.steps.push({
-      name: "Risk Reward",
-      pass: false,
-      detail:
-        `Calculated R:R is 1:${round(rr, 2)} using entry ${round(entry, 6)}, stop ${round(stop, 6)} and target ${round(target, 6)}; minimum required is 1:2`
+      pairLabel,
+      mode,
+      atrSnapshot: atr,
+      supportResistance,
+      structure
     });
 
-    result.reasons.push(
-      "Risk Reward below 1:2"
-    );
+  result.riskDiagnostics =
+    tradePlanResult.diagnostics ??
+    {
+      reason:
+        tradePlanResult.reason
+    };
 
+  result.steps.push({
+    name: "Risk Reward",
+    pass:
+      tradePlanResult.valid,
+    status:
+      tradePlanResult.valid
+        ? "pass"
+        : "fail",
+    detail:
+      tradePlanResult.valid
+        ? `Professional ATR-regime plan passed: ${tradePlanResult.plan.riskReward}R target, ${tradePlanResult.plan.stopAtrMultiplier} ATR stop, regime ${tradePlanResult.plan.atrRegime}`
+        : `Trade plan rejected: ${tradePlanResult.reason}`
+  });
+
+  if (!tradePlanResult.valid) {
+    result.reasons.push(
+      tradePlanResult.reason ||
+      "Risk plan invalid"
+    );
     return result;
   }
 
   result.steps.push({
-    name: "Risk Reward",
+    name: "Confluence Decision",
     pass: true,
+    status: "pass",
     detail:
-      `Risk:Reward passed at 1:${round(rr, 2)} using entry ${round(entry, 6)}, stop ${round(stop, 6)} and target ${round(target, 6)}`
+      `${direction} qualified: score ${selection.winnerScore}, opposing score ${selection.opposingScore}, edge ${selection.edge}`
   });
 
-  /* =============================
-     Final Signal
-     ============================= */
+  const market =
+    computeMarketStructure(rows);
 
-  result.signal =
-    direction;
-
-  result.confidence =
-    80;
+  let confidence =
+    45 +
+    selection.winnerScore *
+      0.42 +
+    selection.edge *
+      0.35;
 
   if (
-    qualifiedPartialAlignment
+    dmi.available &&
+    dmi.adx >= 25 &&
+    dmi.direction === direction
   ) {
-    result.confidence -= 10;
+    confidence += 4;
   }
 
   if (
     market.direction === direction
   ) {
-    result.confidence += 10;
+    confidence += 3;
   }
 
-  if (candlePattern) {
-    result.confidence += 5;
+  if (
+    atr.regime === "EXTREME"
+  ) {
+    confidence -= 5;
+  } else if (
+    atr.regime === "HIGH"
+  ) {
+    confidence -= 2;
   }
 
   if (
     Math.abs(newsScoreRaw) < 10
   ) {
-    result.confidence += 5;
+    confidence += 2;
   }
 
+  result.signal =
+    direction;
+
   result.confidence =
-    clamp(
-      result.confidence,
-      0,
-      100
+    Math.round(
+      clamp(
+        confidence,
+        55,
+        95
+      )
     );
 
-  const risk =
-    Math.abs(entry - stop);
+  result.tradePlan =
+    tradePlanResult.plan;
 
-  result.tradePlan = {
-
-    entry,
-
-    stopLoss: stop,
-
-    target1: target,
-
-    target2:
-      direction === "BUY"
-        ? entry + risk * 3
-        : entry - risk * 3,
-
-    target3:
-      direction === "BUY"
-        ? entry + risk * 4
-        : entry - risk * 4,
-
-    riskReward:
-      round(rr, 2)
-
-  };
+  result.reasons.push(
+    `${direction} professional confluence passed at score ${selection.winnerScore} with edge ${selection.edge}`
+  );
 
   return result;
-
 }
 
 /* =====================================================================
@@ -4576,1893 +5446,6 @@ function buildPreparedMarketData(
 }
 
 /* =====================================================================
-   AI Memory Confidence Adapter
-   ===================================================================== */
-
-function normalizeMemoryEngine(
-  value
-) {
-
-  const normalized =
-    String(
-      value ?? ""
-    )
-      .trim()
-      .toLowerCase();
-
-  if (
-    normalized === "scalp" ||
-    normalized === "scalping" ||
-    normalized.startsWith(
-      "scalp-"
-    )
-  ) {
-
-    return "scalp";
-
-  }
-
-  return normalized || null;
-}
-
-
-function normalizeMemoryDirection(
-  value
-) {
-
-  const normalized =
-    String(
-      value ?? ""
-    )
-      .trim()
-      .toUpperCase();
-
-  if (
-    normalized === "BUY" ||
-    normalized === "LONG" ||
-    normalized === "BULLISH"
-  ) {
-
-    return "BUY";
-
-  }
-
-  if (
-    normalized === "SELL" ||
-    normalized === "SHORT" ||
-    normalized === "BEARISH"
-  ) {
-
-    return "SELL";
-
-  }
-
-  return null;
-}
-
-
-function normalizeMemoryPair(
-  value
-) {
-
-  return normalizePairKey(
-    value
-  );
-
-}
-
-
-function validMemoryStatistic(
-  value
-) {
-
-  if (
-    !value ||
-    typeof value !== "object" ||
-    Array.isArray(value)
-  ) {
-
-    return false;
-
-  }
-
-  const totalTrades =
-    numericValue(
-      value.totalTrades
-    );
-
-  const wins =
-    numericValue(
-      value.wins
-    );
-
-  const losses =
-    numericValue(
-      value.losses
-    );
-
-  const winRate =
-    numericValue(
-      value.winRate
-    );
-
-  const profitFactor =
-    numericValue(
-      value.profitFactor
-    );
-
-  if (
-    totalTrades === null ||
-    wins === null ||
-    losses === null ||
-    winRate === null ||
-    profitFactor === null
-  ) {
-
-    return false;
-
-  }
-
-  if (
-    !Number.isInteger(totalTrades) ||
-    !Number.isInteger(wins) ||
-    !Number.isInteger(losses) ||
-    totalTrades < 0 ||
-    wins < 0 ||
-    losses < 0 ||
-    wins + losses > totalTrades ||
-    winRate < 0 ||
-    winRate > 100 ||
-    profitFactor < 0
-  ) {
-
-    return false;
-
-  }
-
-  return true;
-
-}
-
-
-function getAiMemoryCandidate(
-  memory,
-  pair,
-  engine,
-  direction
-) {
-
-  if (
-    !memory ||
-    typeof memory !== "object" ||
-    Array.isArray(memory) ||
-    !memory.combinations ||
-    typeof memory.combinations !==
-      "object"
-  ) {
-
-    return null;
-
-  }
-
-  const normalizedPair =
-    normalizeMemoryPair(
-      pair
-    );
-
-  const normalizedEngine =
-    normalizeMemoryEngine(
-      engine
-    );
-
-  const normalizedDirection =
-    normalizeMemoryDirection(
-      direction
-    );
-
-  if (
-    !normalizedPair ||
-    !normalizedEngine ||
-    !normalizedDirection
-  ) {
-
-    return null;
-
-  }
-
-  const candidates = [
-    {
-      source:
-        "pairEngineDirection",
-
-      key:
-        `${normalizedPair}::` +
-        `${normalizedEngine}::` +
-        `${normalizedDirection}`
-    },
-    {
-      source:
-        "pairDirection",
-
-      key:
-        `${normalizedPair}::` +
-        `${normalizedDirection}`
-    },
-    {
-      source:
-        "engineDirection",
-
-      key:
-        `${normalizedEngine}::` +
-        `${normalizedDirection}`
-    }
-  ];
-
-  for (const candidate of candidates) {
-
-    const container =
-      memory.combinations[
-        candidate.source
-      ];
-
-    if (
-      !container ||
-      typeof container !== "object" ||
-      Array.isArray(container)
-    ) {
-
-      continue;
-
-    }
-
-    const statistic =
-      container[
-        candidate.key
-      ];
-
-    if (
-      !validMemoryStatistic(
-        statistic
-      )
-    ) {
-
-      continue;
-
-    }
-
-    return {
-      source:
-        candidate.source,
-
-      key:
-        candidate.key,
-
-      statistic
-    };
-
-  }
-
-  return null;
-
-}
-
-
-function memorySampleWeight(
-  totalTrades
-) {
-
-  if (
-    totalTrades < AI_MEMORY_MIN_TRADES
-  ) {
-
-    return 0;
-
-  }
-
-  if (
-    totalTrades < 40
-  ) {
-
-    return 0.5;
-
-  }
-
-  if (
-    totalTrades < 80
-  ) {
-
-    return 0.75;
-
-  }
-
-  return 1;
-
-}
-
-
-function calculateAiMemoryAdjustment(
-  statistic
-) {
-
-  if (
-    !validMemoryStatistic(
-      statistic
-    )
-  ) {
-
-    return 0;
-
-  }
-
-  const totalTrades =
-    numericValue(
-      statistic.totalTrades
-    );
-
-  const winRate =
-    numericValue(
-      statistic.winRate
-    );
-
-  const profitFactor =
-    numericValue(
-      statistic.profitFactor
-    );
-
-  const averageProfitPoints =
-    numericValue(
-      statistic.averageProfitPoints
-    );
-
-  const sampleWeight =
-    memorySampleWeight(
-      totalTrades
-    );
-
-  if (sampleWeight === 0) {
-
-    return 0;
-
-  }
-
-  let score = 0;
-
-  /*
-   * Profit factor is the primary profitability signal.
-   */
-  if (profitFactor >= 1.5) {
-
-    score += 3;
-
-  } else if (
-    profitFactor >= 1.2
-  ) {
-
-    score += 2;
-
-  } else if (
-    profitFactor >= 1.05
-  ) {
-
-    score += 1;
-
-  } else if (
-    profitFactor < 0.5
-  ) {
-
-    score -= 4;
-
-  } else if (
-    profitFactor < 0.8
-  ) {
-
-    score -= 3;
-
-  } else if (
-    profitFactor < 1
-  ) {
-
-    score -= 1;
-
-  }
-
-  /*
-   * Win rate is secondary because different risk/reward profiles can
-   * remain profitable with lower win rates.
-   */
-  if (winRate >= 45) {
-
-    score += 2;
-
-  } else if (
-    winRate >= 35
-  ) {
-
-    score += 1;
-
-  } else if (
-    winRate < 20
-  ) {
-
-    score -= 3;
-
-  } else if (
-    winRate < 30
-  ) {
-
-    score -= 2;
-
-  }
-
-  /*
-   * Average realized points only provide a small confirmation.
-   */
-  if (
-    averageProfitPoints !== null
-  ) {
-
-    if (
-      averageProfitPoints > 0
-    ) {
-
-      score += 1;
-
-    } else if (
-      averageProfitPoints < 0
-    ) {
-
-      score -= 1;
-
-    }
-
-  }
-
-  const weightedScore =
-    Math.round(
-      score *
-      sampleWeight
-    );
-
-  return clamp(
-    weightedScore,
-    -AI_MEMORY_MAX_ADJUSTMENT,
-    AI_MEMORY_MAX_ADJUSTMENT
-  );
-
-}
-
-
-function buildNoAiMemoryAdjustment(
-  reason
-) {
-
-  return {
-    matched: false,
-    applied: false,
-    source: null,
-    key: null,
-    samples: 0,
-    winRate: null,
-    profitFactor: null,
-    adjustment: 0,
-    reason
-  };
-
-}
-
-
-function evaluateAiMemoryConfidence(
-  memory,
-  pair,
-  direction
-) {
-
-  const normalizedDirection =
-    normalizeMemoryDirection(
-      direction
-    );
-
-  if (!normalizedDirection) {
-
-    return buildNoAiMemoryAdjustment(
-      "Signal is not actionable"
-    );
-
-  }
-
-  const candidate =
-    getAiMemoryCandidate(
-      memory,
-      pair,
-      "scalp",
-      normalizedDirection
-    );
-
-  if (!candidate) {
-
-    return buildNoAiMemoryAdjustment(
-      "No valid matching AI Memory statistic"
-    );
-
-  }
-
-  const totalTrades =
-    numericValue(
-      candidate.statistic.totalTrades
-    );
-
-  if (
-    totalTrades <
-    AI_MEMORY_MIN_TRADES
-  ) {
-
-    return {
-      matched: true,
-      applied: false,
-
-      source:
-        candidate.source,
-
-      key:
-        candidate.key,
-
-      samples:
-        totalTrades,
-
-      winRate:
-        numericValue(
-          candidate.statistic.winRate
-        ),
-
-      profitFactor:
-        numericValue(
-          candidate.statistic.profitFactor
-        ),
-
-      adjustment: 0,
-
-      reason:
-        `Insufficient samples: ${totalTrades}/${AI_MEMORY_MIN_TRADES}`
-    };
-
-  }
-
-  const adjustment =
-    calculateAiMemoryAdjustment(
-      candidate.statistic
-    );
-
-  return {
-    matched: true,
-
-    applied:
-      adjustment !== 0,
-
-    source:
-      candidate.source,
-
-    key:
-      candidate.key,
-
-    samples:
-      totalTrades,
-
-    winRate:
-      numericValue(
-        candidate.statistic.winRate
-      ),
-
-    profitFactor:
-      numericValue(
-        candidate.statistic.profitFactor
-      ),
-
-    adjustment,
-
-    reason:
-      adjustment === 0
-        ? "Qualified memory produced a neutral adjustment"
-        : "Qualified historical profitability adjustment"
-  };
-
-}
-
-
-function applyAiMemoryConfidenceAdjustment(
-  analysis,
-  memory,
-  pair
-) {
-
-  if (
-    !analysis ||
-    typeof analysis !== "object"
-  ) {
-
-    return analysis;
-
-  }
-
-  const direction =
-    normalizeMemoryDirection(
-      analysis.signal
-    );
-
-  const baseConfidence =
-    numericValue(
-      analysis.confidence
-    );
-
-  if (baseConfidence === null) {
-
-    return analysis;
-
-  }
-
-  const hasActionableTradePlan =
-    Boolean(direction) &&
-    Boolean(analysis.tradePlan) &&
-    typeof analysis.tradePlan ===
-      "object";
-
-  /*
-   * WAIT and non-actionable results keep their existing signal,
-   * confidence, pipeline and trade-plan behavior unchanged.
-   *
-   * Only additive confidence provenance is attached.
-   */
-  if (!hasActionableTradePlan) {
-
-    analysis.confidenceExplainability = {
-      version: 1,
-
-      adjustmentOwner:
-        "scalp-engine",
-
-      baseConfidence,
-
-      aiAdjustment: 0,
-
-      finalConfidence:
-        baseConfidence,
-
-      evaluated: true,
-      matched: false,
-      applied: false,
-
-      status:
-        "NOT_APPLICABLE",
-
-      source: null,
-      key: null,
-      sampleSize: 0,
-      winRate: null,
-      profitFactor: null,
-      reliability: null,
-
-      reason:
-        direction
-          ? "Confidence adjustment requires a valid trade plan"
-          : "Confidence adjustment requires a BUY or SELL decision"
-    };
-
-    return analysis;
-
-  }
-
-  const memoryResult =
-    evaluateAiMemoryConfidence(
-      memory,
-      pair,
-      direction
-    );
-
-  const adjustment =
-    numericValue(
-      memoryResult.adjustment
-    ) ?? 0;
-
-  const adjustedConfidence =
-    clamp(
-      Math.round(
-        baseConfidence +
-        adjustment
-      ),
-      0,
-      100
-    );
-
-  const explainabilityStatus =
-    !memoryResult.matched
-      ? "NO_MATCH"
-      : memoryResult.samples <
-          AI_MEMORY_MIN_TRADES
-        ? "INSUFFICIENT_DATA"
-        : adjustment === 0
-          ? "NEUTRAL"
-          : adjustment > 0
-            ? "SUPPORTIVE"
-            : "CAUTION";
-
-  /*
-   * Only confidence and additive explainability metadata are changed.
-   *
-   * Direction, signal eligibility, entry, SL, TP and ATR calculations
-   * remain untouched.
-   */
-  analysis.confidence =
-    adjustedConfidence;
-
-  analysis.confidenceExplainability = {
-    version: 1,
-
-    adjustmentOwner:
-      "scalp-engine",
-
-    baseConfidence,
-
-    aiAdjustment:
-      adjustment,
-
-    finalConfidence:
-      adjustedConfidence,
-
-    evaluated: true,
-
-    matched:
-      memoryResult.matched ===
-      true,
-
-    applied:
-      memoryResult.applied ===
-      true,
-
-    status:
-      explainabilityStatus,
-
-    source:
-      memoryResult.source,
-
-    key:
-      memoryResult.key,
-
-    sampleSize:
-      memoryResult.samples,
-
-    winRate:
-      memoryResult.winRate,
-
-    profitFactor:
-      memoryResult.profitFactor,
-
-    /*
-     * Scalp Engine does not currently calculate a separate reliability
-     * metric. Missing metadata is preserved as null rather than invented.
-     */
-    reliability: null,
-
-    reason:
-      memoryResult.reason
-  };
-
-  /*
-   * Existing steps array remains the human-readable pipeline view.
-   */
-  if (
-    Array.isArray(
-      analysis.steps
-    )
-  ) {
-
-    analysis.steps.push({
-      name:
-        "AI Memory Confidence",
-
-      pass:
-        true,
-
-      detail:
-        memoryResult.matched
-          ? (
-              `Base ${baseConfidence}, adjustment ` +
-              `${adjustment >= 0 ? "+" : ""}${adjustment}, ` +
-              `final ${adjustedConfidence}; ` +
-              `${memoryResult.source} ${memoryResult.key}; ` +
-              `${memoryResult.samples} trades, ` +
-              `${memoryResult.winRate}% win rate, ` +
-              `${memoryResult.profitFactor} profit factor; ` +
-              memoryResult.reason
-            )
-          : (
-              `Base ${baseConfidence}, adjustment +0, ` +
-              `final ${adjustedConfidence}; ` +
-              memoryResult.reason
-            )
-    });
-
-  }
-
-  return analysis;
-
-}
-
-/* =====================================================================
-   Phase 4 Learning Enrichment Advisory Context
-   ===================================================================== */
-
-function createUnavailableEnrichmentContext(
-  reason
-) {
-
-  return {
-    version: 1,
-
-    advisoryOnly: true,
-
-    available: false,
-
-    compatible: false,
-
-    evaluated: true,
-
-    status:
-      "UNAVAILABLE",
-
-    source: null,
-
-    key: null,
-
-    sampleSize: 0,
-
-    sampleSufficient: false,
-
-    learningTrend:
-      "unknown",
-
-    recentPerformance: {
-      window: null,
-      availableTrades: 0,
-      complete: false,
-      winRate: null,
-      profitFactor: null,
-      averageProfitPoints: null
-    },
-
-    recencyWeighted: {
-      available: false,
-      winRate: null,
-      profitFactor: null,
-      averageProfitPoints: null
-    },
-
-    overallPerformance: {
-      winRate: null,
-      profitFactor: null,
-      averageProfitPoints: null
-    },
-
-    calibration: null,
-
-    advisorySignal:
-      "NEUTRAL",
-
-    reason:
-      String(
-        reason ||
-        "Learning Enrichment is unavailable."
-      )
-  };
-
-}
-
-
-function isPlainObjectValue(
-  value
-) {
-
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    !Array.isArray(value)
-  );
-
-}
-
-
-function validIsoDateString(
-  value
-) {
-
-  if (
-    typeof value !== "string" ||
-    !value.trim()
-  ) {
-
-    return false;
-
-  }
-
-  const parsed =
-    new Date(value);
-
-  return !Number.isNaN(
-    parsed.getTime()
-  );
-
-}
-
-
-function validateLearningEnrichmentDocument(
-  document
-) {
-
-  if (
-    !isPlainObjectValue(
-      document
-    )
-  ) {
-
-    return {
-      valid: false,
-      reason:
-        "Learning Enrichment document is missing or malformed."
-    };
-
-  }
-
-  if (
-    document.version !==
-    LEARNING_ENRICHMENT_SCHEMA_VERSION
-  ) {
-
-    return {
-      valid: false,
-      reason:
-        `Unsupported Learning Enrichment schema version: ${
-          document.version ??
-          "missing"
-        }.`
-    };
-
-  }
-
-  if (
-    document.engineName !==
-    LEARNING_ENRICHMENT_ENGINE_NAME
-  ) {
-
-    return {
-      valid: false,
-      reason:
-        "Learning Enrichment engine name is incompatible."
-    };
-
-  }
-
-  if (
-    document.engineVersion !==
-    LEARNING_ENRICHMENT_ENGINE_VERSION
-  ) {
-
-    return {
-      valid: false,
-      reason:
-        "Learning Enrichment engine version is incompatible."
-    };
-
-  }
-
-  if (
-    document.mode !==
-    LEARNING_ENRICHMENT_MODE
-  ) {
-
-    return {
-      valid: false,
-      reason:
-        "Learning Enrichment is not in advisory mode."
-    };
-
-  }
-
-  if (
-    !validIsoDateString(
-      document.generatedAt
-    )
-  ) {
-
-    return {
-      valid: false,
-      reason:
-        "Learning Enrichment generatedAt timestamp is invalid."
-    };
-
-  }
-
-  if (
-    document.validation?.valid !==
-    true
-  ) {
-
-    return {
-      valid: false,
-      reason:
-        "Learning Enrichment source validation did not pass."
-    };
-
-  }
-
-  if (
-    !isPlainObjectValue(
-      document.intelligence
-    ) ||
-    !isPlainObjectValue(
-      document.intelligence.overall
-    ) ||
-    !isPlainObjectValue(
-      document.intelligence.contexts
-    )
-  ) {
-
-    return {
-      valid: false,
-      reason:
-        "Learning Enrichment intelligence section is incomplete."
-    };
-
-  }
-
-  return {
-    valid: true,
-    reason: null
-  };
-
-}
-
-
-function normalizeEnrichmentStrategy(
-  value
-) {
-
-  const normalized =
-    String(
-      value ?? ""
-    )
-      .trim()
-      .toLowerCase();
-
-  if (
-    normalized === "scalp" ||
-    normalized === "scalping" ||
-    normalized.startsWith(
-      "scalp-"
-    )
-  ) {
-
-    return "scalp";
-
-  }
-
-  return normalized || null;
-
-}
-
-
-function getEnrichmentPerformanceMaps(
-  enrichment
-) {
-
-  const performance =
-    enrichment
-      ?.intelligence
-      ?.contexts
-      ?.performance;
-
-  if (
-    !isPlainObjectValue(
-      performance
-    )
-  ) {
-
-    return {
-      dimensions: {},
-      combinations: {}
-    };
-
-  }
-
-  return {
-    dimensions:
-      isPlainObjectValue(
-        performance.dimensions
-      )
-        ? performance.dimensions
-        : {},
-
-    combinations:
-      isPlainObjectValue(
-        performance.combinations
-      )
-        ? performance.combinations
-        : {}
-  };
-
-}
-
-
-function validEnrichmentPerformance(
-  value
-) {
-
-  if (
-    !isPlainObjectValue(
-      value
-    )
-  ) {
-
-    return false;
-
-  }
-
-  const totalTrades =
-    numericValue(
-      value.totalTrades
-    );
-
-  if (
-    totalTrades === null ||
-    !Number.isInteger(
-      totalTrades
-    ) ||
-    totalTrades < 0
-  ) {
-
-    return false;
-
-  }
-
-  if (
-    !isPlainObjectValue(
-      value.overall
-    )
-  ) {
-
-    return false;
-
-  }
-
-  return true;
-
-}
-
-
-function getLearningEnrichmentCandidate(
-  enrichment,
-  pair,
-  strategy,
-  direction
-) {
-
-  const normalizedPair =
-    normalizePairKey(
-      pair
-    );
-
-  const normalizedStrategy =
-    normalizeEnrichmentStrategy(
-      strategy
-    );
-
-  const normalizedDirection =
-    normalizeMemoryDirection(
-      direction
-    );
-
-  if (
-    !normalizedPair ||
-    !normalizedStrategy ||
-    !normalizedDirection
-  ) {
-
-    return null;
-
-  }
-
-  const maps =
-    getEnrichmentPerformanceMaps(
-      enrichment
-    );
-
-  const candidates = [
-    {
-      source:
-        "pairStrategyDirection",
-
-      container:
-        maps.combinations
-          .pairStrategyDirection,
-
-      key:
-        `${normalizedPair}::` +
-        `${normalizedStrategy}::` +
-        `${normalizedDirection}`
-    },
-    {
-      source:
-        "strategyDirection",
-
-      container:
-        maps.combinations
-          .strategyDirection,
-
-      key:
-        `${normalizedStrategy}::` +
-        `${normalizedDirection}`
-    },
-    {
-      source:
-        "pairDirection",
-
-      container:
-        maps.combinations
-          .pairDirection,
-
-      key:
-        `${normalizedPair}::` +
-        `${normalizedDirection}`
-    },
-    {
-      source:
-        "pairStrategy",
-
-      container:
-        maps.combinations
-          .pairStrategy,
-
-      key:
-        `${normalizedPair}::` +
-        `${normalizedStrategy}`
-    },
-    {
-      source:
-        "strategies",
-
-      container:
-        maps.dimensions
-          .strategies,
-
-      key:
-        normalizedStrategy
-    },
-    {
-      source:
-        "pairs",
-
-      container:
-        maps.dimensions
-          .pairs,
-
-      key:
-        normalizedPair
-    },
-    {
-      source:
-        "directions",
-
-      container:
-        maps.dimensions
-          .directions,
-
-      key:
-        normalizedDirection
-    }
-  ];
-
-  for (
-    const candidate of candidates
-  ) {
-
-    if (
-      !isPlainObjectValue(
-        candidate.container
-      )
-    ) {
-
-      continue;
-
-    }
-
-    const statistic =
-      candidate.container[
-        candidate.key
-      ];
-
-    if (
-      !validEnrichmentPerformance(
-        statistic
-      )
-    ) {
-
-      continue;
-
-    }
-
-    return {
-      source:
-        candidate.source,
-
-      key:
-        candidate.key,
-
-      statistic
-    };
-
-  }
-
-  const overall =
-    enrichment
-      ?.intelligence
-      ?.overall;
-
-  if (
-    validEnrichmentPerformance(
-      overall
-    )
-  ) {
-
-    return {
-      source:
-        "overall",
-
-      key:
-        "overall",
-
-      statistic:
-        overall
-    };
-
-  }
-
-  return null;
-
-}
-
-
-function readPerformanceNumber(
-  object,
-  key
-) {
-
-  if (
-    !isPlainObjectValue(
-      object
-    )
-  ) {
-
-    return null;
-
-  }
-
-  return numericValue(
-    object[key]
-  );
-
-}
-
-
-function selectRecentRollingWindow(
-  statistic
-) {
-
-  const rollingWindows =
-    statistic?.rollingWindows;
-
-  if (
-    !isPlainObjectValue(
-      rollingWindows
-    )
-  ) {
-
-    return null;
-
-  }
-
-  const preferredWindows = [
-    20,
-    50,
-    100,
-    200
-  ];
-
-  for (
-    const windowSize of
-    preferredWindows
-  ) {
-
-    const window =
-      rollingWindows[
-        String(windowSize)
-      ] ??
-      rollingWindows[
-        windowSize
-      ];
-
-    if (
-      !isPlainObjectValue(
-        window
-      )
-    ) {
-
-      continue;
-
-    }
-
-    const availableTrades =
-      numericValue(
-        window.availableTrades ??
-        window.actualTrades ??
-        window.totalTrades ??
-        window.available
-      );
-
-    const metrics =
-      isPlainObjectValue(
-        window.metrics
-      )
-        ? window.metrics
-        : isPlainObjectValue(
-            window.performance
-          )
-          ? window.performance
-          : window;
-
-    if (
-      availableTrades === null &&
-      !isPlainObjectValue(
-        metrics
-      )
-    ) {
-
-      continue;
-
-    }
-
-    return {
-      window:
-        windowSize,
-
-      availableTrades:
-        availableTrades ??
-        0,
-
-      complete:
-        window.complete ===
-        true,
-
-      winRate:
-        readPerformanceNumber(
-          metrics,
-          "winRate"
-        ),
-
-      profitFactor:
-        readPerformanceNumber(
-          metrics,
-          "profitFactor"
-        ),
-
-      averageProfitPoints:
-        readPerformanceNumber(
-          metrics,
-          "averageProfitPoints"
-        )
-    };
-
-  }
-
-  return null;
-
-}
-
-
-function summarizeRecencyWeightedPerformance(
-  statistic
-) {
-
-  const recencyWeighted =
-    statistic?.recencyWeighted;
-
-  if (
-    !isPlainObjectValue(
-      recencyWeighted
-    )
-  ) {
-
-    return {
-      available: false,
-      winRate: null,
-      profitFactor: null,
-      averageProfitPoints: null
-    };
-
-  }
-
-  return {
-    available: true,
-
-    winRate:
-      readPerformanceNumber(
-        recencyWeighted,
-        "winRate"
-      ),
-
-    profitFactor:
-      readPerformanceNumber(
-        recencyWeighted,
-        "profitFactor"
-      ),
-
-    averageProfitPoints:
-      readPerformanceNumber(
-        recencyWeighted,
-        "averageProfitPoints"
-      )
-  };
-
-}
-
-
-function classifyEnrichmentAdvisorySignal({
-  sampleSize,
-  learningTrend,
-  recentPerformance,
-  overallPerformance
-}) {
-
-  if (
-    sampleSize <
-    LEARNING_ENRICHMENT_MIN_TRADES
-  ) {
-
-    return {
-      status:
-        "INSUFFICIENT_DATA",
-
-      reason:
-        `Learning Enrichment has ${sampleSize}/${LEARNING_ENRICHMENT_MIN_TRADES} required trades.`
-    };
-
-  }
-
-  const recentProfitFactor =
-    numericValue(
-      recentPerformance
-        ?.profitFactor
-    );
-
-  const recentWinRate =
-    numericValue(
-      recentPerformance
-        ?.winRate
-    );
-
-  const overallProfitFactor =
-    numericValue(
-      overallPerformance
-        ?.profitFactor
-    );
-
-  if (
-    learningTrend ===
-      "declining" ||
-    (
-      recentProfitFactor !== null &&
-      recentProfitFactor < 0.8
-    ) ||
-    (
-      recentWinRate !== null &&
-      recentWinRate < 20
-    )
-  ) {
-
-    return {
-      status:
-        "CAUTION",
-
-      reason:
-        "Recent enriched performance indicates declining or weak historical conditions."
-    };
-
-  }
-
-  if (
-    learningTrend ===
-      "improving" &&
-    recentProfitFactor !== null &&
-    recentProfitFactor >= 1.05
-  ) {
-
-    return {
-      status:
-        "SUPPORTIVE",
-
-      reason:
-        "Recent enriched performance is improving with a profitable recent window."
-    };
-
-  }
-
-  if (
-    overallProfitFactor !== null &&
-    overallProfitFactor < 1
-  ) {
-
-    return {
-      status:
-        "CAUTION",
-
-      reason:
-        "Long-term enriched profit factor remains below 1."
-    };
-
-  }
-
-  return {
-    status:
-      "NEUTRAL",
-
-    reason:
-      "Learning Enrichment produced no sufficiently strong supportive or cautionary condition."
-  };
-
-}
-
-
-function buildLearningEnrichmentContext(
-  enrichment,
-  pair,
-  direction
-) {
-
-  const validation =
-    validateLearningEnrichmentDocument(
-      enrichment
-    );
-
-  if (
-    !validation.valid
-  ) {
-
-    return createUnavailableEnrichmentContext(
-      validation.reason
-    );
-
-  }
-
-  const candidate =
-    getLearningEnrichmentCandidate(
-      enrichment,
-      pair,
-      "scalp",
-      direction
-    );
-
-  if (!candidate) {
-
-    return {
-      ...createUnavailableEnrichmentContext(
-        "No matching Learning Enrichment performance context was found."
-      ),
-
-      compatible: true,
-
-      status:
-        "NO_MATCH"
-    };
-
-  }
-
-  const statistic =
-    candidate.statistic;
-
-  const sampleSize =
-    numericValue(
-      statistic.totalTrades
-    ) ?? 0;
-
-  const overall =
-    statistic.overall;
-
-  const trend =
-    isPlainObjectValue(
-      statistic.trend
-    )
-      ? statistic.trend
-      : {};
-
-  const learningTrend =
-    typeof trend.status ===
-    "string"
-      ? trend.status
-      : "unknown";
-
-  const recentPerformance =
-    selectRecentRollingWindow(
-      statistic
-    ) || {
-      window: null,
-      availableTrades: 0,
-      complete: false,
-      winRate: null,
-      profitFactor: null,
-      averageProfitPoints: null
-    };
-
-  const recencyWeighted =
-    summarizeRecencyWeightedPerformance(
-      statistic
-    );
-
-  const overallPerformance = {
-    winRate:
-      readPerformanceNumber(
-        overall,
-        "winRate"
-      ),
-
-    profitFactor:
-      readPerformanceNumber(
-        overall,
-        "profitFactor"
-      ),
-
-    averageProfitPoints:
-      readPerformanceNumber(
-        overall,
-        "averageProfitPoints"
-      )
-  };
-
-  const advisory =
-    classifyEnrichmentAdvisorySignal({
-      sampleSize,
-      learningTrend,
-      recentPerformance,
-      overallPerformance
-    });
-
-  return {
-    version: 1,
-
-    advisoryOnly: true,
-
-    available: true,
-
-    compatible: true,
-
-    evaluated: true,
-
-    generatedAt:
-      enrichment.generatedAt,
-
-    status:
-      advisory.status,
-
-    source:
-      candidate.source,
-
-    key:
-      candidate.key,
-
-    sampleSize,
-
-    sampleSufficient:
-      sampleSize >=
-      LEARNING_ENRICHMENT_MIN_TRADES,
-
-    learningTrend,
-
-    trendAvailable:
-      trend.available ===
-      true,
-
-    trendReasons:
-      Array.isArray(
-        trend.reasons
-      )
-        ? trend.reasons
-            .filter(
-              reason =>
-                typeof reason ===
-                "string"
-            )
-            .slice(
-              0,
-              5
-            )
-        : [],
-
-    recentPerformance,
-
-    recencyWeighted,
-
-    overallPerformance,
-
-    /*
-     * Calibration is not invented. It can be attached in a later
-     * controlled revision when an exact matching calibration context
-     * is verified in the production output.
-     */
-    calibration: null,
-
-    advisorySignal:
-      advisory.status,
-
-    reason:
-      advisory.reason
-  };
-
-}
-
-
-function attachLearningEnrichmentContext(
-  analysis,
-  enrichment,
-  pair
-) {
-
-  if (
-    !analysis ||
-    typeof analysis !==
-      "object"
-  ) {
-
-    return analysis;
-
-  }
-
-  const context =
-    buildLearningEnrichmentContext(
-      enrichment,
-      pair,
-      analysis.signal
-    );
-
-  /*
-   * Preserve the existing confidence explainability object and add one
-   * independent advisory section. No existing value is overwritten.
-   */
-  analysis.confidenceExplainability = {
-    ...(
-      isPlainObjectValue(
-        analysis.confidenceExplainability
-      )
-        ? analysis.confidenceExplainability
-        : {}
-    ),
-
-    enrichmentContext:
-      context
-  };
-
-  /*
-   * Additive top-level alias for dashboard/debug consumers.
-   * Existing consumers can safely ignore this new property.
-   */
-  analysis.enrichmentContext =
-    context;
-
-  /*
-   * Do not append this advisory item to the decision-gate steps array.
-   * This prevents the enrichment context from appearing as a new
-   * eligibility requirement.
-   */
-
-  return analysis;
-
-}
-
-/* =====================================================================
    Main Worker
    ===================================================================== */
 
@@ -6475,55 +5458,6 @@ function run() {
         signals: []
       }
     );
-
-  const aiMemory =
-    readJsonFile(
-      AI_MEMORY_PATH,
-      null
-    );
-
-  if (
-    !aiMemory ||
-    typeof aiMemory !== "object" ||
-    Array.isArray(aiMemory)
-  ) {
-
-    console.warn(
-      "[Scalp Engine] AI Memory unavailable or malformed; " +
-      "confidence adjustment disabled for this run."
-    );
-
-  }
-
-  /*
-   * Phase 4 optional advisory source.
-   *
-   * Missing or malformed enrichment never blocks analysis. The safe
-   * context builder will report UNAVAILABLE while all existing signal,
-   * confidence, ATR and trade-plan behavior continues normally.
-   */
-  const learningEnrichment =
-    readJsonFile(
-      LEARNING_ENRICHMENT_PATH,
-      null
-    );
-
-  const enrichmentValidation =
-    validateLearningEnrichmentDocument(
-      learningEnrichment
-    );
-
-  if (
-    !enrichmentValidation.valid
-  ) {
-
-    console.warn(
-      "[Scalp Engine] Learning Enrichment unavailable or incompatible; " +
-      "advisory context will report UNAVAILABLE. " +
-      enrichmentValidation.reason
-    );
-
-  }
 
   const news =
     readNewsFeed();
@@ -6665,63 +5599,31 @@ function run() {
           pairNews
         );
 
-      const dataSafetyIssues =
-        buildModeDataSafetyIssues(
-          mode,
-          prepared
-        );
-
       const analysis =
-        dataSafetyIssues.length > 0
-          ? createDataSafetyBlockedAnalysis(
-              pair.label,
-              dataSafetyIssues
-            )
-          : analyze(
-              rows,
-              pair.label,
-              score,
-              higherRows,
-              pairNews
-            );
-
-      /*
-       * Apply additive ATR Dynamic TP/SL extension.
-       *
-       * Existing WAIT signals, failed analysis gates and missing
-       * trade plans remain unchanged because the extension safely
-       * falls back to the original analysis result.
-       */
-
-      applyAtrDynamicTradePlan(
-        analysis,
-        rows,
-        pair.label
-      );
-
-      /*
-       * Existing scalp-owned AI Memory confidence adjustment.
-       *
-       * This remains the only confidence-adjustment owner.
-       */
-      applyAiMemoryConfidenceAdjustment(
-        analysis,
-        aiMemory,
-        pair.label
-      );
-
-      /*
-       * Phase 4 advisory-only enrichment attachment.
-       *
-       * This executes after the existing AI Memory adapter so it can
-       * extend confidenceExplainability without replacing any existing
-       * provenance or applying a second confidence adjustment.
-       */
-      attachLearningEnrichmentContext(
-        analysis,
-        learningEnrichment,
-        pair.label
-      );
+        analyze(
+          rows,
+          pair.label,
+          score,
+          higherRows,
+          pairNews,
+          {
+            mode,
+            dataQuality:
+              mode === "M5"
+                ? prepared.quality.m5
+                : {
+                    stale:
+                      prepared.quality.m5
+                        .stale,
+                    derivedFrom:
+                      "complete-closed-M5",
+                    validRows:
+                      Array.isArray(rows)
+                        ? rows.length
+                        : 0
+                  }
+          }
+        );
 
       analysis.mode =
         mode;
@@ -6768,13 +5670,12 @@ function run() {
     SIGNALS_OUT_PATH,
     {
       generatedAt,
-
       engineVersion:
         ENGINE_VERSION,
-
       strategyVersion:
         STRATEGY_VERSION,
-
+      professionalPipelineVersion:
+        PROFESSIONAL_PIPELINE_VERSION,
       signals
     }
   );
@@ -6859,24 +5760,6 @@ function run() {
     log
   );
 
-  const availableEnrichmentContexts =
-    signals.filter(
-      signal =>
-        signal
-          ?.enrichmentContext
-          ?.available ===
-        true
-    ).length;
-
-  const cautionEnrichmentContexts =
-    signals.filter(
-      signal =>
-        signal
-          ?.enrichmentContext
-          ?.advisorySignal ===
-        "CAUTION"
-    ).length;
-
   console.log(
     `[Scalp Engine] ${signals.length} analyses completed; ` +
     `${appendedLogEntries} signal log entr` +
@@ -6885,13 +5768,25 @@ function run() {
     `${suppressedLogEntries === 1 ? "" : "s"} suppressed.`
   );
 
-  console.log(
-    `[Scalp Engine] Phase 4 enrichment contexts: ` +
-    `${availableEnrichmentContexts}/${signals.length} available; ` +
-    `${cautionEnrichmentContexts} caution.`
-  );
-
 }
+
+module.exports = {
+  ENGINE_VERSION,
+  STRATEGY_VERSION,
+  PROFESSIONAL_PIPELINE_VERSION,
+  aggregateCandles,
+  buildM15Rows,
+  buildM30Rows,
+  rsiSeries,
+  atrSeries,
+  computeMACD,
+  computeDmiAdx,
+  getEMAState,
+  buildAtrSnapshot,
+  inferHigherTimeframeBias,
+  analyze,
+  run
+};
 
 if (require.main === module) {
 
@@ -6911,81 +5806,3 @@ if (require.main === module) {
   }
 
 }
-
-module.exports = {
-  ENGINE_VERSION,
-  STRATEGY_VERSION,
-  PAIRS,
-  MODES,
-  readScalpRows,
-  readH1Rows,
-  candleDataQuality,
-  normalizeCandle,
-  normalizeRows,
-  atomicWriteJson,
-  readJsonFile,
-  aggregateCandles,
-  floorToBucket,
-  buildM15Rows,
-  buildM30Rows,
-  rowsForMode,
-  higherTimeframeRows,
-  latestRow,
-  closeSeries,
-  highSeries,
-  lowSeries,
-  readNewsFeed,
-  newsForPair,
-  newsScoreForPair,
-  conflictingHighImpactNews,
-  hasEnoughRows,
-  lastClose,
-  cloneRows,
-  emaSeries,
-  rsiSeries,
-  trueRange,
-  atrSeries,
-  computeVolatility,
-  getAdaptivePeriods,
-  computeMACD,
-  getEMAState,
-  trendDirectionOf,
-  computeMarketStructure,
-  computeSupportResistance,
-  detectCandlePattern,
-  calculateRiskReward,
-  ATR_DYNAMIC_TRADE_PLAN_CONFIG,
-  atrDynamicConfigFor,
-  latestFiniteValue,
-  applyAtrDynamicTradePlan,
-  appendSkippedPipelineSteps,
-  describeUnsafeDataSource,
-  buildModeDataSafetyIssues,
-  createDataSafetyBlockedAnalysis,
-  analyze,
-  normalizeSignalDirection,
-  isActionableSignal,
-  findPairConfiguration,
-  minimumPriceIncrement,
-  numericValue,
-  tradePlanRisk,
-  tradePlanPriceTolerance,
-  numbersMateriallyEqual,
-  tradePlansMateriallyEqual,
-  confidenceMateriallyEqual,
-  findPreviousSnapshotSignal,
-  findLatestSignalLogEntry,
-  shouldAppendSignalLogEntry,
-  createSignalLogEntry,
-  buildPreparedMarketData,
-  normalizeMemoryEngine,
-  normalizeMemoryDirection,
-  normalizeMemoryPair,
-  validMemoryStatistic,
-  getAiMemoryCandidate,
-  memorySampleWeight,
-  calculateAiMemoryAdjustment,
-  buildNoAiMemoryAdjustment,
-  evaluateAiMemoryConfidence,
-  applyAiMemoryConfidenceAdjustment
-};

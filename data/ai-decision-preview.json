@@ -2,17 +2,17 @@
   "version": 1,
   "engineName": "PipSight Pro Autonomous AI Decision Engine",
   "engineVersion": "1.4.0",
-  "evaluatedAt": "2026-08-07T04:00:57.461Z",
-  "decisionId": "live|1.4.0|GBPJPY|scalp|5m|HOLD|none|2026-08-07T03:50:00.000Z",
-  "decisionHash": "5423a4e36d20f068000fa52369e43d065f6ef22aec3a37a483b73458921f0580",
+  "evaluatedAt": "2026-08-07T04:10:43.194Z",
+  "decisionId": "live|1.4.0|GBPJPY|scalp|5m|HOLD|none|2026-08-07T04:10:00.000Z",
+  "decisionHash": "5ea7632568b34f2471f3760134eaff6f6af07c49a5585c1f9a6c8c5849243dbe",
   "context": {
     "pair": "GBPJPY",
     "timeframe": "5m",
     "engine": "scalp",
-    "marketRegime": "DEVELOPING_LOW",
+    "marketRegime": "WEAK_LOW",
     "session": null,
     "pattern": null,
-    "marketDataAt": "2026-08-07T03:50:00.000Z"
+    "marketDataAt": "2026-08-07T04:10:00.000Z"
   },
   "deployment": {
     "configuredMode": "AUTONOMOUS",
@@ -22,7 +22,7 @@
     "rollout": {
       "percent": 100,
       "selected": true,
-      "bucket": 43.17,
+      "bucket": 19.69,
       "identityStable": true,
       "reason": "Decision is inside the deterministic autonomous rollout cohort."
     }
@@ -56,24 +56,25 @@
   "evidence": {
     "baselinePolicy": null,
     "buyPolicy": {
-      "key": "pairTimeframeEngineDirection|GBPJPY|5m|scalp|BUY",
-      "scope": "pairTimeframeEngineDirection",
+      "key": "pairTimeframeEngineDirectionRegime|GBPJPY|5m|scalp|BUY|WEAK_LOW",
+      "scope": "pairTimeframeEngineDirectionRegime",
       "dimensions": {
         "pair": "GBPJPY",
         "timeframe": "5m",
         "engine": "scalp",
-        "direction": "BUY"
+        "direction": "BUY",
+        "marketRegime": "WEAK_LOW"
       },
-      "action": "NEUTRAL",
-      "actionReason": "Available evidence does not justify positive or negative live authority.",
+      "action": "OBSERVE",
+      "actionReason": "Only 1 decisive trades are available; 30 are required.",
       "authorityLevel": "SHADOW_ONLY",
-      "decisiveTrades": 38,
-      "reliability": 0.489911,
-      "edgeScore": -0.667141,
-      "shrunkExpectancyR": -0.35881864,
+      "decisiveTrades": 1,
+      "reliability": 0.156402,
+      "edgeScore": -0.719356,
+      "shrunkExpectancyR": -0.27095701,
       "outOfSamplePassed": false,
       "negativeEdgeConfirmed": false,
-      "averagePlannedRiskReward": 2.143089
+      "averagePlannedRiskReward": 2
     },
     "sellPolicy": {
       "key": "pairTimeframeEngineDirection|GBPJPY|5m|scalp|SELL",
@@ -99,13 +100,7 @@
     "buyMatchAttempts": [
       {
         "scope": "pairTimeframeEngineDirectionRegime",
-        "signature": "pairTimeframeEngineDirectionRegime|GBPJPY|5m|scalp|BUY|developing_low",
-        "matched": false,
-        "reason": "No policy bucket matched."
-      },
-      {
-        "scope": "pairTimeframeEngineDirection",
-        "signature": "pairTimeframeEngineDirection|GBPJPY|5m|scalp|BUY",
+        "signature": "pairTimeframeEngineDirectionRegime|GBPJPY|5m|scalp|BUY|weak_low",
         "matched": true,
         "reason": null
       }
@@ -113,7 +108,7 @@
     "sellMatchAttempts": [
       {
         "scope": "pairTimeframeEngineDirectionRegime",
-        "signature": "pairTimeframeEngineDirectionRegime|GBPJPY|5m|scalp|SELL|developing_low",
+        "signature": "pairTimeframeEngineDirectionRegime|GBPJPY|5m|scalp|SELL|weak_low",
         "matched": false,
         "reason": "No policy bucket matched."
       },
@@ -136,16 +131,16 @@
       {
         "engine": "scalp",
         "decision": "BUY",
-        "confidence": 86,
+        "confidence": 85,
         "active": true,
         "tradePlan": {
           "direction": "BUY",
-          "entry": 213.12,
-          "stopLoss": 213.074,
-          "target1": 213.212,
-          "target2": 213.258,
-          "target3": 213.304,
-          "risk": 0.046,
+          "entry": 213.126,
+          "stopLoss": 213.077,
+          "target1": 213.224,
+          "target2": 213.273,
+          "target3": 213.322,
+          "risk": 0.049,
           "riskReward": 2
         },
         "source": "data/scalp-candles.json"

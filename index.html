@@ -16377,6 +16377,59 @@ function updateScalpTracker(
       continue;
     }
 
+    const registration =
+      registerScalpSignal(
+        pair,
+        candidateSignal,
+        {
+          skipCooldown:true
+        }
+      );
+
+    registrations.push(
+      registration
+    );
+  }
+
+  const storedOpen =
+    loadScalpOpen()[
+      pair.key
+    ] ||
+    null;
+
+  return {
+    resolvedTrade:
+      resolvedTrades.length
+        ? resolvedTrades[0]
+        : null,
+
+    resolvedTrades,
+
+    registration:
+      registrations.length
+        ? registrations[0]
+        : {
+            registered:false,
+            reason:null,
+            trade:null
+          },
+
+    registrations,
+
+    openTrade:
+      storedOpen,
+
+    openTrades:
+      scalpOpenTradeList(
+        loadScalpOpen(),
+        pair.key
+      ),
+
+    history:
+      loadScalpHistory()
+  };
+}
+
 // ════════════════════════════════════════════════════════════════
 // SCALP TRACKER SUMMARY
 // ════════════════════════════════════════════════════════════════

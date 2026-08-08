@@ -2,9 +2,9 @@
   "version": 1,
   "engineName": "PipSight Pro Autonomous AI Decision Engine",
   "engineVersion": "1.4.0",
-  "evaluatedAt": "2026-08-08T04:46:21.518Z",
-  "decisionId": "live|1.4.0|GBPJPY|weekly|D1|HOLD|none|2026-08-08T00:00:00.000Z",
-  "decisionHash": "3de26a89e6bf3061eeb20a37df7ddb4055279e1ea11ef4131060fdd15999d12c",
+  "evaluatedAt": "2026-08-08T04:51:33.898Z",
+  "decisionId": "live|1.4.0|GBPJPY|weekly|D1|SELL|212.933|2026-08-08T00:00:00.000Z",
+  "decisionHash": "54b554ccf07a8b7b287ad24c18c43ca9b4de35896e793a39330f3911c95a8496",
   "context": {
     "pair": "GBPJPY",
     "timeframe": "D1",
@@ -22,33 +22,63 @@
     "rollout": {
       "percent": 100,
       "selected": true,
-      "bucket": 79.7,
+      "bucket": 67.61,
       "identityStable": true,
       "reason": "Decision is inside the deterministic autonomous rollout cohort."
     }
   },
   "baseline": {
-    "decision": "HOLD",
-    "confidence": 53,
-    "tradePlan": null,
+    "decision": "SELL",
+    "confidence": 94,
+    "tradePlan": {
+      "direction": "SELL",
+      "entry": 212.933,
+      "stopLoss": 216.96,
+      "target1": 204.879,
+      "target2": 200.852,
+      "target3": 196.825,
+      "risk": 4.027,
+      "riskReward": 2
+    },
     "reasons": [
-      "Insufficient multi-engine agreement"
+      "2 engine(s) confirm SELL",
+      "Weighted consensus -0.584"
     ]
   },
   "shadowCandidate": {
-    "decision": "HOLD",
-    "confidence": 53,
-    "tradePlan": null,
+    "decision": "SELL",
+    "confidence": 94,
+    "tradePlan": {
+      "direction": "SELL",
+      "entry": 212.933,
+      "stopLoss": 216.96,
+      "target1": 204.879,
+      "target2": 200.852,
+      "target3": 196.825,
+      "risk": 4.027,
+      "riskReward": 2
+    },
     "reasons": [
-      "Insufficient multi-engine agreement"
+      "2 engine(s) confirm SELL",
+      "Weighted consensus -0.584"
     ]
   },
   "proposedDecision": {
-    "decision": "HOLD",
-    "confidence": 53,
-    "tradePlan": null,
+    "decision": "SELL",
+    "confidence": 94,
+    "tradePlan": {
+      "direction": "SELL",
+      "entry": 212.933,
+      "stopLoss": 216.96,
+      "target1": 204.879,
+      "target2": 200.852,
+      "target3": 196.825,
+      "risk": 4.027,
+      "riskReward": 2
+    },
     "reasons": [
-      "Insufficient multi-engine agreement"
+      "2 engine(s) confirm SELL",
+      "Weighted consensus -0.584"
     ]
   },
   "changes": [],
@@ -57,7 +87,32 @@
     "baselinePolicy": null,
     "buyPolicy": null,
     "sellPolicy": null,
-    "baselineMatchAttempts": [],
+    "baselineMatchAttempts": [
+      {
+        "scope": "pairTimeframeEngineDirectionRegime",
+        "signature": "pairTimeframeEngineDirectionRegime|GBPJPY|D1|weekly|SELL|trending_high",
+        "matched": false,
+        "reason": "No policy bucket matched."
+      },
+      {
+        "scope": "pairTimeframeEngineDirection",
+        "signature": "pairTimeframeEngineDirection|GBPJPY|D1|weekly|SELL",
+        "matched": false,
+        "reason": "No policy bucket matched."
+      },
+      {
+        "scope": "pairEngineDirection",
+        "signature": "pairEngineDirection|GBPJPY|weekly|SELL",
+        "matched": false,
+        "reason": "No policy bucket matched."
+      },
+      {
+        "scope": "pairTimeframeDirection",
+        "signature": "pairTimeframeDirection|GBPJPY|D1|SELL",
+        "matched": false,
+        "reason": "No policy bucket matched."
+      }
+    ],
     "buyMatchAttempts": [
       {
         "scope": "pairTimeframeEngineDirectionRegime",
@@ -121,10 +176,19 @@
       },
       {
         "engine": "scalp",
-        "decision": "HOLD",
-        "confidence": 37,
+        "decision": "SELL",
+        "confidence": 83,
         "active": true,
-        "tradePlan": null,
+        "tradePlan": {
+          "direction": "SELL",
+          "entry": 212.793,
+          "stopLoss": 213.062,
+          "target1": 212.255,
+          "target2": 211.986,
+          "target3": 211.717,
+          "risk": 0.269,
+          "riskReward": 2
+        },
         "source": "data/scalp-candles.json"
       },
       {
@@ -159,7 +223,7 @@
     "riskLimitModificationPermitted": false,
     "sourceCodeModificationPermitted": false,
     "externalNetworkCalls": false,
-    "failClosedRecommendation": "HOLD",
+    "failClosedRecommendation": "VALIDATE_WITH_SAFETY_GATE",
     "notes": [
       "proposedDecision is not executable until the independent Safety Gate approves it.",
       "Direction changes require an independently generated valid trade plan; this engine never invents prices.",

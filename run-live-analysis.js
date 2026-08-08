@@ -13671,6 +13671,133 @@ function liveHistoryFingerprint(record) {
   ].join("|");
 }
 
+function liveHistorySetupIdentity(record) {
+  if (!liveIsPlainObject(record)) {
+    return null;
+  }
+
+  const existingIdentity =
+    liveNonEmptyString(
+      record.setupIdentity ??
+        record.setupId ??
+        record.snapshot?.setupIdentity,
+      null
+    );
+
+  if (existingIdentity) {
+    return existingIdentity;
+  }
+
+  const pair = liveCompactPair(
+    record.pair ??
+      record.symbol ??
+      record.pairLabel ??
+      record.snapshot?.pair ??
+      record.snapshot?.symbol
+  );
+
+  if (
+    pair !== "XAUUSD" &&
+    pair !== "GBPJPY"
+  ) {
+    return null;
+  }
+
+  const rawEngine = liveNonEmptyString(
+    record.engine ??
+      record.engineName ??
+      record.mode ??
+      record.strategy ??
+      record.snapshot?.engine ??
+      record.snapshot?.mode,
+    ""
+  ).toLowerCase();
+
+  const engineAliases = {
+    swing: "swing",
+    weekly: "swing",
+    intraday: "intraday",
+    daily: "intraday",
+    scalp: "scalp",
+    "scalp-5m": "scalp",
+    "scalp-15m": "scalp",
+    "scalp-30m": "scalp",
+    master: "master",
+  };
+
+  const engine =
+    engineAliases[rawEngine] || null;
+
+  const timeframe =
+    normalizeAIMemoryTimeframe(
+      firstString(
+        record.timeframe,
+        record.sourceTimeframe,
+        record.tf,
+        record.interval,
+        record.period,
+        record.snapshot?.timeframe,
+        record.snapshot?.sourceTimeframe
+      )
+    );
+
+  const direction =
+    liveExtractDecision(record);
+
+  const openedCandidates = [
+    record.analyzedCandleAt,
+    record.snapshot?.analyzedCandleAt,
+    record.signalTimestamp,
+    record.signalTime,
+    record.openedAt,
+    record.snapshot?.signalTimestamp,
+    record.snapshot?.signalTime,
+    record.timestamp,
+    record.time,
+    record.snapshot?.timestamp,
+    record.snapshot?.time,
+    record.generatedAt,
+    record.snapshot?.generatedAt,
+    record.createdAt,
+    record.recordedAt,
+  ];
+
+  let openedTimestamp = null;
+
+  for (const candidate of openedCandidates) {
+    const parsed = liveStableTimestamp(
+      candidate,
+      null
+    );
+
+    if (Number.isFinite(parsed)) {
+      openedTimestamp = parsed;
+      break;
+    }
+  }
+
+  if (
+    !engine ||
+    !timeframe ||
+    (
+      direction !== "BUY" &&
+      direction !== "SELL"
+    ) ||
+    !Number.isFinite(openedTimestamp)
+  ) {
+    return null;
+  }
+
+  return [
+    "setup-v1",
+    pair,
+    engine,
+    timeframe,
+    direction,
+    new Date(openedTimestamp).toISOString(),
+  ].join("|");
+}
+
 function liveHistoryRecordFromEngine(
   engineResult,
   options = {}
@@ -13988,6 +14115,9 @@ function shouldAppendHistoryRecord(
     record.fingerprint ||
     liveHistoryFingerprint(record);
 
+  const setupIdentity =
+    liveHistorySetupIdentity(record);
+
   const dedupeWindowMs = Math.max(
     0,
     liveFiniteNumber(
@@ -14005,6 +14135,17 @@ function shouldAppendHistoryRecord(
 
     if (!liveIsPlainObject(existing)) {
       continue;
+    }
+
+    const existingSetupIdentity =
+      liveHistorySetupIdentity(existing);
+
+    if (
+      setupIdentity &&
+      existingSetupIdentity ===
+        setupIdentity
+    ) {
+      return false;
     }
 
     const existingTimestamp =

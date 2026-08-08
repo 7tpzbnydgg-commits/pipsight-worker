@@ -1213,6 +1213,10 @@ class PipSightLearner {
                 source.sourceTradeKey ??
                 source.tradeKey,
 
+            setupIdentity:
+                source.setupIdentity ??
+                source.setupId,
+
             reason:
                 source.reason
         };
@@ -1297,6 +1301,10 @@ class PipSightLearner {
 
             sourceTradeKey:
                 context.sourceTradeKey ||
+                null,
+
+            setupIdentity:
+                context.setupIdentity ||
                 null,
 
             fingerprint:
@@ -1562,6 +1570,7 @@ class PipSightLearner {
         const externalIdentityFields = [
             "historyRecordId",
             "sourceTradeKey",
+            "setupIdentity",
             "fingerprint"
         ];
 
@@ -1968,6 +1977,7 @@ class PipSightLearner {
         openedAt,
         historyRecordId,
         sourceTradeKey,
+        setupIdentity,
         fingerprint
     } = {}) {
         const identitySource = {
@@ -1979,6 +1989,7 @@ class PipSightLearner {
             openedAt,
             historyRecordId,
             sourceTradeKey,
+            setupIdentity,
             fingerprint
         };
 
@@ -2021,23 +2032,21 @@ class PipSightLearner {
                     );
             }
 
-            const externalIdentityConflict =
-                this
-                    .haveConflictingExternalIdentities(
-                        signal,
-                        identitySource
-                    );
+            const querySetupIdentity =
+                toTrimmedStringOrNull(
+                    identitySource.setupIdentity
+                );
 
-            if (externalIdentityConflict) {
-                continue;
-            }
+            const candidateSetupIdentity =
+                toTrimmedStringOrNull(
+                    signal.setupIdentity
+                );
 
             if (
-                this
-                    .haveMatchingExternalIdentity(
-                        signal,
-                        identitySource
-                    )
+                querySetupIdentity &&
+                candidateSetupIdentity &&
+                querySetupIdentity ===
+                    candidateSetupIdentity
             ) {
                 return this
                     .backfillExternalIdentity(
@@ -2063,6 +2072,31 @@ class PipSightLearner {
                     openingMatch =
                         signal;
                 }
+            }
+
+            const externalIdentityConflict =
+                this
+                    .haveConflictingExternalIdentities(
+                        signal,
+                        identitySource
+                    );
+
+            if (externalIdentityConflict) {
+                continue;
+            }
+
+            if (
+                this
+                    .haveMatchingExternalIdentity(
+                        signal,
+                        identitySource
+                    )
+            ) {
+                return this
+                    .backfillExternalIdentity(
+                        signal,
+                        identitySource
+                    );
             }
         }
 
@@ -2374,6 +2408,7 @@ class PipSightLearner {
         openedAt,
         historyRecordId,
         sourceTradeKey,
+        setupIdentity,
         fingerprint
     } = {}) {
         const exactSignal =
@@ -2386,6 +2421,7 @@ class PipSightLearner {
                 openedAt,
                 historyRecordId,
                 sourceTradeKey,
+                setupIdentity,
                 fingerprint
             });
 
@@ -2475,6 +2511,9 @@ class PipSightLearner {
                 sourceTradeKey:
                     normalizedSignal
                         .sourceTradeKey,
+                setupIdentity:
+                    normalizedSignal
+                        .setupIdentity,
                 fingerprint:
                     normalizedSignal
                         .fingerprint
@@ -2949,6 +2988,9 @@ class PipSightLearner {
             sourceTradeKey:
                 outcomeData.sourceTradeKey ??
                 outcomeData.tradeKey,
+            setupIdentity:
+                outcomeData.setupIdentity ??
+                outcomeData.setupId,
             fingerprint:
                 outcomeData.fingerprint
         };
@@ -3067,6 +3109,13 @@ class PipSightLearner {
                         outcomeData
                             .sourceTradeKey ??
                         outcomeData.tradeKey
+                    ),
+
+                setupIdentity:
+                    toTrimmedStringOrNull(
+                        outcomeData
+                            .setupIdentity ??
+                        outcomeData.setupId
                     ),
 
                 fingerprint:

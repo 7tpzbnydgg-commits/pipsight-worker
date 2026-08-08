@@ -2,11 +2,11 @@
   "version": 1,
   "engineName": "PipSight Pro Immutable AI Safety Gate",
   "engineVersion": "1.4.0",
-  "evaluatedAt": "2026-08-08T05:01:42.144Z",
-  "decisionId": "live|1.4.0|GBPJPY|weekly|D1|SELL|212.933|2026-08-08T00:00:00.000Z",
-  "sourceDecisionHash": "83a57e81b64c175780c6a6cc7bf6b13c5253352fb74630cee82f3bd576108b9e",
-  "safetyResultHash": "cf14a9d83ccbe36fe726dd8e8f1a415a1df779ec18854ae1ae3b240fd04973cc",
-  "signalFingerprint": "ed0b14a8d11cb1d059d97780d92b56c96c56d4dcf04f82464a35982bf7e747b0",
+  "evaluatedAt": "2026-08-08T05:11:33.021Z",
+  "decisionId": "live|1.4.0|GBPJPY|weekly|D1|HOLD|none|2026-08-08T00:00:00.000Z",
+  "sourceDecisionHash": "57671d08a00e088f97d78c501ebbcd7b1c5ff25f4dc25d1576831f06eddb9af2",
+  "safetyResultHash": "c9e03a61f73e0abfb072ef2d55b20429d4426168b8a784e550327bfbcca61431",
+  "signalFingerprint": "c178b2164a11d24d78de2c23e92c4f173d91c0b73ab03e0d02379c5fb8af0adc",
   "context": {
     "pair": "GBPJPY",
     "timeframe": "D1",
@@ -23,29 +23,11 @@
     "signalOnly": true
   },
   "proposedDecision": {
-    "decision": "SELL",
-    "confidence": 94,
-    "tradePlan": {
-      "direction": "SELL",
-      "entry": 212.933,
-      "stop": 216.96,
-      "stopLoss": 216.96,
-      "targets": [
-        204.879,
-        200.852,
-        196.825
-      ],
-      "target1": 204.879,
-      "target2": 200.852,
-      "target3": 196.825,
-      "risk": 4.027,
-      "riskReward": 2,
-      "requestedRiskPercent": null,
-      "source": null
-    },
+    "decision": "HOLD",
+    "confidence": 53,
+    "tradePlan": null,
     "reasons": [
-      "2 engine(s) confirm SELL",
-      "Weighted consensus -0.584"
+      "Insufficient multi-engine agreement"
     ]
   },
   "finalDecision": {
@@ -53,30 +35,19 @@
     "confidence": 0,
     "tradePlan": null,
     "reasons": [
-      "2 engine(s) confirm SELL",
-      "Weighted consensus -0.584",
-      "An identical signal fingerprint has already been approved.",
+      "Insufficient multi-engine agreement",
       "Safety Gate converted the candidate to HOLD."
     ]
   },
   "approval": {
-    "status": "REJECTED",
+    "status": "HOLD",
     "signalApproved": false,
     "orderApproved": false,
     "publishSignal": false,
     "executeOrder": false,
     "failClosed": true,
-    "blockerCount": 1,
-    "blockers": [
-      {
-        "id": "DUPLICATE_SIGNAL_CLEAR",
-        "message": "An identical signal fingerprint has already been approved.",
-        "details": {
-          "fingerprint": "ed0b14a8d11cb1d059d97780d92b56c96c56d4dcf04f82464a35982bf7e747b0",
-          "duplicate": true
-        }
-      }
-    ]
+    "blockerCount": 0,
+    "blockers": []
   },
   "risk": {
     "requestedRiskPercent": 0.25,
@@ -146,72 +117,72 @@
     },
     {
       "id": "CONTEXT_VALID",
-      "status": "PASS",
+      "status": "SKIP",
       "blocking": true,
-      "message": "Decision ID, pair, timeframe and engine context are present.",
+      "message": "Trading context is not required for HOLD.",
       "details": null
     },
     {
       "id": "MARKET_DATA_FRESH",
-      "status": "PASS",
+      "status": "SKIP",
       "blocking": true,
-      "message": "Market data is within the configured freshness limit.",
+      "message": "Market freshness check is not required for HOLD.",
       "details": {
         "marketClass": "swing",
         "marketDataAt": "2026-08-08T00:00:00.000Z",
-        "evaluatedAt": "2026-08-08T05:01:42.144Z",
-        "marketAgeSeconds": 18102.144,
+        "evaluatedAt": "2026-08-08T05:11:33.021Z",
+        "marketAgeSeconds": 18693.021,
         "maximumAgeSeconds": 172800
       }
     },
     {
       "id": "TRADE_PLAN_PRESENT",
-      "status": "PASS",
+      "status": "SKIP",
       "blocking": true,
-      "message": "Trade plan is present.",
+      "message": "Trade plan is not required for HOLD.",
       "details": null
     },
     {
       "id": "PRICE_VALUES_FINITE",
-      "status": "PASS",
+      "status": "SKIP",
       "blocking": true,
-      "message": "Entry, stop and targets are finite numeric values.",
+      "message": "Price validation is not required for HOLD.",
       "details": null
     },
     {
       "id": "TRADE_GEOMETRY_VALID",
-      "status": "PASS",
+      "status": "SKIP",
       "blocking": true,
-      "message": "Trade direction, stop and target geometry are valid.",
+      "message": "Trade geometry is not required for HOLD.",
       "details": {
         "errors": []
       }
     },
     {
       "id": "RISK_REWARD_VALID",
-      "status": "PASS",
+      "status": "SKIP",
       "blocking": true,
-      "message": "Risk/reward is within immutable boundaries.",
+      "message": "Risk/reward validation is not required for HOLD.",
       "details": {
-        "actual": 2,
+        "actual": null,
         "minimum": 1.5,
         "maximum": 4
       }
     },
     {
       "id": "BASELINE_PLAN_BOUNDARY_VALID",
-      "status": "PASS",
+      "status": "SKIP",
       "blocking": true,
-      "message": "Proposed plan remains within deterministic baseline boundaries.",
+      "message": "Baseline trade-plan boundary comparison is not applicable.",
       "details": {
         "errors": []
       }
     },
     {
       "id": "RISK_PERCENT_VALID",
-      "status": "PASS",
+      "status": "SKIP",
       "blocking": true,
-      "message": "Requested risk percentage is within immutable limits.",
+      "message": "Risk-percent validation is not required for HOLD.",
       "details": {
         "requested": 0.25,
         "default": 0.25,
@@ -220,9 +191,9 @@
     },
     {
       "id": "OPEN_POSITION_LIMIT",
-      "status": "PASS",
+      "status": "SKIP",
       "blocking": true,
-      "message": "Portfolio open-position limit allows this signal.",
+      "message": "Open-position limit is not required for HOLD.",
       "details": {
         "current": 0,
         "maximum": 2
@@ -230,9 +201,9 @@
     },
     {
       "id": "PAIR_POSITION_LIMIT",
-      "status": "PASS",
+      "status": "SKIP",
       "blocking": true,
-      "message": "Pair-specific open-position limit allows this signal.",
+      "message": "Pair-position limit is not required for HOLD.",
       "details": {
         "pair": "GBPJPY",
         "current": 0,
@@ -241,9 +212,9 @@
     },
     {
       "id": "CORRELATED_EXPOSURE_LIMIT",
-      "status": "PASS",
+      "status": "SKIP",
       "blocking": true,
-      "message": "Correlated exposure is within the configured limit.",
+      "message": "Correlated exposure check is not required for HOLD.",
       "details": {
         "current": 0,
         "maximum": 1,
@@ -252,9 +223,9 @@
     },
     {
       "id": "DAILY_LOSS_LIMIT",
-      "status": "WARN",
+      "status": "SKIP",
       "blocking": false,
-      "message": "Daily loss snapshot is unavailable; signal-only approval may continue but order execution remains prohibited.",
+      "message": "Daily loss limit is not required for HOLD.",
       "details": {
         "current": null,
         "maximum": 2,
@@ -263,9 +234,9 @@
     },
     {
       "id": "WEEKLY_LOSS_LIMIT",
-      "status": "WARN",
+      "status": "SKIP",
       "blocking": false,
-      "message": "Weekly loss snapshot is unavailable; signal-only approval may continue but order execution remains prohibited.",
+      "message": "Weekly loss limit is not required for HOLD.",
       "details": {
         "current": null,
         "maximum": 4,
@@ -274,9 +245,9 @@
     },
     {
       "id": "CONSECUTIVE_LOSS_LIMIT",
-      "status": "PASS",
+      "status": "SKIP",
       "blocking": true,
-      "message": "Consecutive losses remain below the cooldown trigger.",
+      "message": "Consecutive-loss limit is not required for HOLD.",
       "details": {
         "current": 0,
         "maximum": 3
@@ -295,9 +266,9 @@
     },
     {
       "id": "PAIR_DAILY_SIGNAL_LIMIT",
-      "status": "PASS",
+      "status": "SKIP",
       "blocking": true,
-      "message": "Daily pair-signal limit allows this candidate.",
+      "message": "Daily pair-signal limit is not required for HOLD.",
       "details": {
         "pair": "GBPJPY",
         "current": 1,
@@ -306,24 +277,24 @@
     },
     {
       "id": "PAIR_SIGNAL_COOLDOWN",
-      "status": "PASS",
+      "status": "SKIP",
       "blocking": true,
-      "message": "Minimum spacing from the previous pair signal has elapsed.",
+      "message": "No prior pair signal requires a cooldown check.",
       "details": {
         "pair": "GBPJPY",
         "lastApprovedSignalAt": "2026-08-08T03:51:30.313Z",
-        "minutesSincePrevious": 70.197,
+        "minutesSincePrevious": 80.045,
         "minimumMinutes": 60
       }
     },
     {
       "id": "DUPLICATE_SIGNAL_CLEAR",
-      "status": "FAIL",
+      "status": "SKIP",
       "blocking": true,
-      "message": "An identical signal fingerprint has already been approved.",
+      "message": "Duplicate check is not required for HOLD.",
       "details": {
-        "fingerprint": "ed0b14a8d11cb1d059d97780d92b56c96c56d4dcf04f82464a35982bf7e747b0",
-        "duplicate": true
+        "fingerprint": "c178b2164a11d24d78de2c23e92c4f173d91c0b73ab03e0d02379c5fb8af0adc",
+        "duplicate": false
       }
     },
     {
@@ -340,7 +311,7 @@
         "equityPresent": false,
         "dailyLossPresent": false,
         "weeklyLossPresent": false,
-        "requestedRiskPresent": false,
+        "requestedRiskPresent": true,
         "consecutiveLossesPresent": false,
         "openPositionSnapshotPresent": false,
         "pairPositionSnapshotPresent": false,
@@ -350,13 +321,8 @@
   ],
   "validation": {
     "valid": true,
-    "errors": [
-      "An identical signal fingerprint has already been approved."
-    ],
-    "warnings": [
-      "Daily loss snapshot was unavailable; order execution remains prohibited.",
-      "Weekly loss snapshot was unavailable; order execution remains prohibited."
-    ]
+    "errors": [],
+    "warnings": []
   },
   "governance": {
     "immutableSafetyGate": true,

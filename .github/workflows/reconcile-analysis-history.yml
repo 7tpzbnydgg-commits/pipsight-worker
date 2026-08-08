@@ -1,4 +1,4 @@
-name: PipSight Pro — one-time analysis history reconciliation
+name: PipSight Pro — one-time adaptive reconciliation closeout
 
 on:
   workflow_dispatch: {}
@@ -11,10 +11,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  reconcile-history:
-    name: Reconcile proven historical duplicates
+  reconcile-adaptive-state:
+    name: Reconcile learning and verify AI Policy rollback snapshot
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
 
     defaults:
       run:
@@ -51,7 +51,20 @@ jobs:
 
           required_files=(
             "reconcile-analysis-history.js"
+            "run-learning-engine.js"
+            "learner.js"
+            "learning-enrichment.js"
+            "ai-memory.js"
+            "ai-policy-engine.js"
+            "data/autonomous-config.json"
             "data/analysis-history.json"
+            "data/learning-data.json"
+            "data/confidence-data.json"
+            "data/learning-engine-state.json"
+            "data/ai-memory.json"
+            "data/ai-memory-state.json"
+            "data/ai-policy.json"
+            "data/ai-policy-state.json"
           )
 
           for file in "${required_files[@]}"; do
@@ -61,19 +74,35 @@ jobs:
             fi
           done
 
-          node --check reconcile-analysis-history.js
+          scripts=(
+            "reconcile-analysis-history.js"
+            "run-learning-engine.js"
+            "learner.js"
+            "learning-enrichment.js"
+            "ai-memory.js"
+            "ai-policy-engine.js"
+          )
 
-      - name: Dry-run reconciliation
+          for script in "${scripts[@]}"; do
+            node --check "$script"
+          done
+
+      - name: Dry-run targeted reconciliation
         run: |
           set -euo pipefail
           node reconcile-analysis-history.js
 
-      - name: Apply reconciliation
+      - name: Apply targeted reconciliation
         run: |
           set -euo pipefail
           node reconcile-analysis-history.js --apply
 
-      - name: Verify reconciled analysis history
+      - name: Regenerate learning confidence and downstream adaptive state
+        run: |
+          set -euo pipefail
+          node run-learning-engine.js
+
+      - name: Verify final adaptive reconciliation
         run: |
           set -euo pipefail
 
@@ -81,24 +110,79 @@ jobs:
           "use strict";
 
           const fs = require("fs");
+          const policyEngine = require("./ai-policy-engine.js");
 
-          const filePath = "data/analysis-history.json";
-          const history = JSON.parse(fs.readFileSync(filePath, "utf8"));
+          function readObject(filePath) {
+            const parsed = JSON.parse(
+              fs.readFileSync(filePath, "utf8")
+            );
 
-          for (const field of ["closed", "records", "history", "items"]) {
+            if (
+              parsed === null ||
+              typeof parsed !== "object" ||
+              Array.isArray(parsed)
+            ) {
+              throw new Error(
+                `${filePath} must contain a JSON object.`
+              );
+            }
+
+            return parsed;
+          }
+
+          const history =
+            readObject("data/analysis-history.json");
+
+          const learning =
+            readObject("data/learning-data.json");
+
+          const confidence =
+            readObject("data/confidence-data.json");
+
+          const learningState =
+            readObject("data/learning-engine-state.json");
+
+          const enrichmentState =
+            readObject("data/learning-enrichment-state.json");
+
+          const aiMemory =
+            readObject("data/ai-memory.json");
+
+          const aiMemoryState =
+            readObject("data/ai-memory-state.json");
+
+          const aiPolicy =
+            readObject("data/ai-policy.json");
+
+          const aiPolicyState =
+            readObject("data/ai-policy-state.json");
+
+          for (const field of [
+            "closed",
+            "records",
+            "history",
+            "items"
+          ]) {
             if (!Array.isArray(history[field])) {
-              throw new Error(`${field} must remain an array.`);
+              throw new Error(
+                `analysis-history.${field} must remain an array.`
+              );
             }
           }
 
           if (
-            JSON.stringify(history.records) !== JSON.stringify(history.history) ||
-            JSON.stringify(history.records) !== JSON.stringify(history.items)
+            JSON.stringify(history.records) !==
+              JSON.stringify(history.history) ||
+            JSON.stringify(history.records) !==
+              JSON.stringify(history.items)
           ) {
-            throw new Error("records/history/items aliases are not synchronized.");
+            throw new Error(
+              "analysis-history records/history/items aliases are not synchronized."
+            );
           }
 
-          const duplicateSetupIdentities = new Map();
+          const setupCounts =
+            new Map();
 
           for (const record of history.closed) {
             const setupIdentity =
@@ -108,37 +192,312 @@ jobs:
 
             if (!setupIdentity) continue;
 
-            duplicateSetupIdentities.set(
+            setupCounts.set(
               setupIdentity,
-              (duplicateSetupIdentities.get(setupIdentity) || 0) + 1
+              (setupCounts.get(setupIdentity) || 0) + 1
             );
           }
 
-          const remainingDuplicates =
-            [...duplicateSetupIdentities.entries()]
-              .filter(([, count]) => count > 1);
+          const historyDuplicateGroups =
+            [...setupCounts.values()]
+              .filter((count) => count > 1)
+              .length;
 
-          if (remainingDuplicates.length !== 0) {
+          if (historyDuplicateGroups !== 0) {
             throw new Error(
-              `Reconciliation left ${remainingDuplicates.length} duplicate setupIdentity group(s).`
+              `analysis-history still contains ${historyDuplicateGroups} duplicate setupIdentity group(s).`
             );
           }
 
-          if (history.count !== history.records.length) {
+          const signals =
+            learning.learning?.signals;
+
+          if (!Array.isArray(signals)) {
             throw new Error(
-              `History count mismatch: count=${history.count}, records=${history.records.length}.`
+              "learning-data.json learning.signals must remain an array."
             );
           }
 
-          console.log("Reconciled analysis history validation passed.");
-          console.log(`Closed records: ${history.closed.length}`);
-          console.log(`Rich records: ${history.records.length}`);
-          console.log("Duplicate setupIdentity groups: 0");
+          const retainedId =
+            "1786134008728-GBPJPY-scalp";
+
+          const removedId =
+            "1786134071287-GBPJPY-scalp";
+
+          const retainedCount =
+            signals.filter(
+              (record) =>
+                record?.historyRecordId ===
+                retainedId
+            ).length;
+
+          const removedCount =
+            signals.filter(
+              (record) =>
+                record?.historyRecordId ===
+                removedId
+            ).length;
+
+          if (
+            retainedCount !== 1 ||
+            removedCount !== 0
+          ) {
+            throw new Error(
+              `Learning reconciliation mismatch: retained=${retainedCount}, removed=${removedCount}.`
+            );
+          }
+
+          const semanticGroups =
+            new Map();
+
+          for (const record of signals) {
+            const values = [
+              record?.pair,
+              record?.strategy,
+              record?.timeframe,
+              record?.direction,
+              record?.openedAt
+            ];
+
+            if (
+              values.some(
+                (value) =>
+                  typeof value !== "string" ||
+                  !value.trim()
+              )
+            ) {
+              continue;
+            }
+
+            const key =
+              values.join("|");
+
+            semanticGroups.set(
+              key,
+              (semanticGroups.get(key) || 0) + 1
+            );
+          }
+
+          const learningDuplicateGroups =
+            [...semanticGroups.values()]
+              .filter((count) => count > 1)
+              .length;
+
+          if (learningDuplicateGroups !== 0) {
+            throw new Error(
+              `learning-data still contains ${learningDuplicateGroups} semantic duplicate group(s).`
+            );
+          }
+
+          const learningStats =
+            learning.learning?.stats;
+
+          if (
+            !learningStats ||
+            learningStats.totalSignals !==
+              signals.length ||
+            learningStats.resolvedSignals !==
+              signals.length
+          ) {
+            throw new Error(
+              "Learning stats do not match the reconciled signal count."
+            );
+          }
+
+          if (
+            history.closed.length !==
+              signals.length
+          ) {
+            throw new Error(
+              `History/Learning count mismatch: history=${history.closed.length}, learning=${signals.length}.`
+            );
+          }
+
+          const confidenceOverall =
+            confidence.confidence?.overall;
+
+          if (
+            confidenceOverall?.totalSignals !==
+              signals.length ||
+            confidenceOverall?.resolvedSignals !==
+              signals.length
+          ) {
+            throw new Error(
+              `Confidence count mismatch after reconciliation: total=${confidenceOverall?.totalSignals}, resolved=${confidenceOverall?.resolvedSignals}, learning=${signals.length}.`
+            );
+          }
+
+          if (
+            learningState.pendingTransaction !== null ||
+            learningState.lastRun?.success !== true ||
+            learningState.lastRun?.persistedLearningData !== true
+          ) {
+            throw new Error(
+              "Learning Engine state is not fully committed after reconciliation."
+            );
+          }
+
+          if (
+            enrichmentState.lastRun?.stateWritten !== true ||
+            enrichmentState.lastRun?.error !== null ||
+            enrichmentState.lastRun?.sourceTrades !==
+              signals.length ||
+            enrichmentState.lastRun?.acceptedTrades !==
+              signals.length ||
+            enrichmentState.lastRun?.duplicateTrades !== 0
+          ) {
+            throw new Error(
+              "Learning Enrichment did not reconcile to the final learning count."
+            );
+          }
+
+          if (
+            aiMemory.validation?.valid !== true ||
+            aiMemory.source?.sourceSignalCount !==
+              signals.length ||
+            aiMemory.source?.acceptedTradeCount !==
+              signals.length ||
+            aiMemory.source?.duplicateTradeCount !== 0 ||
+            aiMemory.summary?.totalTrades !==
+              signals.length
+          ) {
+            throw new Error(
+              "AI Memory did not reconcile to the final canonical learning count."
+            );
+          }
+
+          if (
+            aiMemoryState.pendingTransaction !== null ||
+            aiMemoryState.lastRun?.stateWritten !== true ||
+            aiMemoryState.lastRun?.error !== null
+          ) {
+            throw new Error(
+              "AI Memory state is not fully committed."
+            );
+          }
+
+          if (
+            aiPolicy.validation?.valid !== true ||
+            aiPolicy.crossSourceValidation?.valid !== true
+          ) {
+            throw new Error(
+              "AI Policy validation failed after reconciliation."
+            );
+          }
+
+          const policyWarnings =
+            Array.isArray(aiPolicyState.lastRun?.warnings)
+              ? aiPolicyState.lastRun.warnings
+              : [];
+
+          if (
+            policyWarnings.some(
+              (warning) =>
+                String(warning).includes(
+                  "Confidence resolvedSignals"
+                )
+            )
+          ) {
+            throw new Error(
+              "AI Policy still reports the historical confidence/learning count mismatch."
+            );
+          }
+
+          if (
+            aiPolicyState.pendingTransaction !== null ||
+            aiPolicyState.lastRun?.stateWritten !== true ||
+            aiPolicyState.lastRun?.error !== null ||
+            aiPolicyState.lastRun?.acceptedTrades !==
+              signals.length
+          ) {
+            throw new Error(
+              "AI Policy state is not fully committed or has the wrong accepted trade count."
+            );
+          }
+
+          const snapshot =
+            aiPolicyState.lastKnownGoodPolicySnapshot;
+
+          const snapshotValidation =
+            policyEngine.validatePolicySnapshot(
+              snapshot
+            );
+
+          if (!snapshotValidation.valid) {
+            throw new Error(
+              `AI Policy last-known-good snapshot validation failed: ${snapshotValidation.errors.join(" ")}`
+            );
+          }
+
+          if (
+            snapshot.policyHash !==
+              aiPolicyState.policyHash ||
+            snapshot.policyHash !==
+              aiPolicyState.lastKnownGoodPolicyHash ||
+            snapshot.policy?.metadata
+              ?.policyContentHash !==
+              aiPolicyState.policyHash
+          ) {
+            throw new Error(
+              "AI Policy last-known-good snapshot hashes are not synchronized."
+            );
+          }
+
+          console.log(
+            "One-time adaptive reconciliation closeout validation passed."
+          );
+
+          console.log(
+            `Canonical trades: ${signals.length}`
+          );
+
+          console.log(
+            "History duplicate setupIdentity groups: 0"
+          );
+
+          console.log(
+            "Learning semantic duplicate groups: 0"
+          );
+
+          console.log(
+            `Confidence resolvedSignals: ${confidenceOverall.resolvedSignals}`
+          );
+
+          console.log(
+            `AI Memory canonical trades: ${aiMemory.summary.totalTrades}`
+          );
+
+          console.log(
+            `AI Policy accepted trades: ${aiPolicyState.lastRun.acceptedTrades}`
+          );
+
+          console.log(
+            `AI Policy LKG snapshot hash: ${snapshot.snapshotHash}`
+          );
           NODE
 
-      - name: Verify only analysis history changed
+      - name: Verify only approved adaptive files changed
         run: |
           set -euo pipefail
+
+          allowed_files=(
+            "data/analysis-history.json"
+            "data/learning-data.json"
+            "data/confidence-data.json"
+            "data/learning-engine-state.json"
+            "data/learning-enrichment.json"
+            "data/learning-enrichment-state.json"
+            "data/ai-memory.json"
+            "data/ai-memory-state.json"
+            "data/ai-policy.json"
+            "data/ai-policy-state.json"
+          )
+
+          declare -A allowed=()
+
+          for file in "${allowed_files[@]}"; do
+            allowed["$file"]=1
+          done
 
           mapfile -t changed_files < <(
             git status --porcelain |
@@ -147,33 +506,60 @@ jobs:
               sort -u
           )
 
-          if [[ "${#changed_files[@]}" -ne 1 ]] ||
-             [[ "${changed_files[0]}" != "data/analysis-history.json" ]]; then
-            echo "::error::Unexpected repository changes detected."
-            git status --short
+          if [[ "${#changed_files[@]}" -eq 0 ]]; then
+            echo "::error::Reconciliation produced no repository changes."
             exit 1
           fi
 
-          git diff --check -- data/analysis-history.json
+          for file in "${changed_files[@]}"; do
+            if [[ -z "${allowed[$file]+x}" ]]; then
+              echo "::error file=$file::Unexpected repository change detected."
+              git status --short
+              exit 1
+            fi
+          done
+
+          git diff --check -- "${changed_files[@]}"
           git status --short
 
-      - name: Commit reconciled history
+      - name: Commit reconciled adaptive state
         run: |
           set -euo pipefail
 
           git config user.name "pipsight-maintenance-robot"
           git config user.email "actions@users.noreply.github.com"
 
-          git add -- data/analysis-history.json
+          files_to_commit=(
+            "data/analysis-history.json"
+            "data/learning-data.json"
+            "data/confidence-data.json"
+            "data/learning-engine-state.json"
+            "data/learning-enrichment.json"
+            "data/learning-enrichment-state.json"
+            "data/ai-memory.json"
+            "data/ai-memory-state.json"
+            "data/ai-policy.json"
+            "data/ai-policy-state.json"
+          )
+
+          existing_files=()
+
+          for file in "${files_to_commit[@]}"; do
+            if [[ -f "$file" ]]; then
+              existing_files+=("$file")
+            fi
+          done
+
+          git add -- "${existing_files[@]}"
 
           if git diff --cached --quiet; then
-            echo "::error::Reconciliation produced no committed history change."
+            echo "::error::Reconciliation produced no committed adaptive-state change."
             exit 1
           fi
 
-          git commit -m "maintenance: reconcile historical analysis duplicates"
+          git commit -m "maintenance: reconcile adaptive learning and policy rollback state"
 
-      - name: Push reconciled history
+      - name: Push reconciled adaptive state
         run: |
           set -euo pipefail
 
@@ -183,4 +569,4 @@ jobs:
             exit 1
           fi
 
-          echo "Historical analysis reconciliation committed successfully."
+          echo "Adaptive reconciliation and AI Policy rollback snapshot closeout committed successfully."

@@ -4302,6 +4302,7 @@ function evaluateSafetyGateWithSources({
             (blocker) =>
               blocker.message
           ),
+          proposedDecision !== "HOLD" &&
           finalDecision === "HOLD"
             ? "Safety Gate converted the candidate to HOLD."
             : null

@@ -1596,8 +1596,17 @@ function normalizeLearningTrade(
       )
     );
 
+  const setupIdentity =
+    toNonEmptyStringOrNull(
+      firstDefined(
+        record.setupIdentity,
+        record.setupId
+      )
+    );
+
   const trade = {
     id,
+    setupIdentity,
     pair,
     engine,
     direction,
@@ -1670,6 +1679,29 @@ function createTradeCanonicalKey(
   });
 }
 
+function createTradeSetupKey(
+  trade
+) {
+  const setupIdentity =
+    toNonEmptyStringOrNull(
+      trade?.setupIdentity
+    );
+
+  if (setupIdentity) {
+    return createHash({
+      setupIdentity
+    });
+  }
+
+  return createHash({
+    pair: trade?.pair || null,
+    engine: trade?.engine || null,
+    direction: trade?.direction || null,
+    timeframe: trade?.timeframe || null,
+    openedAt: trade?.openedAt || null
+  });
+}
+
 function normalizeLearningTrades(
   learningDocument,
   config,
@@ -1685,6 +1717,9 @@ function normalizeLearningTrades(
 
   const canonicalByKey =
     new Map();
+
+  const seenSetupKeys =
+    new Set();
 
   const rejectionCounts = {};
 
@@ -1711,6 +1746,24 @@ function normalizeLearningTrades(
 
       continue;
     }
+
+    const setupKey =
+      createTradeSetupKey(
+        result.trade
+      );
+
+    if (
+      seenSetupKeys.has(
+        setupKey
+      )
+    ) {
+      duplicateTrades += 1;
+      continue;
+    }
+
+    seenSetupKeys.add(
+      setupKey
+    );
 
     if (
       canonicalByKey.has(
@@ -3349,6 +3402,103 @@ function buildActionSummary(
   return summary;
 }
 
+function buildPolicyContentCore({
+  configVersion,
+  deploymentMode,
+  autonomousRolloutPercent,
+  sourceHashes,
+  globalMetrics,
+  policies
+}) {
+  return {
+    configVersion:
+      configVersion ?? null,
+    deploymentMode:
+      deploymentMode ?? null,
+    autonomousRolloutPercent:
+      autonomousRolloutPercent ?? null,
+    sourceHashes:
+      isPlainObject(sourceHashes)
+        ? sourceHashes
+        : {},
+    globalMetrics:
+      globalMetrics ?? null,
+    policies:
+      (
+        Array.isArray(policies)
+          ? policies
+          : []
+      ).map(
+        (policy) => ({
+          key:
+            policy?.key,
+          scope:
+            policy?.scope,
+          dimensions:
+            policy?.dimensions,
+          action:
+            policy?.action,
+          edgeScore:
+            policy?.edgeScore,
+          shrunkExpectancyR:
+            policy?.shrunkExpectancyR,
+          reliability:
+            policy?.reliability,
+          authority:
+            policy?.authority,
+          metrics:
+            policy?.metrics,
+          validation:
+            policy?.validation
+        })
+      )
+  };
+}
+
+function createPolicyContentHashFromDocument(
+  policyDocument
+) {
+  if (!isPlainObject(policyDocument)) {
+    return null;
+  }
+
+  const sourceHashes =
+    Object.fromEntries(
+      [
+        "autonomousConfig",
+        "learningData",
+        "confidenceData",
+        "aiMemory"
+      ].map(
+        (key) => [
+          key,
+          toNonEmptyStringOrNull(
+            policyDocument.source
+              ?.[key]
+              ?.hash
+          )
+        ]
+      )
+    );
+
+  return createHash(
+    buildPolicyContentCore({
+      configVersion:
+        policyDocument.config?.version,
+      deploymentMode:
+        policyDocument.mode,
+      autonomousRolloutPercent:
+        policyDocument
+          .autonomousRolloutPercent,
+      sourceHashes,
+      globalMetrics:
+        policyDocument.globalBaseline,
+      policies:
+        policyDocument.policies
+    })
+  );
+}
+
 function validatePolicyDocument(
   policyDocument
 ) {
@@ -3469,17 +3619,33 @@ function validatePolicyDocument(
     );
   }
 
-  if (
-    typeof policyDocument.metadata
-      ?.policyContentHash !==
-      "string" ||
-    !policyDocument.metadata
-      .policyContentHash
-  ) {
+  const embeddedPolicyContentHash =
+    toNonEmptyStringOrNull(
+      policyDocument.metadata
+        ?.policyContentHash
+    );
+
+  if (!embeddedPolicyContentHash) {
     addValidationError(
       validation,
       "Policy content hash is missing."
     );
+  } else {
+    const actualPolicyContentHash =
+      createPolicyContentHashFromDocument(
+        policyDocument
+      );
+
+    if (
+      !actualPolicyContentHash ||
+      actualPolicyContentHash !==
+        embeddedPolicyContentHash
+    ) {
+      addValidationError(
+        validation,
+        "Policy content hash does not match the policy body."
+      );
+    }
   }
 
   return validation;
@@ -3574,58 +3740,30 @@ function buildPolicyDocument({
         ]
       : [];
 
-  const coreContent = {
-    configVersion:
-      config.configVersion,
-    deploymentMode:
-      config.deployment.mode,
-    autonomousRolloutPercent:
-      config.deployment
-        .autonomousRolloutPercent,
-    sourceHashes:
-      Object.fromEntries(
-        Object.entries(
-          sourceDescriptors
-        ).map(
-          ([key, descriptor]) =>
-            [
-              key,
-              descriptor.hash
-            ]
-        )
-      ),
-    normalizedTradeKeys:
-      normalized.trades.map(
-        (trade) =>
-          trade.canonicalKey
-      ),
-    globalMetrics,
-    policies:
-      policies.map(
-        (policy) => ({
-          key:
-            policy.key,
-          scope:
-            policy.scope,
-          dimensions:
-            policy.dimensions,
-          action:
-            policy.action,
-          edgeScore:
-            policy.edgeScore,
-          shrunkExpectancyR:
-            policy.shrunkExpectancyR,
-          reliability:
-            policy.reliability,
-          authority:
-            policy.authority,
-          metrics:
-            policy.metrics,
-          validation:
-            policy.validation
-        })
-      )
-  };
+  const coreContent =
+    buildPolicyContentCore({
+      configVersion:
+        config.configVersion,
+      deploymentMode:
+        config.deployment.mode,
+      autonomousRolloutPercent:
+        config.deployment
+          .autonomousRolloutPercent,
+      sourceHashes:
+        Object.fromEntries(
+          Object.entries(
+            sourceDescriptors
+          ).map(
+            ([key, descriptor]) =>
+              [
+                key,
+                descriptor.hash
+              ]
+          )
+        ),
+      globalMetrics,
+      policies
+    });
 
   const policyContentHash =
     createHash(
@@ -3998,11 +4136,17 @@ function recoverPendingTransaction(
           }
         );
 
-      actualPolicyHash =
-        toNonEmptyStringOrNull(
-          policy?.metadata
-            ?.policyContentHash
+      const policyValidation =
+        validatePolicyDocument(
+          policy
         );
+
+      actualPolicyHash =
+        policyValidation.valid
+          ? createPolicyContentHashFromDocument(
+              policy
+            )
+          : null;
     } catch {
       actualPolicyHash =
         null;
@@ -4410,11 +4554,17 @@ function runAIPolicyEngine() {
           }
         );
 
-      existingPolicyHash =
-        toNonEmptyStringOrNull(
-          existingPolicy?.metadata
-            ?.policyContentHash
+      const existingPolicyValidation =
+        validatePolicyDocument(
+          existingPolicy
         );
+
+      existingPolicyHash =
+        existingPolicyValidation.valid
+          ? createPolicyContentHashFromDocument(
+              existingPolicy
+            )
+          : null;
     }
 
     const unchanged =

@@ -3984,6 +3984,7 @@ function createEmptyPolicyState(
     sourceHashes: {},
     policyHash: null,
     lastKnownGoodPolicyHash: null,
+    lastKnownGoodPolicySnapshot: null,
     pendingTransaction: null,
     counters: {
       runs: 0,
@@ -4058,6 +4059,13 @@ function normalizePolicyState(
       state.lastKnownGoodPolicyHash
     );
 
+  normalized.lastKnownGoodPolicySnapshot =
+    isPlainObject(
+      state.lastKnownGoodPolicySnapshot
+    )
+      ? state.lastKnownGoodPolicySnapshot
+      : null;
+
   normalized.pendingTransaction =
     isPlainObject(
       state.pendingTransaction
@@ -4105,6 +4113,309 @@ function normalizePolicyState(
   return normalized;
 }
 
+
+function createPolicySnapshot(
+  policyDocument,
+  capturedAt
+) {
+  const policyValidation =
+    validatePolicyDocument(
+      policyDocument
+    );
+
+  if (!policyValidation.valid) {
+    throw new Error(
+      `Cannot snapshot an invalid policy document: ${policyValidation.errors.join(" ")}`
+    );
+  }
+
+  const policyHash =
+    createPolicyContentHashFromDocument(
+      policyDocument
+    );
+
+  if (!policyHash) {
+    throw new Error(
+      "Cannot snapshot a policy without a valid content hash."
+    );
+  }
+
+  const capturedAtIso =
+    toISOStringOrNull(
+      capturedAt
+    ) ||
+    new Date().toISOString();
+
+  const policy =
+    structuredClone(
+      policyDocument
+    );
+
+  const snapshotCore = {
+    version: 1,
+    capturedAt:
+      capturedAtIso,
+    policyHash,
+    policy
+  };
+
+  return {
+    ...snapshotCore,
+    snapshotHash:
+      createHash(
+        snapshotCore
+      )
+  };
+}
+
+function validatePolicySnapshot(
+  snapshot
+) {
+  const validation =
+    createValidationResult();
+
+  if (!isPlainObject(snapshot)) {
+    addValidationError(
+      validation,
+      "Last-known-good policy snapshot must be an object."
+    );
+
+    return validation;
+  }
+
+  if (snapshot.version !== 1) {
+    addValidationError(
+      validation,
+      "Last-known-good policy snapshot version must be 1."
+    );
+  }
+
+  const capturedAt =
+    toISOStringOrNull(
+      snapshot.capturedAt
+    );
+
+  if (!capturedAt) {
+    addValidationError(
+      validation,
+      "Last-known-good policy snapshot capturedAt is invalid."
+    );
+  }
+
+  const policyHash =
+    toNonEmptyStringOrNull(
+      snapshot.policyHash
+    );
+
+  const snapshotHash =
+    toNonEmptyStringOrNull(
+      snapshot.snapshotHash
+    );
+
+  if (!policyHash) {
+    addValidationError(
+      validation,
+      "Last-known-good policy snapshot policyHash is missing."
+    );
+  }
+
+  if (!snapshotHash) {
+    addValidationError(
+      validation,
+      "Last-known-good policy snapshot snapshotHash is missing."
+    );
+  }
+
+  const policyValidation =
+    validatePolicyDocument(
+      snapshot.policy
+    );
+
+  if (!policyValidation.valid) {
+    addValidationError(
+      validation,
+      `Last-known-good policy snapshot policy is invalid: ${policyValidation.errors.join(" ")}`
+    );
+
+    return validation;
+  }
+
+  const actualPolicyHash =
+    createPolicyContentHashFromDocument(
+      snapshot.policy
+    );
+
+  if (
+    !policyHash ||
+    actualPolicyHash !==
+      policyHash
+  ) {
+    addValidationError(
+      validation,
+      "Last-known-good policy snapshot policyHash does not match the embedded policy."
+    );
+  }
+
+  if (
+    capturedAt &&
+    policyHash &&
+    snapshotHash
+  ) {
+    const actualSnapshotHash =
+      createHash({
+        version: 1,
+        capturedAt,
+        policyHash,
+        policy:
+          snapshot.policy
+      });
+
+    if (
+      actualSnapshotHash !==
+      snapshotHash
+    ) {
+      addValidationError(
+        validation,
+        "Last-known-good policy snapshot hash does not match the snapshot body."
+      );
+    }
+  }
+
+  return validation;
+}
+
+function ensureLastKnownGoodPolicySnapshot({
+  state,
+  policyDocument,
+  policyHash,
+  runAt
+}) {
+  const existingSnapshot =
+    state.lastKnownGoodPolicySnapshot;
+
+  if (isPlainObject(existingSnapshot)) {
+    const validation =
+      validatePolicySnapshot(
+        existingSnapshot
+      );
+
+    if (
+      validation.valid &&
+      existingSnapshot.policyHash ===
+        policyHash
+    ) {
+      return state;
+    }
+  }
+
+  state.lastKnownGoodPolicySnapshot =
+    createPolicySnapshot(
+      policyDocument,
+      runAt
+    );
+
+  return state;
+}
+
+function restoreAuthoritativePolicyFromSnapshot(
+  state,
+  runAt
+) {
+  if (!state.lastKnownGoodPolicySnapshot) {
+    return {
+      state,
+      restored: false,
+      warning: null
+    };
+  }
+
+  const snapshotValidation =
+    validatePolicySnapshot(
+      state.lastKnownGoodPolicySnapshot
+    );
+
+  if (!snapshotValidation.valid) {
+    throw new Error(
+      `Last-known-good policy snapshot validation failed: ${snapshotValidation.errors.join(" ")}`
+    );
+  }
+
+  const snapshot =
+    state.lastKnownGoodPolicySnapshot;
+
+  let currentPolicyHash =
+    null;
+
+  if (fileExists(AI_POLICY_PATH)) {
+    try {
+      const currentPolicy =
+        readJSON(
+          AI_POLICY_PATH,
+          {
+            required: false,
+            defaultValue: null
+          }
+        );
+
+      const currentValidation =
+        validatePolicyDocument(
+          currentPolicy
+        );
+
+      currentPolicyHash =
+        currentValidation.valid
+          ? createPolicyContentHashFromDocument(
+              currentPolicy
+            )
+          : null;
+    } catch {
+      currentPolicyHash =
+        null;
+    }
+  }
+
+  const expectedCurrentHash =
+    toNonEmptyStringOrNull(
+      state.policyHash
+    );
+
+  if (
+    currentPolicyHash &&
+    (
+      !expectedCurrentHash ||
+      currentPolicyHash ===
+        expectedCurrentHash
+    )
+  ) {
+    return {
+      state,
+      restored: false,
+      warning: null
+    };
+  }
+
+  atomicWriteJSON(
+    AI_POLICY_PATH,
+    snapshot.policy
+  );
+
+  state.policyHash =
+    snapshot.policyHash;
+
+  state.lastKnownGoodPolicyHash =
+    snapshot.policyHash;
+
+  state.updatedAt =
+    runAt;
+
+  return {
+    state,
+    restored: true,
+    warning:
+      "Restored the authoritative policy from the validated last-known-good snapshot before policy evaluation."
+  };
+}
+
 function recoverPendingTransaction(
   state,
   runAt
@@ -4123,31 +4434,44 @@ function recoverPendingTransaction(
         .expectedPolicyHash
     );
 
+  const previousPolicyHash =
+    toNonEmptyStringOrNull(
+      state.pendingTransaction
+        .previousPolicyHash
+    );
+
+  let actualPolicy =
+    null;
+
   let actualPolicyHash =
     null;
 
   if (fileExists(AI_POLICY_PATH)) {
     try {
-      const policy =
+      actualPolicy =
         readJSON(
           AI_POLICY_PATH,
           {
-            required: false
+            required: false,
+            defaultValue: null
           }
         );
 
       const policyValidation =
         validatePolicyDocument(
-          policy
+          actualPolicy
         );
 
       actualPolicyHash =
         policyValidation.valid
           ? createPolicyContentHashFromDocument(
-              policy
+              actualPolicy
             )
           : null;
     } catch {
+      actualPolicy =
+        null;
+
       actualPolicyHash =
         null;
     }
@@ -4157,8 +4481,72 @@ function recoverPendingTransaction(
     Boolean(
       expectedPolicyHash &&
       actualPolicyHash ===
-      expectedPolicyHash
+        expectedPolicyHash
     );
+
+  let restoredPreviousPolicy =
+    false;
+
+  if (committed) {
+    state.policyHash =
+      actualPolicyHash;
+
+    state.lastKnownGoodPolicyHash =
+      actualPolicyHash;
+
+    state =
+      ensureLastKnownGoodPolicySnapshot({
+        state,
+        policyDocument:
+          actualPolicy,
+        policyHash:
+          actualPolicyHash,
+        runAt
+      });
+
+    state.lastSuccessfulRunAt =
+      runAt;
+  } else if (
+    state.lastKnownGoodPolicySnapshot
+  ) {
+    const snapshotValidation =
+      validatePolicySnapshot(
+        state.lastKnownGoodPolicySnapshot
+      );
+
+    if (!snapshotValidation.valid) {
+      throw new Error(
+        `Pending policy recovery cannot use the last-known-good snapshot: ${snapshotValidation.errors.join(" ")}`
+      );
+    }
+
+    const snapshot =
+      state.lastKnownGoodPolicySnapshot;
+
+    if (
+      previousPolicyHash &&
+      snapshot.policyHash !==
+        previousPolicyHash
+    ) {
+      throw new Error(
+        "Pending policy recovery snapshot does not match the transaction previousPolicyHash."
+      );
+    }
+
+    atomicWriteJSON(
+      AI_POLICY_PATH,
+      snapshot.policy
+    );
+
+    state.policyHash =
+      snapshot.policyHash;
+
+    state.lastKnownGoodPolicyHash =
+      snapshot.policyHash;
+
+    restoredPreviousPolicy =
+      true;
+  }
 
   state.pendingTransaction =
     null;
@@ -4169,24 +4557,17 @@ function recoverPendingTransaction(
   state.counters
     .recoveredTransactions += 1;
 
-  if (committed) {
-    state.policyHash =
-      actualPolicyHash;
-
-    state.lastKnownGoodPolicyHash =
-      actualPolicyHash;
-
-    state.lastSuccessfulRunAt =
-      runAt;
-  }
-
   return {
     state,
     recovered: true,
     warning:
       committed
         ? "Recovered a policy write that completed before final state commit."
-        : "Cleared an incomplete pending policy transaction; the previous policy remains authoritative."
+        : (
+            restoredPreviousPolicy
+              ? "Restored the previous policy from the validated last-known-good snapshot after an incomplete policy transaction."
+              : "Cleared an incomplete pending policy transaction; no validated rollback snapshot was available."
+          )
   };
 }
 
@@ -4252,6 +4633,7 @@ function completePolicyRun({
   status,
   sourceHashes,
   policyHash,
+  policyDocument,
   policyWritten,
   policyCount,
   acceptedTrades,
@@ -4274,6 +4656,14 @@ function completePolicyRun({
 
   state.lastKnownGoodPolicyHash =
     policyHash;
+
+  state =
+    ensureLastKnownGoodPolicySnapshot({
+      state,
+      policyDocument,
+      policyHash,
+      runAt
+    });
 
   state.pendingTransaction =
     null;
@@ -4411,6 +4801,21 @@ function runAIPolicyEngine() {
       );
     }
 
+    const snapshotRecovery =
+      restoreAuthoritativePolicyFromSnapshot(
+        state,
+        runAt
+      );
+
+    state =
+      snapshotRecovery.state;
+
+    if (snapshotRecovery.warning) {
+      warnings.push(
+        snapshotRecovery.warning
+      );
+    }
+
     const config =
       readJSON(
         AUTONOMOUS_CONFIG_PATH
@@ -4541,11 +4946,14 @@ function runAIPolicyEngine() {
         sourceDescriptors
       );
 
+    let existingPolicy =
+      null;
+
     let existingPolicyHash =
       null;
 
     if (fileExists(AI_POLICY_PATH)) {
-      const existingPolicy =
+      existingPolicy =
         readJSON(
           AI_POLICY_PATH,
           {
@@ -4621,6 +5029,13 @@ function runAIPolicyEngine() {
             : "UPDATED",
         sourceHashes,
         policyHash,
+        policyDocument:
+          policyWritten
+            ? policyDocument
+            : (
+                existingPolicy ||
+                policyDocument
+              ),
         policyWritten,
         policyCount:
           policyDocument
@@ -4800,6 +5215,9 @@ module.exports = {
   validateConfidenceDocument,
   validateAIMemoryDocument,
   validatePolicyDocument,
+  createPolicySnapshot,
+  validatePolicySnapshot,
+  restoreAuthoritativePolicyFromSnapshot,
   normalizePair,
   normalizeEngine,
   normalizeDirection,

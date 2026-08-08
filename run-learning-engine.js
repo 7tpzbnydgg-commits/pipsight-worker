@@ -1114,6 +1114,18 @@ function normalizeIdentityNumber(
 
 }
 
+function getSetupIdentity(
+  trade
+) {
+
+  return firstNonEmptyString(
+    trade?.setupIdentity,
+    trade?.setupId,
+    trade?.snapshot?.setupIdentity
+  );
+
+}
+
 function buildTradeIdentitySource(
   trade
 ) {
@@ -3011,6 +3023,11 @@ function validateClosedTrade(
     source:
       "analysis-history.closed",
 
+    setupIdentity:
+      getSetupIdentity(
+        record
+      ),
+
     pair,
 
     engine,
@@ -3944,6 +3961,16 @@ function extractTradeContext(
         richRecord?.id
       ),
 
+    setupIdentity:
+      firstNonEmptyString(
+        normalizedTrade?.setupIdentity,
+        raw.setupIdentity,
+        raw.setupId,
+        richRecord?.setupIdentity,
+        richRecord?.setupId,
+        snapshot.setupIdentity
+      ),
+
     fingerprint:
       firstNonEmptyString(
         raw.fingerprint,
@@ -4272,6 +4299,15 @@ function buildLearnerOutcomePayload(
   }
 
   if (
+    context.setupIdentity
+  ) {
+
+    payload.setupIdentity =
+      context.setupIdentity;
+
+  }
+
+  if (
     context.fingerprint
   ) {
 
@@ -4549,6 +4585,93 @@ function prepareClosedHistory(
   const seenThisRun =
     new Map();
 
+  /*
+   * Canonical setup identity is an additional defensive dedupe layer.
+   * Keep the existing persisted tradeKey algorithm unchanged so previously
+   * committed learning-engine state remains backward compatible. When more
+   * than one closed record represents the same setupIdentity, prefer an
+   * already-processed legacy tradeKey; otherwise keep the earliest record.
+   */
+  const setupRepresentatives =
+    new Map();
+
+  for (
+    let index = 0;
+    index < closedRecords.length;
+    index += 1
+  ) {
+
+    const validation =
+      validateClosedTrade(
+        closedRecords[index],
+        index
+      );
+
+    if (
+      !validation.valid ||
+      !validation.normalized
+        ?.setupIdentity
+    ) {
+
+      continue;
+
+    }
+
+    const candidate =
+      validation.normalized;
+
+    const candidateTradeKey =
+      createTradeKey({
+        ...candidate.raw,
+
+        strategy:
+          candidate.strategy,
+
+        timeframe:
+          candidate.timeframe,
+
+        openedAt:
+          candidate.openedAt
+      });
+
+    const candidateProcessed =
+      processedKeys.has(
+        candidateTradeKey
+      ) ||
+      isPlainObject(
+        processedVersions[
+          candidateTradeKey
+        ]
+      );
+
+    const existingRepresentative =
+      setupRepresentatives.get(
+        candidate.setupIdentity
+      );
+
+    if (
+      !existingRepresentative ||
+      (
+        !existingRepresentative.processed &&
+        candidateProcessed
+      )
+    ) {
+
+      setupRepresentatives.set(
+        candidate.setupIdentity,
+        {
+          index,
+          tradeKey:
+            candidateTradeKey,
+          processed:
+            candidateProcessed
+        }
+      );
+
+    }
+
+  }
+
   for (
     let index = 0;
     index < closedRecords.length;
@@ -4665,6 +4788,45 @@ function prepareClosedHistory(
         normalizedTrade,
         richRecord
       );
+
+    const setupRepresentative =
+      normalizedTrade.setupIdentity
+        ? setupRepresentatives.get(
+            normalizedTrade.setupIdentity
+          )
+        : null;
+
+    if (
+      setupRepresentative &&
+      setupRepresentative.index !==
+        index
+    ) {
+
+      duplicates.push({
+        index,
+        tradeKey,
+        resolutionHash,
+        reason:
+          "DUPLICATE_SETUP_IDENTITY",
+        pair:
+          normalizedTrade.pair,
+        strategy:
+          normalizedTrade.strategy,
+        timeframe:
+          normalizedTrade.timeframe,
+        direction:
+          normalizedTrade.direction,
+        outcome:
+          normalizedTrade.outcome,
+        openedAt:
+          normalizedTrade.openedAt,
+        closedAt:
+          normalizedTrade.closedAt
+      });
+
+      continue;
+
+    }
 
     const withinRunVersion =
       seenThisRun.get(
@@ -7841,4 +8003,3 @@ module.exports = {
 
   buildRunSummary
 };
-

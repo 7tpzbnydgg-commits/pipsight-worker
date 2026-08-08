@@ -16339,70 +16339,43 @@ function updateScalpTracker(
 
     /*
      * Replay the exact closed-M5 path before opening a recovered signal.
-     * If SL/TP1 already occurred, it is historical and must not appear as
-     * an active trade now.
+     * If SL/TP1 already occurred, restore the resolved trade to browser
+     * history without reopening it or recording the outcome in Learner.
      */
-    if(
+    const historicalOutcome =
       firstScalpOutcomeAfterOpen(
         candidateTrade,
         candles
-      )
-    ){
-      continue;
-    }
-
-    const registration =
-      registerScalpSignal(
-        pair,
-        candidateSignal,
-        {
-          skipCooldown:true
-        }
       );
 
-    registrations.push(
-      registration
-    );
-  }
+    if(historicalOutcome){
+      history.push({
+        ...candidateTrade,
 
-  const storedOpen =
-    loadScalpOpen()[
-      pair.key
-    ] ||
-    null;
+        status:
+          historicalOutcome.result,
 
-  return {
-    resolvedTrade:
-      resolvedTrades.length
-        ? resolvedTrades[0]
-        : null,
+        result:
+          historicalOutcome.result,
 
-    resolvedTrades,
+        closePrice:
+          historicalOutcome.closePrice,
 
-    registration:
-      registrations.length
-        ? registrations[0]
-        : {
-            registered:false,
-            reason:null,
-            trade:null
-          },
+        closedAt:
+          new Date(
+            historicalOutcome.candleCloseMs
+          ).toISOString(),
 
-    registrations,
+        resolutionReason:
+          historicalOutcome.reason
+      });
 
-    openTrade:
-      storedOpen,
+      saveScalpHistory(
+        history
+      );
 
-    openTrades:
-      scalpOpenTradeList(
-        loadScalpOpen(),
-        pair.key
-      ),
-
-    history:
-      loadScalpHistory()
-  };
-}
+      continue;
+    }
 
 // ════════════════════════════════════════════════════════════════
 // SCALP TRACKER SUMMARY

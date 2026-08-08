@@ -852,6 +852,25 @@ function validateAutonomousConfig(config) {
         "maximumMarketDataAgeSeconds is missing."
       );
     }
+
+    if (
+      gate.killSwitchOnRepeatedWriteFailure ===
+        true
+    ) {
+      const maximumWriteFailures =
+        toInteger(
+          gate.maximumConsecutiveStateWriteFailures
+        );
+
+      if (
+        maximumWriteFailures === null ||
+        maximumWriteFailures < 1
+      ) {
+        errors.push(
+          "maximumConsecutiveStateWriteFailures must be a positive integer when the repeated-write-failure kill switch is enabled."
+        );
+      }
+    }
   }
 
   if (
@@ -1678,6 +1697,692 @@ function normalizeState(
   };
 }
 
+function validateStateStructure(
+  source,
+  options = {}
+) {
+  const errors = [];
+  const skipSnapshots =
+    options.skipSnapshots === true;
+
+  if (!isPlainObject(source)) {
+    return {
+      valid: false,
+      errors: [
+        "Safety Gate state must be an object."
+      ]
+    };
+  }
+
+  if (
+    source.version !==
+      STATE_SCHEMA_VERSION ||
+    source.engineName !==
+      ENGINE_NAME ||
+    source.engineVersion !==
+      ENGINE_VERSION
+  ) {
+    errors.push(
+      "Safety Gate state identity/version is invalid."
+    );
+  }
+
+  const timestampFields = [
+    "updatedAt",
+    "lastRunAt",
+    "lastWriteFailureAt"
+  ];
+
+  for (const field of timestampFields) {
+    if (
+      source[field] !== null &&
+      source[field] !== undefined &&
+      !toISOStringOrNull(
+        source[field]
+      )
+    ) {
+      errors.push(
+        `Safety Gate state ${field} is invalid.`
+      );
+    }
+  }
+
+  const counterFields = [
+    "approvedSignals",
+    "rejectedSignals",
+    "holdSignals",
+    "emergencyStops",
+    "consecutiveWriteFailures"
+  ];
+
+  for (const field of counterFields) {
+    const value =
+      source[field];
+
+    if (
+      !Number.isInteger(value) ||
+      value < 0
+    ) {
+      errors.push(
+        `Safety Gate state ${field} must be a non-negative integer.`
+      );
+    }
+  }
+
+  if (!Array.isArray(
+    source.recentFingerprints
+  )) {
+    errors.push(
+      "Safety Gate state recentFingerprints must be an array."
+    );
+  } else if (
+    source.recentFingerprints.some(
+      (entry) =>
+        !isPlainObject(entry) ||
+        !normalizeText(
+          entry.fingerprint,
+          null
+        ) ||
+        !toISOStringOrNull(
+          entry.approvedAt
+        )
+    )
+  ) {
+    errors.push(
+      "Safety Gate state recentFingerprints contains a malformed entry."
+    );
+  }
+
+  if (!Array.isArray(
+    source.recentApprovals
+  )) {
+    errors.push(
+      "Safety Gate state recentApprovals must be an array."
+    );
+  } else if (
+    source.recentApprovals.some(
+      (entry) =>
+        !isPlainObject(entry) ||
+        !normalizeText(
+          entry.safetyResultHash,
+          null
+        ) ||
+        !normalizeText(
+          entry.fingerprint,
+          null
+        ) ||
+        !toISOStringOrNull(
+          entry.approvedAt
+        )
+    )
+  ) {
+    errors.push(
+      "Safety Gate state recentApprovals contains a malformed entry."
+    );
+  }
+
+  if (!isPlainObject(
+    source.dailyPairCounts
+  )) {
+    errors.push(
+      "Safety Gate state dailyPairCounts must be an object."
+    );
+  } else {
+    for (
+      const pairCounts of
+      Object.values(
+        source.dailyPairCounts
+      )
+    ) {
+      if (!isPlainObject(pairCounts)) {
+        errors.push(
+          "Safety Gate state dailyPairCounts contains a malformed date bucket."
+        );
+        break;
+      }
+
+      if (
+        Object.values(pairCounts).some(
+          (value) =>
+            !Number.isInteger(value) ||
+            value < 0
+        )
+      ) {
+        errors.push(
+          "Safety Gate state dailyPairCounts contains an invalid counter."
+        );
+        break;
+      }
+    }
+  }
+
+  if (!isPlainObject(
+    source.lastApprovedSignalAtByPair
+  )) {
+    errors.push(
+      "Safety Gate state lastApprovedSignalAtByPair must be an object."
+    );
+  } else if (
+    Object.values(
+      source.lastApprovedSignalAtByPair
+    ).some(
+      (value) =>
+        !toISOStringOrNull(value)
+    )
+  ) {
+    errors.push(
+      "Safety Gate state lastApprovedSignalAtByPair contains an invalid timestamp."
+    );
+  }
+
+  if (
+    source.pendingTransaction !== null &&
+    source.pendingTransaction !== undefined &&
+    !isPlainObject(
+      source.pendingTransaction
+    )
+  ) {
+    errors.push(
+      "Safety Gate state pendingTransaction is malformed."
+    );
+  }
+
+  if (!skipSnapshots) {
+    if (!Array.isArray(source.snapshots)) {
+      errors.push(
+        "Safety Gate state snapshots must be an array."
+      );
+    } else {
+      for (const snapshot of source.snapshots) {
+        if (!isPlainObject(snapshot)) {
+          errors.push(
+            "Safety Gate state snapshots contains a malformed entry."
+          );
+          break;
+        }
+
+        const hasRestorableState =
+          Object.prototype
+            .hasOwnProperty.call(
+              snapshot,
+              "restorableState"
+            ) ||
+          Object.prototype
+            .hasOwnProperty.call(
+              snapshot,
+              "restorableStateHash"
+            );
+
+        if (!hasRestorableState) {
+          continue;
+        }
+
+        if (
+          !isPlainObject(
+            snapshot.restorableState
+          ) ||
+          !normalizeText(
+            snapshot.restorableStateHash,
+            null
+          ) ||
+          createHash(
+            snapshot.restorableState
+          ) !==
+            snapshot.restorableStateHash
+        ) {
+          errors.push(
+            "Safety Gate state contains a corrupt restorable snapshot."
+          );
+          break;
+        }
+
+        const snapshotValidation =
+          validateStateStructure(
+            snapshot.restorableState,
+            {
+              skipSnapshots: true
+            }
+          );
+
+        if (!snapshotValidation.valid) {
+          errors.push(
+            "Safety Gate state contains an invalid restorable snapshot payload."
+          );
+          break;
+        }
+      }
+    }
+  }
+
+  return {
+    valid:
+      errors.length === 0,
+    errors:
+      uniqueStrings(errors)
+  };
+}
+
+function createRestorableStatePayload(
+  state
+) {
+  const normalized =
+    normalizeState(
+      state,
+      state?.updatedAt ||
+      new Date().toISOString()
+    );
+
+  return {
+    version:
+      STATE_SCHEMA_VERSION,
+    engineName:
+      ENGINE_NAME,
+    engineVersion:
+      ENGINE_VERSION,
+    updatedAt:
+      normalized.updatedAt,
+    lastRunAt:
+      normalized.lastRunAt,
+    lastResultHash:
+      normalized.lastResultHash,
+    lastDecisionId:
+      normalized.lastDecisionId,
+    approvedSignals:
+      normalized.approvedSignals,
+    rejectedSignals:
+      normalized.rejectedSignals,
+    holdSignals:
+      normalized.holdSignals,
+    emergencyStops:
+      normalized.emergencyStops,
+    consecutiveWriteFailures:
+      normalized.consecutiveWriteFailures,
+    lastWriteFailureAt:
+      normalized.lastWriteFailureAt,
+    recentFingerprints:
+      deepClone(
+        normalized.recentFingerprints
+      ),
+    recentApprovals:
+      deepClone(
+        normalized.recentApprovals
+      ),
+    dailyPairCounts:
+      deepClone(
+        normalized.dailyPairCounts
+      ),
+    lastApprovedSignalAtByPair:
+      deepClone(
+        normalized
+          .lastApprovedSignalAtByPair
+      ),
+    snapshots: [],
+    pendingTransaction: null
+  };
+}
+
+function recoverStateFromLastKnownGoodSnapshot(
+  source,
+  updatedAt = new Date().toISOString()
+) {
+  if (
+    !isPlainObject(source) ||
+    !Array.isArray(source.snapshots)
+  ) {
+    return null;
+  }
+
+  for (
+    let index =
+      source.snapshots.length - 1;
+    index >= 0;
+    index -= 1
+  ) {
+    const snapshot =
+      source.snapshots[index];
+
+    if (
+      !isPlainObject(snapshot) ||
+      !isPlainObject(
+        snapshot.restorableState
+      ) ||
+      !normalizeText(
+        snapshot.restorableStateHash,
+        null
+      ) ||
+      createHash(
+        snapshot.restorableState
+      ) !==
+        snapshot.restorableStateHash
+    ) {
+      continue;
+    }
+
+    const validation =
+      validateStateStructure(
+        snapshot.restorableState,
+        {
+          skipSnapshots: true
+        }
+      );
+
+    if (!validation.valid) {
+      continue;
+    }
+
+    const restored =
+      normalizeState(
+        snapshot.restorableState,
+        updatedAt
+      );
+
+    restored.updatedAt =
+      updatedAt;
+    restored.snapshots =
+      source.snapshots
+        .filter(isPlainObject)
+        .slice(
+          -MAX_STATE_SNAPSHOTS
+        );
+    restored.pendingTransaction =
+      null;
+
+    return {
+      state: restored,
+      snapshotIndex: index,
+      snapshotHash:
+        snapshot.restorableStateHash
+    };
+  }
+
+  return null;
+}
+
+function prepareSafetyState(
+  source,
+  updatedAt = new Date().toISOString()
+) {
+  if (
+    source === null ||
+    source === undefined
+  ) {
+    return {
+      state:
+        createEmptyState(updatedAt),
+      integrity: {
+        valid: true,
+        corruptionDetected: false,
+        recoveredFromSnapshot: false,
+        errors: []
+      }
+    };
+  }
+
+  const validation =
+    validateStateStructure(source);
+
+  if (validation.valid) {
+    return {
+      state:
+        normalizeState(
+          source,
+          updatedAt
+        ),
+      integrity: {
+        valid: true,
+        corruptionDetected: false,
+        recoveredFromSnapshot: false,
+        errors: []
+      }
+    };
+  }
+
+  const recovery =
+    recoverStateFromLastKnownGoodSnapshot(
+      source,
+      updatedAt
+    );
+
+  if (recovery) {
+    return {
+      state:
+        recovery.state,
+      integrity: {
+        valid: false,
+        corruptionDetected: true,
+        recoveredFromSnapshot: true,
+        snapshotIndex:
+          recovery.snapshotIndex,
+        snapshotHash:
+          recovery.snapshotHash,
+        errors:
+          validation.errors
+      }
+    };
+  }
+
+  return {
+    state:
+      createEmptyState(updatedAt),
+    integrity: {
+      valid: false,
+      corruptionDetected: true,
+      recoveredFromSnapshot: false,
+      errors:
+        validation.errors
+    }
+  };
+}
+
+function validatePendingTransactionDocument(
+  pending
+) {
+  const errors = [];
+
+  if (!isPlainObject(pending)) {
+    return {
+      valid: false,
+      errors: [
+        "Safety Gate pending transaction must be an object."
+      ]
+    };
+  }
+
+  if (pending.version !== 1) {
+    errors.push(
+      "Safety Gate pending transaction version is invalid."
+    );
+  }
+
+  if (
+    !isPlainObject(pending.nextState) ||
+    !isPlainObject(pending.nextLog) ||
+    !isPlainObject(pending.preview)
+  ) {
+    errors.push(
+      "Safety Gate pending transaction payload is incomplete."
+    );
+  }
+
+  if (errors.length === 0) {
+    const nextStateHash =
+      createHash(
+        pending.nextState
+      );
+
+    const nextLogHash =
+      createHash(
+        pending.nextLog
+      );
+
+    const previewHash =
+      createHash(
+        pending.preview
+      );
+
+    const expectedTransactionId =
+      createHash({
+        resultHash:
+          pending.resultHash,
+        startedAt:
+          pending.createdAt,
+        nextStateHash,
+        nextLogHash
+      });
+
+    if (
+      pending.preview
+        .safetyResultHash !==
+        pending.resultHash
+    ) {
+      errors.push(
+        "Safety Gate pending transaction result hash does not match its preview."
+      );
+    }
+
+    if (
+      pending.previewHash !==
+        previewHash
+    ) {
+      errors.push(
+        "Safety Gate pending transaction preview hash is invalid."
+      );
+    }
+
+    if (
+      pending.nextLogHash !==
+        nextLogHash
+    ) {
+      errors.push(
+        "Safety Gate pending transaction log hash is invalid."
+      );
+    }
+
+    if (
+      pending.nextStateHash !==
+        undefined &&
+      pending.nextStateHash !==
+        nextStateHash
+    ) {
+      errors.push(
+        "Safety Gate pending transaction state hash is invalid."
+      );
+    }
+
+    if (
+      pending.transactionId !==
+        expectedTransactionId
+    ) {
+      errors.push(
+        "Safety Gate pending transaction id is invalid."
+      );
+    }
+
+    const stateValidation =
+      validateStateStructure(
+        pending.nextState
+      );
+
+    if (!stateValidation.valid) {
+      errors.push(
+        "Safety Gate pending transaction contains an invalid next state."
+      );
+    }
+
+    if (
+      pending.nextLog.version !==
+        LOG_SCHEMA_VERSION ||
+      pending.nextLog.engineName !==
+        ENGINE_NAME ||
+      pending.nextLog.engineVersion !==
+        ENGINE_VERSION ||
+      !Array.isArray(
+        pending.nextLog.decisions
+      )
+    ) {
+      errors.push(
+        "Safety Gate pending transaction contains an invalid next log."
+      );
+    }
+  }
+
+  return {
+    valid:
+      errors.length === 0,
+    errors:
+      uniqueStrings(errors)
+  };
+}
+
+function recordPendingWriteFailure(
+  pendingPath,
+  pending,
+  failedAt = new Date().toISOString()
+) {
+  const updated =
+    deepClone(pending);
+
+  const previousFailures =
+    Math.max(
+      0,
+      toInteger(
+        updated.writeFailureCount
+      ) ||
+      toInteger(
+        updated.nextState
+          ?.consecutiveWriteFailures
+      ) ||
+      0
+    );
+
+  updated.writeFailureCount =
+    previousFailures + 1;
+  updated.lastWriteFailureAt =
+    failedAt;
+
+  if (isPlainObject(
+    updated.nextState
+  )) {
+    updated.nextState
+      .consecutiveWriteFailures =
+      updated.writeFailureCount;
+    updated.nextState
+      .lastWriteFailureAt =
+      failedAt;
+  }
+
+  updated.nextStateHash =
+    createHash(
+      updated.nextState
+    );
+  updated.nextLogHash =
+    createHash(
+      updated.nextLog
+    );
+  updated.previewHash =
+    createHash(
+      updated.preview
+    );
+  updated.transactionId =
+    createHash({
+      resultHash:
+        updated.resultHash,
+      startedAt:
+        updated.createdAt,
+      nextStateHash:
+        updated.nextStateHash,
+      nextLogHash:
+        updated.nextLogHash
+    });
+
+  atomicWriteJSON(
+    pendingPath,
+    updated
+  );
+
+  return updated;
+}
+
 function recoverPendingTransaction(
   options = {}
 ) {
@@ -1704,44 +2409,65 @@ function recoverPendingTransaction(
     };
   }
 
-  const pending =
+  let pending =
     readJSON(pendingPath).value;
 
-  if (
-    !isPlainObject(pending) ||
-    !isPlainObject(pending.nextState) ||
-    !isPlainObject(pending.nextLog) ||
-    !isPlainObject(pending.preview)
-  ) {
+  const validation =
+    validatePendingTransactionDocument(
+      pending
+    );
+
+  if (!validation.valid) {
     throw new Error(
-      "Safety Gate pending transaction is corrupt."
+      `Safety Gate pending transaction is corrupt: ${validation.errors.join(" ")}`
     );
   }
 
-  atomicWriteJSON(
-    previewPath,
-    pending.preview
-  );
+  try {
+    atomicWriteJSON(
+      previewPath,
+      pending.preview
+    );
 
-  atomicWriteJSON(
-    logPath,
-    pending.nextLog
-  );
+    atomicWriteJSON(
+      logPath,
+      pending.nextLog
+    );
 
-  atomicWriteJSON(
-    statePath,
-    pending.nextState
-  );
+    atomicWriteJSON(
+      statePath,
+      pending.nextState
+    );
 
-  fs.rmSync(
-    pendingPath,
-    { force: true }
-  );
+    fs.rmSync(
+      pendingPath,
+      { force: true }
+    );
+  } catch (error) {
+    try {
+      pending =
+        recordPendingWriteFailure(
+          pendingPath,
+          pending,
+          new Date().toISOString()
+        );
+    } catch {
+      // Preserve the original recovery failure.
+    }
+
+    throw new Error(
+      `Safety Gate pending transaction recovery failed: ${error.message}`
+    );
+  }
 
   return {
     recovered: true,
     transactionId:
-      pending.transactionId || null
+      pending.transactionId || null,
+    writeFailureCount:
+      toInteger(
+        pending.writeFailureCount
+      ) || 0
   };
 }
 
@@ -2325,6 +3051,7 @@ function evaluateSafetyGateWithSources({
   config,
   configHash = null,
   state = null,
+  stateIntegrity = null,
   evaluatedAt = new Date().toISOString()
 }) {
   const normalized =
@@ -2333,11 +3060,27 @@ function evaluateSafetyGateWithSources({
       evaluatedAt
     );
 
+  const preparedState =
+    isPlainObject(stateIntegrity)
+      ? {
+          state:
+            normalizeState(
+              state,
+              normalized.evaluatedAt
+            ),
+          integrity:
+            stateIntegrity
+        }
+      : prepareSafetyState(
+          state,
+          normalized.evaluatedAt
+        );
+
   const currentState =
-    normalizeState(
-      state,
-      normalized.evaluatedAt
-    );
+    preparedState.state;
+
+  const currentStateIntegrity =
+    preparedState.integrity;
 
   const checks = [];
   const configValidation =
@@ -2369,13 +3112,39 @@ function evaluateSafetyGateWithSources({
       "OFF"
     );
 
+  const stateCorruptionKillSwitch =
+    config?.riskSafetyGate
+      ?.killSwitchOnStateCorruption ===
+      true &&
+    currentStateIntegrity
+      .corruptionDetected === true;
+
+  const maximumWriteFailures =
+    Math.max(
+      1,
+      toInteger(
+        config?.riskSafetyGate
+          ?.maximumConsecutiveStateWriteFailures
+      ) || 1
+    );
+
+  const repeatedWriteFailureKillSwitch =
+    config?.riskSafetyGate
+      ?.killSwitchOnRepeatedWriteFailure ===
+      true &&
+    currentState
+      .consecutiveWriteFailures >=
+      maximumWriteFailures;
+
   const emergencyStop =
     configuredMode ===
       "EMERGENCY_STOP" ||
     config?.deployment
       ?.emergencyStop === true ||
     normalized.deployment
-      .emergencyStop === true;
+      .emergencyStop === true ||
+    stateCorruptionKillSwitch ||
+    repeatedWriteFailureKillSwitch;
 
   addCheck(
     checks,
@@ -2397,9 +3166,13 @@ function evaluateSafetyGateWithSources({
           normalized.deployment
             .emergencyStop === true,
         reason:
-          config?.deployment
-            ?.emergencyStopReason ||
-          null
+          stateCorruptionKillSwitch
+            ? "STATE_CORRUPTION_KILL_SWITCH"
+            : repeatedWriteFailureKillSwitch
+              ? "REPEATED_WRITE_FAILURE_KILL_SWITCH"
+              : config?.deployment
+                  ?.emergencyStopReason ||
+                null
       }
     }
   );
@@ -3732,21 +4505,36 @@ function evaluateSafetyGate(
       );
   }
 
-  let state;
+  let preparedState;
 
-  if (isPlainObject(options.state)) {
-    state =
-      normalizeState(
-        options.state,
-        evaluatedAt
-      );
+  if (
+    options.state !== undefined &&
+    options.state !== null
+  ) {
+    preparedState =
+      isPlainObject(
+        options.stateIntegrity
+      )
+        ? {
+            state:
+              normalizeState(
+                options.state,
+                evaluatedAt
+              ),
+            integrity:
+              options.stateIntegrity
+          }
+        : prepareSafetyState(
+            options.state,
+            evaluatedAt
+          );
   } else {
     const statePath =
       options.statePath ||
       SAFETY_STATE_PATH;
 
-    state =
-      normalizeState(
+    preparedState =
+      prepareSafetyState(
         readJSONIfExists(
           statePath,
           createEmptyState(
@@ -3761,7 +4549,10 @@ function evaluateSafetyGate(
     input,
     config,
     configHash,
-    state,
+    state:
+      preparedState.state,
+    stateIntegrity:
+      preparedState.integrity,
     evaluatedAt
   });
 }
@@ -3776,14 +4567,28 @@ function evaluateBatch(
     );
   }
 
-  let state =
-    isPlainObject(options.state)
-      ? normalizeState(
-          options.state,
-          options.evaluatedAt ||
-          new Date().toISOString()
-        )
-      : null;
+  const batchEvaluatedAt =
+    options.evaluatedAt ||
+    new Date().toISOString();
+
+  let state = null;
+  let stateIntegrity = null;
+
+  if (
+    options.state !== undefined &&
+    options.state !== null
+  ) {
+    const preparedBatchState =
+      prepareSafetyState(
+        options.state,
+        batchEvaluatedAt
+      );
+
+    state =
+      preparedBatchState.state;
+    stateIntegrity =
+      preparedBatchState.integrity;
+  }
 
   const results = [];
 
@@ -3795,7 +4600,10 @@ function evaluateBatch(
           ...options,
           state:
             state ||
-            options.state
+            options.state,
+          ...(stateIntegrity
+            ? { stateIntegrity }
+            : {})
         }
       );
 
@@ -3813,6 +4621,15 @@ function evaluateBatch(
           ),
           result
         );
+
+      if (stateIntegrity === null) {
+        stateIntegrity = {
+          valid: true,
+          corruptionDetected: false,
+          recoveredFromSnapshot: false,
+          errors: []
+        };
+      }
     }
   }
 
@@ -4050,6 +4867,18 @@ function applyResultToState(
     }
   }
 
+  next.pendingTransaction =
+    null;
+  next.consecutiveWriteFailures =
+    0;
+  next.lastWriteFailureAt =
+    null;
+
+  const restorableState =
+    createRestorableStatePayload(
+      next
+    );
+
   const snapshot = {
     createdAt:
       result.evaluatedAt,
@@ -4069,7 +4898,12 @@ function applyResultToState(
           next.dailyPairCounts,
         lastApprovedSignalAtByPair:
           next.lastApprovedSignalAtByPair
-      })
+      }),
+    restorableState,
+    restorableStateHash:
+      createHash(
+        restorableState
+      )
   };
 
   next.snapshots.push(snapshot);
@@ -4077,13 +4911,6 @@ function applyResultToState(
     next.snapshots.slice(
       -MAX_STATE_SNAPSHOTS
     );
-
-  next.pendingTransaction =
-    null;
-  next.consecutiveWriteFailures =
-    0;
-  next.lastWriteFailureAt =
-    null;
 
   return next;
 }
@@ -4121,8 +4948,8 @@ function persistSafetyResult(
     previewPath
   });
 
-  const existingState =
-    normalizeState(
+  const preparedExistingState =
+    prepareSafetyState(
       readJSONIfExists(
         statePath,
         createEmptyState(
@@ -4131,6 +4958,20 @@ function persistSafetyResult(
       ),
       result.evaluatedAt
     );
+
+  if (
+    preparedExistingState.integrity
+      .corruptionDetected === true &&
+    preparedExistingState.integrity
+      .recoveredFromSnapshot !== true
+  ) {
+    throw new Error(
+      `Safety Gate state is corrupt and no valid last-known-good snapshot is available: ${preparedExistingState.integrity.errors.join(" ")}`
+    );
+  }
+
+  const existingState =
+    preparedExistingState.state;
 
   const existingLog =
     normalizeLog(
@@ -4187,7 +5028,7 @@ function persistSafetyResult(
         createHash(nextLog)
     });
 
-  const pending = {
+  let pending = {
     version: 1,
     transactionId,
     createdAt:
@@ -4198,16 +5039,56 @@ function persistSafetyResult(
     nextLog,
     preview:
       result,
+    nextStateHash:
+      createHash(nextState),
     nextLogHash:
       createHash(nextLog),
     previewHash:
-      createHash(result)
+      createHash(result),
+    writeFailureCount:
+      Math.max(
+        0,
+        toInteger(
+          existingState
+            .consecutiveWriteFailures
+        ) || 0
+      ),
+    lastWriteFailureAt:
+      existingState
+        .lastWriteFailureAt ||
+      null
   };
 
-  atomicWriteJSON(
-    pendingPath,
-    pending
-  );
+  try {
+    atomicWriteJSON(
+      pendingPath,
+      pending
+    );
+  } catch (error) {
+    const failureState =
+      normalizeState(
+        existingState,
+        result.evaluatedAt
+      );
+
+    failureState
+      .consecutiveWriteFailures += 1;
+    failureState.lastWriteFailureAt =
+      result.evaluatedAt;
+
+    try {
+      atomicWriteJSON(
+        statePath,
+        failureState
+      );
+    } catch {
+      // Preserve the original pending-write failure.
+    }
+
+    throw new Error(
+      `Safety Gate persistence transaction failed: ${error.message}`
+    );
+  }
 
   try {
     if (
@@ -4235,6 +5116,17 @@ function persistSafetyResult(
       { force: true }
     );
   } catch (error) {
+    try {
+      pending =
+        recordPendingWriteFailure(
+          pendingPath,
+          pending,
+          result.evaluatedAt
+        );
+    } catch {
+      // Preserve the original transaction failure.
+    }
+
     throw new Error(
       `Safety Gate persistence transaction failed: ${error.message}`
     );
@@ -4284,17 +5176,43 @@ function runAISafetyGate(
               : [inputDocument]
           );
 
-    let state =
-      normalizeState(
+    const statePath =
+      options.statePath ||
+      SAFETY_STATE_PATH;
+
+    if (
+      options.persist !== false
+    ) {
+      recoverPendingTransaction({
+        pendingPath:
+          options.pendingPath ||
+          SAFETY_PENDING_PATH,
+        statePath,
+        logPath:
+          options.safetyLogPath ||
+          SAFETY_LOG_PATH,
+        previewPath:
+          options.safetyPreviewPath ||
+          SAFETY_PREVIEW_PATH
+      });
+    }
+
+    const preparedRunState =
+      prepareSafetyState(
         readJSONIfExists(
-          options.statePath ||
-          SAFETY_STATE_PATH,
+          statePath,
           createEmptyState(
             evaluatedAt
           )
         ),
         evaluatedAt
       );
+
+    let state =
+      preparedRunState.state;
+
+    const stateIntegrity =
+      preparedRunState.integrity;
 
     const results = [];
     const persisted = [];
@@ -4306,7 +5224,8 @@ function runAISafetyGate(
           {
             ...options,
             evaluatedAt,
-            state
+            state,
+            stateIntegrity
           }
         );
 

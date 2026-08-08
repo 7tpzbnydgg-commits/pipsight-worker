@@ -33,6 +33,18 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           persist-credentials: true
 
+      - name: Sync to latest branch head
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_REF_TYPE}" != "branch" ]]; then
+            echo "::error::Live analysis can only synchronize from a branch workflow run."
+            exit 1
+          fi
+
+          git fetch origin "${GITHUB_REF_NAME}"
+          git reset --hard "origin/${GITHUB_REF_NAME}"
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -607,33 +619,14 @@ jobs:
 
           git commit -m "robot: manually refresh autonomous live analysis"
 
-          max_attempts=5
+          if ! git push origin "HEAD:${GITHUB_REF_NAME}"; then
+            echo "::error::The branch changed while this live-analysis recovery run was executing."
+            echo "::error::The validated generated snapshot was not rebased or force-pushed."
+            echo "::error::Re-run the workflow against the newest branch head."
+            exit 1
+          fi
 
-          for attempt in $(seq 1 "$max_attempts"); do
-            echo "Push attempt ${attempt}/${max_attempts}"
-
-            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
-              echo "Live analysis pushed successfully."
-              exit 0
-            fi
-
-            if [[ "$attempt" -eq "$max_attempts" ]]; then
-              echo "Push failed after ${max_attempts} attempts."
-              exit 1
-            fi
-
-            echo "Remote branch changed. Rebasing before retry..."
-
-            git fetch origin "${GITHUB_REF_NAME}"
-
-            if ! git rebase "origin/${GITHUB_REF_NAME}"; then
-              echo "Rebase conflict detected."
-              git rebase --abort || true
-              exit 1
-            fi
-
-            sleep $((attempt * 5))
-          done
+          echo "Live analysis pushed successfully."
 
       - name: Log execution
         if: always()

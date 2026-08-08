@@ -3,7 +3,7 @@
 /**
  * PipSight Pro — Learning Enrichment Engine
  *
- * Version: 1.0.0
+ * Version: 1.4.0
  *
  * Phase 3A purpose:
  * - Read existing Automatic Learning outputs without modifying them.
@@ -52,6 +52,15 @@ const ENGINE_NAME =
   "PipSight Pro Learning Enrichment Engine";
 
 const ENGINE_VERSION =
+  "1.4.0";
+
+/*
+ * Persisted enrichment documents remain on the verified 1.0.0 contract.
+ * Current production consumers and workflow validation explicitly require
+ * engineVersion 1.0.0. Keeping this contract local prevents any dependent
+ * production file from requiring a compatibility edit for the 1.4.0 runtime.
+ */
+const PERSISTED_ENGINE_VERSION =
   "1.0.0";
 
 const ENRICHMENT_SCHEMA_VERSION =
@@ -6125,7 +6134,7 @@ function createEmptyEnrichmentDocument(
       ENGINE_NAME,
 
     engineVersion:
-      ENGINE_VERSION,
+      PERSISTED_ENGINE_VERSION,
 
     mode:
       ENGINE_MODE,
@@ -6299,7 +6308,7 @@ function createEmptyEnrichmentState(
       ENGINE_NAME,
 
     engineVersion:
-      ENGINE_VERSION,
+      PERSISTED_ENGINE_VERSION,
 
     mode:
       ENGINE_MODE,
@@ -7003,7 +7012,7 @@ function validateEnrichmentDocument(
 
   if (
     document.engineVersion !==
-      ENGINE_VERSION
+      PERSISTED_ENGINE_VERSION
   ) {
 
     errors.push(
@@ -7689,7 +7698,7 @@ function validateEnrichmentState(
 
   if (
     state.engineVersion !==
-      ENGINE_VERSION
+      PERSISTED_ENGINE_VERSION
   ) {
 
     errors.push(

@@ -501,6 +501,39 @@ async function saveLearningStateToGitHub(
   learningData
 ) {
 
+  const isLegacyLearningExportPayload =
+    Boolean(
+      learningData &&
+      typeof learningData ===
+        "object" &&
+      !Array.isArray(
+        learningData
+      ) &&
+      learningData.learning &&
+      typeof learningData.learning ===
+        "object" &&
+      !Array.isArray(
+        learningData.learning
+      ) &&
+      Array.isArray(
+        learningData.learning.signals
+      )
+    );
+
+  if (
+    CONFIG.githubFilePath ===
+      "data/learning-engine-state.json" &&
+    isLegacyLearningExportPayload
+  ) {
+
+    console.warn(
+      "Unsafe legacy learning-export sync blocked: learning-export.json must not overwrite data/learning-engine-state.json."
+    );
+
+    return false;
+
+  }
+
   console.log(
     "Fetching current GitHub learning state..."
   );
@@ -583,9 +616,22 @@ async function main() {
     `Read ${signalCount} signals from local export.`
   );
 
-  await saveLearningStateToGitHub(
-    learningData
-  );
+  const saved =
+    await saveLearningStateToGitHub(
+      learningData
+    );
+
+  if (!saved) {
+
+    return {
+      skipped: true,
+      saved: false,
+      signalCount,
+      reason:
+        "unsafe legacy learning-export overwrite blocked"
+    };
+
+  }
 
   return {
     skipped: false,

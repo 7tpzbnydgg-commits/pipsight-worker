@@ -833,6 +833,81 @@ function validateAutonomousConfig(config) {
   return validation;
 }
 
+function createPolicyContentHashFromDocument(
+  policy
+) {
+  if (!isPlainObject(policy)) {
+    return null;
+  }
+
+  const sourceHashKeys = [
+    "autonomousConfig",
+    "learningData",
+    "confidenceData",
+    "aiMemory"
+  ];
+
+  const sourceHashes =
+    Object.fromEntries(
+      sourceHashKeys.map(
+        (key) => [
+          key,
+          toNonEmptyStringOrNull(
+            policy.source
+              ?.[key]
+              ?.hash
+          )
+        ]
+      )
+    );
+
+  const coreContent = {
+    configVersion:
+      policy.config?.version ?? null,
+    deploymentMode:
+      policy.mode ?? null,
+    autonomousRolloutPercent:
+      policy.autonomousRolloutPercent ?? null,
+    sourceHashes,
+    globalMetrics:
+      policy.globalBaseline ?? null,
+    policies:
+      (
+        Array.isArray(policy.policies)
+          ? policy.policies
+          : []
+      ).map(
+        (policyRecord) => ({
+          key:
+            policyRecord?.key,
+          scope:
+            policyRecord?.scope,
+          dimensions:
+            policyRecord?.dimensions,
+          action:
+            policyRecord?.action,
+          edgeScore:
+            policyRecord?.edgeScore,
+          shrunkExpectancyR:
+            policyRecord
+              ?.shrunkExpectancyR,
+          reliability:
+            policyRecord?.reliability,
+          authority:
+            policyRecord?.authority,
+          metrics:
+            policyRecord?.metrics,
+          validation:
+            policyRecord?.validation
+        })
+      )
+  };
+
+  return createHash(
+    coreContent
+  );
+}
+
 function validatePolicyDocument(
   policy,
   config,
@@ -945,15 +1020,30 @@ function validatePolicyDocument(
     );
   }
 
-  if (
-    !toNonEmptyStringOrNull(
+  const embeddedPolicyHash =
+    toNonEmptyStringOrNull(
       policy.metadata
         ?.policyContentHash
-    )
-  ) {
+    );
+
+  const actualPolicyHash =
+    createPolicyContentHashFromDocument(
+      policy
+    );
+
+  if (!embeddedPolicyHash) {
     addValidationError(
       validation,
       "AI policy content hash is missing."
+    );
+  } else if (
+    !actualPolicyHash ||
+    actualPolicyHash !==
+      embeddedPolicyHash
+  ) {
+    addValidationError(
+      validation,
+      "AI policy content hash does not match the actual policy body."
     );
   }
 
@@ -1039,10 +1129,10 @@ function validatePolicyDocument(
     }
 
     const expectedHash =
-      policy.metadata
-        ?.policyContentHash;
+      actualPolicyHash;
 
     if (
+      !expectedHash ||
       policyState.policyHash !==
         expectedHash ||
       policyState.lastKnownGoodPolicyHash !==
@@ -4077,7 +4167,8 @@ function createEmptyDecisionState(now) {
       suppressions: 0,
       reversals: 0,
       tradePlanSelections: 0
-    }
+    },
+    pendingTransaction: null
   };
 }
 
@@ -4124,7 +4215,247 @@ function normalizeDecisionState(
             )
           )
         : {})
+    },
+    pendingTransaction:
+      isPlainObject(
+        normalized.pendingTransaction
+      )
+        ? normalized.pendingTransaction
+        : null
+  };
+}
+
+function createPendingDecisionTransaction({
+  result,
+  nextLog,
+  nextState,
+  preview,
+  skipPreview
+}) {
+  const normalizedNextState = {
+    ...deepClone(nextState),
+    pendingTransaction: null
+  };
+
+  const normalizedPreview =
+    skipPreview === true
+      ? null
+      : deepClone(preview);
+
+  return {
+    version: 1,
+    startedAt:
+      result.evaluatedAt,
+    decisionHash:
+      result.decisionHash,
+    skipPreview:
+      skipPreview === true,
+    nextLogHash:
+      createHash(nextLog),
+    nextStateHash:
+      createHash(
+        normalizedNextState
+      ),
+    previewHash:
+      normalizedPreview
+        ? createHash(
+            normalizedPreview
+          )
+        : null,
+    logUpdatedAt:
+      nextLog.updatedAt,
+    logRecord:
+      buildDecisionLogRecord(
+        result
+      ),
+    nextState:
+      normalizedNextState,
+    preview:
+      normalizedPreview
+  };
+}
+
+function recoverPendingDecisionTransaction(
+  options = {}
+) {
+  const logPath =
+    options.decisionLogPath ||
+    DECISION_LOG_PATH;
+
+  const statePath =
+    options.decisionStatePath ||
+    DECISION_STATE_PATH;
+
+  const previewPath =
+    options.decisionPreviewPath ||
+    DECISION_PREVIEW_PATH;
+
+  const now =
+    toISOStringOrNull(
+      options.now
+    ) ||
+    new Date().toISOString();
+
+  const state =
+    normalizeDecisionState(
+      readJSON(
+        statePath,
+        {
+          required: false,
+          defaultValue:
+            createEmptyDecisionState(
+              now
+            )
+        }
+      ),
+      now
+    );
+
+  const pending =
+    state.pendingTransaction;
+
+  if (!pending) {
+    return {
+      state,
+      recovered: false
+    };
+  }
+
+  if (
+    pending.version !== 1 ||
+    !isPlainObject(
+      pending.logRecord
+    ) ||
+    !isPlainObject(
+      pending.nextState
+    )
+  ) {
+    throw new Error(
+      "Decision state contains an invalid pending transaction."
+    );
+  }
+
+  if (
+    pending.logRecord.decisionHash !==
+      pending.decisionHash ||
+    createHash(
+      {
+        ...pending.nextState,
+        pendingTransaction: null
+      }
+    ) !==
+      pending.nextStateHash
+  ) {
+    throw new Error(
+      "Decision pending transaction integrity validation failed."
+    );
+  }
+
+  if (
+    pending.skipPreview !== true
+  ) {
+    if (
+      !isPlainObject(
+        pending.preview
+      ) ||
+      createHash(
+        pending.preview
+      ) !==
+        pending.previewHash
+    ) {
+      throw new Error(
+        "Decision pending preview integrity validation failed."
+      );
     }
+
+    atomicWriteJSON(
+      previewPath,
+      pending.preview
+    );
+  }
+
+  const recoveredLog =
+    normalizeDecisionLog(
+      readJSON(
+        logPath,
+        {
+          required: false,
+          defaultValue:
+            createEmptyDecisionLog()
+        }
+      )
+    );
+
+  if (
+    !recoveredLog.decisions.some(
+      (record) =>
+        record.decisionHash ===
+        pending.decisionHash
+    )
+  ) {
+    recoveredLog.decisions.push(
+      deepClone(
+        pending.logRecord
+      )
+    );
+  }
+
+  recoveredLog.decisions =
+    recoveredLog.decisions
+      .sort(
+        (left, right) =>
+          Date.parse(
+            left.evaluatedAt
+          ) -
+            Date.parse(
+              right.evaluatedAt
+            ) ||
+          left.decisionHash
+            .localeCompare(
+              right.decisionHash
+            )
+      )
+      .slice(
+        -MAX_DECISION_LOG_ENTRIES
+      );
+
+  recoveredLog.updatedAt =
+    toISOStringOrNull(
+      pending.logUpdatedAt
+    );
+
+  if (
+    createHash(
+      recoveredLog
+    ) !==
+      pending.nextLogHash
+  ) {
+    throw new Error(
+      "Decision pending log integrity validation failed."
+    );
+  }
+
+  atomicWriteJSON(
+    logPath,
+    recoveredLog
+  );
+
+  const recoveredState = {
+    ...deepClone(
+      pending.nextState
+    ),
+    pendingTransaction: null
+  };
+
+  atomicWriteJSON(
+    statePath,
+    recoveredState
+  );
+
+  return {
+    state:
+      recoveredState,
+    recovered: true
   };
 }
 
@@ -4189,6 +4520,17 @@ function persistDecisionResult(
   const now =
     result.evaluatedAt;
 
+  const recovery =
+    recoverPendingDecisionTransaction({
+      decisionLogPath:
+        logPath,
+      decisionStatePath:
+        statePath,
+      decisionPreviewPath:
+        previewPath,
+      now
+    });
+
   const log =
     normalizeDecisionLog(
       readJSON(
@@ -4203,16 +4545,7 @@ function persistDecisionResult(
 
   const state =
     normalizeDecisionState(
-      readJSON(
-        statePath,
-        {
-          required: false,
-          defaultValue:
-            createEmptyDecisionState(
-              now
-            )
-        }
-      ),
+      recovery.state,
       now
     );
 
@@ -4326,6 +4659,32 @@ function persistDecisionResult(
   state.lastDecisionHash =
     result.decisionHash;
 
+  state.pendingTransaction =
+    null;
+
+  const pendingState =
+    deepClone(
+      state
+    );
+
+  pendingState.pendingTransaction =
+    createPendingDecisionTransaction({
+      result,
+      nextLog:
+        log,
+      nextState:
+        state,
+      preview:
+        result,
+      skipPreview:
+        options.skipPreview === true
+    });
+
+  atomicWriteJSON(
+    statePath,
+    pendingState
+  );
+
   if (options.skipPreview !== true) {
     atomicWriteJSON(
       previewPath,
@@ -4362,6 +4721,21 @@ function runAIDecisionEngine(
     new Date().toISOString();
 
   try {
+    if (
+      options.persist !== false
+    ) {
+      recoverPendingDecisionTransaction({
+        decisionLogPath:
+          options.decisionLogPath,
+        decisionStatePath:
+          options.decisionStatePath,
+        decisionPreviewPath:
+          options.decisionPreviewPath,
+        now:
+          evaluatedAt
+      });
+    }
+
     const inputPath =
       options.inputPath ||
       DECISION_INPUT_PATH;
@@ -4524,6 +4898,7 @@ module.exports = {
   evaluateDecisionWithSources,
   evaluateBatch,
   persistDecisionResult,
+  recoverPendingDecisionTransaction,
   normalizeDecisionInput,
   normalizeTradePlan,
   validateTradePlanGeometry,
@@ -4531,6 +4906,7 @@ module.exports = {
   normalizeCandidateTradePlans,
   validateAutonomousConfig,
   validatePolicyDocument,
+  createPolicyContentHashFromDocument,
   validatePolicyRecord,
   buildScopeOrder,
   createPolicyIndex,

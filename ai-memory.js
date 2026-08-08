@@ -5419,6 +5419,24 @@ function extractTradeId(
 
 }
 
+function extractTradeSetupIdentity(
+  record
+) {
+
+  return toNonEmptyStringOrNull(
+    getFirstDefinedValue(
+      record,
+      [
+        ["setupIdentity"],
+        ["setupId"],
+        ["metadata", "setupIdentity"],
+        ["metadata", "setupId"]
+      ]
+    )
+  );
+
+}
+
 function extractTradePair(
   record
 ) {
@@ -6250,6 +6268,11 @@ function normalizeLearnedTrade(
       closedAt
     );
 
+  const setupIdentity =
+    extractTradeSetupIdentity(
+      record
+    );
+
   const trade =
     {
       sourceIndex,
@@ -6315,6 +6338,15 @@ function normalizeLearnedTrade(
       pattern,
       marketRegime
     };
+
+  if (
+    setupIdentity
+  ) {
+
+    trade.setupIdentity =
+      setupIdentity;
+
+  }
 
   return {
     valid: true,
@@ -6392,6 +6424,67 @@ function createTradeKey(
 
 }
 
+function createSetupIdentityKey(
+  trade
+) {
+
+  const pair =
+    normalizePair(
+      trade?.pair
+    );
+
+  const engine =
+    normalizeEngine(
+      trade?.engine
+    );
+
+  const direction =
+    normalizeDirection(
+      trade?.direction
+    );
+
+  const timeframe =
+    normalizeTimeframe(
+      trade?.timeframe
+    );
+
+  const openedAt =
+    toISOStringOrNull(
+      trade?.openedAt
+    );
+
+  if (
+    pair &&
+    engine &&
+    direction &&
+    timeframe &&
+    openedAt
+  ) {
+
+    return createHash({
+      pair,
+      engine,
+      direction,
+      timeframe,
+      openedAt
+    });
+
+  }
+
+  const explicitSetupIdentity =
+    toNonEmptyStringOrNull(
+      trade?.setupIdentity
+    );
+
+  return explicitSetupIdentity
+    ? createHash({
+        setupIdentity:
+          explicitSetupIdentity
+      })
+    : null;
+
+}
+
 // -----------------------------------------------------------------------------
 // Trade collection normalization
 // -----------------------------------------------------------------------------
@@ -6414,6 +6507,9 @@ function normalizeLearningTrades(
     [];
 
   const seenTradeKeys =
+    new Set();
+
+  const seenSetupKeys =
     new Set();
 
   let duplicateTradeKeys =
@@ -6465,9 +6561,20 @@ function normalizeLearningTrades(
         result.trade
       );
 
+    const setupIdentityKey =
+      createSetupIdentityKey(
+        result.trade
+      );
+
     if (
       seenTradeKeys.has(
         tradeKey
+      ) ||
+      (
+        setupIdentityKey &&
+        seenSetupKeys.has(
+          setupIdentityKey
+        )
       )
     ) {
 
@@ -6481,6 +6588,16 @@ function normalizeLearningTrades(
     seenTradeKeys.add(
       tradeKey
     );
+
+    if (
+      setupIdentityKey
+    ) {
+
+      seenSetupKeys.add(
+        setupIdentityKey
+      );
+
+    }
 
     acceptedTrades.push({
       ...result.trade,

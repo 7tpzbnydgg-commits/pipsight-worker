@@ -3,7 +3,7 @@
 /**
  * PipSight Pro — Guarded Adaptive Execution Layer
  *
- * Version: 1.0.0
+ * Version: 1.4.0
  *
  * Phase B1:
  * - Scalp-only dry-run resolution.
@@ -53,7 +53,17 @@ const ENGINE_NAME =
   "PipSight Pro Guarded Adaptive Execution Layer";
 
 const ENGINE_VERSION =
-  "1.0.0";
+  "1.4.0";
+
+/*
+ * In-place compatibility is limited to this engine's own persisted
+ * 1.0.0 output/state documents. The JSON schemas and public API stay
+ * unchanged; legacy documents are validated before migration.
+ */
+const LEGACY_ENGINE_VERSIONS =
+  Object.freeze([
+    "1.0.0"
+  ]);
 
 const EXECUTION_SCHEMA_VERSION =
   1;
@@ -5710,6 +5720,138 @@ function validateExecutionState(
 }
 
 /* =====================================================================
+   In-Place Engine-Version Migration
+   ===================================================================== */
+
+function migrateLegacyExecutionDocument(
+  document
+) {
+
+  if (
+    !isPlainObject(
+      document
+    ) ||
+    !LEGACY_ENGINE_VERSIONS.includes(
+      document.engineVersion
+    )
+  ) {
+
+    return {
+      migrated: false,
+      value: null,
+      fromVersion: null,
+      error: null
+    };
+
+  }
+
+  const fromVersion =
+    document.engineVersion;
+
+  const candidate =
+    cloneJSONCompatible(
+      document
+    );
+
+  candidate.engineVersion =
+    ENGINE_VERSION;
+
+  const validation =
+    validateExecutionDocument(
+      candidate
+    );
+
+  if (
+    !validation.valid
+  ) {
+
+    return {
+      migrated: false,
+      value: null,
+      fromVersion,
+      error:
+        validation.errors.join(
+          " "
+        ) ||
+        "Legacy adaptive execution output failed migration validation."
+    };
+
+  }
+
+  return {
+    migrated: true,
+    value: candidate,
+    fromVersion,
+    error: null
+  };
+
+}
+
+function migrateLegacyExecutionState(
+  state
+) {
+
+  if (
+    !isPlainObject(
+      state
+    ) ||
+    !LEGACY_ENGINE_VERSIONS.includes(
+      state.engineVersion
+    )
+  ) {
+
+    return {
+      migrated: false,
+      value: null,
+      fromVersion: null,
+      error: null
+    };
+
+  }
+
+  const fromVersion =
+    state.engineVersion;
+
+  const candidate =
+    cloneJSONCompatible(
+      state
+    );
+
+  candidate.engineVersion =
+    ENGINE_VERSION;
+
+  const validation =
+    validateExecutionState(
+      candidate
+    );
+
+  if (
+    !validation.valid
+  ) {
+
+    return {
+      migrated: false,
+      value: null,
+      fromVersion,
+      error:
+        validation.errors.join(
+          " "
+        ) ||
+        "Legacy adaptive execution state failed migration validation."
+    };
+
+  }
+
+  return {
+    migrated: true,
+    value: candidate,
+    fromVersion,
+    error: null
+  };
+
+}
+
+/* =====================================================================
    Execution State Loading
    ===================================================================== */
 
@@ -5755,6 +5897,28 @@ function loadExecutionState(
     !validation.valid
   ) {
 
+    const migration =
+      migrateLegacyExecutionState(
+        stateRead.value
+      );
+
+    if (
+      migration.migrated
+    ) {
+
+      return {
+        state:
+          migration.value,
+
+        recovered:
+          false,
+
+        warning:
+          `Migrated adaptive execution state engineVersion ${migration.fromVersion} -> ${ENGINE_VERSION}.`
+      };
+
+    }
+
     return {
       state:
         createEmptyExecutionState(
@@ -5765,6 +5929,7 @@ function loadExecutionState(
         true,
 
       warning:
+        migration.error ||
         validation.errors.join(
           " "
         )
@@ -5827,24 +5992,84 @@ function readExistingExecutionOutput() {
       outputRead.value
     );
 
+  if (
+    validation.valid
+  ) {
+
+    return {
+      exists:
+        true,
+
+      valid:
+        true,
+
+      value:
+        outputRead.value,
+
+      error:
+        null,
+
+      requiresMigration:
+        false,
+
+      migrationWarning:
+        null
+    };
+
+  }
+
+  const migration =
+    migrateLegacyExecutionDocument(
+      outputRead.value
+    );
+
+  if (
+    migration.migrated
+  ) {
+
+    return {
+      exists:
+        true,
+
+      valid:
+        true,
+
+      value:
+        migration.value,
+
+      error:
+        null,
+
+      requiresMigration:
+        true,
+
+      migrationWarning:
+        `Migrated adaptive execution output engineVersion ${migration.fromVersion} -> ${ENGINE_VERSION}.`
+    };
+
+  }
+
   return {
     exists:
       true,
 
     valid:
-      validation.valid,
+      false,
 
     value:
-      validation.valid
-        ? outputRead.value
-        : null,
+      null,
 
     error:
-      validation.valid
-        ? null
-        : validation.errors.join(
-            " "
-          )
+      migration.error ||
+      validation.errors.join(
+        " "
+      ),
+
+    requiresMigration:
+      false,
+
+    migrationWarning:
+      null
   };
 
 }
@@ -6459,6 +6684,16 @@ function runAdaptiveExecution() {
       readExistingExecutionOutput();
 
     if (
+      existingOutput.migrationWarning
+    ) {
+
+      runtimeWarnings.push(
+        existingOutput.migrationWarning
+      );
+
+    }
+
+    if (
       existingOutput.exists &&
       !existingOutput.valid &&
       existingOutput.error
@@ -6492,6 +6727,8 @@ function runAdaptiveExecution() {
 
     const mustWriteOutput =
       (
+        existingOutput.requiresMigration ===
+          true ||
         !existingOutput.exists ||
         !existingOutput.valid ||
         outputChanged

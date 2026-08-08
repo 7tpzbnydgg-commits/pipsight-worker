@@ -13092,6 +13092,9 @@ function analyzeScalp(
 // SCALP STORAGE CONFIGURATION
 // ════════════════════════════════════════════════════════════════
 
+const SCALP_SIGNAL_LOG_URL =
+  `${PIPSIGHT_REPOSITORY_RAW_BASE}/data/scalp-signal-log.json`;
+
 const SCALP_OPEN_STORAGE_KEY =
   "pipsight_scalp_open_v2";
 
@@ -13347,6 +13350,156 @@ function backendScalpEntryForPair(
   }
 
   return null;
+}
+
+function normalizeScalpTrackerTimeframe(value){
+  const normalized =
+    typeof value === "string"
+      ? value
+          .trim()
+          .toUpperCase()
+          .replace(/\s+/g, "")
+      : "";
+
+  if(
+    normalized === "M5" ||
+    normalized === "5M"
+  ){
+    return "M5";
+  }
+
+  if(
+    normalized === "M15" ||
+    normalized === "15M"
+  ){
+    return "M15";
+  }
+
+  if(
+    normalized === "M30" ||
+    normalized === "30M"
+  ){
+    return "M30";
+  }
+
+  if(
+    normalized === "H1" ||
+    normalized === "1H"
+  ){
+    return "H1";
+  }
+
+  return normalized;
+}
+
+function backendScalpEntriesForPair(
+  payload,
+  pairKey
+){
+  if(
+    !payload ||
+    typeof payload !== "object" ||
+    typeof pairKey !== "string"
+  ){
+    return [];
+  }
+
+  const normalizedPairKey =
+    String(pairKey || "")
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, "");
+
+  if(Array.isArray(payload.signals)){
+    return payload.signals.filter(
+      item=>
+        item &&
+        typeof item === "object" &&
+        String(item.pair || "")
+          .trim()
+          .toUpperCase()
+          .replace(/[^A-Z0-9]/g, "") ===
+          normalizedPairKey
+    );
+  }
+
+  const legacy =
+    backendScalpEntryForPair(
+      payload,
+      pairKey
+    );
+
+  return legacy
+    ? [legacy]
+    : [];
+}
+
+function scalpSignalLogEntriesForPair(
+  log,
+  pairKey
+){
+  if(
+    !Array.isArray(log) ||
+    typeof pairKey !== "string"
+  ){
+    return [];
+  }
+
+  const normalizedPairKey =
+    String(pairKey || "")
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, "");
+
+  return log.filter(
+    item=>
+      item &&
+      typeof item === "object" &&
+      String(item.pair || "")
+        .trim()
+        .toUpperCase()
+        .replace(/[^A-Z0-9]/g, "") ===
+        normalizedPairKey
+  );
+}
+
+async function fetchBackendScalpSignalLog({
+  forceRefresh = false
+} = {}){
+  try{
+    const payload =
+      await fetchJSONCached(
+        SCALP_SIGNAL_LOG_URL,
+        {
+          ttlMs:
+            APP_CONFIG
+              .cacheTtlMs
+              .scalpSignals,
+
+          forceRefresh,
+
+          validate:
+            value=>
+              Array.isArray(value)
+                ? true
+                : "Scalp signal log must be an array",
+
+          allowLastKnownGood:
+            true
+        }
+      );
+
+    return Array.isArray(payload)
+      ? payload
+      : [];
+  }catch(error){
+    console.warn(
+      "Scalp signal-log fetch failed:",
+      normalizeErrorMessage(error)
+    );
+
+    return [];
+  }
 }
 
 function normalizeSignalDecision(value){
@@ -14304,6 +14457,43 @@ function normalizeBackendScalpSignal(
       rawEntry.createdAt
     );
 
+  const setupTimeframe =
+    normalizeScalpTrackerTimeframe(
+      rawEntry.setupTimeframe ||
+      rawEntry.confirmationTimeframe ||
+      rawEntry.mode ||
+      rawEntry.timeframe ||
+      rawEntry.interval
+    );
+
+  const executionTimeframe =
+    normalizeScalpTrackerTimeframe(
+      rawEntry.executionTimeframe ||
+      rawEntry.entryTimeframe ||
+      "M5"
+    ) ||
+    "M5";
+
+  const entryTimeframe =
+    normalizeScalpTrackerTimeframe(
+      rawEntry.entryTimeframe ||
+      rawEntry.executionTimeframe ||
+      "M5"
+    ) ||
+    "M5";
+
+  const setupCandleAt =
+    safeISODate(
+      rawEntry.setupCandleAt ||
+      rawEntry.analyzedCandleAt
+    );
+
+  const executionCandleAt =
+    safeISODate(
+      rawEntry.executionCandleAt ||
+      rawEntry.analyzedCandleAt
+    );
+
   return {
     decision:
       finalDecision,
@@ -14325,9 +14515,40 @@ function normalizeBackendScalpSignal(
 
     generatedAt,
 
+    mode:
+      rawEntry.mode ||
+      setupTimeframe ||
+      null,
+
+    setupTimeframe:
+      setupTimeframe ||
+      null,
+
+    confirmationTimeframe:
+      normalizeScalpTrackerTimeframe(
+        rawEntry.confirmationTimeframe ||
+        setupTimeframe
+      ) ||
+      null,
+
+    executionTimeframe,
+
+    entryTimeframe,
+
+    setupCandleAt,
+
+    executionCandleAt,
+
+    executionReason:
+      typeof rawEntry.executionReason === "string" &&
+      rawEntry.executionReason.trim()
+        ? rawEntry.executionReason.trim()
+        : "",
+
     pipeline:
       normalizeScalpPipeline(
-        rawEntry.pipeline
+        rawEntry.pipeline ||
+        rawEntry.steps
       ),
 
     perTF:
@@ -14637,6 +14858,323 @@ function isScalpSignalFresh(
   );
 }
 
+function scalpSignalSlotKey(
+  pairKey,
+  signal
+){
+  const setupTimeframe =
+    normalizeScalpTrackerTimeframe(
+      signal &&
+      (
+        signal.setupTimeframe ||
+        signal.confirmationTimeframe ||
+        signal.mode ||
+        signal.timeframe
+      )
+    ) ||
+    "SCALP";
+
+  return `${pairKey}::${setupTimeframe}`;
+}
+
+function scalpOpenTradeList(
+  openTrades,
+  pairKey
+){
+  const stored =
+    openTrades &&
+    typeof openTrades === "object"
+      ? openTrades[pairKey]
+      : null;
+
+  if(Array.isArray(stored)){
+    return stored.filter(
+      trade=>
+        trade &&
+        typeof trade === "object" &&
+        trade.status === "OPEN"
+    );
+  }
+
+  if(
+    stored &&
+    typeof stored === "object" &&
+    Array.isArray(stored.trades)
+  ){
+    return stored.trades.filter(
+      trade=>
+        trade &&
+        typeof trade === "object" &&
+        trade.status === "OPEN"
+    );
+  }
+
+  if(
+    stored &&
+    typeof stored === "object" &&
+    stored.status === "OPEN"
+  ){
+    return [stored];
+  }
+
+  return [];
+}
+
+function saveScalpOpenTradesForPair(
+  openTrades,
+  pairKey,
+  trades
+){
+  const active =
+    safeArray(trades)
+      .filter(
+        trade=>
+          trade &&
+          typeof trade === "object" &&
+          trade.status === "OPEN"
+      );
+
+  if(!active.length){
+    delete openTrades[pairKey];
+    return openTrades;
+  }
+
+  if(active.length === 1){
+    openTrades[pairKey] =
+      active[0];
+
+    return openTrades;
+  }
+
+  openTrades[pairKey] = {
+    status:
+      "OPEN",
+
+    pairKey,
+
+    trades:
+      active,
+
+    updatedAt:
+      new Date().toISOString()
+  };
+
+  return openTrades;
+}
+
+function scalpTradeIdentityFromStoredTrade(
+  trade
+){
+  if(
+    !trade ||
+    typeof trade !== "object"
+  ){
+    return null;
+  }
+
+  if(
+    typeof trade.identity === "string" &&
+    trade.identity.trim()
+  ){
+    return trade.identity.trim();
+  }
+
+  const setupTimeframe =
+    normalizeScalpTrackerTimeframe(
+      trade.setupTimeframe ||
+      trade.confirmationTimeframe ||
+      trade.mode ||
+      trade.timeframe
+    );
+
+  const setupCandleAt =
+    safeISODate(
+      trade.setupCandleAt ||
+      trade.analyzedCandleAt
+    );
+
+  if(
+    setupTimeframe &&
+    setupCandleAt &&
+    (trade.decision === "BUY" ||
+     trade.decision === "SELL")
+  ){
+    return [
+      trade.pairKey ||
+        trade.pair ||
+        "UNKNOWN",
+      setupTimeframe,
+      trade.decision,
+      setupCandleAt
+    ].join("|");
+  }
+
+  return null;
+}
+
+function scalpTradeAlreadyRecorded(
+  history,
+  identity
+){
+  if(!identity){
+    return false;
+  }
+
+  return safeArray(history).some(
+    trade=>
+      scalpTradeIdentityFromStoredTrade(
+        trade
+      ) === identity
+  );
+}
+
+function firstScalpOutcomeAfterOpen(
+  trade,
+  candles
+){
+  const openedAtMs =
+    safeDateMs(
+      trade &&
+      trade.openedAt
+    );
+
+  if(openedAtMs == null){
+    return null;
+  }
+
+  for(const candle of safeArray(candles)){
+    const candleOpenMs =
+      candleTimeMs(
+        candle
+      );
+
+    if(candleOpenMs == null){
+      continue;
+    }
+
+    const candleCloseMs =
+      candleOpenMs +
+      timeframeMilliseconds(
+        5
+      );
+
+    if(candleCloseMs <= openedAtMs){
+      continue;
+    }
+
+    const outcome =
+      resolveScalpTradeAgainstCandle(
+        trade,
+        candle
+      );
+
+    if(!outcome){
+      continue;
+    }
+
+    return {
+      ...outcome,
+
+      candleCloseMs
+    };
+  }
+
+  return null;
+}
+
+async function getScalpTrackerSignalsForPair(
+  pair,
+  {
+    forceRefresh = false
+  } = {}
+){
+  if(
+    !pair ||
+    typeof pair !== "object"
+  ){
+    return [];
+  }
+
+  if(
+    !SCALP_SIGNALS_DATA ||
+    forceRefresh
+  ){
+    await fetchBackendScalpSignals({
+      forceRefresh
+    });
+  }
+
+  const persistentLog =
+    await fetchBackendScalpSignalLog({
+      forceRefresh
+    });
+
+  const rawCandidates = [
+    ...scalpSignalLogEntriesForPair(
+      persistentLog,
+      pair.key
+    ),
+    ...backendScalpEntriesForPair(
+      SCALP_SIGNALS_DATA,
+      pair.key
+    )
+  ];
+
+  const normalizedCandidates =
+    rawCandidates
+      .map(
+        rawEntry=>
+          normalizeBackendScalpSignal(
+            rawEntry,
+            pair
+          )
+      )
+      .filter(
+        signal=>
+          signal &&
+          (signal.decision === "BUY" ||
+           signal.decision === "SELL") &&
+          signal.tradePlan
+      )
+      .sort(
+        (a,b)=>
+          (
+            safeDateMs(a.generatedAt) ??
+            Number.MAX_SAFE_INTEGER
+          ) -
+          (
+            safeDateMs(b.generatedAt) ??
+            Number.MAX_SAFE_INTEGER
+          )
+      );
+
+  const unique =
+    new Map();
+
+  for(const signal of normalizedCandidates){
+    const identity =
+      scalpSignalIdentity(
+        pair.key,
+        signal
+      );
+
+    if(!identity){
+      continue;
+    }
+
+    if(!unique.has(identity)){
+      unique.set(
+        identity,
+        signal
+      );
+    }
+  }
+
+  return Array.from(
+    unique.values()
+  );
+}
+
 // ════════════════════════════════════════════════════════════════
 // BACKEND-ONLY SCALP SIGNAL SELECTION
 // ════════════════════════════════════════════════════════════════
@@ -14783,6 +15321,36 @@ function scalpSignalIdentity(
     return null;
   }
 
+  const setupTimeframe =
+    normalizeScalpTrackerTimeframe(
+      signal.setupTimeframe ||
+      signal.confirmationTimeframe ||
+      signal.mode ||
+      signal.timeframe
+    );
+
+  const setupCandleAt =
+    safeISODate(
+      signal.setupCandleAt ||
+      signal.analyzedCandleAt
+    );
+
+  if(
+    setupTimeframe &&
+    setupCandleAt
+  ){
+    return [
+      pairKey,
+      setupTimeframe,
+      decision,
+      setupCandleAt
+    ].join("|");
+  }
+
+  /*
+   * Backward compatibility for legacy browser/local records that predate
+   * setup-timeframe and setup-candle metadata.
+   */
   const entry =
     safeNumber(
       signal.rawEntry ??
@@ -14819,21 +15387,12 @@ function scalpSignalIdentity(
     return null;
   }
 
-  const entryToken =
-    entry.toFixed(6);
-
-  const stopToken =
-    stop.toFixed(6);
-
-  const targetToken =
-    target.toFixed(6);
-
   return [
     pairKey,
     decision,
-    entryToken,
-    stopToken,
-    targetToken
+    entry.toFixed(6),
+    stop.toFixed(6),
+    target.toFixed(6)
   ].join("|");
 }
 
@@ -14899,7 +15458,16 @@ function isDuplicateScalpSignal(
   const lastSignals =
     loadLastScalpSignals();
 
+  const slotKey =
+    scalpSignalSlotKey(
+      pairKey,
+      signal
+    );
+
   const previous =
+    lastSignals[
+      slotKey
+    ] ||
     lastSignals[
       pairKey
     ];
@@ -14963,7 +15531,13 @@ function rememberScalpSignal(
   const lastSignals =
     loadLastScalpSignals();
 
-  lastSignals[pairKey] = {
+  const slotKey =
+    scalpSignalSlotKey(
+      pairKey,
+      signal
+    );
+
+  lastSignals[slotKey] = {
     identity:
       scalpSignalIdentity(
         pairKey,
@@ -14975,6 +15549,15 @@ function rememberScalpSignal(
         signal.decision ||
         signal.signal
       ),
+
+    setupTimeframe:
+      normalizeScalpTrackerTimeframe(
+        signal.setupTimeframe ||
+        signal.confirmationTimeframe ||
+        signal.mode ||
+        signal.timeframe
+      ) ||
+      null,
 
     entry:
       safeNumber(
@@ -15092,13 +15675,51 @@ function buildOpenScalpTrade(
       risk
     );
 
+  const setupTimeframe =
+    normalizeScalpTrackerTimeframe(
+      signal.setupTimeframe ||
+      signal.confirmationTimeframe ||
+      signal.mode ||
+      signal.timeframe
+    ) ||
+    null;
+
+  const executionTimeframe =
+    normalizeScalpTrackerTimeframe(
+      signal.executionTimeframe ||
+      signal.entryTimeframe ||
+      "M5"
+    ) ||
+    "M5";
+
+  const setupCandleAt =
+    safeISODate(
+      signal.setupCandleAt ||
+      signal.analyzedCandleAt
+    );
+
+  const executionCandleAt =
+    safeISODate(
+      signal.executionCandleAt ||
+      signal.analyzedCandleAt
+    );
+
+  const identity =
+    scalpSignalIdentity(
+      pair.key,
+      signal
+    );
+
   return {
     id:
+      identity ||
       [
         pair.key,
         decision,
         Date.now()
       ].join("-"),
+
+    identity,
 
     pairKey:
       pair.key,
@@ -15110,6 +15731,33 @@ function buildOpenScalpTrade(
       pair.decimals,
 
     decision,
+
+    setupTimeframe,
+
+    confirmationTimeframe:
+      normalizeScalpTrackerTimeframe(
+        signal.confirmationTimeframe ||
+        setupTimeframe
+      ) ||
+      setupTimeframe,
+
+    executionTimeframe,
+
+    entryTimeframe:
+      normalizeScalpTrackerTimeframe(
+        signal.entryTimeframe ||
+        executionTimeframe
+      ) ||
+      executionTimeframe,
+
+    setupCandleAt,
+
+    executionCandleAt,
+
+    executionReason:
+      typeof signal.executionReason === "string"
+        ? signal.executionReason
+        : "",
 
     entry,
 
@@ -15168,7 +15816,10 @@ function buildOpenScalpTrade(
 
 function registerScalpSignal(
   pair,
-  signal
+  signal,
+  {
+    skipCooldown = false
+  } = {}
 ){
   const decision =
     normalizeSignalDecision(
@@ -15193,25 +15844,38 @@ function registerScalpSignal(
   const openTrades =
     loadScalpOpen();
 
-  const existingOpen =
-    openTrades[
+  const pairOpenTrades =
+    scalpOpenTradeList(
+      openTrades,
       pair.key
-    ];
+    );
 
-  if(
-    existingOpen &&
-    existingOpen.status === "OPEN"
-  ){
+  const identity =
+    scalpSignalIdentity(
+      pair.key,
+      signal
+    );
+
+  const existingOpen =
+    pairOpenTrades.find(
+      trade=>
+        scalpTradeIdentityFromStoredTrade(
+          trade
+        ) === identity
+    );
+
+  if(existingOpen){
     return {
       registered:false,
       reason:
-        `${pair.label} already has an open ${existingOpen.decision} scalp signal`,
+        `${pair.label} already has this open scalp setup`,
       trade:
         existingOpen
     };
   }
 
   if(
+    !skipCooldown &&
     isDuplicateScalpSignal(
       pair.key,
       signal
@@ -15240,10 +15904,15 @@ function registerScalpSignal(
     };
   }
 
-  openTrades[
-    pair.key
-  ] =
-    trade;
+  pairOpenTrades.push(
+    trade
+  );
+
+  saveScalpOpenTradesForPair(
+    openTrades,
+    pair.key,
+    pairOpenTrades
+  );
 
   saveScalpOpen(
     openTrades
@@ -15489,142 +16158,246 @@ function updateScalpTracker(
   const history =
     loadScalpHistory();
 
-  const openTrade =
-    openTrades[
+  const pairOpenTrades =
+    scalpOpenTradeList(
+      openTrades,
       pair.key
-    ];
+    );
 
-  let resolvedTrade =
-    null;
+  const stillOpen = [];
+  const resolvedTrades = [];
 
-  if(
-    openTrade &&
-    openTrade.status === "OPEN"
-  ){
-    const openedAtMs =
-      safeDateMs(
-        openTrade.openedAt
+  for(const openTrade of pairOpenTrades){
+    const outcome =
+      firstScalpOutcomeAfterOpen(
+        openTrade,
+        candles
       );
 
-    const candidateCandles =
-      candles.filter(
-        candle=>{
-          const candleOpenMs =
-            candleTimeMs(
-              candle
-            );
-
-          if(candleOpenMs == null){
-            return false;
-          }
-
-          const candleCloseMs =
-            candleOpenMs +
-            timeframeMilliseconds(
-              5
-            );
-
-          return (
-            openedAtMs == null ||
-            candleCloseMs >
-              openedAtMs
-          );
-        }
+    if(!outcome){
+      stillOpen.push(
+        openTrade
       );
+      continue;
+    }
 
-    for(const candle of candidateCandles){
-      const outcome =
-        resolveScalpTradeAgainstCandle(
-          openTrade,
-          candle
-        );
+    const resolvedTrade = {
+      ...openTrade,
 
-      if(!outcome){
-        continue;
-      }
+      status:
+        outcome.result,
 
-      resolvedTrade = {
-        ...openTrade,
+      result:
+        outcome.result,
 
-        status:
-          outcome.result,
+      closePrice:
+        outcome.closePrice,
 
-        result:
-          outcome.result,
+      closedAt:
+        new Date(
+          outcome.candleCloseMs
+        ).toISOString(),
 
-        closePrice:
-          outcome.closePrice,
+      resolutionReason:
+        outcome.reason
+    };
 
-        closedAt:
-          new Date(
-            candleTimeMs(
-              candle
-            ) +
-            timeframeMilliseconds(
-              5
-            )
-          ).toISOString(),
+    resolvedTrades.push(
+      resolvedTrade
+    );
 
-        resolutionReason:
-          outcome.reason
-      };
-
-      history.push(
+    const identity =
+      scalpTradeIdentityFromStoredTrade(
         resolvedTrade
       );
 
-      delete openTrades[
-        pair.key
-      ];
-
-      saveScalpHistory(
-        history
-      );
-
-      saveScalpOpen(
-        openTrades
+    if(
+      !scalpTradeAlreadyRecorded(
+        history,
+        identity
+      )
+    ){
+      history.push(
+        resolvedTrade
       );
 
       recordScalpOutcomeInLearner(
         resolvedTrade
       );
-
-      break;
     }
   }
 
-  let registration = {
-    registered:false,
-    reason:null,
-    trade:null
-  };
+  saveScalpOpenTradesForPair(
+    openTrades,
+    pair.key,
+    stillOpen
+  );
 
-  const refreshedOpenTrades =
-    loadScalpOpen();
-
-  if(
-    signal &&
-    !refreshedOpenTrades[
-      pair.key
-    ]
-  ){
-    registration =
-      registerScalpSignal(
-        pair,
-        signal
-      );
+  if(resolvedTrades.length){
+    saveScalpHistory(
+      history
+    );
   }
 
-  return {
-    resolvedTrade,
+  saveScalpOpen(
+    openTrades
+  );
 
-    registration,
+  const signals =
+    Array.isArray(signal)
+      ? signal
+      : signal
+        ? [signal]
+        : [];
+
+  const firstCandleOpenMs =
+    candles.length
+      ? candleTimeMs(
+          candles[0]
+        )
+      : null;
+
+  const registrations = [];
+
+  for(const candidateSignal of signals){
+    const decision =
+      normalizeSignalDecision(
+        candidateSignal &&
+        (
+          candidateSignal.decision ||
+          candidateSignal.signal
+        )
+      );
+
+    if(
+      decision !== "BUY" &&
+      decision !== "SELL"
+    ){
+      continue;
+    }
+
+    const candidateTrade =
+      buildOpenScalpTrade(
+        pair,
+        candidateSignal
+      );
+
+    if(!candidateTrade){
+      continue;
+    }
+
+    const openedAtMs =
+      safeDateMs(
+        candidateTrade.openedAt
+      );
+
+    /*
+     * A historical backend signal is recovered only when the available
+     * closed-M5 data covers its entire post-entry path. This prevents an
+     * old, already-resolved trade from being falsely reopened.
+     */
+    if(
+      openedAtMs == null ||
+      (
+        firstCandleOpenMs != null &&
+        openedAtMs < firstCandleOpenMs
+      )
+    ){
+      continue;
+    }
+
+    const identity =
+      scalpTradeIdentityFromStoredTrade(
+        candidateTrade
+      );
+
+    if(
+      scalpTradeAlreadyRecorded(
+        history,
+        identity
+      )
+    ){
+      continue;
+    }
+
+    const currentOpenTrades =
+      scalpOpenTradeList(
+        loadScalpOpen(),
+        pair.key
+      );
+
+    if(
+      currentOpenTrades.some(
+        trade=>
+          scalpTradeIdentityFromStoredTrade(
+            trade
+          ) === identity
+      )
+    ){
+      continue;
+    }
+
+    /*
+     * Replay the exact closed-M5 path before opening a recovered signal.
+     * If SL/TP1 already occurred, it is historical and must not appear as
+     * an active trade now.
+     */
+    if(
+      firstScalpOutcomeAfterOpen(
+        candidateTrade,
+        candles
+      )
+    ){
+      continue;
+    }
+
+    const registration =
+      registerScalpSignal(
+        pair,
+        candidateSignal,
+        {
+          skipCooldown:true
+        }
+      );
+
+    registrations.push(
+      registration
+    );
+  }
+
+  const storedOpen =
+    loadScalpOpen()[
+      pair.key
+    ] ||
+    null;
+
+  return {
+    resolvedTrade:
+      resolvedTrades.length
+        ? resolvedTrades[0]
+        : null,
+
+    resolvedTrades,
+
+    registration:
+      registrations.length
+        ? registrations[0]
+        : {
+            registered:false,
+            reason:null,
+            trade:null
+          },
+
+    registrations,
 
     openTrade:
-      loadScalpOpen()[
+      storedOpen,
+
+    openTrades:
+      scalpOpenTradeList(
+        loadScalpOpen(),
         pair.key
-      ] ||
-      null,
+      ),
 
     history:
       loadScalpHistory()
@@ -15750,18 +16523,32 @@ async function buildScalpViewModel(
     );
 
   const signal =
-  await getScalpSignalForPair(
-    pair,
-    {
-      forceRefresh
-    }
-  );
+    await getScalpSignalForPair(
+      pair,
+      {
+        forceRefresh
+      }
+    );
+
+  /*
+   * The visible Scalp decision remains the existing M5-primary dashboard
+   * result. The tracker separately consumes every authoritative backend
+   * M5/M15/M30 signal plus the persistent scalp signal log so independent
+   * setups are not lost while the browser is closed.
+   */
+  const trackerSignals =
+    await getScalpTrackerSignalsForPair(
+      pair,
+      {
+        forceRefresh
+      }
+    );
 
   const tracker =
     updateScalpTracker(
       pair,
       candles,
-      signal
+      trackerSignals
     );
 
   const stats =
@@ -16299,10 +17086,27 @@ function renderOpenScalpTrade(
   trade,
   pair
 ){
-  if(
-    !trade ||
-    trade.status !== "OPEN"
-  ){
+  const trades =
+    Array.isArray(trade)
+      ? trade.filter(
+          item=>
+            item &&
+            item.status === "OPEN"
+        )
+      : trade &&
+        typeof trade === "object" &&
+        Array.isArray(trade.trades)
+        ? trade.trades.filter(
+            item=>
+              item &&
+              item.status === "OPEN"
+          )
+        : trade &&
+          trade.status === "OPEN"
+          ? [trade]
+          : [];
+
+  if(!trades.length){
     return `
       <div class="empty-note">
         No open tracked scalp trade for ${escapeHTML(pair.label)}.
@@ -16315,116 +17119,153 @@ function renderOpenScalpTrade(
       pair
     );
 
-  return `
-    <div class="signal-summary">
-      <div
-        style="
-          display:flex;
-          justify-content:space-between;
-          align-items:flex-start;
-          gap:12px;
-          margin-bottom:10px;
-        "
-      >
-        <div>
-          <div class="label">
-            Open Tracked Signal
+  return trades
+    .slice()
+    .sort(
+      (a,b)=>
+        (
+          safeDateMs(b.openedAt) ??
+          0
+        ) -
+        (
+          safeDateMs(a.openedAt) ??
+          0
+        )
+    )
+    .map(
+      item=>{
+        const setupTimeframe =
+          normalizeScalpTrackerTimeframe(
+            item.setupTimeframe ||
+            item.confirmationTimeframe
+          ) ||
+          "Scalp";
+
+        const entryTimeframe =
+          normalizeScalpTrackerTimeframe(
+            item.entryTimeframe ||
+            item.executionTimeframe
+          ) ||
+          "M5";
+
+        return `
+          <div class="signal-summary">
+            <div
+              style="
+                display:flex;
+                justify-content:space-between;
+                align-items:flex-start;
+                gap:12px;
+                margin-bottom:10px;
+              "
+            >
+              <div>
+                <div class="label">
+                  Open Tracked Signal · ${escapeHTML(setupTimeframe)} setup
+                </div>
+
+                <span
+                  class="badge ${signalBadgeClass(item.decision)}"
+                >
+                  ${escapeHTML(item.decision)}
+                </span>
+              </div>
+
+              <div
+                class="mono"
+                style="
+                  color:var(--muted);
+                  font-size:10px;
+                  text-align:right;
+                "
+              >
+                Opened ${escapeHTML(
+                  getTimeAgo(
+                    item.openedAt
+                  )
+                )}
+              </div>
+            </div>
+
+            <div class="metric-grid">
+              <div class="metric">
+                <div class="metric-label">
+                  Entry
+                </div>
+
+                <div class="metric-value">
+                  ${safeFixed(
+                    item.entry,
+                    decimals
+                  )}
+                </div>
+              </div>
+
+              <div class="metric">
+                <div class="metric-label">
+                  Stop
+                </div>
+
+                <div
+                  class="metric-value"
+                  style="color:var(--sell);"
+                >
+                  ${safeFixed(
+                    item.stop,
+                    decimals
+                  )}
+                </div>
+              </div>
+
+              <div class="metric">
+                <div class="metric-label">
+                  TP1
+                </div>
+
+                <div
+                  class="metric-value"
+                  style="color:var(--buy);"
+                >
+                  ${safeFixed(
+                    item.target1,
+                    decimals
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div
+              class="scope-note"
+              style="margin-top:10px;"
+            >
+              Setup <b>${escapeHTML(setupTimeframe)}</b>
+              · Entry <b>${escapeHTML(entryTimeframe)}</b>
+
+              ${
+                item.setupCandleAt
+                  ? ` · Setup candle <b>${escapeHTML(
+                      safeDateLabel(
+                        item.setupCandleAt,
+                        item.setupCandleAt
+                      )
+                    )}</b>`
+                  : ""
+              }
+
+              ${
+                safeNumber(
+                  item.confidence,
+                  null
+                ) != null
+                  ? ` · Confidence <b>${safeFixed(item.confidence,0)}%</b>`
+                  : ""
+              }
+            </div>
           </div>
-
-          <span
-            class="badge ${signalBadgeClass(trade.decision)}"
-          >
-            ${escapeHTML(trade.decision)}
-          </span>
-        </div>
-
-        <div
-          class="mono"
-          style="
-            color:var(--muted);
-            font-size:10px;
-            text-align:right;
-          "
-        >
-          Opened ${escapeHTML(
-            getTimeAgo(
-              trade.openedAt
-            )
-          )}
-        </div>
-      </div>
-
-      <div class="metric-grid">
-        <div class="metric">
-          <div class="metric-label">
-            Entry
-          </div>
-
-          <div class="metric-value">
-            ${safeFixed(
-              trade.entry,
-              decimals
-            )}
-          </div>
-        </div>
-
-        <div class="metric">
-          <div class="metric-label">
-            Stop
-          </div>
-
-          <div
-            class="metric-value"
-            style="color:var(--sell);"
-          >
-            ${safeFixed(
-              trade.stop,
-              decimals
-            )}
-          </div>
-        </div>
-
-        <div class="metric">
-          <div class="metric-label">
-            TP1
-          </div>
-
-          <div
-            class="metric-value"
-            style="color:var(--buy);"
-          >
-            ${safeFixed(
-              trade.target1,
-              decimals
-            )}
-          </div>
-        </div>
-      </div>
-
-      <div
-        class="scope-note"
-        style="margin-top:10px;"
-      >
-        Source:
-        <b>
-          ${escapeHTML(
-            trade.sourceLabel ||
-            trade.source ||
-            "Unknown"
-          )}
-        </b>
-
-        ${
-          safeNumber(
-            trade.confidence,
-            null
-          ) != null
-            ? ` · Confidence <b>${safeFixed(trade.confidence,0)}%</b>`
-            : ""
-        }
-      </div>
-    </div>
-  `;
+        `;
+      }
+    )
+    .join("");
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -22024,8 +22865,3 @@ if(
   
 </body>
 </html>
-
-
-
-
-

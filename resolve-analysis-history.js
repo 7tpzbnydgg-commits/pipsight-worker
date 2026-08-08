@@ -7316,16 +7316,54 @@ function recordsReferToSameTrade(
     );
 
   /*
-   * Autonomous source-trade identities are immutable and authoritative.
-   * Different explicit keys must never collapse into one trade.
+   * Autonomous source-trade identities remain authoritative unless both
+   * records prove the same canonical setup. Live Analysis can persist the
+   * same setup under different generated record IDs, which creates different
+   * sourceTradeKeys. A matching complete setupIdentity is the only safe
+   * exception to that external-key mismatch.
    */
   if (
     leftSourceTradeKey &&
     rightSourceTradeKey
   ) {
 
-    return leftSourceTradeKey ===
-      rightSourceTradeKey;
+    if (
+      leftSourceTradeKey ===
+        rightSourceTradeKey
+    ) {
+
+      return true;
+
+    }
+
+    const leftCanonicalSetupIdentity =
+      getExistingSetupIdentity(
+        left
+      ) ||
+      buildStableSetupIdentity(
+        left
+      );
+
+    const rightCanonicalSetupIdentity =
+      getExistingSetupIdentity(
+        right
+      ) ||
+      buildStableSetupIdentity(
+        right
+      );
+
+    if (
+      leftCanonicalSetupIdentity &&
+      rightCanonicalSetupIdentity &&
+      leftCanonicalSetupIdentity ===
+        rightCanonicalSetupIdentity
+    ) {
+
+      return true;
+
+    }
+
+    return false;
 
   }
 

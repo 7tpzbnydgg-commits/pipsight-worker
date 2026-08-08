@@ -3,7 +3,7 @@
 /**
  * PipSight Pro — Professional Adaptive Optimization Engine
  *
- * Version: 1.0.0
+ * Version: 1.4.0
  *
  * Phase A:
  * - Shadow-mode optimization only.
@@ -61,7 +61,17 @@ const ENGINE_NAME =
   "PipSight Pro Professional Adaptive Optimization Engine";
 
 const ENGINE_VERSION =
-  "1.0.0";
+  "1.4.0";
+
+/*
+ * State files produced by the verified 1.0.0 engine are structurally
+ * compatible with schema version 1. Preserve their counters and timestamps
+ * during the one-time 1.4.0 metadata migration instead of resetting state.
+ */
+const LEGACY_STATE_ENGINE_VERSIONS =
+  Object.freeze([
+    "1.0.0"
+  ]);
 
 const OPTIMIZATION_SCHEMA_VERSION =
   1;
@@ -1965,19 +1975,28 @@ function normalizeLearningConfidence(
     );
 
   const wins =
-    toNonNegativeInteger(
-      value.wins
-    );
+    value.wins === null ||
+    value.wins === undefined
+      ? null
+      : toNonNegativeInteger(
+          value.wins
+        );
 
   const losses =
-    toNonNegativeInteger(
-      value.losses
-    );
+    value.losses === null ||
+    value.losses === undefined
+      ? null
+      : toNonNegativeInteger(
+          value.losses
+        );
 
   const breakevens =
-    toNonNegativeInteger(
-      value.breakevens
-    );
+    value.breakevens === null ||
+    value.breakevens === undefined
+      ? null
+      : toNonNegativeInteger(
+          value.breakevens
+        );
 
   const winRate =
     clamp(
@@ -2028,35 +2047,8 @@ function normalizeLearningConfidence(
 
   }
 
-  if (
-    wins === null
-  ) {
 
-    errors.push(
-      `${label}.wins is invalid.`
-    );
 
-  }
-
-  if (
-    losses === null
-  ) {
-
-    errors.push(
-      `${label}.losses is invalid.`
-    );
-
-  }
-
-  if (
-    breakevens === null
-  ) {
-
-    errors.push(
-      `${label}.breakevens is invalid.`
-    );
-
-  }
 
   if (
     winRate === null
@@ -2104,14 +2096,16 @@ function normalizeLearningConfidence(
 
   if (
     resolved !== null &&
-    wins !== null &&
-    losses !== null &&
-    breakevens !== null &&
     (
-      wins +
-      losses +
-      breakevens
-    ) !== resolved
+      wins === null ||
+      losses === null ||
+      breakevens === null ||
+      (
+        wins +
+        losses +
+        breakevens
+      ) !== resolved
+    )
   ) {
 
     warnings.push(
@@ -6456,6 +6450,80 @@ function validateOptimizerState(
 }
 
 /* =====================================================================
+   Optimizer State Version Migration
+   ===================================================================== */
+
+function migrateLegacyOptimizerState(
+  value
+) {
+
+  if (
+    !isPlainObject(
+      value
+    ) ||
+    value.engineName !==
+      ENGINE_NAME ||
+    value.version !==
+      STATE_SCHEMA_VERSION ||
+    value.mode !==
+      OPTIMIZER_MODE ||
+    !LEGACY_STATE_ENGINE_VERSIONS.includes(
+      value.engineVersion
+    )
+  ) {
+
+    return {
+      migrated: false,
+      state: null,
+      fromVersion: null,
+      error: null
+    };
+
+  }
+
+  const migratedState =
+    cloneJSONCompatible(
+      value
+    );
+
+  const fromVersion =
+    migratedState.engineVersion;
+
+  migratedState.engineVersion =
+    ENGINE_VERSION;
+
+  const validation =
+    validateOptimizerState(
+      migratedState
+    );
+
+  if (
+    !validation.valid
+  ) {
+
+    return {
+      migrated: false,
+      state: null,
+      fromVersion,
+      error:
+        validation.errors.join(
+          " "
+        ) ||
+        "Legacy optimizer state migration validation failed."
+    };
+
+  }
+
+  return {
+    migrated: true,
+    state: migratedState,
+    fromVersion,
+    error: null
+  };
+
+}
+
+/* =====================================================================
    Optimizer State Loading
    ===================================================================== */
 
@@ -6488,6 +6556,28 @@ function loadOptimizerState(
 
       warning:
         stateRead.error
+    };
+
+  }
+
+  const migration =
+    migrateLegacyOptimizerState(
+      stateRead.value
+    );
+
+  if (
+    migration.migrated
+  ) {
+
+    return {
+      state:
+        migration.state,
+
+      recovered:
+        false,
+
+      warning:
+        `Optimizer state migrated from engine ${migration.fromVersion} to ${ENGINE_VERSION}.`
     };
 
   }

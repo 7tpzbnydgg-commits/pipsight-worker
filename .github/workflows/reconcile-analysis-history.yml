@@ -1,0 +1,186 @@
+name: PipSight Pro — one-time analysis history reconciliation
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pipsight-analysis-writes-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  reconcile-history:
+    name: Reconcile proven historical duplicates
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Sync to latest branch head
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_REF_TYPE}" != "branch" ]]; then
+            echo "::error::Reconciliation can only run from a branch."
+            exit 1
+          fi
+
+          git fetch origin "${GITHUB_REF_NAME}"
+          git reset --hard "origin/${GITHUB_REF_NAME}"
+
+      - name: Verify reconciliation inputs
+        run: |
+          set -euo pipefail
+
+          required_files=(
+            "reconcile-analysis-history.js"
+            "data/analysis-history.json"
+          )
+
+          for file in "${required_files[@]}"; do
+            if [[ ! -f "$file" ]]; then
+              echo "::error file=$file::Required reconciliation file is missing: $file"
+              exit 1
+            fi
+          done
+
+          node --check reconcile-analysis-history.js
+
+      - name: Dry-run reconciliation
+        run: |
+          set -euo pipefail
+          node reconcile-analysis-history.js
+
+      - name: Apply reconciliation
+        run: |
+          set -euo pipefail
+          node reconcile-analysis-history.js --apply
+
+      - name: Verify reconciled analysis history
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          "use strict";
+
+          const fs = require("fs");
+
+          const filePath = "data/analysis-history.json";
+          const history = JSON.parse(fs.readFileSync(filePath, "utf8"));
+
+          for (const field of ["closed", "records", "history", "items"]) {
+            if (!Array.isArray(history[field])) {
+              throw new Error(`${field} must remain an array.`);
+            }
+          }
+
+          if (
+            JSON.stringify(history.records) !== JSON.stringify(history.history) ||
+            JSON.stringify(history.records) !== JSON.stringify(history.items)
+          ) {
+            throw new Error("records/history/items aliases are not synchronized.");
+          }
+
+          const duplicateSetupIdentities = new Map();
+
+          for (const record of history.closed) {
+            const setupIdentity =
+              typeof record?.setupIdentity === "string"
+                ? record.setupIdentity.trim()
+                : "";
+
+            if (!setupIdentity) continue;
+
+            duplicateSetupIdentities.set(
+              setupIdentity,
+              (duplicateSetupIdentities.get(setupIdentity) || 0) + 1
+            );
+          }
+
+          const remainingDuplicates =
+            [...duplicateSetupIdentities.entries()]
+              .filter(([, count]) => count > 1);
+
+          if (remainingDuplicates.length !== 0) {
+            throw new Error(
+              `Reconciliation left ${remainingDuplicates.length} duplicate setupIdentity group(s).`
+            );
+          }
+
+          if (history.count !== history.records.length) {
+            throw new Error(
+              `History count mismatch: count=${history.count}, records=${history.records.length}.`
+            );
+          }
+
+          console.log("Reconciled analysis history validation passed.");
+          console.log(`Closed records: ${history.closed.length}`);
+          console.log(`Rich records: ${history.records.length}`);
+          console.log("Duplicate setupIdentity groups: 0");
+          NODE
+
+      - name: Verify only analysis history changed
+        run: |
+          set -euo pipefail
+
+          mapfile -t changed_files < <(
+            git status --porcelain |
+              sed -E 's/^.. //' |
+              sed -E 's/^"//; s/"$//' |
+              sort -u
+          )
+
+          if [[ "${#changed_files[@]}" -ne 1 ]] ||
+             [[ "${changed_files[0]}" != "data/analysis-history.json" ]]; then
+            echo "::error::Unexpected repository changes detected."
+            git status --short
+            exit 1
+          fi
+
+          git diff --check -- data/analysis-history.json
+          git status --short
+
+      - name: Commit reconciled history
+        run: |
+          set -euo pipefail
+
+          git config user.name "pipsight-maintenance-robot"
+          git config user.email "actions@users.noreply.github.com"
+
+          git add -- data/analysis-history.json
+
+          if git diff --cached --quiet; then
+            echo "::error::Reconciliation produced no committed history change."
+            exit 1
+          fi
+
+          git commit -m "maintenance: reconcile historical analysis duplicates"
+
+      - name: Push reconciled history
+        run: |
+          set -euo pipefail
+
+          if ! git push origin "HEAD:${GITHUB_REF_NAME}"; then
+            echo "::error::Push was rejected because the branch changed during reconciliation."
+            echo "::error::No rebase or force-push was attempted. Re-run this workflow against the newest branch head."
+            exit 1
+          fi
+
+          echo "Historical analysis reconciliation committed successfully."

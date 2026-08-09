@@ -633,16 +633,7 @@ jobs:
             had_state=true
           fi
 
-          if [[ "$POLICY_FORCE_REFRESH" == "true" ]]; then
-            # The engine intentionally avoids rewriting unchanged policy content.
-            # Removing only the working policy copy forces a fresh generatedAt while
-            # backups keep the last-known-good snapshot recoverable on failure.
-            rm -f data/ai-policy.json
-          fi
-
-          if ! node ai-policy-engine.js; then
-            echo "::error::AI Policy refresh failed; restoring last-known-good files."
-
+          restore_policy_backups() {
             if [[ "$had_policy" == "true" ]]; then
               cp "$policy_backup" data/ai-policy.json
             else
@@ -654,7 +645,15 @@ jobs:
             else
               rm -f data/ai-policy-state.json
             fi
+          }
 
+          # AI Policy Engine 1.4.0 owns freshness refreshes itself.
+          # Do not delete the active policy or mutate LKG state here; doing so
+          # races the engine's rollback protection. The configured 120-minute
+          # freshness threshold is inherited through PIPSIGHT_POLICY_REFRESH_MINUTES.
+          if ! node ai-policy-engine.js; then
+            echo "::error::AI Policy refresh failed; restoring the pre-run policy/state snapshot."
+            restore_policy_backups
             exit 1
           fi
 
@@ -1148,10 +1147,76 @@ jobs:
 
           git commit -m "robot: refresh unified autonomous analysis state"
 
-          if ! git push origin "HEAD:${GITHUB_REF_NAME}"; then
-            echo "::error::The branch changed while this unified pipeline run was executing."
-            echo "::error::The validated generated snapshot was not rebased or force-pushed."
-            echo "::error::Re-run the workflow against the newest branch head."
+          # A remote commit can arrive after this unified snapshot has been
+          # generated and validated. Preserve fail-closed behavior for any
+          # change that can affect unified analysis inputs/state, while safely
+          # rebasing across unrelated repository changes so harmless branch
+          # advances do not delay publication.
+          push_succeeded=false
+
+          for attempt in 1 2 3; do
+            echo "Push attempt ${attempt} of 3..."
+
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              push_succeeded=true
+              break
+            fi
+
+            if [[ "$attempt" -eq 3 ]]; then
+              break
+            fi
+
+            if [[ -n "$(git status --porcelain)" ]]; then
+              echo "::error::The working tree is not clean after committing the validated unified snapshot."
+              git status --short
+              exit 1
+            fi
+
+            echo "Remote branch advanced. Verifying whether the new commits are safe to rebase across..."
+            git fetch origin "${GITHUB_REF_NAME}"
+
+            merge_base="$(git merge-base HEAD "origin/${GITHUB_REF_NAME}")"
+
+            if [[ -z "$merge_base" ]]; then
+              echo "::error::Unable to determine a common base with the updated remote branch."
+              exit 1
+            fi
+
+            mapfile -t remote_changed_files < <(
+              git diff --name-only "$merge_base" "origin/${GITHUB_REF_NAME}" |
+                sed '/^$/d' |
+                sort -u
+            )
+
+            unsafe_remote_changes=()
+
+            for file in "${remote_changed_files[@]}"; do
+              case "$file" in
+                data/*)
+                  unsafe_remote_changes+=("$file")
+                  ;;
+                fetch-scalp-candles.js|run-scalp-analysis.js|run-live-analysis.js|resolve-analysis-history.js|run-learning-engine.js|learner.js|learning-enrichment.js|ai-memory.js|ai-policy-engine.js|ai-decision-engine.js|ai-safety-gate.js|.github/workflows/fetch-scalp-candles.yml)
+                  unsafe_remote_changes+=("$file")
+                  ;;
+              esac
+            done
+
+            if [[ "${#unsafe_remote_changes[@]}" -gt 0 ]]; then
+              echo "::error::The branch changed in files that can affect the validated unified snapshot."
+              printf '::error::Unsafe remote change: %s\n' "${unsafe_remote_changes[@]}"
+              echo "::error::The stale unified snapshot was not merged, rebased, or force-pushed."
+              echo "::error::Re-run against the newest branch head so the full pipeline is regenerated from current inputs."
+              exit 1
+            fi
+
+            echo "Remote changes are unrelated to unified analysis inputs/state. Rebasing the already validated commit."
+            git rebase "origin/${GITHUB_REF_NAME}"
+
+            sleep $((attempt * 2))
+          done
+
+          if [[ "$push_succeeded" != "true" ]]; then
+            echo "::error::Unable to publish the validated unified snapshot after 3 safe push attempts."
             exit 1
           fi
 

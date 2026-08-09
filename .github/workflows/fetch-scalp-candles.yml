@@ -1192,6 +1192,11 @@ jobs:
 
             for file in "${remote_changed_files[@]}"; do
               case "$file" in
+                data/gbpjpy-live.json)
+                  # This independently published tick is not read by the unified
+                  # scalp/live/resolver/learning pipeline. Rebasing across only
+                  # this remote change cannot stale the validated snapshot.
+                  ;;
                 data/*)
                   unsafe_remote_changes+=("$file")
                   ;;

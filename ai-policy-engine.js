@@ -4299,10 +4299,23 @@ function ensureLastKnownGoodPolicySnapshot({
         existingSnapshot
       );
 
+    const existingGeneratedAt =
+      toISOStringOrNull(
+        existingSnapshot.policy
+          ?.generatedAt
+      );
+
+    const activeGeneratedAt =
+      toISOStringOrNull(
+        policyDocument?.generatedAt
+      );
+
     if (
       validation.valid &&
       existingSnapshot.policyHash ===
-        policyHash
+        policyHash &&
+      existingGeneratedAt ===
+        activeGeneratedAt
     ) {
       return state;
     }
@@ -4761,6 +4774,83 @@ function createRunResult({
   };
 }
 
+
+function getPolicyFreshnessLimitMinutes(
+  config
+) {
+  const environmentLimit =
+    toFiniteNumber(
+      process.env
+        .PIPSIGHT_POLICY_REFRESH_MINUTES
+    );
+
+  if (
+    environmentLimit !== null &&
+    environmentLimit >= 1
+  ) {
+    return Math.max(
+      1,
+      environmentLimit
+    );
+  }
+
+  const configuredLimit =
+    toFiniteNumber(
+      config?.policyValidation
+        ?.maximumPolicyAgeMinutes
+    );
+
+  return Math.max(
+    1,
+    configuredLimit !== null
+      ? configuredLimit
+      : 180
+  );
+}
+
+function policyMetadataRequiresRefresh({
+  existingPolicy,
+  runAt,
+  config
+}) {
+  if (!isPlainObject(existingPolicy)) {
+    return false;
+  }
+
+  const runAtMs =
+    Date.parse(runAt);
+
+  const generatedAtMs =
+    Date.parse(
+      existingPolicy.generatedAt ||
+      ""
+    );
+
+  if (!Number.isFinite(runAtMs)) {
+    throw new Error(
+      "AI Policy runAt timestamp is invalid."
+    );
+  }
+
+  if (!Number.isFinite(generatedAtMs)) {
+    return true;
+  }
+
+  const ageMs =
+    runAtMs - generatedAtMs;
+
+  if (ageMs < -60 * 1000) {
+    return true;
+  }
+
+  const maximumAgeMs =
+    getPolicyFreshnessLimitMinutes(
+      config
+    ) * 60 * 1000;
+
+  return ageMs > maximumAgeMs;
+}
+
 function runAIPolicyEngine() {
   const runAt =
     new Date().toISOString();
@@ -4975,9 +5065,27 @@ function runAIPolicyEngine() {
           : null;
     }
 
-    const unchanged =
+    const contentUnchanged =
       existingPolicyHash ===
       policyHash;
+
+    const metadataRefreshRequired =
+      contentUnchanged &&
+      policyMetadataRequiresRefresh({
+        existingPolicy,
+        runAt,
+        config
+      });
+
+    if (metadataRefreshRequired) {
+      warnings.push(
+        "Refreshed unchanged AI Policy metadata to preserve the configured freshness contract."
+      );
+    }
+
+    const unchanged =
+      contentUnchanged &&
+      !metadataRefreshRequired;
 
     if (!unchanged) {
       state =

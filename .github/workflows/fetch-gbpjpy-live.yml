@@ -159,6 +159,11 @@ jobs:
         run: |
           set -euo pipefail
 
+          if [[ "${GITHUB_REF_TYPE}" != "branch" ]]; then
+            echo "::error::Live GBP/JPY data can only be committed from a branch workflow run."
+            exit 1
+          fi
+
           git config user.name "pipsight-robot"
           git config user.email "actions@users.noreply.github.com"
 
@@ -178,7 +183,7 @@ jobs:
           for attempt in 1 2 3 4 5; do
             echo "Push attempt ${attempt} of 5..."
 
-            if git push origin HEAD:main; then
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
               push_succeeded=true
               break
             fi
@@ -187,11 +192,50 @@ jobs:
               break
             fi
 
-            echo "Push was rejected. Fetching and rebasing onto origin/main..."
+            if [[ -n "$(git status --porcelain)" ]]; then
+              echo "::error::The working tree is not clean after committing the validated live GBP/JPY snapshot."
+              git status --short
+              exit 1
+            fi
 
-            git fetch origin main
+            echo "Remote branch advanced. Verifying whether the new commits are safe to rebase across..."
 
-            if ! git rebase origin/main; then
+            git fetch origin "${GITHUB_REF_NAME}"
+
+            merge_base="$(git merge-base HEAD "origin/${GITHUB_REF_NAME}")"
+
+            if [[ -z "$merge_base" ]]; then
+              echo "::error::Unable to determine a common base with the updated remote branch."
+              exit 1
+            fi
+
+            mapfile -t remote_changed_files < <(
+              git diff --name-only "$merge_base" "origin/${GITHUB_REF_NAME}" |
+                sed '/^$/d' |
+                sort -u
+            )
+
+            unsafe_remote_changes=()
+
+            for file in "${remote_changed_files[@]}"; do
+              case "$file" in
+                data/gbpjpy-live.json|fetch-gbpjpy-live.js|.github/workflows/fetch-gbpjpy-live.yml)
+                  unsafe_remote_changes+=("$file")
+                  ;;
+              esac
+            done
+
+            if [[ "${#unsafe_remote_changes[@]}" -gt 0 ]]; then
+              echo "::error::The branch changed in files that can affect the validated live GBP/JPY snapshot."
+              printf '::error::Unsafe remote change: %s\n' "${unsafe_remote_changes[@]}"
+              echo "::error::The stale generated snapshot was not merged, rebased, or force-pushed."
+              echo "::error::Re-run against the newest branch head so output is regenerated from current input/code."
+              exit 1
+            fi
+
+            echo "Remote changes are unrelated to live GBP/JPY generation. Rebasing the validated commit."
+
+            if ! git rebase "origin/${GITHUB_REF_NAME}"; then
               echo "::error::Rebase failed while synchronizing live GBP/JPY tick."
               git rebase --abort || true
               exit 1
@@ -201,7 +245,7 @@ jobs:
           done
 
           if [[ "${push_succeeded}" != "true" ]]; then
-            echo "::error::Unable to push live GBP/JPY tick after 5 attempts."
+            echo "::error::Unable to publish the validated live GBP/JPY tick after 5 safe push attempts."
             exit 1
           fi
 

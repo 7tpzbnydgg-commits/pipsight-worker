@@ -32,6 +32,18 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           persist-credentials: true
 
+      - name: Sync to latest branch head
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_REF_TYPE}" != "branch" ]]; then
+            echo "::error::Adaptive state can only synchronize from a branch workflow run."
+            exit 1
+          fi
+
+          git fetch origin "${GITHUB_REF_NAME}"
+          git reset --hard "origin/${GITHUB_REF_NAME}"
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -1050,6 +1062,11 @@ jobs:
 
           git commit -m "robot: refresh hourly adaptive state"
 
+          # The shared concurrency queue can delay this run, and the branch can
+          # still advance later because of unrelated writers/manual commits.
+          # Rebase only across changes proven unrelated to this adaptive
+          # calculation. Any change to an actual adaptive input/state/module
+          # fails closed so stale learning is never promoted.
           push_succeeded=false
 
           for attempt in 1 2 3 4 5; do
@@ -1064,21 +1081,57 @@ jobs:
               break
             fi
 
-            echo "Push was rejected. Fetching and rebasing..."
-
-            git fetch origin "${GITHUB_REF_NAME}"
-
-            if ! git rebase "origin/${GITHUB_REF_NAME}"; then
-              echo "::error::Rebase failed while synchronizing hourly adaptive state."
-              git rebase --abort || true
+            if [[ -n "$(git status --porcelain)" ]]; then
+              echo "::error::The working tree is not clean after committing the validated adaptive snapshot."
+              git status --short
               exit 1
             fi
+
+            echo "Remote branch advanced. Verifying whether the new commits are safe to rebase across..."
+            git fetch origin "${GITHUB_REF_NAME}"
+
+            merge_base="$(git merge-base HEAD "origin/${GITHUB_REF_NAME}")"
+
+            if [[ -z "$merge_base" ]]; then
+              echo "::error::Unable to determine a common base with the updated remote branch."
+              exit 1
+            fi
+
+            mapfile -t remote_changed_files < <(
+              git diff --name-only "$merge_base" "origin/${GITHUB_REF_NAME}" |
+                sed '/^$/d' |
+                sort -u
+            )
+
+            unsafe_remote_changes=()
+
+            for file in "${remote_changed_files[@]}"; do
+              case "$file" in
+                data/analysis-history.json|data/scalp-candles.json|data/intraday-h1.json|data/daily-ohlc.json|data/learning-data.json|data/confidence-data.json|data/learning-engine-state.json|data/learning-enrichment.json|data/learning-enrichment-state.json|data/ai-memory.json|data/ai-memory-state.json|data/ai-policy.json|data/ai-policy-state.json|data/autonomous-config.json)
+                  unsafe_remote_changes+=("$file")
+                  ;;
+                resolve-analysis-history.js|run-learning-engine.js|learner.js|learning-enrichment.js|ai-memory.js|ai-policy-engine.js|.github/workflows/run-learning-engine.yml)
+                  unsafe_remote_changes+=("$file")
+                  ;;
+              esac
+            done
+
+            if [[ "${#unsafe_remote_changes[@]}" -gt 0 ]]; then
+              echo "::error::The branch changed in files that can affect the validated adaptive snapshot."
+              printf '::error::Unsafe remote change: %s\n' "${unsafe_remote_changes[@]}"
+              echo "::error::The stale adaptive snapshot was not merged, rebased, or force-pushed."
+              echo "::error::Re-run against the newest branch head so resolver/learning/memory/policy are regenerated from current inputs."
+              exit 1
+            fi
+
+            echo "Remote changes are unrelated to adaptive inputs/state. Rebasing the already validated commit."
+            git rebase "origin/${GITHUB_REF_NAME}"
 
             sleep $((attempt * 2))
           done
 
           if [[ "$push_succeeded" != "true" ]]; then
-            echo "::error::Unable to push hourly adaptive state after 5 attempts."
+            echo "::error::Unable to publish the validated hourly adaptive snapshot after 5 safe push attempts."
             exit 1
           fi
 

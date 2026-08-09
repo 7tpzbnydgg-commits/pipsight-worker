@@ -156,6 +156,8 @@ jobs:
             node run-learning-engine.js
           fi
 
+          echo "bootstrap=$bootstrap" >> "$GITHUB_OUTPUT"
+
           refresh_env="${RUNNER_TEMP}/autonomous-policy-refresh.env"
 
           node > "$refresh_env" <<'NODE'
@@ -570,6 +572,9 @@ jobs:
       - name: Commit and push updated analysis
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BOOTSTRAP_PERFORMED: ${{ steps.autonomous-policy.outputs.bootstrap }}
         run: |
           set -euo pipefail
 
@@ -581,7 +586,6 @@ jobs:
           git config user.name "pipsight-robot"
           git config user.email "actions@users.noreply.github.com"
 
-          # Strictly stage only files owned or refreshed by autonomous live analysis.
           files_to_commit=(
             "data/live-analysis.json"
             "data/analysis-history.json"
@@ -596,33 +600,295 @@ jobs:
             "data/ai-safety-state.json"
           )
 
-          existing_files=()
+          if [[ "${BOOTSTRAP_PERFORMED:-false}" == "true" ]]; then
+            files_to_commit+=(
+              "data/learning-data.json"
+              "data/confidence-data.json"
+              "data/learning-engine-state.json"
+              "data/learning-enrichment.json"
+              "data/learning-enrichment-state.json"
+              "data/ai-memory.json"
+              "data/ai-memory-state.json"
+            )
+          fi
 
-          for file in "${files_to_commit[@]}"; do
-            if [[ -f "$file" ]]; then
-              existing_files+=("$file")
+          retry_validator="${RUNNER_TEMP}/validate-live-analysis-retry.js"
+          cat > "$retry_validator" <<'NODE'
+          "use strict";
+          
+          const fs = require("fs");
+          
+          function readObject(filePath) {
+            if (!fs.existsSync(filePath)) {
+              throw new Error(
+                `Required output file does not exist: ${filePath}`
+              );
+            }
+          
+            const raw =
+              fs.readFileSync(filePath, "utf8").trim();
+          
+            if (!raw) {
+              throw new Error(
+                `Output file is empty: ${filePath}`
+              );
+            }
+          
+            const parsed = JSON.parse(raw);
+          
+            if (
+              parsed === null ||
+              typeof parsed !== "object" ||
+              Array.isArray(parsed)
+            ) {
+              throw new Error(
+                `${filePath} must contain a JSON object.`
+              );
+            }
+          
+            return parsed;
+          }
+          
+          const live =
+            readObject("data/live-analysis.json");
+          
+          const history =
+            readObject("data/analysis-history.json");
+          
+          const notify =
+            readObject("data/notify-state.json");
+          
+          const config =
+            readObject("data/autonomous-config.json");
+          
+          const decisionState =
+            readObject("data/ai-decision-state.json");
+          
+          const safetyState =
+            readObject("data/ai-safety-state.json");
+          
+          if (
+            live.engineVersion !== "1.4.2-pro" ||
+            live.status !== "ok" ||
+            typeof live.pairs !== "object" ||
+            live.pairs === null ||
+            Array.isArray(live.pairs) ||
+            !Array.isArray(live.results) ||
+            !Array.isArray(live.analyses) ||
+            !Array.isArray(live.data) ||
+            live.pairCount !==
+              Object.keys(live.pairs).length ||
+            JSON.stringify(live.results) !==
+              JSON.stringify(live.analyses) ||
+            JSON.stringify(live.results) !==
+              JSON.stringify(live.data)
+          ) {
+            throw new Error(
+              "data/live-analysis.json failed its production schema contract."
+            );
+          }
+          
+          for (const field of [
+            "records",
+            "history",
+            "items",
+            "closed"
+          ]) {
+            if (!Array.isArray(history[field])) {
+              throw new Error(
+                `data/analysis-history.json field ${field} must be an array.`
+              );
+            }
+          }
+          
+          if (
+            history.open === null ||
+            typeof history.open !== "object" ||
+            Array.isArray(history.open) ||
+            JSON.stringify(history.records) !==
+              JSON.stringify(history.history) ||
+            JSON.stringify(history.records) !==
+              JSON.stringify(history.items)
+          ) {
+            throw new Error(
+              "data/analysis-history.json aliases or open collection are invalid."
+            );
+          }
+          
+          for (const field of [
+            "signals",
+            "notifications",
+            "state"
+          ]) {
+            if (
+              notify[field] === null ||
+              typeof notify[field] !== "object" ||
+              Array.isArray(notify[field])
+            ) {
+              throw new Error(
+                `data/notify-state.json field ${field} must be an object.`
+              );
+            }
+          }
+          
+          if (
+            JSON.stringify(notify.signals) !==
+              JSON.stringify(notify.notifications) ||
+            JSON.stringify(notify.signals) !==
+              JSON.stringify(notify.state)
+          ) {
+            throw new Error(
+              "data/notify-state.json aliases are not synchronized."
+            );
+          }
+          
+          if (
+            live.autonomous?.version !== "1.4.0" ||
+            live.autonomous?.configuredMode !== config.deployment.mode ||
+            decisionState.engineVersion !== "1.4.0" ||
+            safetyState.engineVersion !== "1.4.0" ||
+            safetyState.pendingTransaction !== null
+          ) {
+            throw new Error(
+              "Autonomous decision and safety state validation failed."
+            );
+          }
+          
+          if (fs.existsSync("data/ai-safety-state.pending.json")) {
+            throw new Error(
+              "AI Safety Gate left an incomplete pending transaction."
+            );
+          }
+          
+          console.log(
+            "Live analysis, autonomous state, history and notify-state validation passed."
+          );
+          NODE
+
+          validate_live_outputs() {
+            node "$retry_validator"
+          }
+
+          stage_and_commit() {
+            local commit_message="$1"
+            local existing_files=()
+
+            for file in "${files_to_commit[@]}"; do
+              if [[ -f "$file" ]]; then
+                existing_files+=("$file")
+              fi
+            done
+
+            if [[ "${#existing_files[@]}" -eq 0 ]]; then
+              echo "No autonomous live-analysis outputs are available."
+              return 2
             fi
-          done
 
-          if [[ "${#existing_files[@]}" -eq 0 ]]; then
-            echo "No autonomous live-analysis outputs are available."
+            git add -- "${existing_files[@]}"
+
+            if git diff --cached --quiet; then
+              echo "No live analysis changes to commit."
+              return 2
+            fi
+
+            git commit -m "$commit_message"
+          }
+
+          preserve_recovery_files() {
+            local backup_dir="$1"
+            mkdir -p "$backup_dir"
+
+            # Policy is independent of the four market-data inputs below and was
+            # already validated earlier in this run. notify-state is preserved
+            # because Telegram is an external side effect that may already have
+            # occurred before the push race is detected.
+            local preserve_files=(
+              "data/ai-policy.json"
+              "data/ai-policy-state.json"
+              "data/notify-state.json"
+            )
+
+            if [[ "${BOOTSTRAP_PERFORMED:-false}" == "true" ]]; then
+              preserve_files+=(
+                "data/learning-data.json"
+                "data/confidence-data.json"
+                "data/learning-engine-state.json"
+                "data/learning-enrichment.json"
+                "data/learning-enrichment-state.json"
+                "data/ai-memory.json"
+                "data/ai-memory-state.json"
+              )
+            fi
+
+            for file in "${preserve_files[@]}"; do
+              if [[ -f "$file" ]]; then
+                cp "$file" "$backup_dir/$(basename "$file")"
+              fi
+            done
+          }
+
+          restore_recovery_files() {
+            local backup_dir="$1"
+            local restore_files=(
+              "data/ai-policy.json"
+              "data/ai-policy-state.json"
+              "data/notify-state.json"
+            )
+
+            if [[ "${BOOTSTRAP_PERFORMED:-false}" == "true" ]]; then
+              restore_files+=(
+                "data/learning-data.json"
+                "data/confidence-data.json"
+                "data/learning-engine-state.json"
+                "data/learning-enrichment.json"
+                "data/learning-enrichment-state.json"
+                "data/ai-memory.json"
+                "data/ai-memory-state.json"
+              )
+            fi
+
+            for file in "${restore_files[@]}"; do
+              local backup_file="$backup_dir/$(basename "$file")"
+              if [[ -f "$backup_file" ]]; then
+                cp "$backup_file" "$file"
+              fi
+            done
+          }
+
+          regenerate_from_latest_market_inputs() {
+            local backup_dir="${RUNNER_TEMP}/live-analysis-retry-${RANDOM}-${RANDOM}"
+
+            echo "A live market-data input changed during this run. Regenerating from the latest branch head."
+            preserve_recovery_files "$backup_dir"
+
+            # Discard the stale calculated commit entirely. Do not merge or
+            # rebase stale live outputs onto changed market inputs.
+            git reset --hard "origin/${GITHUB_REF_NAME}"
+
+            restore_recovery_files "$backup_dir"
+            rm -rf "$backup_dir"
+
+            # Recalculate from the new market inputs, then apply the exact same
+            # validation contract used by the normal workflow path.
+            node run-live-analysis.js
+            validate_live_outputs
+
+            local stage_status=0
+            stage_and_commit "robot: manually refresh autonomous live analysis" || stage_status=$?
+            return "$stage_status"
+          }
+
+          stage_status=0
+          stage_and_commit "robot: manually refresh autonomous live analysis" || stage_status=$?
+
+          if [[ "$stage_status" -eq 2 ]]; then
             exit 0
           fi
 
-          git add -- "${existing_files[@]}"
-
-          if git diff --cached --quiet; then
-            echo "No live analysis changes to commit."
-            exit 0
+          if [[ "$stage_status" -ne 0 ]]; then
+            exit "$stage_status"
           fi
 
-          git commit -m "robot: manually refresh autonomous live analysis"
-
-          # A remote commit can arrive after this run has generated and validated
-          # its snapshot. Preserve fail-closed behavior for any change that could
-          # affect analysis inputs/state, but safely rebase across unrelated
-          # repository changes so a harmless branch advance does not delay
-          # publication.
           push_succeeded=false
 
           for attempt in 1 2 3; do
@@ -643,7 +909,7 @@ jobs:
               exit 1
             fi
 
-            echo "Remote branch advanced. Verifying whether the new commits are safe to rebase across..."
+            echo "Remote branch advanced. Verifying the new commits before retrying..."
             git fetch origin "${GITHUB_REF_NAME}"
 
             merge_base="$(git merge-base HEAD "origin/${GITHUB_REF_NAME}")"
@@ -659,25 +925,47 @@ jobs:
                 sort -u
             )
 
+            market_input_changes=()
             unsafe_remote_changes=()
 
             for file in "${remote_changed_files[@]}"; do
               case "$file" in
-                data/*)
+                data/scalp-signals.json|data/scalp-candles.json|data/intraday-h1.json|data/daily-ohlc.json)
+                  market_input_changes+=("$file")
+                  ;;
+                data/live-analysis.json|data/analysis-history.json|data/notify-state.json|data/learning-data.json|data/confidence-data.json|data/learning-engine-state.json|data/learning-enrichment.json|data/learning-enrichment-state.json|data/ai-memory.json|data/ai-memory-state.json|data/ai-policy.json|data/ai-policy-state.json|data/autonomous-config.json|data/ai-decision-preview.json|data/ai-decision-log.json|data/ai-decision-state.json|data/ai-safety-preview.json|data/ai-safety-log.json|data/ai-safety-state.json|data/ai-safety-state.pending.json)
                   unsafe_remote_changes+=("$file")
                   ;;
-                run-live-analysis.js|run-learning-engine.js|learner.js|ai-memory.js|ai-policy-engine.js|ai-decision-engine.js|ai-safety-gate.js|.github/workflows/run-live-analysis.yml)
+                run-live-analysis.js|run-learning-engine.js|learner.js|learning-enrichment.js|ai-memory.js|ai-policy-engine.js|ai-decision-engine.js|ai-safety-gate.js|.github/workflows/run-live-analysis.yml)
                   unsafe_remote_changes+=("$file")
                   ;;
               esac
             done
 
             if [[ "${#unsafe_remote_changes[@]}" -gt 0 ]]; then
-              echo "::error::The branch changed in files that can affect the validated live-analysis snapshot."
+              echo "::error::The branch changed in state/code that requires the full recovery workflow to restart."
               printf '::error::Unsafe remote change: %s\n' "${unsafe_remote_changes[@]}"
-              echo "::error::The stale snapshot was not merged, rebased, or force-pushed."
-              echo "::error::Re-run against the newest branch head so analysis is regenerated from current inputs."
+              echo "::error::No stale live-analysis snapshot was published."
               exit 1
+            fi
+
+            if [[ "${#market_input_changes[@]}" -gt 0 ]]; then
+              printf 'Market input updated during run: %s\n' "${market_input_changes[@]}"
+
+              regenerate_status=0
+              regenerate_from_latest_market_inputs || regenerate_status=$?
+
+              if [[ "$regenerate_status" -eq 2 ]]; then
+                push_succeeded=true
+                break
+              fi
+
+              if [[ "$regenerate_status" -ne 0 ]]; then
+                exit "$regenerate_status"
+              fi
+
+              sleep $((attempt * 2))
+              continue
             fi
 
             echo "Remote changes are unrelated to live-analysis inputs/state. Rebasing the already validated commit."
@@ -687,7 +975,7 @@ jobs:
           done
 
           if [[ "$push_succeeded" != "true" ]]; then
-            echo "::error::Unable to publish the validated live-analysis snapshot after 3 safe push attempts."
+            echo "::error::Unable to publish live analysis after 3 controlled attempts."
             exit 1
           fi
 

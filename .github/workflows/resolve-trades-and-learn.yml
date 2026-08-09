@@ -7,7 +7,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: pipsight-unified-analysis-${{ github.ref }}
+  group: pipsight-analysis-writes-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -27,6 +27,18 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
           persist-credentials: true
+
+      - name: Sync to latest branch head
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_REF_TYPE}" != "branch" ]]; then
+            echo "::error::Adaptive pipeline can only synchronize from a branch workflow run."
+            exit 1
+          fi
+
+          git fetch origin "${GITHUB_REF_NAME}"
+          git reset --hard "origin/${GITHUB_REF_NAME}"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -344,8 +356,12 @@ jobs:
             "data/learning-data.json"
             "data/confidence-data.json"
             "data/learning-engine-state.json"
+            "data/learning-enrichment.json"
+            "data/learning-enrichment-state.json"
             "data/ai-memory.json"
             "data/ai-memory-state.json"
+            "data/ai-policy.json"
+            "data/ai-policy-state.json"
           )
 
           existing_files=()
@@ -370,35 +386,10 @@ jobs:
 
           git commit -m "robot: resolve trades and refresh adaptive state"
 
-          push_succeeded=false
-
-          for attempt in 1 2 3 4 5; do
-            echo "Push attempt ${attempt} of 5..."
-
-            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
-              push_succeeded=true
-              break
-            fi
-
-            if [[ "$attempt" -eq 5 ]]; then
-              break
-            fi
-
-            echo "Push was rejected. Fetching and rebasing..."
-
-            git fetch origin "${GITHUB_REF_NAME}"
-
-            if ! git rebase "origin/${GITHUB_REF_NAME}"; then
-              echo "::error::Rebase failed while synchronizing adaptive state."
-              git rebase --abort || true
-              exit 1
-            fi
-
-            sleep $((attempt * 2))
-          done
-
-          if [[ "$push_succeeded" != "true" ]]; then
-            echo "::error::Unable to push adaptive state after 5 attempts."
+          if ! git push origin "HEAD:${GITHUB_REF_NAME}"; then
+            echo "::error::The branch changed while this adaptive pipeline run was executing."
+            echo "::error::The validated generated adaptive snapshot was not rebased or force-pushed."
+            echo "::error::Re-run the workflow against the newest branch head."
             exit 1
           fi
 

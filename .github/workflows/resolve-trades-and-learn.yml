@@ -386,10 +386,76 @@ jobs:
 
           git commit -m "robot: resolve trades and refresh adaptive state"
 
-          if ! git push origin "HEAD:${GITHUB_REF_NAME}"; then
-            echo "::error::The branch changed while this adaptive pipeline run was executing."
-            echo "::error::The validated generated adaptive snapshot was not rebased or force-pushed."
-            echo "::error::Re-run the workflow against the newest branch head."
+          # A remote commit can arrive after this validated adaptive snapshot was
+          # generated. Rebase only across changes proven unrelated to the
+          # resolver/learning/memory/policy calculation. Any relevant source,
+          # state, engine or workflow change fails closed so stale learning is
+          # never promoted.
+          push_succeeded=false
+
+          for attempt in 1 2 3; do
+            echo "Push attempt ${attempt} of 3..."
+
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              push_succeeded=true
+              break
+            fi
+
+            if [[ "$attempt" -eq 3 ]]; then
+              break
+            fi
+
+            if [[ -n "$(git status --porcelain)" ]]; then
+              echo "::error::The working tree is not clean after committing the validated adaptive snapshot."
+              git status --short
+              exit 1
+            fi
+
+            echo "Remote branch advanced. Verifying whether the new commits are safe to rebase across..."
+            git fetch origin "${GITHUB_REF_NAME}"
+
+            merge_base="$(git merge-base HEAD "origin/${GITHUB_REF_NAME}")"
+
+            if [[ -z "$merge_base" ]]; then
+              echo "::error::Unable to determine a common base with the updated remote branch."
+              exit 1
+            fi
+
+            mapfile -t remote_changed_files < <(
+              git diff --name-only "$merge_base" "origin/${GITHUB_REF_NAME}" |
+                sed '/^$/d' |
+                sort -u
+            )
+
+            unsafe_remote_changes=()
+
+            for file in "${remote_changed_files[@]}"; do
+              case "$file" in
+                data/analysis-history.json|data/scalp-candles.json|data/intraday-h1.json|data/daily-ohlc.json|data/learning-data.json|data/confidence-data.json|data/learning-engine-state.json|data/learning-enrichment.json|data/learning-enrichment-state.json|data/ai-memory.json|data/ai-memory-state.json|data/ai-policy.json|data/ai-policy-state.json|data/autonomous-config.json)
+                  unsafe_remote_changes+=("$file")
+                  ;;
+                resolve-analysis-history.js|run-learning-engine.js|learner.js|learning-enrichment.js|ai-memory.js|ai-policy-engine.js|.github/workflows/resolve-trades-and-learn.yml)
+                  unsafe_remote_changes+=("$file")
+                  ;;
+              esac
+            done
+
+            if [[ "${#unsafe_remote_changes[@]}" -gt 0 ]]; then
+              echo "::error::The branch changed in files that can affect the validated adaptive snapshot."
+              printf '::error::Unsafe remote change: %s\n' "${unsafe_remote_changes[@]}"
+              echo "::error::The stale adaptive snapshot was not merged, rebased, or force-pushed."
+              echo "::error::Re-run against the newest branch head so resolver/learning/memory/policy are regenerated from current inputs."
+              exit 1
+            fi
+
+            echo "Remote changes are unrelated to adaptive inputs/state. Rebasing the already validated commit."
+            git rebase "origin/${GITHUB_REF_NAME}"
+
+            sleep $((attempt * 2))
+          done
+
+          if [[ "$push_succeeded" != "true" ]]; then
+            echo "::error::Unable to publish the validated adaptive snapshot after 3 safe push attempts."
             exit 1
           fi
 

@@ -2,7 +2,7 @@
   "version": 1,
   "engineName": "PipSight Pro Autonomous AI Decision Engine",
   "engineVersion": "1.4.0",
-  "updatedAt": "2026-08-09T23:35:47.451Z",
+  "updatedAt": "2026-08-09T23:42:57.362Z",
   "decisions": [
     {
       "decisionHash": "be4e3ec12abdca3bf6a59053c40dfcafa060bf8f292746a8d25525670030ab6d",
@@ -168926,6 +168926,201 @@
       "metadata": {
         "policyHash": "d9f01f3d23c6e649c96236a3ba74b100c1c2ce62e57e635a88b72c9d2229ef14",
         "policyGeneratedAt": "2026-08-09T23:05:18.936Z",
+        "configVersion": "1.4.0",
+        "deterministic": true,
+        "deterministicRollout": true,
+        "explainable": true,
+        "duplicateSafe": true,
+        "liveOrderExecution": false,
+        "nextConsumer": "PipSight Pro AI Safety Gate"
+      }
+    },
+    {
+      "decisionHash": "feeb9c19f430357cbba2698b841cde38a8d8e1803661fe84eb8f9a17646cc224",
+      "decisionId": "live|1.4.0|XAUUSD|weekly|D1|HOLD|none|2026-08-09T00:00:00.000Z",
+      "evaluatedAt": "2026-08-09T23:42:57.192Z",
+      "context": {
+        "pair": "XAUUSD",
+        "timeframe": "D1",
+        "engine": "weekly",
+        "marketRegime": "TRENDING_NORMAL",
+        "session": null,
+        "pattern": null,
+        "marketDataAt": "2026-08-09T00:00:00.000Z"
+      },
+      "deployment": {
+        "configuredMode": "AUTONOMOUS",
+        "authorityMode": "AUTONOMOUS",
+        "enabled": true,
+        "emergencyStop": false,
+        "rollout": {
+          "percent": 100,
+          "selected": true,
+          "bucket": 57.89,
+          "identityStable": true,
+          "reason": "Decision is inside the deterministic autonomous rollout cohort."
+        }
+      },
+      "baseline": {
+        "decision": "HOLD",
+        "confidence": 0,
+        "tradePlan": null,
+        "reasons": [
+          "No directional engine produced an active setup"
+        ]
+      },
+      "shadowCandidate": {
+        "decision": "HOLD",
+        "confidence": 0,
+        "tradePlan": null,
+        "reasons": [
+          "No directional engine produced an active setup"
+        ]
+      },
+      "proposedDecision": {
+        "decision": "HOLD",
+        "confidence": 0,
+        "tradePlan": null,
+        "reasons": [
+          "No directional engine produced an active setup"
+        ]
+      },
+      "changes": [],
+      "blockedChanges": [],
+      "policyEvidence": {
+        "baselinePolicy": null,
+        "buyPolicy": null,
+        "sellPolicy": {
+          "key": "pairTimeframeEngineDirection|XAUUSD|D1|weekly|SELL",
+          "scope": "pairTimeframeEngineDirection",
+          "dimensions": {
+            "pair": "XAUUSD",
+            "timeframe": "D1",
+            "engine": "weekly",
+            "direction": "SELL"
+          },
+          "action": "OBSERVE",
+          "actionReason": "Only 1 decisive trades are available; 30 are required.",
+          "authorityLevel": "SHADOW_ONLY",
+          "decisiveTrades": 1,
+          "reliability": 0.131372,
+          "edgeScore": -0.791693,
+          "shrunkExpectancyR": -0.37833396,
+          "outOfSamplePassed": false,
+          "negativeEdgeConfirmed": false,
+          "averagePlannedRiskReward": 2
+        }
+      },
+      "validation": {
+        "valid": true,
+        "errors": [],
+        "warnings": []
+      },
+      "safety": {
+        "finalApprovalRequired": true,
+        "finalAuthority": "PipSight Pro AI Safety Gate",
+        "orderPlacementPermitted": false,
+        "riskLimitModificationPermitted": false,
+        "sourceCodeModificationPermitted": false,
+        "externalNetworkCalls": false,
+        "failClosedRecommendation": "HOLD",
+        "notes": [
+          "proposedDecision is not executable until the independent Safety Gate approves it.",
+          "Direction changes require an independently generated valid trade plan; this engine never invents prices.",
+          "Risk limits remain immutable and outside AI policy authority."
+        ]
+      },
+      "metadata": {
+        "policyHash": "5c954376dca3378588b22aee04da172683d95802cc3e60d5605defca492bb30f",
+        "policyGeneratedAt": "2026-08-09T23:35:52.001Z",
+        "configVersion": "1.4.0",
+        "deterministic": true,
+        "deterministicRollout": true,
+        "explainable": true,
+        "duplicateSafe": true,
+        "liveOrderExecution": false,
+        "nextConsumer": "PipSight Pro AI Safety Gate"
+      }
+    },
+    {
+      "decisionHash": "be0763c5cda14eac19e91f8754b1f8ed9989696326551a49907eaf6609e21446",
+      "decisionId": "live|1.4.0|GBPJPY|weekly|D1|HOLD|none|2026-08-09T00:00:00.000Z",
+      "evaluatedAt": "2026-08-09T23:42:57.362Z",
+      "context": {
+        "pair": "GBPJPY",
+        "timeframe": "D1",
+        "engine": "weekly",
+        "marketRegime": "TRENDING_HIGH",
+        "session": null,
+        "pattern": null,
+        "marketDataAt": "2026-08-09T00:00:00.000Z"
+      },
+      "deployment": {
+        "configuredMode": "AUTONOMOUS",
+        "authorityMode": "AUTONOMOUS",
+        "enabled": true,
+        "emergencyStop": false,
+        "rollout": {
+          "percent": 100,
+          "selected": true,
+          "bucket": 87.62,
+          "identityStable": true,
+          "reason": "Decision is inside the deterministic autonomous rollout cohort."
+        }
+      },
+      "baseline": {
+        "decision": "HOLD",
+        "confidence": 54,
+        "tradePlan": null,
+        "reasons": [
+          "Insufficient multi-engine agreement"
+        ]
+      },
+      "shadowCandidate": {
+        "decision": "HOLD",
+        "confidence": 54,
+        "tradePlan": null,
+        "reasons": [
+          "Insufficient multi-engine agreement"
+        ]
+      },
+      "proposedDecision": {
+        "decision": "HOLD",
+        "confidence": 54,
+        "tradePlan": null,
+        "reasons": [
+          "Insufficient multi-engine agreement"
+        ]
+      },
+      "changes": [],
+      "blockedChanges": [],
+      "policyEvidence": {
+        "baselinePolicy": null,
+        "buyPolicy": null,
+        "sellPolicy": null
+      },
+      "validation": {
+        "valid": true,
+        "errors": [],
+        "warnings": []
+      },
+      "safety": {
+        "finalApprovalRequired": true,
+        "finalAuthority": "PipSight Pro AI Safety Gate",
+        "orderPlacementPermitted": false,
+        "riskLimitModificationPermitted": false,
+        "sourceCodeModificationPermitted": false,
+        "externalNetworkCalls": false,
+        "failClosedRecommendation": "HOLD",
+        "notes": [
+          "proposedDecision is not executable until the independent Safety Gate approves it.",
+          "Direction changes require an independently generated valid trade plan; this engine never invents prices.",
+          "Risk limits remain immutable and outside AI policy authority."
+        ]
+      },
+      "metadata": {
+        "policyHash": "5c954376dca3378588b22aee04da172683d95802cc3e60d5605defca492bb30f",
+        "policyGeneratedAt": "2026-08-09T23:35:52.001Z",
         "configVersion": "1.4.0",
         "deterministic": true,
         "deterministicRollout": true,

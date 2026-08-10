@@ -2,17 +2,17 @@
   "version": 1,
   "engineName": "PipSight Pro Autonomous AI Decision Engine",
   "engineVersion": "1.4.0",
-  "evaluatedAt": "2026-08-10T05:49:11.596Z",
-  "decisionId": "live|1.4.0|GBPJPY|scalp|5m|HOLD|none|2026-08-10T05:40:00.000Z",
-  "decisionHash": "08efdd977442361d5892dc970bfd917dc6b07750bb00b76c7953768ab4af94c2",
+  "evaluatedAt": "2026-08-10T05:54:15.965Z",
+  "decisionId": "live|1.4.0|GBPJPY|scalp|5m|HOLD|none|2026-08-10T05:50:00.000Z",
+  "decisionHash": "f34bba6f80d9c7971e071983c8867b38c244fe3c72510d22e24c1a169a45083a",
   "context": {
     "pair": "GBPJPY",
     "timeframe": "5m",
     "engine": "scalp",
-    "marketRegime": "STRONG_LOW",
+    "marketRegime": null,
     "session": null,
     "pattern": null,
-    "marketDataAt": "2026-08-10T05:40:00.000Z"
+    "marketDataAt": "2026-08-10T05:50:00.000Z"
   },
   "deployment": {
     "configuredMode": "AUTONOMOUS",
@@ -22,14 +22,14 @@
     "rollout": {
       "percent": 100,
       "selected": true,
-      "bucket": 53.61,
+      "bucket": 34.79,
       "identityStable": true,
       "reason": "Decision is inside the deterministic autonomous rollout cohort."
     }
   },
   "baseline": {
     "decision": "HOLD",
-    "confidence": 20,
+    "confidence": 17,
     "tradePlan": null,
     "reasons": [
       "Directional engines are conflicting"
@@ -37,7 +37,7 @@
   },
   "shadowCandidate": {
     "decision": "HOLD",
-    "confidence": 20,
+    "confidence": 17,
     "tradePlan": null,
     "reasons": [
       "Directional engines are conflicting"
@@ -45,7 +45,7 @@
   },
   "proposedDecision": {
     "decision": "HOLD",
-    "confidence": 20,
+    "confidence": 17,
     "tradePlan": null,
     "reasons": [
       "Directional engines are conflicting"
@@ -56,25 +56,24 @@
   "evidence": {
     "baselinePolicy": null,
     "buyPolicy": {
-      "key": "pairTimeframeEngineDirectionRegime|GBPJPY|5m|scalp|BUY|STRONG_LOW",
-      "scope": "pairTimeframeEngineDirectionRegime",
+      "key": "pairTimeframeEngineDirection|GBPJPY|5m|scalp|BUY",
+      "scope": "pairTimeframeEngineDirection",
       "dimensions": {
         "pair": "GBPJPY",
         "timeframe": "5m",
         "engine": "scalp",
-        "direction": "BUY",
-        "marketRegime": "STRONG_LOW"
+        "direction": "BUY"
       },
-      "action": "OBSERVE",
-      "actionReason": "Only 9 decisive trades are available; 30 are required.",
+      "action": "NEUTRAL",
+      "actionReason": "Available evidence does not justify positive or negative live authority.",
       "authorityLevel": "SHADOW_ONLY",
-      "decisiveTrades": 9,
-      "reliability": 0.321823,
-      "edgeScore": -0.756346,
-      "shrunkExpectancyR": -0.38966142,
+      "decisiveTrades": 113,
+      "reliability": 0.538701,
+      "edgeScore": -0.536497,
+      "shrunkExpectancyR": -0.28808948,
       "outOfSamplePassed": false,
       "negativeEdgeConfirmed": false,
-      "averagePlannedRiskReward": 2
+      "averagePlannedRiskReward": 2.048118
     },
     "sellPolicy": {
       "key": "pairTimeframeEngineDirection|GBPJPY|5m|scalp|SELL",
@@ -100,7 +99,13 @@
     "buyMatchAttempts": [
       {
         "scope": "pairTimeframeEngineDirectionRegime",
-        "signature": "pairTimeframeEngineDirectionRegime|GBPJPY|5m|scalp|BUY|strong_low",
+        "signature": null,
+        "matched": false,
+        "reason": "Required context dimension is unavailable."
+      },
+      {
+        "scope": "pairTimeframeEngineDirection",
+        "signature": "pairTimeframeEngineDirection|GBPJPY|5m|scalp|BUY",
         "matched": true,
         "reason": null
       }
@@ -108,9 +113,9 @@
     "sellMatchAttempts": [
       {
         "scope": "pairTimeframeEngineDirectionRegime",
-        "signature": "pairTimeframeEngineDirectionRegime|GBPJPY|5m|scalp|SELL|strong_low",
+        "signature": null,
         "matched": false,
-        "reason": "No policy bucket matched."
+        "reason": "Required context dimension is unavailable."
       },
       {
         "scope": "pairTimeframeEngineDirection",
@@ -131,19 +136,19 @@
       {
         "engine": "scalp",
         "decision": "BUY",
-        "confidence": 86,
+        "confidence": 95,
         "active": true,
         "tradePlan": {
           "direction": "BUY",
-          "entry": 213.597,
-          "stopLoss": 213.547,
-          "target1": 213.697,
-          "target2": 213.747,
-          "target3": 213.797,
-          "risk": 0.05,
+          "entry": 213.642,
+          "stopLoss": 213.568,
+          "target1": 213.79,
+          "target2": 213.864,
+          "target3": 213.938,
+          "risk": 0.074,
           "riskReward": 2
         },
-        "source": "data/scalp-candles.json"
+        "source": "data/scalp-signals.json"
       },
       {
         "engine": "weekly",

@@ -963,6 +963,226 @@ jobs:
           );
           NODE
 
+      - name: Refresh resolved dashboard history projection
+        if: steps.resolve.outputs.history_changed == 'true'
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          "use strict";
+
+          const fs = require("fs");
+
+          const {
+            buildDashboardHistoryTracker
+          } = require("./run-live-analysis.js");
+
+          if (
+            typeof buildDashboardHistoryTracker !==
+              "function"
+          ) {
+            throw new Error(
+              "run-live-analysis.js does not export buildDashboardHistoryTracker()."
+            );
+          }
+
+          const livePath =
+            "data/live-analysis.json";
+
+          const historyPath =
+            "data/analysis-history.json";
+
+          const readObject = (
+            filePath
+          ) => {
+            const raw =
+              fs.readFileSync(
+                filePath,
+                "utf8"
+              ).trim();
+
+            if (!raw) {
+              throw new Error(
+                `${filePath} is empty.`
+              );
+            }
+
+            let value;
+
+            try {
+              value =
+                JSON.parse(raw);
+            } catch (error) {
+              throw new Error(
+                `${filePath} contains invalid JSON: ${error.message}`
+              );
+            }
+
+            if (
+              value === null ||
+              typeof value !== "object" ||
+              Array.isArray(value)
+            ) {
+              throw new Error(
+                `${filePath} must contain a JSON object.`
+              );
+            }
+
+            return value;
+          };
+
+          const live =
+            readObject(
+              livePath
+            );
+
+          const history =
+            readObject(
+              historyPath
+            );
+
+          const historyTracker =
+            buildDashboardHistoryTracker(
+              history
+            );
+
+          if (
+            !historyTracker ||
+            typeof historyTracker !== "object" ||
+            Array.isArray(historyTracker) ||
+            historyTracker.schemaVersion !== 1 ||
+            !historyTracker.pairs ||
+            typeof historyTracker.pairs !== "object" ||
+            Array.isArray(historyTracker.pairs)
+          ) {
+            throw new Error(
+              "Resolved dashboard history projection is invalid."
+            );
+          }
+
+          for (
+            const pairKey of
+            ["XAUUSD", "GBPJPY"]
+          ) {
+            const pairTracker =
+              historyTracker.pairs[
+                pairKey
+              ];
+
+            if (
+              !pairTracker ||
+              typeof pairTracker !== "object" ||
+              Array.isArray(pairTracker)
+            ) {
+              throw new Error(
+                `Resolved dashboard tracker is missing ${pairKey}.`
+              );
+            }
+
+            for (
+              const engine of
+              ["intraday", "swing"]
+            ) {
+              const tracker =
+                pairTracker[
+                  engine
+                ];
+
+              if (
+                !tracker ||
+                typeof tracker !== "object" ||
+                Array.isArray(tracker) ||
+                !Array.isArray(
+                  tracker.openTrades
+                ) ||
+                !tracker.stats ||
+                typeof tracker.stats !== "object" ||
+                Array.isArray(
+                  tracker.stats
+                ) ||
+                !Array.isArray(
+                  tracker.recentResolved
+                )
+              ) {
+                throw new Error(
+                  `Resolved dashboard tracker is invalid for ${pairKey}/${engine}.`
+                );
+              }
+            }
+          }
+
+          const before =
+            JSON.stringify(
+              live.historyTracker ||
+              null
+            );
+
+          const after =
+            JSON.stringify(
+              historyTracker
+            );
+
+          if (
+            before ===
+            after
+          ) {
+            console.log(
+              "Resolved dashboard history projection is already current."
+            );
+
+            process.exit(0);
+          }
+
+          const nextLive = {
+            ...live,
+            historyTracker
+          };
+
+          const temporaryPath =
+            `${livePath}.${process.pid}.${Date.now()}.tmp`;
+
+          let temporaryCreated =
+            false;
+
+          try {
+            fs.writeFileSync(
+              temporaryPath,
+              `${JSON.stringify(
+                nextLive,
+                null,
+                2
+              )}\n`,
+              "utf8"
+            );
+
+            temporaryCreated =
+              true;
+
+            fs.renameSync(
+              temporaryPath,
+              livePath
+            );
+
+            temporaryCreated =
+              false;
+          } finally {
+            if (
+              temporaryCreated &&
+              fs.existsSync(
+                temporaryPath
+              )
+            ) {
+              fs.unlinkSync(
+                temporaryPath
+              );
+            }
+          }
+
+          console.log(
+            "Refreshed live-analysis.json historyTracker from resolved analysis history."
+          );
+          NODE
+
       - name: Determine learning refresh requirement
         id: learning-gate
         run: |
@@ -1192,11 +1412,6 @@ jobs:
 
             for file in "${remote_changed_files[@]}"; do
               case "$file" in
-                data/gbpjpy-live.json)
-                  # This independently published tick is not read by the unified
-                  # scalp/live/resolver/learning pipeline. Rebasing across only
-                  # this remote change cannot stale the validated snapshot.
-                  ;;
                 data/*)
                   unsafe_remote_changes+=("$file")
                   ;;

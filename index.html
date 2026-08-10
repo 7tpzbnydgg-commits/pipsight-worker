@@ -14901,38 +14901,48 @@ function scalpOpenTradeList(
     typeof openTrades === "object"
       ? openTrades[pairKey]
       : null;
-
-  if(Array.isArray(stored)){
-    return stored.filter(
-      trade=>
-        trade &&
-        typeof trade === "object" &&
-        trade.status === "OPEN"
-    );
+  const candidates =
+    Array.isArray(stored)
+      ? stored
+      : stored &&
+        typeof stored === "object" &&
+        Array.isArray(stored.trades)
+        ? stored.trades
+        : stored &&
+          typeof stored === "object" &&
+          stored.status === "OPEN"
+          ? [stored]
+          : [];
+  const unique =
+    new Map();
+  const legacy = [];
+  for(const trade of candidates){
+    if(
+      !trade ||
+      typeof trade !== "object" ||
+      trade.status !== "OPEN"
+    ){
+      continue;
+    }
+    const identity =
+      scalpTradeIdentityFromStoredTrade(
+        trade
+      );
+    if(!identity){
+      legacy.push(trade);
+      continue;
+    }
+    if(!unique.has(identity)){
+      unique.set(
+        identity,
+        trade
+      );
+    }
   }
-
-  if(
-    stored &&
-    typeof stored === "object" &&
-    Array.isArray(stored.trades)
-  ){
-    return stored.trades.filter(
-      trade=>
-        trade &&
-        typeof trade === "object" &&
-        trade.status === "OPEN"
-    );
-  }
-
-  if(
-    stored &&
-    typeof stored === "object" &&
-    stored.status === "OPEN"
-  ){
-    return [stored];
-  }
-
-  return [];
+  return [
+    ...unique.values(),
+    ...legacy
+  ];
 }
 
 function saveScalpOpenTradesForPair(
@@ -14986,14 +14996,11 @@ function scalpTradeIdentityFromStoredTrade(
   ){
     return null;
   }
-
-  if(
-    typeof trade.identity === "string" &&
-    trade.identity.trim()
-  ){
-    return trade.identity.trim();
-  }
-
+  const decision =
+    normalizeSignalDecision(
+      trade.decision ||
+      trade.signal
+    );
   const setupTimeframe =
     normalizeScalpTrackerTimeframe(
       trade.setupTimeframe ||
@@ -15001,29 +15008,51 @@ function scalpTradeIdentityFromStoredTrade(
       trade.mode ||
       trade.timeframe
     );
-
-  const setupCandleAt =
+  const executionCandleAt =
     safeISODate(
-      trade.setupCandleAt ||
-      trade.analyzedCandleAt
+      trade.executionCandleAt
     );
-
   if(
     setupTimeframe &&
-    setupCandleAt &&
-    (trade.decision === "BUY" ||
-     trade.decision === "SELL")
+    executionCandleAt &&
+    (decision === "BUY" ||
+     decision === "SELL")
   ){
     return [
       trade.pairKey ||
         trade.pair ||
         "UNKNOWN",
       setupTimeframe,
-      trade.decision,
+      decision,
+      executionCandleAt
+    ].join("|");
+  }
+  const setupCandleAt =
+    safeISODate(
+      trade.setupCandleAt ||
+      trade.analyzedCandleAt
+    );
+  if(
+    setupTimeframe &&
+    setupCandleAt &&
+    (decision === "BUY" ||
+     decision === "SELL")
+  ){
+    return [
+      trade.pairKey ||
+        trade.pair ||
+        "UNKNOWN",
+      setupTimeframe,
+      decision,
       setupCandleAt
     ].join("|");
   }
-
+  if(
+    typeof trade.identity === "string" &&
+    trade.identity.trim()
+  ){
+    return trade.identity.trim();
+  }
   return null;
 }
 
@@ -15322,20 +15351,17 @@ function scalpSignalIdentity(
   ){
     return null;
   }
-
   const decision =
     normalizeSignalDecision(
       signal.decision ||
       signal.signal
     );
-
   if(
     decision !== "BUY" &&
     decision !== "SELL"
   ){
     return null;
   }
-
   const setupTimeframe =
     normalizeScalpTrackerTimeframe(
       signal.setupTimeframe ||
@@ -15343,13 +15369,26 @@ function scalpSignalIdentity(
       signal.mode ||
       signal.timeframe
     );
-
+  const executionCandleAt =
+    safeISODate(
+      signal.executionCandleAt
+    );
+  if(
+    setupTimeframe &&
+    executionCandleAt
+  ){
+    return [
+      pairKey,
+      setupTimeframe,
+      decision,
+      executionCandleAt
+    ].join("|");
+  }
   const setupCandleAt =
     safeISODate(
       signal.setupCandleAt ||
       signal.analyzedCandleAt
     );
-
   if(
     setupTimeframe &&
     setupCandleAt
@@ -15361,10 +15400,9 @@ function scalpSignalIdentity(
       setupCandleAt
     ].join("|");
   }
-
   /*
    * Backward compatibility for legacy browser/local records that predate
-   * setup-timeframe and setup-candle metadata.
+   * execution/setup candle metadata.
    */
   const entry =
     safeNumber(
@@ -15372,7 +15410,6 @@ function scalpSignalIdentity(
       signal.entry,
       null
     );
-
   const stop =
     safeNumber(
       signal.rawSl ??
@@ -15382,7 +15419,6 @@ function scalpSignalIdentity(
       ),
       null
     );
-
   const target =
     safeNumber(
       signal.rawTp1 ??
@@ -15393,7 +15429,6 @@ function scalpSignalIdentity(
       ),
       null
     );
-
   if(
     entry == null ||
     stop == null ||
@@ -15401,7 +15436,6 @@ function scalpSignalIdentity(
   ){
     return null;
   }
-
   return [
     pairKey,
     decision,

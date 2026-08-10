@@ -887,6 +887,58 @@ function buildLocalSignalId(signal) {
   ].join("-");
 }
 
+function buildScalpLifecycleId(signal) {
+  const source =
+    asObject(signal);
+  if (
+    normalizeEngine(
+      source.engine ||
+      source.source ||
+      source.mode
+    ) !== "scalp"
+  ) {
+    return null;
+  }
+  const executionCandleAt =
+    normalizeTimestamp(
+      source.executionCandleAt
+    );
+  if (!executionCandleAt) {
+    return null;
+  }
+  const pair =
+    normalizePair(
+      source.pair ||
+      source.symbol ||
+      source.pairLabel
+    );
+  const direction =
+    extractDirection(source);
+  const timeframe =
+    normalizeTimeframe(
+      source.timeframe ||
+      source.interval ||
+      source.period ||
+      source.mode
+    );
+  if (
+    !pair ||
+    !direction ||
+    !timeframe
+  ) {
+    return null;
+  }
+  return [
+    "PIPSIGHT",
+    "SCALP",
+    "LIFECYCLE",
+    pair,
+    timeframe,
+    direction,
+    executionCandleAt
+  ].join("-");
+}
+
 function normalizeSentAlertEntry(entry) {
   if (!isPlainObject(entry)) {
     return null;
@@ -1452,6 +1504,113 @@ async function sendTelegramMessage(message) {
   return response;
 }
 
+function findEquivalentSentScalpAlert({
+  signal,
+  sentAlerts
+}) {
+  const source =
+    asObject(signal);
+  const executionCandleAt =
+    normalizeTimestamp(
+      source.executionCandleAt
+    );
+  if (
+    normalizeEngine(
+      source.engine ||
+      source.source ||
+      source.mode
+    ) !== "scalp" ||
+    !executionCandleAt
+  ) {
+    return null;
+  }
+  const executionTimeMs =
+    new Date(
+      executionCandleAt
+    ).getTime();
+  if (!Number.isFinite(executionTimeMs)) {
+    return null;
+  }
+  const pair =
+    normalizePair(
+      source.pair ||
+      source.symbol ||
+      source.pairLabel
+    );
+  const direction =
+    extractDirection(source);
+  const timeframe =
+    normalizeTimeframe(
+      source.timeframe ||
+      source.interval ||
+      source.period ||
+      source.mode
+    );
+  const entry =
+    toFiniteNumber(
+      firstDefined(
+        source.entry,
+        source.entryPrice,
+        source.price
+      )
+    );
+  if (
+    !pair ||
+    !direction ||
+    !timeframe
+  ) {
+    return null;
+  }
+  const legacyPrefix =
+    [
+      "PIPSIGHT",
+      "SCALP",
+      pair,
+      timeframe,
+      direction
+    ].join("-") + "-";
+  const legacySuffix =
+    entry === null
+      ? null
+      : `-${String(entry)}`;
+  for (const entryRecord of sentAlerts) {
+    const sentAlert =
+      normalizeSentAlertEntry(
+        entryRecord
+      );
+    if (
+      !sentAlert ||
+      !sentAlert.id.startsWith(
+        legacyPrefix
+      ) ||
+      (
+        legacySuffix &&
+        !sentAlert.id.endsWith(
+          legacySuffix
+        )
+      )
+    ) {
+      continue;
+    }
+    const sentAt =
+      normalizeTimestamp(
+        sentAlert.sentAt
+      );
+    if (!sentAt) {
+      continue;
+    }
+    const sentAtMs =
+      new Date(sentAt).getTime();
+    if (
+      Number.isFinite(sentAtMs) &&
+      sentAtMs >= executionTimeMs
+    ) {
+      return sentAlert;
+    }
+  }
+  return null;
+}
+
 async function sendUnsentSignal({
   signal,
   signalId,
@@ -1463,6 +1622,52 @@ async function sendUnsentSignal({
       `Skipping previously reserved or sent alert: ${signalId}`
     );
 
+    return "skipped";
+  }
+
+  const equivalentScalpAlert =
+    findEquivalentSentScalpAlert({
+      signal,
+      sentAlerts
+    });
+  if (equivalentScalpAlert) {
+    const migratedEntry = {
+      id:
+        signalId,
+      sentAt:
+        equivalentScalpAlert.sentAt,
+      status:
+        equivalentScalpAlert.status
+    };
+    sentAlerts.push(
+      migratedEntry
+    );
+    sentIds.add(
+      signalId
+    );
+    try {
+      saveSentAlerts(
+        sentAlerts
+      );
+    } catch (error) {
+      sentAlerts.splice(
+        sentAlerts.indexOf(
+          migratedEntry
+        ),
+        1
+      );
+      sentIds.delete(
+        signalId
+      );
+      console.warn(
+        `Unable to persist migrated Scalp lifecycle ID ${signalId}: ` +
+        error.message
+      );
+    }
+    console.log(
+      "Skipping previously reserved or sent Scalp trade lifecycle: " +
+      equivalentScalpAlert.id
+    );
     return "skipped";
   }
 
@@ -2545,23 +2750,18 @@ function normalizeScalpSignal({
   if (!isPlainObject(rawSignal)) {
     return null;
   }
-
   const direction =
     extractDirection(
       rawSignal
     );
-
   if (!direction) {
     return null;
   }
-
-  return normalizeTradeSignal({
+  const normalized = normalizeTradeSignal({
     source:
       "scalp",
-
     engine:
       "scalp",
-
     pair:
       firstDefined(
         rawSignal.pair,
@@ -2569,7 +2769,6 @@ function normalizeScalpSignal({
         rawSignal.symbol,
         pairFallback
       ),
-
     timeframe:
       firstDefined(
         rawSignal.timeframe,
@@ -2579,23 +2778,19 @@ function normalizeScalpSignal({
         rawSignal.mode,
         "5M"
       ),
-
     direction,
-
     confidence:
       firstDefined(
         rawSignal.confidence,
         rawSignal.confidencePct,
         rawSignal.confidencePercent
       ),
-
     reason:
       firstDefined(
         rawSignal.reason,
         rawSignal.summary,
         rawSignal.message
       ),
-
     pattern:
       firstDefined(
         rawSignal.pattern,
@@ -2603,7 +2798,6 @@ function normalizeScalpSignal({
         rawSignal.strategy,
         "Backend Scalp Setup"
       ),
-
     timestamp:
       firstDefined(
         rawSignal.analyzedCandleAt,
@@ -2617,14 +2811,24 @@ function normalizeScalpSignal({
         rawSignal.timestamp,
         timestampFallback
       ),
-
     tradePlan:
       extractTradePlan(
         rawSignal
       ),
-
     rawSignal
   });
+  if (!normalized) {
+    return null;
+  }
+  const executionCandleAt =
+    normalizeTimestamp(
+      rawSignal.executionCandleAt
+    );
+  if (executionCandleAt) {
+    normalized.executionCandleAt =
+      executionCandleAt;
+  }
+  return normalized;
 }
 
 function collectScalpAlerts() {
@@ -2703,6 +2907,9 @@ function collectScalpAlerts() {
     }
 
     const signalId =
+      buildScalpLifecycleId(
+        signal
+      ) ||
       buildLocalSignalId(
         signal
       );

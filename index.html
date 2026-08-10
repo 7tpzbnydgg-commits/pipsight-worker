@@ -18899,6 +18899,203 @@ function renderNewsForPair(
 }
 
 // ════════════════════════════════════════════════════════════════
+// INTRADAY / SWING HISTORY TRACKER RENDERING
+// ════════════════════════════════════════════════════════════════
+
+function renderMainHistoryTracker(
+  tracker,
+  pair,
+  mode
+){
+  const label =
+    String(mode || "").toLowerCase() === "weekly"
+      ? "Swing"
+      : "Intraday";
+
+  const source =
+    tracker &&
+    typeof tracker === "object" &&
+    !Array.isArray(tracker)
+      ? tracker
+      : null;
+
+  const openTrades =
+    source
+      ? safeArray(source.openTrades)
+          .filter(
+            item=>
+              item &&
+              typeof item === "object" &&
+              String(item.status || "")
+                .toUpperCase() === "OPEN"
+          )
+          .map(
+            item=>({
+              ...item,
+
+              setupTimeframe:
+                item.timeframe,
+
+              entryTimeframe:
+                item.timeframe,
+
+              executionTimeframe:
+                item.timeframe
+            })
+          )
+      : [];
+
+  const stats =
+    source
+      ? safeObject(source.stats)
+      : {};
+
+  const recentResolved =
+    source
+      ? safeArray(source.recentResolved)
+          .slice(0,10)
+      : [];
+
+  const decimals =
+    decimalsFor(
+      pair
+    );
+
+  const openHTML =
+    !source
+      ? `
+          <div class="empty-note">
+            Backend ${escapeHTML(label)} tracker data is unavailable for ${escapeHTML(pair.label)}.
+          </div>
+        `
+      : !openTrades.length
+        ? `
+            <div class="empty-note">
+              No open tracked ${escapeHTML(label.toLowerCase())} trade for ${escapeHTML(pair.label)}.
+            </div>
+          `
+        : renderOpenScalpTrade(
+            openTrades,
+            pair
+          );
+
+  const statsHTML =
+    source
+      ? renderScalpTrackerStats(
+          stats
+        )
+      : `
+          <div class="empty-note">
+            Backend ${escapeHTML(label)} performance data is unavailable for ${escapeHTML(pair.label)}.
+          </div>
+        `;
+
+  const historyHTML =
+    !source
+      ? `
+          <div class="empty-note">
+            Backend ${escapeHTML(label)} history data is unavailable for ${escapeHTML(pair.label)}.
+          </div>
+        `
+      : !recentResolved.length
+        ? `
+            <div class="empty-note">
+              No resolved ${escapeHTML(label.toLowerCase())} trades are available for ${escapeHTML(pair.label)}.
+            </div>
+          `
+        : recentResolved
+            .map(
+              entry=>{
+                const result =
+                  String(
+                    entry.result ||
+                    entry.status ||
+                    "OPEN"
+                  ).toUpperCase();
+
+                const rr =
+                  safeNumber(
+                    entry.rr,
+                    null
+                  );
+
+                return `
+                  <div class="log-row">
+                    <div>
+                      <div>
+                        <span
+                          style="
+                            color:${signalTextColor(entry.decision)};
+                            font-weight:600;
+                          "
+                        >
+                          ${escapeHTML(entry.decision || "HOLD")}
+                        </span>
+
+                        <span style="color:var(--muted);">
+                          · Entry ${safeFixed(entry.entry,decimals)}
+                        </span>
+                      </div>
+
+                      <div
+                        style="
+                          margin-top:3px;
+                          color:var(--muted);
+                          font-size:10px;
+                        "
+                      >
+                        Closed ${escapeHTML(
+                          safeDateLabel(
+                            entry.closedAt,
+                            "Unknown close time"
+                          )
+                        )}
+
+                        ${
+                          rr == null
+                            ? ""
+                            : ` · R:R 1:${safeFixed(rr,2)}`
+                        }
+                      </div>
+                    </div>
+
+                    <span class="log-status ${resultStatusClass(result)}">
+                      ${escapeHTML(result)}
+                    </span>
+                  </div>
+                `;
+              }
+            )
+            .join("");
+
+  return `
+    <div class="card">
+      <div class="label">
+        Open Signal Tracker
+      </div>
+
+      ${openHTML}
+    </div>
+
+    <div class="card">
+      <div class="label">
+        Tracker Performance
+      </div>
+
+      ${statsHTML}
+    </div>
+
+    <div class="card">
+      <div class="label">
+        Recent Resolved ${escapeHTML(label)} Signals
+      </div>
+
+      ${historyHTML}
+    </div>
+  `;
+}
+
+// ════════════════════════════════════════════════════════════════
 // MAIN PANEL HTML
 // ════════════════════════════════════════════════════════════════
 
@@ -19095,6 +19292,13 @@ function mainPanelHTML(
         analysis.pipeline
       )}
     </div>
+
+    ${renderMainHistoryTracker(
+      analysis &&
+      analysis.historyTracker,
+      pair,
+      currentMode
+    )}
 
     <div class="card">
       <div class="label">
@@ -19674,6 +19878,38 @@ function resolveBackendEngineResult(
         ? "swing"
         : frontendMode;
 
+  const pairKey =
+    normalizeBackendPairIdentity(
+      pair?.key ||
+      pair?.label ||
+      pair?.symbol
+    );
+
+  const trackerPairs =
+    safeObject(
+      safeObject(
+        liveAnalysis?.historyTracker
+      ).pairs
+    );
+
+  const pairTracker =
+    safeObject(
+      trackerPairs[pairKey]
+    );
+
+  const historyTracker =
+    (
+      backendMode === "intraday" ||
+      backendMode === "swing"
+    ) &&
+    pairTracker[backendMode] &&
+    typeof pairTracker[backendMode] === "object" &&
+    !Array.isArray(
+      pairTracker[backendMode]
+    )
+      ? pairTracker[backendMode]
+      : null;
+
   const engines =
     safeObject(
       pairAnalysis.engines
@@ -20018,7 +20254,9 @@ function resolveBackendEngineResult(
       "live-analysis",
 
     backendAuthoritative:
-      true
+      true,
+
+    historyTracker
   };
 }
 

@@ -3048,25 +3048,10 @@ function renderLiveAnalysisObservability(
       .trim()
       .toLowerCase();
 
-  const reportedStale =
+  const stale =
     resolveObservabilityStaleValue(
       document
     );
-
-  const lastRunTimestamp =
-    safeDateMs(lastRun);
-
-  const staleByAge =
-    lastRunTimestamp == null ||
-    Date.now() - lastRunTimestamp >
-      APP_CONFIG
-        .freshnessMinutes
-        .scalpSignals *
-      60_000;
-
-  const stale =
-    reportedStale === true ||
-    staleByAge;
 
   let statusLabel =
     "Unknown";
@@ -3080,7 +3065,7 @@ function renderLiveAnalysisObservability(
 
     statusState =
       "error";
-  }else if(stale){
+  }else if(stale === true){
     statusLabel =
       "Stale";
 
@@ -3137,10 +3122,10 @@ function renderLiveAnalysisObservability(
 
   setObservabilityText(
     "observabilityStaleStatus",
-    reportedStale == null
+    stale == null
       ? "Not reported"
       : formatObservabilityBoolean(
-          reportedStale,
+          stale,
           {
             trueLabel:
               "Yes",
@@ -3153,9 +3138,9 @@ function renderLiveAnalysisObservability(
 
   setObservabilityValueClass(
     "observabilityStaleStatus",
-    reportedStale === true
+    stale === true
       ? "warn"
-      : reportedStale === false
+      : stale === false
         ? "ok"
         : "muted"
   );

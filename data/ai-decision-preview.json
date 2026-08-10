@@ -2,17 +2,17 @@
   "version": 1,
   "engineName": "PipSight Pro Autonomous AI Decision Engine",
   "engineVersion": "1.4.0",
-  "evaluatedAt": "2026-08-10T11:03:35.534Z",
-  "decisionId": "live|1.4.0|GBPJPY|scalp|5m|HOLD|none|2026-08-10T11:00:00.000Z",
-  "decisionHash": "4db0aa00d0a4d749587f87714977c7d9e5859224fd5c6146d9445df68f8fa4c7",
+  "evaluatedAt": "2026-08-10T11:11:49.836Z",
+  "decisionId": "live|1.4.0|GBPJPY|scalp|5m|HOLD|none|2026-08-10T11:10:00.000Z",
+  "decisionHash": "5e36ecfc0910b6fef74aaad904300e20e6b2afa4c4485032af238764a25de43f",
   "context": {
     "pair": "GBPJPY",
     "timeframe": "5m",
     "engine": "scalp",
-    "marketRegime": "STRONG_NORMAL",
+    "marketRegime": "STRONG_HIGH",
     "session": null,
     "pattern": null,
-    "marketDataAt": "2026-08-10T11:00:00.000Z"
+    "marketDataAt": "2026-08-10T11:10:00.000Z"
   },
   "deployment": {
     "configuredMode": "AUTONOMOUS",
@@ -22,14 +22,14 @@
     "rollout": {
       "percent": 100,
       "selected": true,
-      "bucket": 95.75,
+      "bucket": 96.73,
       "identityStable": true,
       "reason": "Decision is inside the deterministic autonomous rollout cohort."
     }
   },
   "baseline": {
     "decision": "HOLD",
-    "confidence": 19,
+    "confidence": 20,
     "tradePlan": null,
     "reasons": [
       "Directional engines are conflicting"
@@ -37,7 +37,7 @@
   },
   "shadowCandidate": {
     "decision": "HOLD",
-    "confidence": 19,
+    "confidence": 20,
     "tradePlan": null,
     "reasons": [
       "Directional engines are conflicting"
@@ -45,7 +45,7 @@
   },
   "proposedDecision": {
     "decision": "HOLD",
-    "confidence": 19,
+    "confidence": 20,
     "tradePlan": null,
     "reasons": [
       "Directional engines are conflicting"
@@ -56,51 +56,52 @@
   "evidence": {
     "baselinePolicy": null,
     "buyPolicy": {
-      "key": "pairTimeframeEngineDirectionRegime|GBPJPY|5m|scalp|BUY|STRONG_NORMAL",
+      "key": "pairTimeframeEngineDirectionRegime|GBPJPY|5m|scalp|BUY|STRONG_HIGH",
       "scope": "pairTimeframeEngineDirectionRegime",
       "dimensions": {
         "pair": "GBPJPY",
         "timeframe": "5m",
         "engine": "scalp",
         "direction": "BUY",
-        "marketRegime": "STRONG_NORMAL"
+        "marketRegime": "STRONG_HIGH"
       },
       "action": "OBSERVE",
-      "actionReason": "Only 3 decisive trades are available; 30 are required.",
+      "actionReason": "Only 9 decisive trades are available; 30 are required.",
       "authorityLevel": "SHADOW_ONLY",
-      "decisiveTrades": 3,
-      "reliability": 0.286041,
-      "edgeScore": -0.733272,
-      "shrunkExpectancyR": -0.28972661,
+      "decisiveTrades": 9,
+      "reliability": 0.32056,
+      "edgeScore": -0.716014,
+      "shrunkExpectancyR": -0.32400265,
       "outOfSamplePassed": false,
       "negativeEdgeConfirmed": false,
       "averagePlannedRiskReward": 2
     },
     "sellPolicy": {
-      "key": "pairTimeframeEngineDirection|GBPJPY|5m|scalp|SELL",
-      "scope": "pairTimeframeEngineDirection",
+      "key": "pairTimeframeEngineDirectionRegime|GBPJPY|5m|scalp|SELL|STRONG_HIGH",
+      "scope": "pairTimeframeEngineDirectionRegime",
       "dimensions": {
         "pair": "GBPJPY",
         "timeframe": "5m",
         "engine": "scalp",
-        "direction": "SELL"
+        "direction": "SELL",
+        "marketRegime": "STRONG_HIGH"
       },
-      "action": "NEUTRAL",
-      "actionReason": "Available evidence does not justify positive or negative live authority.",
+      "action": "OBSERVE",
+      "actionReason": "Only 7 decisive trades are available; 30 are required.",
       "authorityLevel": "SHADOW_ONLY",
-      "decisiveTrades": 93,
-      "reliability": 0.535964,
-      "edgeScore": -0.265839,
-      "shrunkExpectancyR": -0.12638297,
+      "decisiveTrades": 7,
+      "reliability": 0.300399,
+      "edgeScore": -0.379292,
+      "shrunkExpectancyR": -0.20638117,
       "outOfSamplePassed": false,
       "negativeEdgeConfirmed": false,
-      "averagePlannedRiskReward": 2.000532
+      "averagePlannedRiskReward": 2
     },
     "baselineMatchAttempts": [],
     "buyMatchAttempts": [
       {
         "scope": "pairTimeframeEngineDirectionRegime",
-        "signature": "pairTimeframeEngineDirectionRegime|GBPJPY|5m|scalp|BUY|strong_normal",
+        "signature": "pairTimeframeEngineDirectionRegime|GBPJPY|5m|scalp|BUY|strong_high",
         "matched": true,
         "reason": null
       }
@@ -108,13 +109,7 @@
     "sellMatchAttempts": [
       {
         "scope": "pairTimeframeEngineDirectionRegime",
-        "signature": "pairTimeframeEngineDirectionRegime|GBPJPY|5m|scalp|SELL|strong_normal",
-        "matched": false,
-        "reason": "No policy bucket matched."
-      },
-      {
-        "scope": "pairTimeframeEngineDirection",
-        "signature": "pairTimeframeEngineDirection|GBPJPY|5m|scalp|SELL",
+        "signature": "pairTimeframeEngineDirectionRegime|GBPJPY|5m|scalp|SELL|strong_high",
         "matched": true,
         "reason": null
       }
@@ -131,16 +126,16 @@
       {
         "engine": "scalp",
         "decision": "BUY",
-        "confidence": 87,
+        "confidence": 86,
         "active": true,
         "tradePlan": {
           "direction": "BUY",
-          "entry": 214.372,
-          "stopLoss": 214.298,
-          "target1": 214.52,
-          "target2": 214.594,
-          "target3": 214.668,
-          "risk": 0.074,
+          "entry": 214.426,
+          "stopLoss": 214.336,
+          "target1": 214.606,
+          "target2": 214.696,
+          "target3": 214.786,
+          "risk": 0.09,
           "riskReward": 2
         },
         "source": "data/scalp-candles.json"
@@ -185,8 +180,8 @@
     ]
   },
   "metadata": {
-    "policyHash": "7604f1689c7394e33d96b8cb0bdd1400e12da996cf21799996bf1fcd1ea707b2",
-    "policyGeneratedAt": "2026-08-10T09:55:37.080Z",
+    "policyHash": "c920792a6fe167cba5f7e3c097ded3a67f0836f0d6ba5c5b146d8c8b0ad8d3df",
+    "policyGeneratedAt": "2026-08-10T11:03:41.986Z",
     "configVersion": "1.4.0",
     "deterministic": true,
     "deterministicRollout": true,

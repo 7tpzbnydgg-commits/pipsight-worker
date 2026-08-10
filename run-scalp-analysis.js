@@ -4385,18 +4385,139 @@ function evaluateProfessionalExecutionRiskLayer({
         );
   }
 
+  function resolveExistingTradePlanOutcome(
+    plan,
+    executionCandleAt
+  ) {
+    if (
+      !isUsableExistingTradePlan(plan)
+    ) {
+      return null;
+    }
+
+    const executionTime =
+      parseTimestamp(
+        executionCandleAt
+      );
+
+    if (!executionTime) {
+      return null;
+    }
+
+    const executionTimeMs =
+      executionTime.getTime();
+
+    const stopLoss =
+      Number(plan.stopLoss);
+
+    const target1 =
+      Number(plan.target1);
+
+    for (const row of rows) {
+      if (
+        !isFiniteNumber(row.timestamp) ||
+        row.timestamp <=
+          executionTimeMs
+      ) {
+        continue;
+      }
+
+      const stopHit =
+        normalizedDirection === "BUY"
+          ? row.low <= stopLoss
+          : row.high >= stopLoss;
+
+      const targetHit =
+        normalizedDirection === "BUY"
+          ? row.high >= target1
+          : row.low <= target1;
+
+      if (stopHit && targetHit) {
+        return {
+          result: "LOSS",
+          reason:
+            "SL and TP1 crossed within the same closed M5 candle; conservative SL-first resolution applied",
+          resolvedCandleAt:
+            row.date ?? null
+        };
+      }
+
+      if (stopHit) {
+        return {
+          result: "LOSS",
+          reason:
+            "Closed M5 path crossed the preserved stop loss",
+          resolvedCandleAt:
+            row.date ?? null
+        };
+      }
+
+      if (targetHit) {
+        return {
+          result: "WIN",
+          reason:
+            "Closed M5 path crossed the preserved TP1",
+          resolvedCandleAt:
+            row.date ?? null
+        };
+      }
+    }
+
+    return null;
+  }
+
   const previousDirection =
     normalizeSignalDirection(
       previousSignal?.signal
     );
 
-  if (
+  const previousPlanUsable =
     previousDirection ===
       normalizedDirection &&
     isUsableExistingTradePlan(
       previousSignal?.tradePlan
-    )
+    );
+
+  const previousTradeOutcome =
+    previousPlanUsable
+      ? resolveExistingTradePlanOutcome(
+          previousSignal.tradePlan,
+          previousSignal
+            ?.executionCandleAt ??
+          null
+        )
+      : null;
+
+  if (
+    previousPlanUsable &&
+    previousTradeOutcome
   ) {
+    return {
+      valid: false,
+      waiting: true,
+      reason:
+        `Previous active trade resolved ${previousTradeOutcome.result} on the closed M5 path; waiting for a fresh execution`,
+      entryModel: null,
+      tradePlan: null,
+      diagnostics: {
+        setupMode,
+        executionTimeframe:
+          normalizedExecutionTimeframe,
+        entryModel:
+          "ACTIVE_SIGNAL_RESOLVED",
+        preservedActiveTradePlan:
+          false,
+        originalExecutionCandleAt:
+          previousSignal
+            ?.executionCandleAt ??
+          null,
+        resolution:
+          previousTradeOutcome
+      }
+    };
+  }
+
+  if (previousPlanUsable) {
     return {
       valid: true,
       waiting: false,

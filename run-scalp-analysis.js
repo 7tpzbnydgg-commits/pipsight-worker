@@ -4264,6 +4264,1241 @@ function buildProfessionalTradePlan({
 }
 
 /* =====================================================================
+   Professional M5 Execution & Risk Layer
+
+   Additive authority only:
+   - Existing setup/confluence direction is accepted as immutable input.
+   - Entry timing is validated on the supplied execution timeframe rows.
+   - Production worker supplies fully closed M5 rows for M5/M15/M30 setups.
+   - Entry paths: breakout-retest, pullback-resumption, momentum continuation.
+   - EXTREME execution volatility blocks direct momentum chasing.
+   - SL/TP are rebuilt from execution-timeframe ATR/structure, then checked
+     against setup-timeframe opposing structure so wide setup-TF ATR does not
+     automatically force wide M5 execution plans.
+   - No opposite-direction signal is created here. Failure means WAIT.
+   ===================================================================== */
+
+function evaluateProfessionalExecutionRiskLayer({
+  direction,
+  executionRows,
+  executionTimeframe,
+  pairLabel,
+  setupMode,
+  setupSupportResistance,
+  setupStructure,
+  setupHigherTimeframe,
+  previousSignal
+}) {
+  const rows =
+    Array.isArray(executionRows)
+      ? executionRows
+          .filter(
+            row =>
+              row &&
+              row.isClosed === true &&
+              [
+                row.open,
+                row.high,
+                row.low,
+                row.close,
+                row.timestamp
+              ].every(isFiniteNumber)
+          )
+          .slice()
+          .sort(
+            (a, b) =>
+              a.timestamp -
+              b.timestamp
+          )
+      : [];
+
+  const normalizedDirection =
+    String(direction ?? "")
+      .trim()
+      .toUpperCase();
+
+  const normalizedExecutionTimeframe =
+    String(
+      executionTimeframe ??
+      "M5"
+    )
+      .trim()
+      .toUpperCase();
+
+  if (
+    normalizedDirection !== "BUY" &&
+    normalizedDirection !== "SELL"
+  ) {
+    return {
+      valid: false,
+      waiting: true,
+      reason:
+        "Execution layer requires an already-qualified BUY or SELL direction",
+      entryModel: null,
+      tradePlan: null,
+      diagnostics: {
+        setupMode,
+        executionTimeframe:
+          normalizedExecutionTimeframe
+      }
+    };
+  }
+
+  function isUsableExistingTradePlan(plan) {
+    if (
+      !plan ||
+      typeof plan !== "object"
+    ) {
+      return false;
+    }
+
+    const entry = Number(plan.entry);
+    const stopLoss = Number(plan.stopLoss);
+    const target1 = Number(plan.target1);
+    const target2 = Number(plan.target2);
+    const target3 = Number(plan.target3);
+
+    if (
+      ![
+        entry,
+        stopLoss,
+        target1,
+        target2,
+        target3
+      ].every(Number.isFinite)
+    ) {
+      return false;
+    }
+
+    return normalizedDirection === "BUY"
+      ? (
+          stopLoss < entry &&
+          entry < target1 &&
+          target1 < target2 &&
+          target2 < target3
+        )
+      : (
+          target3 < target2 &&
+          target2 < target1 &&
+          target1 < entry &&
+          entry < stopLoss
+        );
+  }
+
+  const previousDirection =
+    normalizeSignalDirection(
+      previousSignal?.signal
+    );
+
+  if (
+    previousDirection ===
+      normalizedDirection &&
+    isUsableExistingTradePlan(
+      previousSignal?.tradePlan
+    )
+  ) {
+    return {
+      valid: true,
+      waiting: false,
+      reason: null,
+      entryModel:
+        "ACTIVE_SIGNAL_CONTINUATION",
+      tradePlan: {
+        ...previousSignal.tradePlan
+      },
+      diagnostics: {
+        setupMode,
+        executionTimeframe:
+          normalizedExecutionTimeframe,
+        entryModel:
+          "ACTIVE_SIGNAL_CONTINUATION",
+        preservedActiveTradePlan:
+          true,
+        originalExecutionCandleAt:
+          previousSignal
+            ?.executionCandleAt ??
+          null
+      }
+    };
+  }
+
+  if (rows.length < 4) {
+    return {
+      valid: false,
+      waiting: true,
+      reason:
+        "Not enough fully closed execution candles for professional entry confirmation",
+      entryModel: null,
+      tradePlan: null,
+      diagnostics: {
+        setupMode,
+        executionTimeframe:
+          normalizedExecutionTimeframe,
+        executionRows:
+          rows.length
+      }
+    };
+  }
+
+  const atrPeriod =
+    atrRiskConfigFor(pairLabel)
+      ?.period ?? 14;
+
+  const executionAtr =
+    buildAtrSnapshot(
+      rows,
+      atrPeriod
+    );
+
+  if (!executionAtr.available) {
+    return {
+      valid: false,
+      waiting: true,
+      reason:
+        "Execution-timeframe ATR is unavailable",
+      entryModel: null,
+      tradePlan: null,
+      diagnostics: {
+        setupMode,
+        executionTimeframe:
+          normalizedExecutionTimeframe,
+        atrPeriod
+      }
+    };
+  }
+
+  const structureBuffer =
+    executionAtr.atr *
+    ATR_STRUCTURE_BUFFER;
+
+  function contextBefore(excludedTail) {
+    const contextRows =
+      rows.slice(
+        0,
+        Math.max(
+          0,
+          rows.length -
+          excludedTail
+        )
+      );
+
+    return {
+      rows:
+        contextRows,
+      structure:
+        computeMarketStructure(
+          contextRows
+        ),
+      supportResistance:
+        computeSupportResistance(
+          contextRows
+        )
+    };
+  }
+
+  function nearestBreakoutLevel(
+    context,
+    referencePrice
+  ) {
+    const candidates = [];
+
+    if (
+      !context ||
+      !isFiniteNumber(referencePrice)
+    ) {
+      return null;
+    }
+
+    if (
+      normalizedDirection ===
+      "BUY"
+    ) {
+      for (
+        const value of
+          context
+            .supportResistance
+            .resistances || []
+      ) {
+        if (
+          isFiniteNumber(value) &&
+          value > referencePrice
+        ) {
+          candidates.push(value);
+        }
+      }
+
+      for (
+        const value of [
+          context.structure
+            ?.latestHigh?.price,
+          context.structure
+            ?.previousHigh?.price
+        ]
+      ) {
+        if (
+          isFiniteNumber(value) &&
+          value > referencePrice
+        ) {
+          candidates.push(value);
+        }
+      }
+
+      return candidates.length > 0
+        ? Math.min(...candidates)
+        : null;
+    }
+
+    for (
+      const value of
+        context
+          .supportResistance
+          .supports || []
+    ) {
+      if (
+        isFiniteNumber(value) &&
+        value < referencePrice
+      ) {
+        candidates.push(value);
+      }
+    }
+
+    for (
+      const value of [
+        context.structure
+          ?.latestLow?.price,
+        context.structure
+          ?.previousLow?.price
+      ]
+    ) {
+      if (
+        isFiniteNumber(value) &&
+        value < referencePrice
+      ) {
+        candidates.push(value);
+      }
+    }
+
+    return candidates.length > 0
+      ? Math.max(...candidates)
+      : null;
+  }
+
+  function directionalBody(candle) {
+    if (!candle) {
+      return false;
+    }
+
+    return normalizedDirection ===
+      "BUY"
+      ? candle.close > candle.open
+      : candle.close < candle.open;
+  }
+
+  function breakoutPassed(
+    candle,
+    level,
+    previousClose
+  ) {
+    if (
+      !candle ||
+      !isFiniteNumber(level) ||
+      !isFiniteNumber(previousClose)
+    ) {
+      return false;
+    }
+
+    if (
+      normalizedDirection ===
+      "BUY"
+    ) {
+      return (
+        previousClose <= level &&
+        candle.close > level &&
+        directionalBody(candle)
+      );
+    }
+
+    return (
+      previousClose >= level &&
+      candle.close < level &&
+      directionalBody(candle)
+    );
+  }
+
+  function retestHeld(
+    candle,
+    level
+  ) {
+    if (
+      !candle ||
+      !isFiniteNumber(level)
+    ) {
+      return false;
+    }
+
+    if (
+      normalizedDirection ===
+      "BUY"
+    ) {
+      return (
+        candle.low <=
+          level +
+          structureBuffer &&
+        candle.close >= level &&
+        directionalBody(candle)
+      );
+    }
+
+    return (
+      candle.high >=
+        level -
+        structureBuffer &&
+      candle.close <= level &&
+      directionalBody(candle)
+    );
+  }
+
+  function closesBeyond(
+    candle,
+    referenceCandle
+  ) {
+    if (
+      !candle ||
+      !referenceCandle ||
+      !directionalBody(candle)
+    ) {
+      return false;
+    }
+
+    return normalizedDirection ===
+      "BUY"
+      ? candle.close >
+        referenceCandle.high
+      : candle.close <
+        referenceCandle.low;
+  }
+
+  const trigger =
+    rows[
+      rows.length - 1
+    ];
+
+  const previous =
+    rows[
+      rows.length - 2
+    ];
+
+  const twoBack =
+    rows[
+      rows.length - 3
+    ];
+
+  /*
+   * Adaptive execution evidence.
+   *
+   * The data layer recommends M5 candle-close confirmation with structure,
+   * support/resistance, volatility and rejection/engulfing/breakout evidence.
+   * No new numeric score or threshold is introduced here. A qualified setup
+   * may execute through any recognised closed-candle confirmation path.
+   */
+  const preTriggerContext =
+    contextBefore(1);
+
+  const structureLevel =
+    selectStructureLevel(
+      normalizedDirection,
+      trigger.close,
+      preTriggerContext
+        .supportResistance,
+      preTriggerContext
+        .structure
+    );
+
+  const structureRejectionConfirmed =
+    retestHeld(
+      trigger,
+      structureLevel
+    );
+
+  const engulfingPattern =
+    detectCandlePattern([
+      previous,
+      trigger
+    ]);
+
+  const engulfingConfirmed =
+    normalizedDirection === "BUY"
+      ? engulfingPattern ===
+        "Bullish Engulfing"
+      : engulfingPattern ===
+        "Bearish Engulfing";
+
+  const breakoutLevel =
+    nearestBreakoutLevel(
+      preTriggerContext,
+      previous.close
+    );
+
+  const freshBreakoutConfirmed =
+    breakoutPassed(
+      trigger,
+      breakoutLevel,
+      previous.close
+    );
+
+  const directionalFollowThrough =
+    closesBeyond(
+      trigger,
+      previous
+    );
+
+  const previousCounterMove =
+    normalizedDirection === "BUY"
+      ? (
+          previous.close <
+            previous.open ||
+          previous.close <
+            twoBack.close
+        )
+      : (
+          previous.close >
+            previous.open ||
+          previous.close >
+            twoBack.close
+        );
+
+  const pullbackResumptionConfirmed =
+    previousCounterMove &&
+    directionalFollowThrough;
+
+  const directMomentumEvidence =
+    freshBreakoutConfirmed ||
+    (
+      directionalFollowThrough &&
+      !pullbackResumptionConfirmed
+    ) ||
+    engulfingConfirmed;
+
+  const blockedMomentumByVolatility =
+    executionAtr.regime ===
+      "EXTREME" &&
+    directMomentumEvidence &&
+    !pullbackResumptionConfirmed &&
+    !structureRejectionConfirmed;
+
+  let entryModel = null;
+  let triggerLevel = null;
+
+  if (pullbackResumptionConfirmed) {
+    entryModel =
+      "PULLBACK_RESUMPTION_CONFIRMATION";
+    triggerLevel =
+      isFiniteNumber(structureLevel)
+        ? structureLevel
+        : previous.low;
+  } else if (structureRejectionConfirmed) {
+    entryModel =
+      "STRUCTURE_REJECTION_CONFIRMATION";
+    triggerLevel =
+      structureLevel;
+  } else if (
+    engulfingConfirmed &&
+    !blockedMomentumByVolatility
+  ) {
+    entryModel =
+      "ENGULFING_CONFIRMATION";
+    triggerLevel =
+      previous.close;
+  } else if (
+    freshBreakoutConfirmed &&
+    !blockedMomentumByVolatility
+  ) {
+    entryModel =
+      "FRESH_BREAKOUT_CONFIRMATION";
+    triggerLevel =
+      breakoutLevel;
+  } else if (
+    directionalFollowThrough &&
+    !blockedMomentumByVolatility
+  ) {
+    entryModel =
+      "DIRECTIONAL_FOLLOW_THROUGH";
+    triggerLevel =
+      normalizedDirection === "BUY"
+        ? previous.high
+        : previous.low;
+  }
+
+  if (!entryModel) {
+    return {
+      valid: false,
+      waiting: true,
+      reason:
+        blockedMomentumByVolatility
+          ? "Qualified setup is waiting for an M5 pullback or structure rejection because direct momentum entry is blocked in EXTREME volatility"
+          : "Qualified setup is waiting for closed-M5 pullback resumption, structure rejection, engulfing, breakout, or directional follow-through confirmation",
+      entryModel: null,
+      tradePlan: null,
+      diagnostics: {
+        setupMode,
+        executionTimeframe:
+          normalizedExecutionTimeframe,
+        executionCandleAt:
+          trigger.date ?? null,
+        executionAtr:
+          executionAtr.atr,
+        executionAtrRegime:
+          executionAtr.regime,
+        blockedMomentumByVolatility,
+        evidence: {
+          pullbackResumptionConfirmed,
+          structureRejectionConfirmed,
+          engulfingConfirmed,
+          freshBreakoutConfirmed,
+          directionalFollowThrough
+        },
+        structureLevel,
+        breakoutLevel
+      }
+    };
+  }
+
+  const entry =
+    trigger.close;
+
+  const executionStructure =
+    computeMarketStructure(rows);
+
+  const executionSupportResistance =
+    computeSupportResistance(rows);
+
+  /*
+   * Execution-aware risk input:
+   * - Protective-side structure comes from M5 execution data so the stop is
+   *   not widened by setup-timeframe ATR/structure.
+   * - Opposing-side room remains anchored to the setup timeframe so normal
+   *   M5 micro swing noise does not become a new hard blocker for M15/M30.
+   *
+   * BUY uses M5 supports for stop structure and setup resistances for room.
+   * SELL uses M5 resistances for stop structure and setup supports for room.
+   */
+  const executionRiskSupportResistance =
+    normalizedDirection === "BUY"
+      ? {
+          supports:
+            executionSupportResistance
+              .supports || [],
+          resistances:
+            Array.isArray(
+              setupSupportResistance
+                ?.resistances
+            )
+              ? setupSupportResistance
+                  .resistances
+              : executionSupportResistance
+                  .resistances || []
+        }
+      : {
+          supports:
+            Array.isArray(
+              setupSupportResistance
+                ?.supports
+            )
+              ? setupSupportResistance
+                  .supports
+              : executionSupportResistance
+                  .supports || [],
+          resistances:
+            executionSupportResistance
+              .resistances || []
+        };
+
+  /*
+   * Reuse the existing professional risk engine with M5 ATR and M5
+   * protective structure. No new stop multiplier or risk threshold is added.
+   */
+  const basePlanResult =
+    buildProfessionalTradePlan({
+      direction:
+        normalizedDirection,
+      entry,
+      pairLabel,
+      mode:
+        normalizedExecutionTimeframe,
+      atrSnapshot:
+        executionAtr,
+      supportResistance:
+        executionRiskSupportResistance,
+      structure:
+        executionStructure
+    });
+
+  if (!basePlanResult.valid) {
+    return {
+      valid: false,
+      waiting: false,
+      reason:
+        basePlanResult.reason ||
+        "Execution-timeframe risk plan is invalid",
+      entryModel,
+      tradePlan: null,
+      diagnostics: {
+        ...(basePlanResult.diagnostics || {}),
+        setupMode,
+        executionTimeframe:
+          normalizedExecutionTimeframe,
+        entryModel,
+        triggerLevel,
+        executionAtr:
+          executionAtr.atr,
+        executionAtrRegime:
+          executionAtr.regime
+      }
+    };
+  }
+
+  const plan = {
+    ...basePlanResult.plan
+  };
+
+  const riskDistance =
+    Math.abs(
+      plan.entry -
+      plan.stopLoss
+    );
+
+  const minimumRiskReward =
+    modeConfluenceConfig(
+      normalizedExecutionTimeframe
+    ).minimumRiskReward;
+
+  const priceDecimals =
+    normalizePairKey(pairLabel) ===
+      "XAUUSD"
+      ? 2
+      : normalizePairKey(pairLabel) ===
+        "GBPJPY"
+      ? 3
+      : 6;
+
+  const minimumIncrement =
+    minimumPriceIncrement(
+      pairLabel
+    );
+
+  function collectLevels({
+    includeExecution,
+    includeSetup
+  }) {
+    const levels = [];
+
+    function add(value) {
+      if (!isFiniteNumber(value)) {
+        return;
+      }
+
+      const isOpposing =
+        normalizedDirection ===
+          "BUY"
+          ? value > plan.entry
+          : value < plan.entry;
+
+      if (isOpposing) {
+        levels.push(value);
+      }
+    }
+
+    if (includeExecution) {
+      const executionOpposing =
+        normalizedDirection ===
+          "BUY"
+          ? executionSupportResistance
+              .resistances || []
+          : executionSupportResistance
+              .supports || [];
+
+      for (const value of executionOpposing) {
+        add(value);
+      }
+
+      if (
+        normalizedDirection ===
+        "BUY"
+      ) {
+        add(
+          executionStructure
+            ?.latestHigh?.price
+        );
+        add(
+          executionStructure
+            ?.previousHigh?.price
+        );
+      } else {
+        add(
+          executionStructure
+            ?.latestLow?.price
+        );
+        add(
+          executionStructure
+            ?.previousLow?.price
+        );
+      }
+    }
+
+    if (includeSetup) {
+      const setupOpposing =
+        normalizedDirection ===
+          "BUY"
+          ? setupSupportResistance
+              ?.resistances || []
+          : setupSupportResistance
+              ?.supports || [];
+
+      for (const value of setupOpposing) {
+        add(value);
+      }
+
+      if (
+        normalizedDirection ===
+        "BUY"
+      ) {
+        add(
+          setupStructure
+            ?.latestHigh?.price
+        );
+        add(
+          setupStructure
+            ?.previousHigh?.price
+        );
+      } else {
+        add(
+          setupStructure
+            ?.latestLow?.price
+        );
+        add(
+          setupStructure
+            ?.previousLow?.price
+        );
+      }
+    }
+
+    const unique =
+      Array.from(
+        new Set(
+          levels.map(
+            value =>
+              round(
+                value,
+                priceDecimals
+              )
+          )
+        )
+      ).filter(isFiniteNumber);
+
+    return unique.sort(
+      normalizedDirection ===
+        "BUY"
+        ? (a, b) => a - b
+        : (a, b) => b - a
+    );
+  }
+
+  /*
+   * Setup-timeframe opposing structure is the hard room gate. This preserves
+   * the setup's own market context instead of allowing every M5 micro swing to
+   * invalidate an otherwise qualified M15/M30 trade.
+   */
+  const hardOpposingLevels =
+    collectLevels({
+      includeExecution: false,
+      includeSetup: true
+    });
+
+  /*
+   * M5 + setup levels remain useful as soft target references beyond TP1, so
+   * TP2/TP3 can be shortened to realistic structure without creating a new
+   * pre-TP1 hard blocker.
+   */
+  const targetOpposingLevels =
+    collectLevels({
+      includeExecution: true,
+      includeSetup: true
+    });
+
+  const opposingLevels =
+    targetOpposingLevels;
+
+  const nearestOpposingLevel =
+    hardOpposingLevels.length > 0
+      ? hardOpposingLevels[0]
+      : null;
+
+  const nearestOpposingRoomR =
+    isFiniteNumber(
+      nearestOpposingLevel
+    ) &&
+    isFiniteNumber(
+      riskDistance
+    ) &&
+    riskDistance > 0
+      ? (
+          normalizedDirection ===
+            "BUY"
+            ? nearestOpposingLevel -
+              plan.entry
+            : plan.entry -
+              nearestOpposingLevel
+        ) /
+        riskDistance
+      : null;
+
+  if (
+    isFiniteNumber(
+      nearestOpposingRoomR
+    ) &&
+    nearestOpposingRoomR <
+      minimumRiskReward
+  ) {
+    return {
+      valid: false,
+      waiting: false,
+      reason:
+        `Setup-timeframe opposing structure provides only ${round(nearestOpposingRoomR, 2)}R room; ${minimumRiskReward}R is required`,
+      entryModel,
+      tradePlan: null,
+      diagnostics: {
+        ...(basePlanResult.diagnostics || {}),
+        setupMode,
+        executionTimeframe:
+          normalizedExecutionTimeframe,
+        entryModel,
+        triggerLevel,
+        nearestOpposingLevel,
+        nearestOpposingRoomR,
+        executionAtr:
+          executionAtr.atr,
+        executionAtrRegime:
+          executionAtr.regime
+      }
+    };
+  }
+
+  function bufferedTargetAtLevel(
+    level
+  ) {
+    if (!isFiniteNumber(level)) {
+      return null;
+    }
+
+    return round(
+      normalizedDirection ===
+        "BUY"
+        ? level -
+          structureBuffer
+        : level +
+          structureBuffer,
+      priceDecimals
+    );
+  }
+
+  function isBeyond(
+    value,
+    reference
+  ) {
+    if (
+      !isFiniteNumber(value) ||
+      !isFiniteNumber(reference)
+    ) {
+      return false;
+    }
+
+    return normalizedDirection ===
+      "BUY"
+      ? value >
+        reference +
+        minimumIncrement
+      : value <
+        reference -
+        minimumIncrement;
+  }
+
+  function closerToEntry(
+    baseTarget,
+    structuralTarget
+  ) {
+    if (
+      !isFiniteNumber(
+        structuralTarget
+      )
+    ) {
+      return baseTarget;
+    }
+
+    return normalizedDirection ===
+      "BUY"
+      ? Math.min(
+          baseTarget,
+          structuralTarget
+        )
+      : Math.max(
+          baseTarget,
+          structuralTarget
+        );
+  }
+
+  const baseTarget1 =
+    plan.target1;
+
+  const baseTarget2 =
+    plan.target2;
+
+  const baseTarget3 =
+    plan.target3;
+
+  let target2 =
+    baseTarget2;
+
+  let target3 =
+    baseTarget3;
+
+  const target2Level =
+    opposingLevels.find(
+      level => {
+        const target =
+          bufferedTargetAtLevel(
+            level
+          );
+
+        return isBeyond(
+          target,
+          baseTarget1
+        );
+      }
+    ) ?? null;
+
+  if (
+    isFiniteNumber(target2Level)
+  ) {
+    const structuralTarget2 =
+      bufferedTargetAtLevel(
+        target2Level
+      );
+
+    const candidateTarget2 =
+      closerToEntry(
+        baseTarget2,
+        structuralTarget2
+      );
+
+    if (
+      isBeyond(
+        candidateTarget2,
+        baseTarget1
+      )
+    ) {
+      target2 =
+        round(
+          candidateTarget2,
+          priceDecimals
+        );
+    }
+  }
+
+  const target3Level =
+    opposingLevels.find(
+      level => {
+        const target =
+          bufferedTargetAtLevel(
+            level
+          );
+
+        return isBeyond(
+          target,
+          target2
+        );
+      }
+    ) ?? null;
+
+  if (
+    isFiniteNumber(target3Level)
+  ) {
+    const structuralTarget3 =
+      bufferedTargetAtLevel(
+        target3Level
+      );
+
+    const candidateTarget3 =
+      closerToEntry(
+        baseTarget3,
+        structuralTarget3
+      );
+
+    if (
+      isBeyond(
+        candidateTarget3,
+        target2
+      )
+    ) {
+      target3 =
+        round(
+          candidateTarget3,
+          priceDecimals
+        );
+    }
+  }
+
+  const geometryValid =
+    normalizedDirection ===
+      "BUY"
+      ? (
+          plan.stopLoss <
+            plan.entry &&
+          plan.entry <
+            baseTarget1 &&
+          baseTarget1 <
+            target2 &&
+          target2 <
+            target3
+        )
+      : (
+          target3 <
+            target2 &&
+          target2 <
+            baseTarget1 &&
+          baseTarget1 <
+            plan.entry &&
+          plan.entry <
+            plan.stopLoss
+        );
+
+  if (!geometryValid) {
+    return {
+      valid: false,
+      waiting: false,
+      reason:
+        "Execution-aware structure targets produced invalid trade-plan geometry",
+      entryModel,
+      tradePlan: null,
+      diagnostics: {
+        ...(basePlanResult.diagnostics || {}),
+        setupMode,
+        executionTimeframe:
+          normalizedExecutionTimeframe,
+        entryModel,
+        triggerLevel,
+        opposingLevels,
+        target2Level,
+        target3Level,
+        executionAtr:
+          executionAtr.atr,
+        executionAtrRegime:
+          executionAtr.regime
+      }
+    };
+  }
+
+  plan.target2 =
+    target2;
+
+  plan.target3 =
+    target3;
+
+  plan.opposingLevel =
+    isFiniteNumber(
+      nearestOpposingLevel
+    )
+      ? round(
+          nearestOpposingLevel,
+          priceDecimals
+        )
+      : plan.opposingLevel;
+
+  plan.roomToOpposingLevelR =
+    isFiniteNumber(
+      nearestOpposingRoomR
+    )
+      ? round(
+          nearestOpposingRoomR,
+          4
+        )
+      : plan
+          .roomToOpposingLevelR;
+
+  plan.targetAtrMultipliers = {
+    target1:
+      round(
+        Math.abs(
+          baseTarget1 -
+          plan.entry
+        ) /
+        executionAtr.atr,
+        4
+      ),
+    target2:
+      round(
+        Math.abs(
+          target2 -
+          plan.entry
+        ) /
+        executionAtr.atr,
+        4
+      ),
+    target3:
+      round(
+        Math.abs(
+          target3 -
+          plan.entry
+        ) /
+        executionAtr.atr,
+        4
+      )
+  };
+
+  return {
+    valid: true,
+    waiting: false,
+    reason: null,
+    entryModel,
+    tradePlan:
+      plan,
+    diagnostics: {
+      ...(basePlanResult.diagnostics || {}),
+      setupMode,
+      executionTimeframe:
+        normalizedExecutionTimeframe,
+      entryModel,
+      triggerLevel:
+        isFiniteNumber(triggerLevel)
+          ? round(
+              triggerLevel,
+              priceDecimals
+            )
+          : null,
+      executionCandleAt:
+        trigger.date ?? null,
+      executionAtr:
+        executionAtr.atr,
+      executionAtrRegime:
+        executionAtr.regime,
+      setupStructureLevel:
+        normalizedDirection ===
+          "BUY"
+          ? setupStructure
+              ?.latestLow?.price ??
+            null
+          : setupStructure
+              ?.latestHigh?.price ??
+            null,
+      nearestOpposingLevel,
+      nearestOpposingRoomR,
+      opposingLevels,
+      target2Level,
+      target3Level
+    }
+  };
+}
+
+/* =====================================================================
    Main Analysis Engine
    ===================================================================== */
 
@@ -4743,56 +5978,103 @@ function analyze(
   }
 
   /*
-   * Preserve the setup calculation on its own mode while executing the
-   * qualified trade from the latest fully closed execution candle. The
-   * worker passes the normalized M5 rows here for M15 and M30 setups.
-   * Direct analyze() callers that omit executionRows retain the original
-   * same-timeframe entry behavior.
+   * Additive professional execution/risk authority.
+   * Existing setup direction remains immutable; this layer only decides
+   * whether the current execution candle is a professional entry and, when
+   * it is, rebuilds SL/TP from execution-timeframe structure and ATR.
    */
-  const entry =
-    lastClose(
-      executionRows
-    );
-
-  const tradePlanResult =
-    buildProfessionalTradePlan({
+  const executionLayer =
+    evaluateProfessionalExecutionRiskLayer({
       direction,
-      entry,
+      executionRows,
+      executionTimeframe,
       pairLabel,
-      mode,
-      atrSnapshot: atr,
-      supportResistance,
-      structure
+      setupMode:
+        mode,
+      setupSupportResistance:
+        supportResistance,
+      setupStructure:
+        structure,
+      setupHigherTimeframe:
+        higherTimeframe,
+      previousSignal:
+        context.previousSignal ??
+        null
     });
 
+  const activeSignalContinuation =
+    executionLayer.entryModel ===
+    "ACTIVE_SIGNAL_CONTINUATION";
+
+  if (
+    activeSignalContinuation &&
+    typeof context
+      .previousSignal
+      ?.executionCandleAt ===
+      "string"
+  ) {
+    result.executionCandleAt =
+      context
+        .previousSignal
+        .executionCandleAt;
+  }
+
   result.riskDiagnostics =
-    tradePlanResult.diagnostics ??
+    executionLayer.diagnostics ??
     {
       reason:
-        tradePlanResult.reason
+        executionLayer.reason
     };
 
   result.steps.push({
-    name: "Risk Reward",
+    name:
+      "M5 Entry Execution",
     pass:
-      tradePlanResult.valid,
+      executionLayer.valid,
     status:
-      tradePlanResult.valid
+      executionLayer.valid
         ? "pass"
+        : executionLayer.waiting
+        ? "info"
         : "fail",
     detail:
-      tradePlanResult.valid
-        ? `Professional ATR-regime plan passed: ${tradePlanResult.plan.riskReward}R target, ${tradePlanResult.plan.stopAtrMultiplier} ATR stop, regime ${tradePlanResult.plan.atrRegime}`
-        : `Trade plan rejected: ${tradePlanResult.reason}`
+      executionLayer.valid
+        ? activeSignalContinuation
+          ? "Existing active signal remains qualified; original M5 entry and trade plan are preserved"
+          : `${executionLayer.entryModel} confirmed on ${executionTimeframe}; execution-aware SL/TP passed`
+        : executionLayer.reason
   });
 
-  if (!tradePlanResult.valid) {
+  if (!executionLayer.valid) {
+    result.reason =
+      executionLayer.reason;
+
     result.reasons.push(
-      tradePlanResult.reason ||
-      "Risk plan invalid"
+      executionLayer.reason ||
+      "Professional execution layer did not qualify the entry"
     );
+
     return result;
   }
+
+  const tradePlanResult = {
+    valid: true,
+    reason: null,
+    plan:
+      executionLayer.tradePlan,
+    diagnostics:
+      executionLayer.diagnostics
+  };
+
+  result.steps.push({
+    name: "Risk Reward",
+    pass: true,
+    status: "pass",
+    detail:
+      activeSignalContinuation
+        ? `Existing active trade plan preserved at ${tradePlanResult.plan.riskReward}R TP1; no new entry/SL/TP generated`
+        : `Execution-aware plan passed: ${tradePlanResult.plan.riskReward}R TP1, ${tradePlanResult.plan.stopAtrMultiplier} ATR stop on ${executionTimeframe}, regime ${tradePlanResult.plan.atrRegime}`
+  });
 
   result.steps.push({
     name: "Confluence Decision",
@@ -5722,6 +7004,15 @@ function run() {
               scalp.rows,
             executionTimeframe:
               "M5",
+            previousSignal:
+              findPreviousSnapshotSignal(
+                previousSnapshot,
+                {
+                  pair:
+                    pair.label,
+                  mode
+                }
+              ),
             dataQuality:
               mode === "M5"
                 ? prepared.quality.m5

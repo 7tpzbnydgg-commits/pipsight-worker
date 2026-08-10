@@ -10525,7 +10525,9 @@ function applyLiveHigherTimeframeConfirmation(
   const higherDirection =
     higherDecision !== "HOLD"
       ? higherDecision
-      : higherRawDirection;
+      : options.requireQualifiedHigherDecision === true
+        ? "HOLD"
+        : higherRawDirection;
   const higherWinningScore =
     candleNumber(
       higher.confluence &&
@@ -10914,6 +10916,7 @@ function runLegacyCompatibleAnalysisPipeline(
           dailyAnalysis,
           {
             higherTimeframe: "D1",
+            requireQualifiedHigherDecision: true,
           }
         )
       : intradayBase;
@@ -13017,6 +13020,391 @@ function buildMasterConsensus(input = {}) {
 
 
 // ---------------------------------------------------------------------------
+// Stateful Intraday H1 professional execution
+// ---------------------------------------------------------------------------
+// Existing H1 confluence remains the direction authority. This layer adds only
+// fresh closed-H1 execution confirmation, one-campaign-per-pair protection and
+// an exact-context AI Memory CAUTION veto using the existing sample/reliability
+// thresholds. It does not invent direction, SL/TP or new numeric thresholds.
+const INTRADAY_PROFESSIONAL_EXECUTION_VERSION =
+  "stateful-h1-execution-3.0.0";
+
+function findActiveIntradayCampaigns(rawHistory, pair, rawH1Rows) {
+  const records = liveAsArray(
+    liveIsPlainObject(rawHistory)
+      ? rawHistory.records
+      : []
+  ).filter(liveIsPlainObject);
+  const pairKey = liveCompactPair(pair);
+  const h1Rows = professionalLiveClosedRows(
+    Array.isArray(rawH1Rows) ? rawH1Rows : [],
+    "H1",
+    Date.now()
+  ).rows;
+  const resolved = new Set();
+
+  const outcomeOf = (record) => {
+    const value = liveNonEmptyString(
+      record?.outcome ?? record?.result ?? record?.resolution?.outcome,
+      ""
+    ).toUpperCase();
+    return ["WIN", "LOSS", "BREAKEVEN"].includes(value) ? value : null;
+  };
+
+  const openedAtOf = (record) => {
+    for (const value of [
+      record?.analyzedCandleAt,
+      record?.snapshot?.analyzedCandleAt,
+      record?.signalTimestamp,
+      record?.signalTime,
+      record?.openedAt,
+      record?.snapshot?.signalTimestamp,
+      record?.snapshot?.signalTime,
+      record?.timestamp,
+      record?.time,
+      record?.createdAt,
+      record?.recordedAt,
+    ]) {
+      const timestamp = liveStableTimestamp(value, null);
+      if (Number.isFinite(timestamp)) return timestamp;
+    }
+    return null;
+  };
+
+  const planOf = (record) => {
+    const direction = normalizeLiveDecision(
+      record?.direction ?? record?.decision ?? record?.signal ?? record?.action
+    );
+    const entry = liveFiniteNumber(
+      record?.entry ?? record?.entryPrice ?? record?.tradePlan?.entry ??
+      record?.snapshot?.entry ?? record?.snapshot?.tradePlan?.entry,
+      null
+    );
+    const stopLoss = liveFiniteNumber(
+      record?.stopLoss ?? record?.stop ?? record?.sl ??
+      record?.tradePlan?.stopLoss ?? record?.tradePlan?.stop ??
+      record?.snapshot?.stopLoss ?? record?.snapshot?.stop,
+      null
+    );
+    const target1 = liveFiniteNumber(
+      record?.target1 ?? record?.takeProfit1 ?? record?.tp1 ?? record?.target ??
+      record?.tradePlan?.target1 ?? record?.snapshot?.target1,
+      null
+    );
+    const valid = [entry, stopLoss, target1].every(Number.isFinite) &&
+      (direction === "BUY"
+        ? stopLoss < entry && entry < target1
+        : direction === "SELL" && target1 < entry && entry < stopLoss);
+    return { direction, entry, stopLoss, target1, valid };
+  };
+
+  for (const record of records) {
+    const status = liveNonEmptyString(record?.status, "").toLowerCase();
+    if (outcomeOf(record) || ["closed", "resolved", "complete", "completed"].includes(status)) {
+      const identity = liveHistorySetupIdentity(record);
+      if (identity) resolved.add(identity);
+    }
+  }
+
+  const campaigns = new Map();
+  for (const record of records) {
+    const status = liveNonEmptyString(record?.status, "").toLowerCase();
+    const engine = liveNonEmptyString(
+      record?.engine ?? record?.engineName ?? record?.mode,
+      ""
+    ).toLowerCase().replace(/[^a-z0-9]/g, "");
+    const recordPair = liveCompactPair(
+      record?.pair ?? record?.symbol ?? record?.pairLabel ?? record?.snapshot?.pair
+    );
+    const plan = planOf(record);
+    const identity = liveHistorySetupIdentity(record) || liveNonEmptyString(record?.id, "");
+
+    if (
+      recordPair !== pairKey ||
+      !["intraday", "h1", "daytrade", "daytrading"].includes(engine) ||
+      outcomeOf(record) ||
+      ["closed", "resolved", "complete", "completed", "hold", "invalid", "rejected", "error"].includes(status) ||
+      (plan.direction !== "BUY" && plan.direction !== "SELL") ||
+      !identity || resolved.has(identity) || campaigns.has(identity)
+    ) {
+      continue;
+    }
+
+    const openedAt = openedAtOf(record);
+    let pathResolved = false;
+    if (plan.valid && Number.isFinite(openedAt)) {
+      for (const candle of h1Rows) {
+        if (!Number.isFinite(candle?.timestamp) || candle.timestamp <= openedAt) continue;
+        const stopTouched = plan.direction === "BUY"
+          ? candle.low <= plan.stopLoss
+          : candle.high >= plan.stopLoss;
+        const targetTouched = plan.direction === "BUY"
+          ? candle.high >= plan.target1
+          : candle.low <= plan.target1;
+        if (stopTouched || targetTouched) {
+          pathResolved = true;
+          break;
+        }
+      }
+    }
+    if (pathResolved) continue;
+
+    campaigns.set(identity, {
+      identity,
+      recordId: liveNonEmptyString(record?.id, "") || null,
+      direction: plan.direction,
+      openedAt: Number.isFinite(openedAt) ? new Date(openedAt).toISOString() : null,
+      planUsable: plan.valid,
+      entry: plan.entry,
+      stopLoss: plan.stopLoss,
+      target1: plan.target1,
+    });
+  }
+
+  return Array.from(campaigns.values()).sort(
+    (a, b) => liveStableTimestamp(a.openedAt, 0) - liveStableTimestamp(b.openedAt, 0)
+  );
+}
+
+function evaluateProfessionalIntradayH1Execution(direction, rawRows) {
+  const normalizedDirection = normalizeLiveDecision(direction);
+  const rows = professionalLiveClosedRows(
+    Array.isArray(rawRows) ? rawRows : [],
+    "H1",
+    Date.now()
+  ).rows;
+
+  if ((normalizedDirection !== "BUY" && normalizedDirection !== "SELL") || rows.length < 3) {
+    return {
+      valid: false,
+      reason: "Fresh Intraday execution requires a qualified direction and at least three fully closed H1 candles",
+      diagnostics: { direction: normalizedDirection, closedH1Rows: rows.length },
+    };
+  }
+
+  const trigger = rows[rows.length - 1];
+  const previous = rows[rows.length - 2];
+  const twoBack = rows[rows.length - 3];
+  const directionalBody = (candle) => normalizedDirection === "BUY"
+    ? candle.close > candle.open
+    : candle.close < candle.open;
+  const followThrough = directionalBody(trigger) && (normalizedDirection === "BUY"
+    ? trigger.close > previous.high
+    : trigger.close < previous.low);
+  const previousCounterMove = normalizedDirection === "BUY"
+    ? previous.close < previous.open || previous.close < twoBack.close
+    : previous.close > previous.open || previous.close > twoBack.close;
+  const pullbackResumption = previousCounterMove && followThrough;
+
+  const structureLevel = professionalLiveRecentStructureLevel(
+    rows.slice(0, -1),
+    normalizedDirection
+  );
+  const structureRejection = Number.isFinite(structureLevel) && directionalBody(trigger) &&
+    (normalizedDirection === "BUY"
+      ? trigger.low <= structureLevel && trigger.close >= structureLevel
+      : trigger.high >= structureLevel && trigger.close <= structureLevel);
+
+  const engulfing = normalizedDirection === "BUY"
+    ? previous.close < previous.open && trigger.close > trigger.open &&
+      trigger.open <= previous.close && trigger.close >= previous.open
+    : previous.close > previous.open && trigger.close < trigger.open &&
+      trigger.open >= previous.close && trigger.close <= previous.open;
+
+  const swings = professionalLiveConfirmedSwingLevels(rows.slice(0, -2));
+  const crossedLevels = normalizedDirection === "BUY"
+    ? swings.highs.filter(level => twoBack.close <= level && previous.close > level)
+    : swings.lows.filter(level => twoBack.close >= level && previous.close < level);
+  const breakoutLevel = crossedLevels.length
+    ? normalizedDirection === "BUY" ? Math.max(...crossedLevels) : Math.min(...crossedLevels)
+    : null;
+  const breakoutRetest = Number.isFinite(breakoutLevel) && directionalBody(previous) &&
+    directionalBody(trigger) && (normalizedDirection === "BUY"
+      ? trigger.low <= breakoutLevel && trigger.close >= breakoutLevel
+      : trigger.high >= breakoutLevel && trigger.close <= breakoutLevel);
+
+  let entryModel = null;
+  let triggerLevel = null;
+  if (breakoutRetest) {
+    entryModel = "BREAKOUT_RETEST_CONFIRMATION";
+    triggerLevel = breakoutLevel;
+  } else if (pullbackResumption) {
+    entryModel = "PULLBACK_RESUMPTION_CONFIRMATION";
+    triggerLevel = normalizedDirection === "BUY" ? previous.high : previous.low;
+  } else if (structureRejection) {
+    entryModel = "STRUCTURE_REJECTION_CONFIRMATION";
+    triggerLevel = structureLevel;
+  } else if (engulfing) {
+    entryModel = "ENGULFING_CONFIRMATION";
+    triggerLevel = previous.close;
+  }
+
+  const diagnostics = {
+    direction: normalizedDirection,
+    executionCandleAt: trigger.time ?? trigger.date ?? new Date(trigger.timestamp).toISOString(),
+    entryModel,
+    triggerLevel,
+    structureLevel,
+    breakoutLevel,
+    evidence: { breakoutRetest, pullbackResumption, structureRejection, engulfing },
+  };
+
+  return entryModel
+    ? { valid: true, reason: null, diagnostics }
+    : {
+        valid: false,
+        reason: "Qualified Intraday direction is waiting for closed-H1 pullback resumption, structure rejection, engulfing, or breakout-retest confirmation",
+        diagnostics,
+      };
+}
+
+function evaluateIntradayAIMemoryExecutionGate(assessment) {
+  const memory = liveIsPlainObject(assessment) ? assessment : {};
+  const sampleSize = liveFiniteNumber(memory.sampleSize, 0);
+  const reliability = liveFiniteNumber(memory.reliability, 0);
+  const eligible =
+    memory.available === true &&
+    memory.valid === true &&
+    memory.matchedBy === "pairEngineDirection" &&
+    sampleSize >= AI_MEMORY_INTEGRATION.minimumSamplesToApply &&
+    reliability >= AI_MEMORY_INTEGRATION.minimumReliabilityToApply;
+  const blocked = eligible && memory.status === "CAUTION";
+
+  return {
+    blocked,
+    eligible,
+    status: memory.status || "UNAVAILABLE",
+    matchedBy: memory.matchedBy || null,
+    matchedKey: memory.matchedKey || null,
+    sampleSize,
+    reliability,
+  };
+}
+
+function buildIntradayExecutionHold(source, reason, diagnostics, stepStatus = "fail") {
+  const steps = liveAsArray(source.steps);
+  const step = livePipelineStep(
+    "Professional H1 Execution",
+    stepStatus,
+    reason,
+    diagnostics
+  );
+
+  return {
+    ...source,
+    decision: "HOLD",
+    signal: "HOLD",
+    action: "HOLD",
+    direction: "HOLD",
+    confidence: 0,
+    tradePlan: null,
+    plan: null,
+    entry: null,
+    stop: null,
+    stopLoss: null,
+    target1: null,
+    target2: null,
+    target3: null,
+    tp1: null,
+    tp2: null,
+    tp3: null,
+    riskReward: null,
+    rr: null,
+    reason,
+    steps: [...steps, step],
+    pipeline: [...steps, step],
+    confluence: {
+      ...(liveIsPlainObject(source.confluence) ? source.confluence : {}),
+      qualified: false,
+      selectedDirection: "HOLD",
+    },
+    intradayExecution: {
+      version: INTRADAY_PROFESSIONAL_EXECUTION_VERSION,
+      qualified: false,
+      ...diagnostics,
+      reason,
+    },
+  };
+}
+
+function applyProfessionalIntradayExecutionGate(engineResult, context = {}) {
+  if (!liveIsPlainObject(engineResult)) return engineResult;
+  const direction = normalizeLiveDecision(
+    engineResult.decision ?? engineResult.signal ?? engineResult.direction
+  );
+  if (direction !== "BUY" && direction !== "SELL") return engineResult;
+
+  const campaigns = findActiveIntradayCampaigns(
+    context.analysisHistory,
+    context.pair,
+    context.h1Rows
+  );
+  if (campaigns.length) {
+    return buildIntradayExecutionHold(
+      engineResult,
+      `Existing unresolved Intraday campaign blocks a fresh ${direction} entry`,
+      {
+        status: "ACTIVE_CAMPAIGN_LOCK",
+        activeCampaignCount: campaigns.length,
+        activeCampaign: campaigns[0],
+        legacyStackedCampaigns: Math.max(0, campaigns.length - 1),
+      },
+      "info"
+    );
+  }
+
+  const execution = evaluateProfessionalIntradayH1Execution(direction, context.h1Rows);
+  if (!execution.valid) {
+    return buildIntradayExecutionHold(
+      engineResult,
+      execution.reason,
+      { status: "WAITING_FOR_FRESH_EXECUTION", ...execution.diagnostics }
+    );
+  }
+
+  const aiGate = evaluateIntradayAIMemoryExecutionGate(context.aiMemoryAssessment);
+  if (aiGate.blocked) {
+    return buildIntradayExecutionHold(
+      engineResult,
+      "Exact Intraday pair/direction AI Memory is CAUTION with sufficient existing sample and reliability; fresh entry blocked",
+      {
+        status: "AI_MEMORY_CAUTION_BLOCK",
+        ...execution.diagnostics,
+        aiMemoryGate: aiGate,
+      }
+    );
+  }
+
+  const steps = liveAsArray(engineResult.steps);
+  const step = livePipelineStep(
+    "Professional H1 Execution",
+    "pass",
+    `${execution.diagnostics.entryModel} qualified; no unresolved Intraday campaign exists`,
+    {
+      version: INTRADAY_PROFESSIONAL_EXECUTION_VERSION,
+      ...execution.diagnostics,
+      activeCampaignCount: 0,
+      aiMemoryGate: aiGate,
+    }
+  );
+
+  return {
+    ...engineResult,
+    steps: [...steps, step],
+    pipeline: [...steps, step],
+    intradayExecution: {
+      version: INTRADAY_PROFESSIONAL_EXECUTION_VERSION,
+      qualified: true,
+      status: "FRESH_EXECUTION_QUALIFIED",
+      ...execution.diagnostics,
+      activeCampaignCount: 0,
+      aiMemoryGate: aiGate,
+    },
+  };
+}
+
+
+// ---------------------------------------------------------------------------
 // Per-pair engine bundle
 // ---------------------------------------------------------------------------
 function attachAIMemoryAssessment(
@@ -13124,7 +13512,7 @@ function buildPairEngineBundle(
         pipeline,
     });
 
-  const baseIntraday =
+  const selectedBaseIntraday =
     selectIntradayEngineResult({
       pair,
 
@@ -13135,6 +13523,38 @@ function buildPairEngineBundle(
       analysisPipeline:
         pipeline,
     });
+
+  const intradayAIMemoryAssessment =
+    createAIMemoryAssessment(
+      aiMemoryState,
+      {
+        pair,
+        engine: "daily",
+        mode: "intraday",
+        direction:
+          selectedBaseIntraday.decision ||
+          selectedBaseIntraday.signal ||
+          selectedBaseIntraday.direction,
+        timeframe: "1H",
+      }
+    );
+
+  const baseIntraday =
+    applyProfessionalIntradayExecutionGate(
+      selectedBaseIntraday,
+      {
+        pair,
+        h1Rows:
+          input.h1Rows ||
+          input.intradayRows ||
+          [],
+        analysisHistory:
+          input.analysisHistory ||
+          null,
+        aiMemoryAssessment:
+          intradayAIMemoryAssessment,
+      }
+    );
 
   const selectedBaseScalp =
     selectScalpEngineResult({
@@ -13243,15 +13663,9 @@ function buildPairEngineBundle(
     );
 
   const intraday =
-    attachAIMemoryAssessment(
+    applyAIMemoryConfidenceAdjustment(
       baseIntraday,
-      aiMemoryState,
-      {
-        pair,
-        engine: "daily",
-        mode: "intraday",
-        timeframe: "1H",
-      }
+      intradayAIMemoryAssessment
     );
 
   const scalp =
@@ -18616,6 +19030,9 @@ function p6BuildPairInput(
 
     dailyRows,
     dailyCandles: dailyRows,
+
+    analysisHistory:
+      sources.analysisHistory,
 
     includeActiveCandle:
       runtimeOptions

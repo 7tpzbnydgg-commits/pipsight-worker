@@ -14283,6 +14283,297 @@ function appendAnalysisHistoryRecords(
 }
 
 
+
+// ---------------------------------------------------------------------------
+// Dashboard Intraday / Swing history projection
+// ---------------------------------------------------------------------------
+function buildDashboardHistoryTracker(rawHistory) {
+  const history = liveIsPlainObject(rawHistory) ? rawHistory : {};
+  const records = liveAsArray(history.records).filter(liveIsPlainObject);
+  const closed = liveAsArray(history.closed).filter(liveIsPlainObject);
+  const pairs = ["XAUUSD", "GBPJPY"];
+  const engines = ["intraday", "swing"];
+
+  const pairOf = (record) => {
+    const pair = liveCompactPair(
+      record?.pair ??
+      record?.symbol ??
+      record?.pairLabel ??
+      record?.snapshot?.pair ??
+      record?.snapshot?.symbol
+    );
+    return pairs.includes(pair) ? pair : null;
+  };
+
+  const engineOf = (record) => {
+    const raw = liveNonEmptyString(
+      record?.engine ??
+      record?.engineName ??
+      record?.mode ??
+      record?.strategy ??
+      record?.snapshot?.engine ??
+      record?.snapshot?.mode,
+      ""
+    ).toLowerCase();
+
+    if (raw === "intraday" || raw === "daily") return "intraday";
+    if (raw === "swing" || raw === "weekly") return "swing";
+    return null;
+  };
+
+  const outcomeOf = (record) => {
+    const outcome = liveNonEmptyString(
+      record?.outcome ??
+      record?.result ??
+      record?.resolution?.outcome,
+      ""
+    ).toUpperCase();
+
+    return ["WIN", "LOSS", "BREAKEVEN"].includes(outcome)
+      ? outcome
+      : null;
+  };
+
+  const numberOf = (record, fields) => {
+    for (const value of fields(record)) {
+      const number = liveFiniteNumber(value, null);
+      if (Number.isFinite(number)) return number;
+    }
+    return null;
+  };
+
+  const entryOf = (record) =>
+    numberOf(record, (r) => [
+      r?.entry, r?.entryPrice, r?.tradePlan?.entry,
+      r?.snapshot?.entry, r?.snapshot?.entryPrice,
+      r?.snapshot?.tradePlan?.entry,
+    ]);
+
+  const stopOf = (record) =>
+    numberOf(record, (r) => [
+      r?.stop, r?.stopLoss, r?.sl,
+      r?.tradePlan?.stop, r?.tradePlan?.stopLoss, r?.tradePlan?.sl,
+      r?.snapshot?.stop, r?.snapshot?.stopLoss, r?.snapshot?.sl,
+      r?.snapshot?.tradePlan?.stop,
+    ]);
+
+  const targetOf = (record) =>
+    numberOf(record, (r) => [
+      r?.target1, r?.takeProfit1, r?.tp1, r?.target,
+      r?.tradePlan?.target1, r?.snapshot?.target1,
+      r?.snapshot?.tp1, r?.snapshot?.tradePlan?.target1,
+    ]);
+
+  const rrOf = (record) => {
+    const stored = numberOf(record, (r) => [
+      r?.riskReward, r?.rr,
+      r?.tradePlan?.riskReward, r?.tradePlan?.rr,
+    ]);
+    if (Number.isFinite(stored) && stored > 0) return stored;
+
+    const entry = entryOf(record);
+    const stop = stopOf(record);
+    const target = targetOf(record);
+    if (![entry, stop, target].every(Number.isFinite)) return null;
+
+    const risk = Math.abs(entry - stop);
+    return risk > 0 ? Math.abs(target - entry) / risk : null;
+  };
+
+  const timestampOf = (record, closedTime = false) => {
+    const values = closedTime
+      ? [record?.closedAt, record?.resolvedAt, record?.resolution?.resolvedAt]
+      : [
+          record?.analyzedCandleAt,
+          record?.snapshot?.analyzedCandleAt,
+          record?.signalTimestamp,
+          record?.signalTime,
+          record?.openedAt,
+          record?.snapshot?.signalTimestamp,
+          record?.snapshot?.signalTime,
+          record?.createdAt,
+          record?.recordedAt,
+        ];
+
+    for (const value of values) {
+      const timestamp = liveStableTimestamp(value, null);
+      if (Number.isFinite(timestamp)) return timestamp;
+    }
+    return null;
+  };
+
+  const resolvedSetupIds = new Set(
+    records
+      .filter((record) => {
+        const status = liveNonEmptyString(record?.status, "").toLowerCase();
+        return Boolean(
+          outcomeOf(record) ||
+          ["closed", "resolved", "complete", "completed"].includes(status)
+        );
+      })
+      .map(liveHistorySetupIdentity)
+      .filter(Boolean)
+  );
+
+  const openMaps = Object.fromEntries(
+    pairs.map((pair) => [
+      pair,
+      {
+        intraday: new Map(),
+        swing: new Map(),
+      },
+    ])
+  );
+
+  for (const record of records) {
+    const pair = pairOf(record);
+    const engine = engineOf(record);
+    const status = liveNonEmptyString(record?.status, "").toLowerCase();
+    const identity = liveHistorySetupIdentity(record);
+
+    if (
+      !pair ||
+      !engines.includes(engine) ||
+      outcomeOf(record) ||
+      ["closed", "resolved", "complete", "completed",
+       "hold", "invalid", "rejected", "error"].includes(status) ||
+      !identity ||
+      resolvedSetupIds.has(identity) ||
+      openMaps[pair][engine].has(identity)
+    ) {
+      continue;
+    }
+
+    const direction = liveExtractDecision(record);
+    const entry = entryOf(record);
+    const stop = stopOf(record);
+    const target1 = targetOf(record);
+    const openedAt = timestampOf(record);
+
+    if (
+      !["BUY", "SELL"].includes(direction) ||
+      ![entry, stop, target1, openedAt].every(Number.isFinite)
+    ) {
+      continue;
+    }
+
+    openMaps[pair][engine].set(identity, {
+      identity,
+      pairKey: pair,
+      engine,
+      timeframe: engine === "intraday" ? "1H" : "D1",
+      decision: direction,
+      entry,
+      stop,
+      target1,
+      rr: rrOf(record),
+      confidence: liveFiniteNumber(
+        record?.confidencePct ?? record?.confidence,
+        null
+      ),
+      openedAt: new Date(openedAt).toISOString(),
+      status: "OPEN",
+    });
+  }
+
+  const trackerPairs = {};
+
+  for (const pair of pairs) {
+    trackerPairs[pair] = {
+      pairKey: pair,
+      pair: pair === "XAUUSD" ? "XAU/USD" : "GBP/JPY",
+    };
+
+    for (const engine of engines) {
+      const resolvedTrades = closed.filter(
+        (record) =>
+          pairOf(record) === pair &&
+          engineOf(record) === engine &&
+          outcomeOf(record)
+      );
+
+      const wins = resolvedTrades.filter(
+        (record) => outcomeOf(record) === "WIN"
+      ).length;
+      const losses = resolvedTrades.filter(
+        (record) => outcomeOf(record) === "LOSS"
+      ).length;
+      const breakevens = resolvedTrades.filter(
+        (record) => outcomeOf(record) === "BREAKEVEN"
+      ).length;
+      const resolved = wins + losses;
+      const rrValues = resolvedTrades
+        .map(rrOf)
+        .filter((value) => Number.isFinite(value) && value > 0);
+
+      const openTrades = Array.from(openMaps[pair][engine].values())
+        .sort(
+          (a, b) =>
+            liveStableTimestamp(b.openedAt, 0) -
+            liveStableTimestamp(a.openedAt, 0)
+        );
+
+      const recentResolved = resolvedTrades
+        .map((record) => {
+          const openedAt = timestampOf(record);
+          const closedAt = timestampOf(record, true);
+          return {
+            pairKey: pair,
+            engine,
+            decision: liveExtractDecision(record),
+            entry: entryOf(record),
+            stop: stopOf(record),
+            target1: targetOf(record),
+            rr: rrOf(record),
+            result: outcomeOf(record),
+            openedAt: Number.isFinite(openedAt)
+              ? new Date(openedAt).toISOString()
+              : null,
+            closedAt: Number.isFinite(closedAt)
+              ? new Date(closedAt).toISOString()
+              : null,
+          };
+        })
+        .sort(
+          (a, b) =>
+            liveStableTimestamp(b.closedAt, 0) -
+            liveStableTimestamp(a.closedAt, 0)
+        )
+        .slice(0, 10);
+
+      trackerPairs[pair][engine] = {
+        openTrades,
+        stats: {
+          resolved,
+          wins,
+          losses,
+          breakevens,
+          winRate: resolved
+            ? Number(((wins / resolved) * 100).toFixed(2))
+            : null,
+          averageRR: rrValues.length
+            ? Number(
+                (
+                  rrValues.reduce((sum, value) => sum + value, 0) /
+                  rrValues.length
+                ).toFixed(4)
+              )
+            : null,
+          openCount: openTrades.length,
+        },
+        recentResolved,
+      };
+    }
+  }
+
+  return {
+    schemaVersion: 1,
+    updatedAt: liveNonEmptyString(history.updatedAt, "") || liveNowIso(),
+    pairs: trackerPairs,
+  };
+}
+
+
 // ---------------------------------------------------------------------------
 // History collection from current output
 // ---------------------------------------------------------------------------
@@ -19004,6 +19295,11 @@ async function runLiveAnalysisRuntime(
       }
     );
 
+  output.historyTracker =
+    buildDashboardHistoryTracker(
+      historyResult.history
+    );
+
   let telegramResult = {
     notifyState:
       normalizeNotifyState(
@@ -19337,6 +19633,7 @@ if (
 
     collectHistoryRecordsFromOutput,
     appendAnalysisHistoryRecords,
+    buildDashboardHistoryTracker,
 
     normalizeNotifyState,
     processTelegramNotification,

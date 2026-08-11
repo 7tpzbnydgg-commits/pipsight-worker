@@ -3177,10 +3177,48 @@ function evaluateSafetyGateWithSources({
     }
   );
 
+  const expectedDecisionHash =
+    isPlainObject(
+      normalized.decisionDocument
+    )
+      ? createHash({
+          inputId:
+            normalized.decisionDocument
+              .decisionId,
+          evaluatedAt:
+            normalized.decisionDocument
+              .evaluatedAt,
+          policyHash:
+            normalized.decisionDocument
+              .metadata?.policyHash ||
+            null,
+          baseline:
+            normalized.decisionDocument
+              .baseline,
+          shadowCandidate:
+            normalized.decisionDocument
+              .shadowCandidate,
+          proposed:
+            normalized.decisionDocument
+              .proposedDecision
+        })
+      : null;
+
+  const decisionHashValid =
+    normalizeText(
+      normalized.decisionDocument
+        ?.decisionHash,
+      null
+    ) !== null &&
+    normalized.decisionDocument
+      .decisionHash ===
+      expectedDecisionHash;
+
   const decisionDocumentValid =
     isPlainObject(
       normalized.decisionDocument
     ) &&
+    decisionHashValid &&
     normalized.decisionDocument
       .engineName ===
       SUPPORTED_DECISION_ENGINE_NAME &&

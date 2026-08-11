@@ -3602,18 +3602,29 @@ function evaluateDecisionWithSources({
             desiredDirection;
           shadowCandidate.tradePlan =
             planSelection.selected;
+          /*
+           * A reversal must never inherit confidence from the deterministic
+           * direction it is replacing. That confidence is evidence for the
+           * opposite side. Use the validated policy reliability for the new
+           * direction while preserving the existing HOLD-activation behavior.
+           */
+          const directionalPolicyConfidence =
+            (
+              toFiniteNumber(
+                bestDirectional.policy
+                  .reliability?.value
+              ) || 0
+            ) * 100;
+
           shadowCandidate.confidence =
             round(
               clamp(
-                Math.max(
-                  baseline.confidence,
-                  (
-                    toFiniteNumber(
-                      bestDirectional.policy
-                        .reliability?.value
-                    ) || 0
-                  ) * 100
-                ),
+                isReversal
+                  ? directionalPolicyConfidence
+                  : Math.max(
+                      baseline.confidence,
+                      directionalPolicyConfidence
+                    ),
                 0,
                 100
               ),

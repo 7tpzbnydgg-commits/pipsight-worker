@@ -2652,6 +2652,40 @@ function isCandidatePlanAllowed({
     config.authority
       ?.tradePlanOptimization || {};
 
+  /*
+   * Live Analysis owns the professional H1/D1 structural plan.
+   * Autonomous optimization may improve entry/targets, but it must not
+   * downgrade that professional horizon below 2R or below an already
+   * stronger deterministic baseline.
+   *
+   * Scalp keeps the configured 1.5R floor unchanged.
+   */
+  const professionalPlanProtection =
+    (
+      input.engine === "daily" &&
+      input.timeframe === "1H"
+    ) ||
+    (
+      input.engine === "weekly" &&
+      input.timeframe === "D1"
+    );
+
+  const baselineRiskReward =
+    requireBaselineComparison &&
+    baselinePlan
+      ? toFiniteNumber(
+          baselinePlan.riskReward
+        )
+      : null;
+
+  const professionalMinimumRiskReward =
+    professionalPlanProtection
+      ? Math.max(
+          2,
+          baselineRiskReward || 0
+        )
+      : 0;
+
   const minimumRiskReward =
     Math.max(
       toFiniteNumber(
@@ -2660,7 +2694,8 @@ function isCandidatePlanAllowed({
       toFiniteNumber(
         config.riskSafetyGate
           ?.minimumRiskReward
-      ) || 1.5
+      ) || 1.5,
+      professionalMinimumRiskReward
     );
 
   const maximumRiskReward =
@@ -2742,31 +2777,54 @@ function isCandidatePlanAllowed({
       }
     }
 
-    const baselineRisk =
-      baselinePlan.risk;
+    const baselineStop =
+      toFiniteNumber(
+        baselinePlan.stopLoss
+      );
+    const proposedStop =
+      toFiniteNumber(
+        plan.stopLoss
+      );
+
+    const stopWidened =
+      baselineStop !== null &&
+      proposedStop !== null &&
+      (
+        direction === "BUY"
+          ? proposedStop <
+              baselineStop -
+                Number.EPSILON
+          : proposedStop >
+              baselineStop +
+                Number.EPSILON
+      );
+
+    const stopTightened =
+      baselineStop !== null &&
+      proposedStop !== null &&
+      (
+        direction === "BUY"
+          ? proposedStop >
+              baselineStop +
+                Number.EPSILON
+          : proposedStop <
+              baselineStop -
+                Number.EPSILON
+      );
 
     if (
-      plan.risk >
-      baselineRisk +
-        Number.EPSILON
-    ) {
-      if (
-        planConfig.allowStopWidening !==
+      stopWidened &&
+      planConfig.allowStopWidening !==
         true
-      ) {
-        return {
-          allowed: false,
-          reason:
-            "STOP_WIDENING_DISABLED"
-        };
-      }
+    ) {
+      return {
+        allowed: false,
+        reason:
+          "STOP_WIDENING_DISABLED"
+      };
     }
 
-    if (
-      plan.risk <
-      baselineRisk -
-        Number.EPSILON
-    ) {
+    if (stopTightened) {
       if (
         planConfig.allowStopTightening !==
         true
@@ -2778,12 +2836,23 @@ function isCandidatePlanAllowed({
         };
       }
 
+      const baselineStopDistance =
+        Math.abs(
+          baselinePlan.entry -
+          baselineStop
+        );
+      const tighteningDistance =
+        Math.abs(
+          proposedStop -
+          baselineStop
+        );
       const tighteningPercent =
-        (
-          1 -
-          plan.risk /
-            baselineRisk
-        ) * 100;
+        baselineStopDistance > 0
+          ? (
+              tighteningDistance /
+              baselineStopDistance
+            ) * 100
+          : Infinity;
 
       const maximumTightening =
         Math.max(
@@ -2796,7 +2865,8 @@ function isCandidatePlanAllowed({
 
       if (
         tighteningPercent >
-        maximumTightening
+        maximumTightening +
+          Number.EPSILON
       ) {
         return {
           allowed: false,
@@ -2823,6 +2893,43 @@ function selectTradePlanCandidate({
   const baselinePlan =
     input.baseline.tradePlan;
 
+  const professionalPlanProtection =
+    (
+      input.engine === "daily" &&
+      input.timeframe === "1H"
+    ) ||
+    (
+      input.engine === "weekly" &&
+      input.timeframe === "D1"
+    );
+
+  const comparableBaselineRiskReward =
+    requireBaselineComparison
+      ? toFiniteNumber(
+          baselinePlan?.riskReward
+        )
+      : null;
+
+  const selectionMinimumRiskReward =
+    Math.max(
+      toFiniteNumber(
+        config.authority
+          ?.tradePlanOptimization
+          ?.minimumRiskReward
+      ) || 1.5,
+      toFiniteNumber(
+        config.riskSafetyGate
+          ?.minimumRiskReward
+      ) || 1.5,
+      professionalPlanProtection
+        ? Math.max(
+            2,
+            comparableBaselineRiskReward ||
+              0
+          )
+        : 0
+    );
+
   const targetRiskReward =
     clamp(
       toFiniteNumber(
@@ -2832,17 +2939,8 @@ function selectTradePlanCandidate({
       toFiniteNumber(
         baselinePlan?.riskReward
       ) ||
-      toFiniteNumber(
-        config.authority
-          ?.tradePlanOptimization
-          ?.minimumRiskReward
-      ) ||
-      1.5,
-      toFiniteNumber(
-        config.authority
-          ?.tradePlanOptimization
-          ?.minimumRiskReward
-      ) || 1.5,
+      selectionMinimumRiskReward,
+      selectionMinimumRiskReward,
       toFiniteNumber(
         config.authority
           ?.tradePlanOptimization

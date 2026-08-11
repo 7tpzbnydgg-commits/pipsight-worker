@@ -57,7 +57,7 @@ const SYMBOLS = [
 /*
  * Preserve the existing one-request-per-symbol provider policy.
  *
- * 1500 × 5-minute candles provides enough source history for:
+ * 1500 Ã 5-minute candles provides enough source history for:
  * - 5-minute analysis
  * - 15-minute aggregation
  * - 30-minute aggregation
@@ -67,7 +67,7 @@ const SYMBOLS = [
  * - ATR and market structure
  *
  * 30 complete 4-hour candles require:
- * 30 × 48 five-minute candles = 1440 source candles.
+ * 30 Ã 48 five-minute candles = 1440 source candles.
  *
  * The small additional buffer protects against an incomplete current
  * aggregation bucket while keeping the request count unchanged.
@@ -122,7 +122,17 @@ function sleep(milliseconds) {
     });
 }
 function parsePrice(value) {
-    const parsed = Number.parseFloat(value);
+    if (typeof value !== "number" &&
+        typeof value !== "string") {
+        return null;
+    }
+    const normalized = typeof value === "string"
+        ? value.trim()
+        : value;
+    if (normalized === "") {
+        return null;
+    }
+    const parsed = Number(normalized);
     return Number.isFinite(parsed)
         ? parsed
         : null;
@@ -878,7 +888,7 @@ function mergeCandleRows(
      *
      * Keep only cached candles that are strictly older than the
      * first fresh candle. Cached candles overlapping the fresh
-     * window—or incorrectly appearing after it—are discarded.
+     * windowâor incorrectly appearing after itâare discarded.
      */
     const safePreviousRows = Array.isArray(previousRows) &&
         Number.isFinite(firstFreshTime)

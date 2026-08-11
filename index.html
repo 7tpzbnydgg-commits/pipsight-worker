@@ -2219,6 +2219,9 @@ const DATA_URLS = Object.freeze({
   patternSignals:
     "https://raw.githubusercontent.com/Detector-byte/pattern-detector-bot/main/data/pattern-signals.json",
 
+  patternLearning:
+    "https://raw.githubusercontent.com/Detector-byte/pattern-detector-bot/main/data/pattern-learning.json",
+
   patternPipelineStatus:
     "https://raw.githubusercontent.com/Detector-byte/pattern-detector-bot/main/data/pattern-pipeline-status.json"
 });
@@ -2253,6 +2256,9 @@ const SHARED_SCALP_SIGNALS_URL =
 
 const PATTERN_DATA_URL =
   DATA_URLS.patternSignals;
+
+const PATTERN_LEARNING_DATA_URL =
+  DATA_URLS.patternLearning;
 
 const PATTERN_PIPELINE_STATUS_URL =
   DATA_URLS.patternPipelineStatus;
@@ -3707,6 +3713,9 @@ const APP_CONFIG = Object.freeze({
       60_000,
 
     patternSignals:
+      60_000,
+
+    patternLearning:
       60_000,
 
     forexHistory:
@@ -21547,6 +21556,9 @@ const PATTERN_TERMINAL_SIGNAL_STATUSES =
     "ARCHIVED"
   ]);
 
+const PATTERN_HISTORY_DISPLAY_WINDOW_MS =
+  48 * 60 * 60 * 1000;
+
 function normalizePatternLifecycleStatus(
   value
 ){
@@ -21609,6 +21621,38 @@ function isTerminalPatternSignal(
       .includes(
         pattern.status
       )
+  );
+}
+
+function isPatternHistoryWithinDisplayWindow(
+  pattern,
+  nowMs = Date.now()
+){
+  if(
+    !isTerminalPatternSignal(
+      pattern
+    )
+  ){
+    return false;
+  }
+
+  const terminalMs =
+    safeDateMs(
+      pattern.terminalAt
+    );
+
+  if(terminalMs == null){
+    return false;
+  }
+
+  const ageMs =
+    nowMs -
+    terminalMs;
+
+  return (
+    ageMs >= 0 &&
+    ageMs <=
+      PATTERN_HISTORY_DISPLAY_WINDOW_MS
   );
 }
 
@@ -21734,9 +21778,9 @@ function normalizePatternSignal(item){
       safeISODate(
         item.resolvedAt ||
         item.expiredAt ||
-        item.closedAt ||
-        item.lastUpdated ||
-        item.updatedAt
+        item.cancelledAt ||
+        item.archivedAt ||
+        item.closedAt
       ),
 
     exitPrice:
@@ -21857,6 +21901,137 @@ async function fetchPatternSignals({
   };
 
   return PATTERN_DATA;
+}
+
+function validatePatternLearningPayload(
+  payload
+){
+  if(
+    !payload ||
+    typeof payload !== "object"
+  ){
+    return "Pattern learning payload must be an object";
+  }
+
+  if(
+    !isPlainObject(
+      payload.pairStats
+    )
+  ){
+    return "Pattern learning pairStats must be an object";
+  }
+
+  return true;
+}
+
+async function fetchPatternLearning({
+  forceRefresh = false
+} = {}){
+  return fetchJSONCached(
+    PATTERN_LEARNING_DATA_URL,
+    {
+      ttlMs:
+        APP_CONFIG
+          .cacheTtlMs
+          .patternLearning,
+
+      forceRefresh,
+
+      validate:
+        validatePatternLearningPayload
+    }
+  );
+}
+
+function normalizePatternPerformanceStats(
+  learningPayload,
+  pairKey
+){
+  const pairStats =
+    learningPayload &&
+    isPlainObject(
+      learningPayload.pairStats
+    )
+      ? learningPayload.pairStats
+      : null;
+
+  const source =
+    pairStats &&
+    isPlainObject(
+      pairStats[pairKey]
+    )
+      ? pairStats[pairKey]
+      : null;
+
+  if(!source){
+    return null;
+  }
+
+  const resolved =
+    Math.max(
+      0,
+      Math.trunc(
+        safeNumber(
+          source.resolved,
+          0
+        )
+      )
+    );
+
+  const wins =
+    Math.max(
+      0,
+      Math.trunc(
+        safeNumber(
+          source.wins,
+          0
+        )
+      )
+    );
+
+  const losses =
+    Math.max(
+      0,
+      Math.trunc(
+        safeNumber(
+          source.losses,
+          0
+        )
+      )
+    );
+
+  const observedResolved =
+    wins +
+    losses;
+
+  const winRate =
+    observedResolved > 0
+      ? (
+          wins /
+          observedResolved
+        ) * 100
+      : null;
+
+  return {
+    resolved,
+    wins,
+    losses,
+    winRate,
+
+    totalRealizedR:
+      safeNumber(
+        source.totalRealizedR,
+        null
+      ),
+
+    expectancyR:
+      observedResolved > 0
+        ? safeNumber(
+            source.expectancyR,
+            null
+          )
+        : null
+  };
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -22830,6 +23005,134 @@ function renderPatternCard(
   `;
 }
 
+function renderPatternPerformance(
+  stats,
+  pair
+){
+  if(!stats){
+    return `
+      <div class="card">
+        <div class="label">
+          Pattern Performance
+        </div>
+
+        <div class="empty-note">
+          Pattern learner performance data is unavailable for
+          ${escapeHTML(pair.label)}.
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="card">
+      <div class="label">
+        Pattern Performance
+      </div>
+
+      <div class="metric-grid">
+        <div class="metric">
+          <div class="metric-label">
+            Resolved
+          </div>
+
+          <div class="metric-value">
+            ${safeFixed(
+              stats.resolved,
+              0,
+              "0"
+            )}
+          </div>
+        </div>
+
+        <div class="metric">
+          <div class="metric-label">
+            Wins
+          </div>
+
+          <div class="metric-value">
+            ${safeFixed(
+              stats.wins,
+              0,
+              "0"
+            )}
+          </div>
+        </div>
+
+        <div class="metric">
+          <div class="metric-label">
+            Losses
+          </div>
+
+          <div class="metric-value">
+            ${safeFixed(
+              stats.losses,
+              0,
+              "0"
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div
+        class="metric-grid"
+        style="margin-top:6px;"
+      >
+        <div class="metric">
+          <div class="metric-label">
+            Win Rate
+          </div>
+
+          <div class="metric-value">
+            ${
+              stats.winRate == null
+                ? "—"
+                : `${safeFixed(
+                    stats.winRate,
+                    1
+                  )}%`
+            }
+          </div>
+        </div>
+
+        <div class="metric">
+          <div class="metric-label">
+            Total R
+          </div>
+
+          <div class="metric-value">
+            ${
+              stats.totalRealizedR == null
+                ? "—"
+                : `${safeFixed(
+                    stats.totalRealizedR,
+                    2
+                  )}R`
+            }
+          </div>
+        </div>
+
+        <div class="metric">
+          <div class="metric-label">
+            Expectancy
+          </div>
+
+          <div class="metric-value">
+            ${
+              stats.expectancyR == null
+                ? "—"
+                : `${safeFixed(
+                    stats.expectancyR,
+                    2
+                  )}R`
+            }
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function renderPatternHistory(
   history,
   pair
@@ -23073,7 +23376,8 @@ async function loadPatternDetector({
 
   const [
     patternResult,
-    pipelineResult
+    pipelineResult,
+    learningResult
   ] =
     await Promise.allSettled([
       fetchPatternSignals({
@@ -23081,6 +23385,10 @@ async function loadPatternDetector({
       }),
 
       fetchPatternPipelineStatus({
+        forceRefresh
+      }),
+
+      fetchPatternLearning({
         forceRefresh
       })
     ]);
@@ -23114,6 +23422,18 @@ async function loadPatternDetector({
       "fulfilled"
       ? pipelineResult.value
       : null;
+
+  const learningPayload =
+    learningResult.status ===
+      "fulfilled"
+      ? learningResult.value
+      : null;
+
+  const patternPerformance =
+    normalizePatternPerformanceStats(
+      learningPayload,
+      pair.key
+    );
 
   const patterns =
     safeArray(
@@ -23150,6 +23470,9 @@ async function loadPatternDetector({
           .maximumPatternSignalsPerPair
       );
 
+  const patternHistoryNowMs =
+    Date.now();
+
   const patternHistory =
     safeArray(
       patternPayload.items
@@ -23158,8 +23481,9 @@ async function loadPatternDetector({
         item=>
           item.pairKey ===
             pair.key &&
-          isTerminalPatternSignal(
-            item
+          isPatternHistoryWithinDisplayWindow(
+            item,
+            patternHistoryNowMs
           )
       )
       .sort(
@@ -23246,6 +23570,12 @@ async function loadPatternDetector({
           </div>
         `;
 
+  const patternPerformanceHTML =
+    renderPatternPerformance(
+      patternPerformance,
+      pair
+    );
+
   const patternHistoryHTML =
     patternResult.status ===
       "fulfilled"
@@ -23308,6 +23638,8 @@ async function loadPatternDetector({
     ${pipelineHTML}
 
     ${patternFeedHTML}
+
+    ${patternPerformanceHTML}
 
     ${patternHistoryHTML}
 

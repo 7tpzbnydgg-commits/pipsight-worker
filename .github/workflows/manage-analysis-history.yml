@@ -1,0 +1,539 @@
+name: PipSight Pro — reusable Analysis history maintenance
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type MAINTAIN_ANALYSIS_HISTORY to execute verified history maintenance"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pipsight-analysis-writes-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  maintain-analysis-history:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Confirm maintenance and capture branch tip
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+
+          expected="MAINTAIN_ANALYSIS_HISTORY"
+
+          if [[ "${CONFIRMATION:-}" != "$expected" ]]; then
+            echo "::error::Confirmation must exactly equal $expected"
+            exit 1
+          fi
+
+          if [[ "${GITHUB_REF_TYPE:-}" != "branch" ]]; then
+            echo "::error::Analysis-history maintenance may only run from a branch."
+            exit 1
+          fi
+
+          if [[ -z "${GITHUB_REF_NAME:-}" ]]; then
+            echo "::error::GITHUB_REF_NAME is unavailable."
+            exit 1
+          fi
+
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "::error::Working tree is not clean before maintenance."
+            git status --short
+            exit 1
+          fi
+
+          git fetch --no-tags origin "$GITHUB_REF_NAME"
+
+          local_sha="$(git rev-parse HEAD)"
+          remote_sha="$(git rev-parse "origin/$GITHUB_REF_NAME")"
+
+          if [[ "$local_sha" != "$remote_sha" ]]; then
+            echo "::error::Checked-out commit is not the current remote branch tip. Refusing history maintenance."
+            exit 1
+          fi
+
+          echo "MAINTENANCE_BASE_SHA=$remote_sha" >> "$GITHUB_ENV"
+          echo "Maintenance base: $remote_sha"
+
+      - name: Validate maintenance dependencies and source contract
+        run: |
+          set -euo pipefail
+
+          required_files=(
+            "manage-analysis-history.js"
+            "run-learning-engine.js"
+            "data/analysis-history.json"
+          )
+
+          for file in "${required_files[@]}"; do
+            if [[ ! -f "$file" ]]; then
+              echo "::error file=$file::Required maintenance dependency is missing: $file"
+              exit 1
+            fi
+          done
+
+          node --check manage-analysis-history.js
+          node --check run-learning-engine.js
+
+          node <<'NODE'
+          "use strict";
+
+          const fs = require("fs");
+          const crypto = require("crypto");
+
+          const filePath =
+            "data/analysis-history.json";
+
+          const raw =
+            fs.readFileSync(
+              filePath,
+              "utf8"
+            );
+
+          if (!raw.trim()) {
+            throw new Error(
+              `${filePath} is empty.`
+            );
+          }
+
+          const history =
+            JSON.parse(raw);
+
+          if (
+            history === null ||
+            typeof history !== "object" ||
+            Array.isArray(history)
+          ) {
+            throw new Error(
+              `${filePath} must contain a JSON object.`
+            );
+          }
+
+          for (const field of [
+            "records",
+            "history",
+            "items",
+            "closed"
+          ]) {
+            if (!Array.isArray(history[field])) {
+              throw new Error(
+                `${filePath}.${field} must be an array.`
+              );
+            }
+          }
+
+          if (
+            JSON.stringify(history.records) !==
+              JSON.stringify(history.history) ||
+            JSON.stringify(history.records) !==
+              JSON.stringify(history.items)
+          ) {
+            throw new Error(
+              "analysis-history records/history/items aliases are not exactly synchronized."
+            );
+          }
+
+          if (
+            history.open !== undefined &&
+            (
+              history.open === null ||
+              typeof history.open !== "object" ||
+              Array.isArray(history.open)
+            )
+          ) {
+            throw new Error(
+              "analysis-history.open must remain an object when present."
+            );
+          }
+
+          if (
+            history.count !== undefined &&
+            Number(history.count) !==
+              history.records.length
+          ) {
+            throw new Error(
+              "analysis-history.count does not equal records.length."
+            );
+          }
+
+          const protectedProjection = {};
+
+          for (const [key, value] of Object.entries(history)) {
+            if (
+              key === "records" ||
+              key === "history" ||
+              key === "items" ||
+              key === "count"
+            ) {
+              continue;
+            }
+
+            protectedProjection[key] =
+              value;
+          }
+
+          const protectedHash =
+            crypto
+              .createHash("sha256")
+              .update(
+                JSON.stringify(
+                  protectedProjection
+                )
+              )
+              .digest("hex");
+
+          fs.appendFileSync(
+            process.env.GITHUB_ENV,
+            `HISTORY_PROTECTED_HASH=${protectedHash}\n`
+          );
+
+          fs.appendFileSync(
+            process.env.GITHUB_ENV,
+            `HISTORY_ORIGINAL_RECORD_COUNT=${history.records.length}\n`
+          );
+
+          console.log(
+            `Preflight PASS: ${(Buffer.byteLength(raw) / 1024 / 1024).toFixed(2)} MiB, ` +
+            `${history.records.length} rich records, ${history.closed.length} verified closed records.`
+          );
+          NODE
+
+      - name: Dry-run verified history maintenance
+        run: |
+          set -euo pipefail
+          node manage-analysis-history.js
+
+      - name: Apply verified history maintenance
+        env:
+          PIPSIGHT_HISTORY_MAINTENANCE_CONFIRM: MAINTAIN_ANALYSIS_HISTORY
+        run: |
+          set -euo pipefail
+          node manage-analysis-history.js --apply
+
+      - name: Validate maintained history and archive-aware learning
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          "use strict";
+
+          const fs = require("fs");
+          const crypto = require("crypto");
+
+          const targetBytes =
+            20 * 1024 * 1024;
+
+          const historyPath =
+            "data/analysis-history.json";
+
+          const raw =
+            fs.readFileSync(
+              historyPath,
+              "utf8"
+            );
+
+          const history =
+            JSON.parse(raw);
+
+          for (const field of [
+            "records",
+            "history",
+            "items",
+            "closed"
+          ]) {
+            if (!Array.isArray(history[field])) {
+              throw new Error(
+                `Maintained history field ${field} must be an array.`
+              );
+            }
+          }
+
+          if (
+            JSON.stringify(history.records) !==
+              JSON.stringify(history.history) ||
+            JSON.stringify(history.records) !==
+              JSON.stringify(history.items)
+          ) {
+            throw new Error(
+              "Maintained records/history/items aliases are not exactly synchronized."
+            );
+          }
+
+          if (
+            history.count !== undefined &&
+            Number(history.count) !==
+              history.records.length
+          ) {
+            throw new Error(
+              "Maintained history count is inconsistent."
+            );
+          }
+
+          if (
+            Buffer.byteLength(raw) >
+              targetBytes
+          ) {
+            throw new Error(
+              `Maintained analysis-history.json exceeds the 20 MiB target: ` +
+              `${(Buffer.byteLength(raw) / 1024 / 1024).toFixed(2)} MiB.`
+            );
+          }
+
+          const protectedProjection = {};
+
+          for (const [key, value] of Object.entries(history)) {
+            if (
+              key === "records" ||
+              key === "history" ||
+              key === "items" ||
+              key === "count"
+            ) {
+              continue;
+            }
+
+            protectedProjection[key] =
+              value;
+          }
+
+          const protectedHash =
+            crypto
+              .createHash("sha256")
+              .update(
+                JSON.stringify(
+                  protectedProjection
+                )
+              )
+              .digest("hex");
+
+          if (
+            protectedHash !==
+              process.env.HISTORY_PROTECTED_HASH
+          ) {
+            throw new Error(
+              "Protected analysis-history state changed during maintenance."
+            );
+          }
+
+          const manifestPath =
+            "data/history-archive/manifest.json";
+
+          let archivedRichRecords =
+            0;
+
+          if (
+            fs.existsSync(
+              manifestPath
+            )
+          ) {
+            const manifest =
+              JSON.parse(
+                fs.readFileSync(
+                  manifestPath,
+                  "utf8"
+                )
+              );
+
+            if (
+              manifest === null ||
+              typeof manifest !== "object" ||
+              Array.isArray(manifest) ||
+              manifest.version !== 1 ||
+              !Array.isArray(
+                manifest.archives
+              )
+            ) {
+              throw new Error(
+                "History archive manifest is invalid."
+              );
+            }
+
+            archivedRichRecords =
+              manifest.archives.reduce(
+                (sum, entry) =>
+                  sum +
+                  Number(
+                    entry?.recordCount ||
+                    0
+                  ),
+                0
+              );
+          }
+
+          const learning =
+            require(
+              "./run-learning-engine.js"
+            );
+
+          const loaded =
+            learning
+              .loadAnalysisHistory();
+
+          const state =
+            learning
+              .loadLearningState();
+
+          const prepared =
+            learning
+              .prepareClosedHistory(
+                loaded.raw,
+                state,
+                {
+                  learningStartAt:
+                    state.learningStartAt
+                }
+              );
+
+          const expectedRichCount =
+            history.records.length +
+            archivedRichRecords;
+
+          if (
+            prepared.richRecordCount !==
+              expectedRichCount
+          ) {
+            throw new Error(
+              `Archive-aware Learning Engine rich-record count mismatch: ` +
+              `${prepared.richRecordCount} !== ${expectedRichCount}.`
+            );
+          }
+
+          console.log(
+            `Post-maintenance PASS: ${(Buffer.byteLength(raw) / 1024 / 1024).toFixed(2)} MiB active history, ` +
+            `${history.records.length} active rich records, ${archivedRichRecords} archived rich records, ` +
+            `${history.closed.length} verified closed records.`
+          );
+          NODE
+
+      - name: Enforce maintenance change ownership
+        id: ownership
+        run: |
+          set -euo pipefail
+
+          mapfile -t changed_files < <(
+            git status --porcelain=v1 --untracked-files=all |
+              sed -E 's/^.. //'
+          )
+
+          if [[ "${#changed_files[@]}" -eq 0 ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Maintenance produced no repository changes."
+            exit 0
+          fi
+
+          for file in "${changed_files[@]}"; do
+            case "$file" in
+              data/analysis-history.json)
+                ;;
+              data/history-archive/manifest.json)
+                ;;
+              data/history-archive/rich/analysis-history-rich-*.json.gz)
+                ;;
+              *)
+                echo "::error file=$file::Unexpected file changed during analysis-history maintenance."
+                exit 1
+                ;;
+            esac
+          done
+
+          git diff --check
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "Maintenance-owned changes:"
+          printf '  %s\n' "${changed_files[@]}"
+
+      - name: Guard remote branch before publication
+        if: steps.ownership.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+
+          git fetch --no-tags origin "$GITHUB_REF_NAME"
+
+          remote_sha="$(
+            git rev-parse \
+              "origin/$GITHUB_REF_NAME"
+          )"
+
+          if [[ "$remote_sha" != "$MAINTENANCE_BASE_SHA" ]]; then
+            echo "::error::Remote branch moved during maintenance. Refusing stale publication."
+            exit 1
+          fi
+
+          echo "Remote branch guard PASS: $remote_sha"
+
+      - name: Commit and push maintained history
+        if: steps.ownership.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+
+          git config user.name "pipsight-robot"
+          git config user.email "pipsight-robot@users.noreply.github.com"
+
+          git add -A -- \
+            data/analysis-history.json \
+            data/history-archive
+
+          mapfile -t staged_files < <(
+            git diff --cached --name-only
+          )
+
+          if [[ "${#staged_files[@]}" -eq 0 ]]; then
+            echo "No staged maintenance changes remain."
+            exit 0
+          fi
+
+          for file in "${staged_files[@]}"; do
+            case "$file" in
+              data/analysis-history.json)
+                ;;
+              data/history-archive/manifest.json)
+                ;;
+              data/history-archive/rich/analysis-history-rich-*.json.gz)
+                ;;
+              *)
+                echo "::error file=$file::Unexpected staged file in maintenance commit."
+                exit 1
+                ;;
+            esac
+          done
+
+          git diff --cached --check
+
+          git commit \
+            -m "maintenance: archive resolved analysis history"
+
+          git fetch --no-tags origin "$GITHUB_REF_NAME"
+
+          remote_sha="$(
+            git rev-parse \
+              "origin/$GITHUB_REF_NAME"
+          )"
+
+          if [[ "$remote_sha" != "$MAINTENANCE_BASE_SHA" ]]; then
+            echo "::error::Remote branch moved after maintenance commit. Refusing stale push."
+            exit 1
+          fi
+
+          git push \
+            origin \
+            "HEAD:$GITHUB_REF_NAME"
+
+          echo "Analysis-history maintenance committed successfully."

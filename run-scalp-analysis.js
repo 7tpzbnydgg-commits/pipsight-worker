@@ -812,6 +812,72 @@ function extractPairRows(
    Source Readers
    ===================================================================== */
 
+function isSourceStaleForPair(
+  source,
+  pair
+) {
+  if (
+    !source ||
+    typeof source !== "object"
+  ) {
+    return false;
+  }
+
+  if (source.stale === true) {
+    return true;
+  }
+
+  const expectedKey =
+    normalizePairKey(
+      pair?.key ??
+      pair?.label
+    );
+
+  if (!expectedKey) {
+    return false;
+  }
+
+  if (
+    source.stale &&
+    typeof source.stale === "object"
+  ) {
+    for (
+      const [key, value] of
+      Object.entries(source.stale)
+    ) {
+      if (
+        normalizePairKey(key) ===
+          expectedKey &&
+        value === true
+      ) {
+        return true;
+      }
+    }
+  }
+
+  if (
+    source.metadata &&
+    typeof source.metadata === "object"
+  ) {
+    for (
+      const [key, metadata] of
+      Object.entries(source.metadata)
+    ) {
+      if (
+        normalizePairKey(key) ===
+          expectedKey &&
+        metadata &&
+        typeof metadata === "object" &&
+        metadata.stale === true
+      ) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 function readScalpRows(pair) {
   const source =
     readJsonFile(
@@ -837,7 +903,10 @@ function readScalpRows(pair) {
         : null,
 
     sourceStale:
-      source?.stale === true
+      isSourceStaleForPair(
+        source,
+        pair
+      )
   };
 }
 
@@ -866,7 +935,10 @@ function readH1Rows(pair) {
         : null,
 
     sourceStale:
-      source?.stale === true
+      isSourceStaleForPair(
+        source,
+        pair
+      )
   };
 }
 
@@ -7140,9 +7212,16 @@ function run() {
                 : {
                     stale:
                       prepared.quality.m5
-                        .stale,
+                        .stale ||
+                      (
+                        mode === "M30" &&
+                        prepared.quality.h1
+                          .stale
+                      ),
                     derivedFrom:
-                      "complete-closed-M5",
+                      mode === "M30"
+                        ? "complete-closed-M5-with-H1-confirmation"
+                        : "complete-closed-M5",
                     validRows:
                       Array.isArray(rows)
                         ? rows.length

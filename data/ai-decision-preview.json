@@ -2,9 +2,9 @@
   "version": 1,
   "engineName": "PipSight Pro Autonomous AI Decision Engine",
   "engineVersion": "1.4.0",
-  "evaluatedAt": "2026-08-11T10:22:27.537Z",
-  "decisionId": "live|1.4.0|GBPJPY|scalp|5m|HOLD|none|2026-08-11T10:20:00.000Z",
-  "decisionHash": "629d1988afba6a561c36830f96426705c15dcc77b48a2038017177df3c0d28ba",
+  "evaluatedAt": "2026-08-11T10:29:40.218Z",
+  "decisionId": "live|1.4.0|GBPJPY|scalp|5m|HOLD|none|2026-08-11T10:25:00.000Z",
+  "decisionHash": "65bfca2f0446a39eca1e62469a95b910e448cb5fb90ecaca7f311017bb9b2a94",
   "context": {
     "pair": "GBPJPY",
     "timeframe": "5m",
@@ -12,7 +12,7 @@
     "marketRegime": "WEAK_NORMAL",
     "session": null,
     "pattern": null,
-    "marketDataAt": "2026-08-11T10:20:00.000Z"
+    "marketDataAt": "2026-08-11T10:25:00.000Z"
   },
   "deployment": {
     "configuredMode": "AUTONOMOUS",
@@ -22,33 +22,33 @@
     "rollout": {
       "percent": 100,
       "selected": true,
-      "bucket": 56,
+      "bucket": 45.17,
       "identityStable": true,
       "reason": "Decision is inside the deterministic autonomous rollout cohort."
     }
   },
   "baseline": {
     "decision": "HOLD",
-    "confidence": 0,
+    "confidence": 30,
     "tradePlan": null,
     "reasons": [
-      "No directional engine produced an active setup"
+      "Weighted consensus is below the required threshold"
     ]
   },
   "shadowCandidate": {
     "decision": "HOLD",
-    "confidence": 0,
+    "confidence": 30,
     "tradePlan": null,
     "reasons": [
-      "No directional engine produced an active setup"
+      "Weighted consensus is below the required threshold"
     ]
   },
   "proposedDecision": {
     "decision": "HOLD",
-    "confidence": 0,
+    "confidence": 30,
     "tradePlan": null,
     "reasons": [
-      "No directional engine produced an active setup"
+      "Weighted consensus is below the required threshold"
     ]
   },
   "changes": [],
@@ -66,12 +66,12 @@
         "marketRegime": "WEAK_NORMAL"
       },
       "action": "OBSERVE",
-      "actionReason": "Only 7 decisive trades are available; 30 are required.",
+      "actionReason": "Only 8 decisive trades are available; 30 are required.",
       "authorityLevel": "SHADOW_ONLY",
-      "decisiveTrades": 7,
-      "reliability": 0.326164,
-      "edgeScore": -0.722759,
-      "shrunkExpectancyR": -0.27548125,
+      "decisiveTrades": 8,
+      "reliability": 0.333497,
+      "edgeScore": -0.737479,
+      "shrunkExpectancyR": -0.29554676,
       "outOfSamplePassed": false,
       "negativeEdgeConfirmed": false,
       "averagePlannedRiskReward": 2
@@ -90,9 +90,9 @@
       "actionReason": "Only 3 decisive trades are available; 30 are required.",
       "authorityLevel": "SHADOW_ONLY",
       "decisiveTrades": 3,
-      "reliability": 0.284241,
-      "edgeScore": -0.651457,
-      "shrunkExpectancyR": -0.1876608,
+      "reliability": 0.284177,
+      "edgeScore": -0.652459,
+      "shrunkExpectancyR": -0.18881142,
       "outOfSamplePassed": false,
       "negativeEdgeConfirmed": false,
       "averagePlannedRiskReward": 2
@@ -125,10 +125,19 @@
       },
       {
         "engine": "scalp",
-        "decision": "HOLD",
-        "confidence": 40,
+        "decision": "SELL",
+        "confidence": 61,
         "active": true,
-        "tradePlan": null,
+        "tradePlan": {
+          "direction": "SELL",
+          "entry": 215.051,
+          "stopLoss": 215.112,
+          "target1": 214.929,
+          "target2": 214.868,
+          "target3": 214.807,
+          "risk": 0.061,
+          "riskReward": 2
+        },
         "source": "data/scalp-candles.json"
       },
       {
@@ -162,8 +171,8 @@
     ]
   },
   "metadata": {
-    "policyHash": "4c2524df0961263558ee038dbcee16891454ffcdc3f45c9485fcd212f30fedc3",
-    "policyGeneratedAt": "2026-08-11T09:22:00.734Z",
+    "policyHash": "b86d615ed03884e3d9de1135465b123e09049565093cb70401314096b82027a5",
+    "policyGeneratedAt": "2026-08-11T10:22:30.420Z",
     "configVersion": "1.4.0",
     "deterministic": true,
     "deterministicRollout": true,

@@ -21531,6 +21531,75 @@ function patternItemsFromPayload(payload){
   );
 }
 
+const PATTERN_OPEN_SIGNAL_STATUSES =
+  Object.freeze([
+    "NEW",
+    "ACTIVE",
+    "PARTIAL"
+  ]);
+
+const PATTERN_TERMINAL_SIGNAL_STATUSES =
+  Object.freeze([
+    "WIN",
+    "LOSS",
+    "EXPIRED",
+    "CANCELLED",
+    "ARCHIVED"
+  ]);
+
+function normalizePatternLifecycleStatus(
+  value
+){
+  const normalized =
+    value == null
+      ? ""
+      : String(value)
+          .trim()
+          .toUpperCase()
+          .replace(
+            /[^A-Z0-9]+/g,
+            "_"
+          )
+          .replace(
+            /^_+|_+$/g,
+            ""
+          );
+
+  if(
+    normalized ===
+      "OPEN"
+  ){
+    return "ACTIVE";
+  }
+
+  if(
+    PATTERN_OPEN_SIGNAL_STATUSES
+      .includes(
+        normalized
+      ) ||
+    PATTERN_TERMINAL_SIGNAL_STATUSES
+      .includes(
+        normalized
+      )
+  ){
+    return normalized;
+  }
+
+  return "UNKNOWN";
+}
+
+function isOpenPatternSignal(
+  pattern
+){
+  return Boolean(
+    pattern &&
+    PATTERN_OPEN_SIGNAL_STATUSES
+      .includes(
+        pattern.status
+      )
+  );
+}
+
 function normalizePatternSignal(item){
   if(
     !item ||
@@ -21594,6 +21663,27 @@ function normalizePatternSignal(item){
       null
     );
 
+  const status =
+    normalizePatternLifecycleStatus(
+      item.status ||
+      item.tradeStatus ||
+      item.state
+    );
+
+  const outcome =
+    normalizePatternLifecycleStatus(
+      item.outcome ||
+      item.result
+    );
+
+  const effectiveStatus =
+    PATTERN_TERMINAL_SIGNAL_STATUSES
+      .includes(
+        outcome
+      )
+      ? outcome
+      : status;
+
   return {
     pairKey,
 
@@ -21605,6 +21695,14 @@ function normalizePatternSignal(item){
     pattern,
 
     direction,
+
+    status:
+      effectiveStatus,
+
+    outcome:
+      outcome === "UNKNOWN"
+        ? null
+        : outcome,
 
     confidence:
       confidence == null
@@ -22783,7 +22881,10 @@ async function loadPatternDetector({
       .filter(
         item=>
           item.pairKey ===
-          pair.key
+            pair.key &&
+          isOpenPatternSignal(
+            item
+          )
       )
       .sort(
         (

@@ -21600,6 +21600,32 @@ function isOpenPatternSignal(
   );
 }
 
+function isTerminalPatternSignal(
+  pattern
+){
+  return Boolean(
+    pattern &&
+    PATTERN_TERMINAL_SIGNAL_STATUSES
+      .includes(
+        pattern.status
+      )
+  );
+}
+
+function patternLifecycleBadgeClass(
+  status
+){
+  if(status === "WIN"){
+    return "badge-buy";
+  }
+
+  if(status === "LOSS"){
+    return "badge-sell";
+  }
+
+  return "badge-hold";
+}
+
 function normalizePatternSignal(item){
   if(
     !item ||
@@ -21703,6 +21729,35 @@ function normalizePatternSignal(item){
       outcome === "UNKNOWN"
         ? null
         : outcome,
+
+    terminalAt:
+      safeISODate(
+        item.resolvedAt ||
+        item.expiredAt ||
+        item.closedAt ||
+        item.lastUpdated ||
+        item.updatedAt
+      ),
+
+    exitPrice:
+      safeNumber(
+        item.exitPrice ??
+        item.exit,
+        null
+      ),
+
+    exitReason:
+      String(
+        item.exitReason ||
+        item.closeReason ||
+        ""
+      ).trim(),
+
+    realizedR:
+      safeNumber(
+        item.realizedR,
+        null
+      ),
 
     confidence:
       confidence == null
@@ -22775,6 +22830,192 @@ function renderPatternCard(
   `;
 }
 
+function renderPatternHistory(
+  history,
+  pair
+){
+  const rows =
+    safeArray(
+      history
+    );
+
+  const decimals =
+    decimalsFor(
+      pair
+    );
+
+  return `
+    <div class="card">
+      <div class="label">
+        Pattern Signal History
+      </div>
+
+      ${
+        rows.length
+          ? rows
+              .map(
+                pattern=>`
+                  <div class="signal-summary">
+                    <div
+                      style="
+                        display:flex;
+                        justify-content:space-between;
+                        align-items:flex-start;
+                        gap:14px;
+                      "
+                    >
+                      <div>
+                        <div class="label">
+                          ${escapeHTML(pattern.timeframe)}
+                          ·
+                          ${escapeHTML(pattern.direction)}
+                        </div>
+
+                        <div
+                          class="display"
+                          style="
+                            font-size:18px;
+                            font-weight:600;
+                          "
+                        >
+                          ${escapeHTML(pattern.pattern)}
+                        </div>
+                      </div>
+
+                      <span
+                        class="badge ${patternLifecycleBadgeClass(pattern.status)}"
+                      >
+                        ${escapeHTML(pattern.status)}
+                      </span>
+                    </div>
+
+                    <div
+                      class="metric-grid"
+                      style="margin-top:12px;"
+                    >
+                      <div class="metric">
+                        <div class="metric-label">
+                          Entry
+                        </div>
+
+                        <div class="metric-value">
+                          ${safeFixed(
+                            pattern.price,
+                            decimals
+                          )}
+                        </div>
+                      </div>
+
+                      <div class="metric">
+                        <div class="metric-label">
+                          Target
+                        </div>
+
+                        <div class="metric-value">
+                          ${safeFixed(
+                            pattern.target,
+                            decimals
+                          )}
+                        </div>
+                      </div>
+
+                      <div class="metric">
+                        <div class="metric-label">
+                          Stop
+                        </div>
+
+                        <div class="metric-value">
+                          ${safeFixed(
+                            pattern.stop,
+                            decimals
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div
+                      class="metric-grid"
+                      style="margin-top:6px;"
+                    >
+                      <div class="metric">
+                        <div class="metric-label">
+                          Exit
+                        </div>
+
+                        <div class="metric-value">
+                          ${
+                            pattern.exitPrice == null
+                              ? "—"
+                              : safeFixed(
+                                  pattern.exitPrice,
+                                  decimals
+                                )
+                          }
+                        </div>
+                      </div>
+
+                      <div class="metric">
+                        <div class="metric-label">
+                          Realized R
+                        </div>
+
+                        <div class="metric-value">
+                          ${
+                            pattern.realizedR == null
+                              ? "—"
+                              : `${safeFixed(
+                                  pattern.realizedR,
+                                  2
+                                )}R`
+                          }
+                        </div>
+                      </div>
+
+                      <div class="metric">
+                        <div class="metric-label">
+                          Closed
+                        </div>
+
+                        <div class="metric-value">
+                          ${escapeHTML(
+                            getTimeAgo(
+                              pattern.terminalAt
+                            )
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    ${
+                      pattern.exitReason
+                        ? `
+                          <div
+                            class="scope-note"
+                            style="margin-top:10px;"
+                          >
+                            Exit reason:
+                            <b>
+                              ${escapeHTML(pattern.exitReason)}
+                            </b>
+                          </div>
+                        `
+                        : ""
+                    }
+                  </div>
+                `
+              )
+              .join("")
+          : `
+              <div class="empty-note">
+                No resolved or expired pattern signal history for
+                ${escapeHTML(pair.label)}.
+              </div>
+            `
+      }
+    </div>
+  `;
+}
+
 async function loadPatternDetector({
   forceRefresh = false,
   refreshMaster = true
@@ -22909,6 +23150,49 @@ async function loadPatternDetector({
           .maximumPatternSignalsPerPair
       );
 
+  const patternHistory =
+    safeArray(
+      patternPayload.items
+    )
+      .filter(
+        item=>
+          item.pairKey ===
+            pair.key &&
+          isTerminalPatternSignal(
+            item
+          )
+      )
+      .sort(
+        (
+          first,
+          second
+        )=>
+          (
+            safeDateMs(
+              second.terminalAt
+            ) ||
+            safeDateMs(
+              second.detectedAt
+            ) ||
+            0
+          ) -
+          (
+            safeDateMs(
+              first.terminalAt
+            ) ||
+            safeDateMs(
+              first.detectedAt
+            ) ||
+            0
+          )
+      )
+      .slice(
+        0,
+        APP_CONFIG
+          .limits
+          .maximumPatternSignalsPerPair
+      );
+
   const pipelineHTML =
     pipelineResult.status ===
       "fulfilled"
@@ -22961,6 +23245,15 @@ async function loadPatternDetector({
             </div>
           </div>
         `;
+
+  const patternHistoryHTML =
+    patternResult.status ===
+      "fulfilled"
+      ? renderPatternHistory(
+          patternHistory,
+          pair
+        )
+      : "";
 
   const freshnessSource =
     patternPayload.updatedAt ||
@@ -23015,6 +23308,8 @@ async function loadPatternDetector({
     ${pipelineHTML}
 
     ${patternFeedHTML}
+
+    ${patternHistoryHTML}
 
     <div class="footer-note">
       Pattern detections and institutional pipeline states

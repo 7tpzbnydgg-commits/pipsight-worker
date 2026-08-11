@@ -10455,6 +10455,1286 @@ function analyzeLiveTimeframe(
 
 
 // ---------------------------------------------------------------------------
+// Intraday + Swing Risk-Adjusted Trend Momentum (strictly additive)
+// ---------------------------------------------------------------------------
+
+const PROFESSIONAL_INTRADAY_SWING_MOMENTUM_VERSION =
+  "risk-adjusted-momentum-1.0.0";
+
+const PROFESSIONAL_INTRADAY_SWING_MOMENTUM_STRATEGY =
+  "RISK_ADJUSTED_TIME_SERIES_MOMENTUM";
+
+const PROFESSIONAL_INTRADAY_SWING_MOMENTUM_CONFIG = Object.freeze({
+  H1: Object.freeze({
+    momentumLookback: 6,
+    minimumMomentumAtr: 0.80,
+    minimumPersistenceRatio: 0.66,
+    minimumEmaSeparationAtr: 0.10,
+    maximumExtensionAtr: 1.80,
+    minimumBodyRatio: 0.55,
+  }),
+  D1: Object.freeze({
+    momentumLookback: 5,
+    minimumMomentumAtr: 1.00,
+    minimumPersistenceRatio: 0.60,
+    minimumEmaSeparationAtr: 0.12,
+    maximumExtensionAtr: 2.20,
+    minimumBodyRatio: 0.55,
+  }),
+});
+
+function professionalLiveMomentumConfigFor(timeframe) {
+  const key = professionalLiveTimeframeKey(timeframe);
+
+  return key === "H1" || key === "D1"
+    ? PROFESSIONAL_INTRADAY_SWING_MOMENTUM_CONFIG[key]
+    : null;
+}
+
+function professionalLiveAssessTrendPersistence(rows, direction, lookback) {
+  const source = Array.isArray(rows) ? rows : [];
+  const normalizedDirection = normalizePipelineDecision(direction);
+  const transitions = Math.max(1, Math.trunc(candleNumber(lookback, 1)));
+  const requiredRows = transitions + 1;
+  const window = source.slice(-requiredRows);
+
+  if (
+    (normalizedDirection !== "BUY" && normalizedDirection !== "SELL") ||
+    window.length < requiredRows
+  ) {
+    return {
+      available: false,
+      favorableMoves: 0,
+      observedMoves: 0,
+      ratio: 0,
+    };
+  }
+
+  let favorableMoves = 0;
+  let observedMoves = 0;
+
+  for (let index = 1; index < window.length; index += 1) {
+    const previous = candleNumber(window[index - 1].close);
+    const current = candleNumber(window[index].close);
+
+    if (!Number.isFinite(previous) || !Number.isFinite(current)) {
+      continue;
+    }
+
+    observedMoves += 1;
+
+    if (
+      normalizedDirection === "BUY"
+        ? current > previous
+        : current < previous
+    ) {
+      favorableMoves += 1;
+    }
+  }
+
+  return {
+    available: observedMoves === transitions,
+    favorableMoves,
+    observedMoves,
+    ratio:
+      observedMoves > 0
+        ? professionalLiveRound(favorableMoves / observedMoves, 4)
+        : 0,
+  };
+}
+
+function professionalLiveAssessRiskAdjustedMomentum(
+  rows,
+  direction,
+  atr,
+  lookback
+) {
+  const source = Array.isArray(rows) ? rows : [];
+  const normalizedDirection = normalizePipelineDecision(direction);
+  const period = Math.max(1, Math.trunc(candleNumber(lookback, 1)));
+  const current = source[source.length - 1] || null;
+  const reference = source[source.length - 1 - period] || null;
+  const currentClose = candleNumber(current && current.close);
+  const referenceClose = candleNumber(reference && reference.close);
+  const currentAtr = candleNumber(atr);
+
+  if (
+    (normalizedDirection !== "BUY" && normalizedDirection !== "SELL") ||
+    ![currentClose, referenceClose, currentAtr].every(Number.isFinite) ||
+    currentAtr <= 0
+  ) {
+    return {
+      available: false,
+      lookback: period,
+      rawMomentum: null,
+      directionalMomentum: null,
+      riskAdjustedMomentum: null,
+    };
+  }
+
+  const rawMomentum = currentClose - referenceClose;
+  const directionalMomentum =
+    normalizedDirection === "BUY"
+      ? rawMomentum
+      : -rawMomentum;
+
+  return {
+    available: true,
+    lookback: period,
+    rawMomentum: professionalLiveRound(rawMomentum, 8),
+    directionalMomentum: professionalLiveRound(directionalMomentum, 8),
+    riskAdjustedMomentum: professionalLiveRound(
+      directionalMomentum / currentAtr,
+      4
+    ),
+  };
+}
+
+function professionalLiveAssessMomentumContinuation(
+  rows,
+  direction,
+  minimumBodyRatio
+) {
+  const source = Array.isArray(rows) ? rows : [];
+  const normalizedDirection = normalizePipelineDecision(direction);
+  const last = source[source.length - 1] || null;
+  const previous = source[source.length - 2] || null;
+
+  if (
+    (normalizedDirection !== "BUY" && normalizedDirection !== "SELL") ||
+    !last ||
+    !previous
+  ) {
+    return {
+      available: false,
+      confirmed: false,
+      breakout: false,
+      structureBreak: false,
+      strongDirectionalClose: false,
+      bodyRatio: null,
+    };
+  }
+
+  const range = candleNumber(last.high) - candleNumber(last.low);
+  const body = Math.abs(candleNumber(last.close) - candleNumber(last.open));
+  const bodyRatio = Number.isFinite(range) && range > 0 ? body / range : 0;
+  const directionalBody =
+    normalizedDirection === "BUY"
+      ? last.close > last.open
+      : last.close < last.open;
+  const breakout =
+    normalizedDirection === "BUY"
+      ? last.close > previous.high
+      : last.close < previous.low;
+  const strongDirectionalClose =
+    directionalBody &&
+    bodyRatio >= minimumBodyRatio &&
+    (
+      normalizedDirection === "BUY"
+        ? last.close > previous.close
+        : last.close < previous.close
+    );
+  const priorSwings = professionalLiveConfirmedSwingLevels(
+    source.slice(0, -1)
+  );
+  const structureBreak =
+    normalizedDirection === "BUY"
+      ? priorSwings.highs.some(
+          level => previous.close <= level && last.close > level
+        )
+      : priorSwings.lows.some(
+          level => previous.close >= level && last.close < level
+        );
+
+  return {
+    available: true,
+    confirmed:
+      breakout ||
+      structureBreak ||
+      strongDirectionalClose,
+    breakout,
+    structureBreak,
+    strongDirectionalClose,
+    bodyRatio: professionalLiveRound(bodyRatio, 4),
+  };
+}
+
+function professionalLiveAssessEntryExtension({
+  analysis,
+  rows,
+  direction,
+  atr,
+  maximumExtensionAtr,
+}) {
+  const normalizedDirection = normalizePipelineDecision(direction);
+  const currentPrice = candleNumber(
+    analysis && (
+      analysis.price ??
+      analysis.currentPrice ??
+      analysis.lastPrice
+    )
+  );
+  const currentAtr = candleNumber(atr);
+  const ema = analysis?.indicatorSnapshot?.ema || null;
+  const emaReference = candleNumber(
+    ema?.values?.ema20,
+    candleNumber(ema?.values?.ema50)
+  );
+  const structureReference = professionalLiveRecentStructureLevel(
+    Array.isArray(rows) ? rows.slice(0, -1) : [],
+    normalizedDirection
+  );
+
+  if (
+    (normalizedDirection !== "BUY" && normalizedDirection !== "SELL") ||
+    !Number.isFinite(currentPrice) ||
+    !Number.isFinite(currentAtr) ||
+    currentAtr <= 0 ||
+    !Number.isFinite(emaReference)
+  ) {
+    return {
+      available: false,
+      emaReference: Number.isFinite(emaReference) ? emaReference : null,
+      structureReference:
+        Number.isFinite(structureReference) ? structureReference : null,
+      extensionAtr: null,
+      structureExtensionAtr: null,
+      maximumExtensionAtr,
+      overextended: true,
+    };
+  }
+
+  const extensionAtr = Math.abs(currentPrice - emaReference) / currentAtr;
+  const structureExtensionAtr = Number.isFinite(structureReference)
+    ? Math.abs(currentPrice - structureReference) / currentAtr
+    : null;
+
+  return {
+    available: true,
+    emaReference,
+    structureReference:
+      Number.isFinite(structureReference) ? structureReference : null,
+    extensionAtr: professionalLiveRound(extensionAtr, 4),
+    structureExtensionAtr:
+      Number.isFinite(structureExtensionAtr)
+        ? professionalLiveRound(structureExtensionAtr, 4)
+        : null,
+    maximumExtensionAtr,
+    overextended: extensionAtr > maximumExtensionAtr,
+  };
+}
+
+function professionalLiveMomentumRsiQualified(rsi, direction) {
+  const normalizedDirection = normalizePipelineDecision(direction);
+
+  if (!rsi || rsi.available !== true) {
+    return false;
+  }
+
+  if (normalizedDirection === "BUY") {
+    return (
+      (rsi.regime === "BULLISH_CONTROL" || rsi.regime === "BULLISH_MOMENTUM") &&
+      rsi.current > 50 &&
+      rsi.current < 75 &&
+      (
+        (Number.isFinite(rsi.slope) && rsi.slope >= 0) ||
+        (Number.isFinite(rsi.momentum3) && rsi.momentum3 > 0)
+      )
+    );
+  }
+
+  if (normalizedDirection === "SELL") {
+    return (
+      (rsi.regime === "BEARISH_CONTROL" || rsi.regime === "BEARISH_MOMENTUM") &&
+      rsi.current < 50 &&
+      rsi.current > 25 &&
+      (
+        (Number.isFinite(rsi.slope) && rsi.slope <= 0) ||
+        (Number.isFinite(rsi.momentum3) && rsi.momentum3 < 0)
+      )
+    );
+  }
+
+  return false;
+}
+
+function professionalLiveAssessMomentumDirection({
+  analysis,
+  rows,
+  direction,
+  timeframe,
+}) {
+  const normalizedDirection = normalizePipelineDecision(direction);
+  const config = professionalLiveMomentumConfigFor(timeframe);
+  const ema = analysis?.indicatorSnapshot?.ema || null;
+  const rsi = analysis?.indicatorSnapshot?.rsi || null;
+  const dmiAdx = analysis?.indicatorSnapshot?.dmiAdx || null;
+  const atr = analysis?.indicatorSnapshot?.atr || null;
+  const structure =
+    analysis?.indicatorSnapshot?.structure ||
+    analysis?.structure ||
+    null;
+  const currentAtr = candleNumber(atr?.current, candleNumber(analysis?.atr));
+
+  if (!config || !Number.isFinite(currentAtr) || currentAtr <= 0) {
+    return {
+      qualified: false,
+      direction: normalizedDirection,
+      reason: "Momentum strategy requires supported H1/D1 timeframe and valid ATR",
+    };
+  }
+
+  const comparisonCount =
+    normalizedDirection === "BUY"
+      ? candleNumber(ema?.bullishCount, 0)
+      : candleNumber(ema?.bearishCount, 0);
+  const slopeCount =
+    normalizedDirection === "BUY"
+      ? candleNumber(ema?.bullishSlopeCount, 0)
+      : candleNumber(ema?.bearishSlopeCount, 0);
+  const emaDirectionQualified =
+    ema?.available === true &&
+    ema.direction === normalizedDirection &&
+    comparisonCount >= 3 &&
+    slopeCount >= 2;
+  const emaSeparationAtr =
+    Number.isFinite(candleNumber(ema?.values?.ema20)) &&
+    Number.isFinite(candleNumber(ema?.values?.ema50))
+      ? Math.abs(ema.values.ema20 - ema.values.ema50) / currentAtr
+      : null;
+  const emaSeparationQualified =
+    Number.isFinite(emaSeparationAtr) &&
+    emaSeparationAtr >= config.minimumEmaSeparationAtr;
+  const dmiQualified =
+    dmiAdx?.available === true &&
+    dmiAdx.direction === normalizedDirection &&
+    ["DEVELOPING", "TRENDING", "STRONG"].includes(dmiAdx.regime);
+  const structureQualified =
+    structure &&
+    (
+      structure.direction === normalizedDirection ||
+      structure.direction === "NEUTRAL"
+    );
+  const persistence = professionalLiveAssessTrendPersistence(
+    rows,
+    normalizedDirection,
+    config.momentumLookback
+  );
+  const persistenceQualified =
+    persistence.available === true &&
+    persistence.ratio >= config.minimumPersistenceRatio;
+  const momentum = professionalLiveAssessRiskAdjustedMomentum(
+    rows,
+    normalizedDirection,
+    currentAtr,
+    config.momentumLookback
+  );
+  const momentumQualified =
+    momentum.available === true &&
+    Number.isFinite(momentum.riskAdjustedMomentum) &&
+    momentum.riskAdjustedMomentum >= config.minimumMomentumAtr;
+  const rsiQualified = professionalLiveMomentumRsiQualified(
+    rsi,
+    normalizedDirection
+  );
+  const continuation = professionalLiveAssessMomentumContinuation(
+    rows,
+    normalizedDirection,
+    config.minimumBodyRatio
+  );
+  const extension = professionalLiveAssessEntryExtension({
+    analysis,
+    rows,
+    direction: normalizedDirection,
+    atr: currentAtr,
+    maximumExtensionAtr: config.maximumExtensionAtr,
+  });
+  const extensionQualified =
+    extension.available === true &&
+    extension.overextended !== true;
+  const volatilityQualified =
+    atr?.available === true &&
+    atr.hardBlock !== true;
+
+  const checks = {
+    emaDirectionQualified,
+    emaSeparationQualified,
+    dmiQualified,
+    structureQualified: Boolean(structureQualified),
+    persistenceQualified,
+    momentumQualified,
+    rsiQualified,
+    continuationQualified: continuation.confirmed === true,
+    extensionQualified,
+    volatilityQualified,
+  };
+  const trendQualityScore =
+    (emaDirectionQualified
+      ? ema.fullAlignment === true
+        ? 20
+        : 16
+      : 0) +
+    (dmiQualified
+      ? dmiAdx.regime === "STRONG"
+        ? 15
+        : dmiAdx.regime === "TRENDING"
+          ? 12
+          : 9
+      : 0) +
+    (structureQualified
+      ? structure.direction === normalizedDirection
+        ? 10
+        : 6
+      : 0);
+  const momentumQualityScore =
+    (momentumQualified
+      ? professionalLiveClamp(
+          momentum.riskAdjustedMomentum /
+            Math.max(config.minimumMomentumAtr, 1e-9) * 10,
+          10,
+          20
+        )
+      : 0) +
+    (persistenceQualified
+      ? professionalLiveClamp(persistence.ratio * 10, 0, 10)
+      : 0);
+  const rsiQualityScore = rsiQualified ? 10 : 0;
+  const continuationQualityScore = continuation.confirmed
+    ? continuation.breakout || continuation.structureBreak
+      ? 10
+      : 8
+    : 0;
+  const extensionQualityScore = extensionQualified
+    ? professionalLiveClamp(
+        5 *
+          (1 -
+            Math.min(
+              extension.extensionAtr /
+                Math.max(config.maximumExtensionAtr, 1e-9),
+              1
+            )),
+        0,
+        5
+      )
+    : 0;
+  const strategyScore = professionalLiveRound(
+    trendQualityScore +
+      momentumQualityScore +
+      rsiQualityScore +
+      continuationQualityScore +
+      extensionQualityScore,
+    2
+  );
+  const qualified = Object.values(checks).every(Boolean);
+  const failedChecks = Object.entries(checks)
+    .filter(([, passed]) => !passed)
+    .map(([name]) => name);
+
+  return {
+    qualified,
+    direction: normalizedDirection,
+    version: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_VERSION,
+    strategy: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_STRATEGY,
+    timeframe: professionalLiveTimeframeKey(timeframe),
+    strategyScore,
+    checks,
+    failedChecks,
+    emaPeriods: ema?.periods || null,
+    emaSeparationAtr:
+      Number.isFinite(emaSeparationAtr)
+        ? professionalLiveRound(emaSeparationAtr, 4)
+        : null,
+    minimumEmaSeparationAtr: config.minimumEmaSeparationAtr,
+    persistence,
+    minimumPersistenceRatio: config.minimumPersistenceRatio,
+    momentum,
+    minimumMomentumAtr: config.minimumMomentumAtr,
+    rsi: {
+      current: rsi?.current ?? null,
+      slope: rsi?.slope ?? null,
+      momentum3: rsi?.momentum3 ?? null,
+      regime: rsi?.regime || "UNAVAILABLE",
+      qualified: rsiQualified,
+    },
+    continuation,
+    extension,
+    volatility: {
+      regime: atr?.regime || "UNAVAILABLE",
+      hardBlock: atr?.hardBlock === true,
+    },
+    reason: qualified
+      ? `${normalizedDirection} risk-adjusted trend momentum qualified`
+      : `Risk-adjusted trend momentum rejected: ${failedChecks.join(", ")}`,
+  };
+}
+
+function professionalLiveSelectMomentumDirection(analysis, rows, timeframe) {
+  const buy = professionalLiveAssessMomentumDirection({
+    analysis,
+    rows,
+    direction: "BUY",
+    timeframe,
+  });
+  const sell = professionalLiveAssessMomentumDirection({
+    analysis,
+    rows,
+    direction: "SELL",
+    timeframe,
+  });
+
+  if (buy.qualified && !sell.qualified) {
+    return { direction: "BUY", assessment: buy, buy, sell };
+  }
+
+  if (sell.qualified && !buy.qualified) {
+    return { direction: "SELL", assessment: sell, buy, sell };
+  }
+
+  return {
+    direction: "HOLD",
+    assessment:
+      buy.strategyScore >= sell.strategyScore
+        ? buy
+        : sell,
+    buy,
+    sell,
+  };
+}
+
+function professionalLiveValidateAdaptiveInvalidation({
+  direction,
+  plan,
+  rows,
+  atrSnapshot,
+  pair,
+  timeframe,
+}) {
+  const normalizedDirection = normalizePipelineDecision(direction);
+  const config = professionalLiveConfigFor(timeframe);
+  const currentAtr = candleNumber(atrSnapshot?.current);
+  const entry = candleNumber(plan?.entry, candleNumber(plan?.entryPrice));
+  const stop = candleNumber(
+    plan?.stopLoss,
+    candleNumber(plan?.stop, candleNumber(plan?.sl))
+  );
+
+  if (
+    (normalizedDirection !== "BUY" && normalizedDirection !== "SELL") ||
+    ![currentAtr, entry, stop].every(Number.isFinite) ||
+    currentAtr <= 0
+  ) {
+    return {
+      qualified: false,
+      reason: "Adaptive invalidation requires valid direction, ATR, entry and stop",
+    };
+  }
+
+  const confirmedSwingLevels = professionalLiveConfirmedSwingLevels(rows);
+  const confirmedSupports = confirmedSwingLevels.lows.filter(level => level < entry);
+  const confirmedResistances = confirmedSwingLevels.highs.filter(level => level > entry);
+  const nearestSupport = confirmedSupports.length
+    ? Math.max(...confirmedSupports)
+    : null;
+  const nearestResistance = confirmedResistances.length
+    ? Math.min(...confirmedResistances)
+    : null;
+  const recentStructureLevel = professionalLiveRecentStructureLevel(
+    rows,
+    normalizedDirection
+  );
+  const candidates = [];
+
+  if (normalizedDirection === "BUY") {
+    if (Number.isFinite(nearestSupport)) candidates.push(nearestSupport);
+    if (Number.isFinite(recentStructureLevel) && recentStructureLevel < entry) {
+      candidates.push(recentStructureLevel);
+    }
+  } else {
+    if (Number.isFinite(nearestResistance)) candidates.push(nearestResistance);
+    if (Number.isFinite(recentStructureLevel) && recentStructureLevel > entry) {
+      candidates.push(recentStructureLevel);
+    }
+  }
+
+  const selectedStructureLevel = candidates.length
+    ? normalizedDirection === "BUY"
+      ? Math.max(...candidates)
+      : Math.min(...candidates)
+    : null;
+  const structureBuffer = currentAtr * 0.15;
+  const requiredStop = Number.isFinite(selectedStructureLevel)
+    ? normalizedDirection === "BUY"
+      ? selectedStructureLevel - structureBuffer
+      : selectedStructureLevel + structureBuffer
+    : null;
+  const requiredStructureDistance = Number.isFinite(requiredStop)
+    ? Math.abs(entry - requiredStop)
+    : null;
+  const actualRisk = Math.abs(entry - stop);
+  const minimumDistance = currentAtr * 0.75;
+  const maximumDistance = currentAtr * config.maximumStopAtr;
+  const decimals = livePairPriceDecimals(pair);
+  const epsilon = 1 / (10 ** Math.max(0, decimals));
+  const structureTooWide =
+    Number.isFinite(requiredStructureDistance) &&
+    requiredStructureDistance > maximumDistance + epsilon;
+  const stopProtectsStructure =
+    !Number.isFinite(requiredStop) ||
+    (
+      normalizedDirection === "BUY"
+        ? stop <= requiredStop + epsilon
+        : stop >= requiredStop - epsilon
+    );
+  const minimumStopProtected = actualRisk + epsilon >= minimumDistance;
+  const maximumStopProtected = actualRisk <= maximumDistance + epsilon;
+  const qualified =
+    !structureTooWide &&
+    stopProtectsStructure &&
+    minimumStopProtected &&
+    maximumStopProtected;
+
+  return {
+    qualified,
+    model: "ATR_REGIME_STRUCTURE_INVALIDATION_VALIDATION",
+    selectedStructureLevel,
+    requiredStop,
+    requiredStructureDistance:
+      Number.isFinite(requiredStructureDistance)
+        ? professionalLiveRound(requiredStructureDistance, decimals)
+        : null,
+    actualRisk: professionalLiveRound(actualRisk, decimals),
+    actualRiskAtr: professionalLiveRound(actualRisk / currentAtr, 4),
+    minimumRiskAtr: 0.75,
+    maximumRiskAtr: config.maximumStopAtr,
+    structureTooWide,
+    stopProtectsStructure,
+    minimumStopProtected,
+    maximumStopProtected,
+    structureStopUsed: plan?.riskDiagnostics?.structureUsed === true,
+    reason: qualified
+      ? "Final stop preserves the accepted volatility/structure invalidation envelope"
+      : structureTooWide
+        ? "Confirmed structure requires risk beyond the professional maximum; trade rejected instead of tightening the stop"
+        : !stopProtectsStructure
+          ? "Final stop does not protect the confirmed structure invalidation point"
+          : !minimumStopProtected
+            ? "Final stop is inside the normal-noise protection floor"
+            : "Final stop exceeds the professional maximum risk envelope",
+  };
+}
+
+function professionalLiveValidateMarketRoom({
+  direction,
+  plan,
+  rows,
+  timeframe,
+}) {
+  const normalizedDirection = normalizePipelineDecision(direction);
+  const config = professionalLiveConfigFor(timeframe);
+  const entry = candleNumber(plan?.entry, candleNumber(plan?.entryPrice));
+  const stop = candleNumber(
+    plan?.stopLoss,
+    candleNumber(plan?.stop, candleNumber(plan?.sl))
+  );
+  const risk =
+    Number.isFinite(entry) && Number.isFinite(stop)
+      ? Math.abs(entry - stop)
+      : null;
+
+  if (
+    (normalizedDirection !== "BUY" && normalizedDirection !== "SELL") ||
+    !Number.isFinite(entry) ||
+    !Number.isFinite(risk) ||
+    risk <= 0
+  ) {
+    return {
+      qualified: false,
+      reason: "Market-room validation requires valid direction, entry and final risk",
+    };
+  }
+
+  const confirmedSwingLevels = professionalLiveConfirmedSwingLevels(rows);
+  const opposingBarrier =
+    normalizedDirection === "BUY"
+      ? confirmedSwingLevels.highs
+          .filter(level => level > entry)
+          .sort((left, right) => left - right)[0] ?? null
+      : confirmedSwingLevels.lows
+          .filter(level => level < entry)
+          .sort((left, right) => right - left)[0] ?? null;
+  const barrierDistance = Number.isFinite(opposingBarrier)
+    ? Math.abs(opposingBarrier - entry)
+    : null;
+  const barrierR = Number.isFinite(barrierDistance)
+    ? barrierDistance / risk
+    : null;
+  const minimumRiskReward = config.minimumRiskReward;
+  const targetRewards = [
+    candleNumber(plan?.target1, candleNumber(plan?.tp1)),
+    candleNumber(plan?.target2, candleNumber(plan?.tp2)),
+    candleNumber(plan?.target3, candleNumber(plan?.tp3)),
+  ].map(target =>
+    Number.isFinite(target)
+      ? Math.abs(target - entry) / risk
+      : null
+  );
+  const targetMarketRoomConfirmed = targetRewards.map(requiredR =>
+    !Number.isFinite(requiredR) ||
+    !Number.isFinite(barrierR) ||
+    barrierR + 1e-9 >= requiredR
+  );
+  const qualified =
+    !Number.isFinite(barrierR) ||
+    barrierR + 1e-9 >= minimumRiskReward;
+
+  return {
+    qualified,
+    opposingBarrier:
+      Number.isFinite(opposingBarrier) ? opposingBarrier : null,
+    barrierDistance:
+      Number.isFinite(barrierDistance)
+        ? professionalLiveRound(barrierDistance, 8)
+        : null,
+    barrierR:
+      Number.isFinite(barrierR)
+        ? professionalLiveRound(barrierR, 4)
+        : null,
+    minimumRiskReward,
+    target1MarketRoomConfirmed: targetMarketRoomConfirmed[0],
+    target2MarketRoomConfirmed: targetMarketRoomConfirmed[1],
+    target3MarketRoomConfirmed: targetMarketRoomConfirmed[2],
+    reason: qualified
+      ? Number.isFinite(barrierR)
+        ? `Confirmed opposing structure leaves ${professionalLiveRound(barrierR, 2)}R of market room`
+        : "No confirmed opposing swing barrier limits the available reward"
+      : `Confirmed opposing structure leaves only ${professionalLiveRound(barrierR, 2)}R; trade rejected rather than tightening the stop`,
+  };
+}
+
+function professionalLiveMomentumHoldResult(
+  source,
+  reason,
+  momentumDiagnostics,
+  riskDiagnostics,
+  stepName = "Risk-Adjusted Momentum Safety"
+) {
+  const steps = Array.isArray(source?.steps) ? [...source.steps] : [];
+  steps.push(
+    livePipelineStep(
+      stepName,
+      "fail",
+      reason,
+      {
+        momentumStrategy: momentumDiagnostics || null,
+        adaptiveRisk: riskDiagnostics || null,
+      }
+    )
+  );
+
+  return {
+    ...source,
+    decision: "HOLD",
+    signal: "HOLD",
+    action: "HOLD",
+    direction: "HOLD",
+    confidence: Math.min(candleInteger(source?.confidence, 0), 69),
+    tradePlan: null,
+    plan: null,
+    entry: null,
+    entryPrice: null,
+    stop: null,
+    stopLoss: null,
+    sl: null,
+    target1: null,
+    target2: null,
+    target3: null,
+    takeProfit1: null,
+    takeProfit2: null,
+    takeProfit3: null,
+    tp1: null,
+    tp2: null,
+    tp3: null,
+    riskReward: null,
+    rr: null,
+    reason,
+    steps,
+    pipeline: steps,
+    confluence: {
+      ...(source?.confluence && typeof source.confluence === "object"
+        ? source.confluence
+        : {}),
+      qualified: false,
+      selectedDirection: "HOLD",
+      hardBlocks: [
+        ...(
+          Array.isArray(source?.confluence?.hardBlocks)
+            ? source.confluence.hardBlocks
+            : []
+        ),
+        reason,
+      ],
+    },
+    metadata: {
+      ...(source?.metadata && typeof source.metadata === "object"
+        ? source.metadata
+        : {}),
+      strategyCandidate: {
+        version: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_VERSION,
+        strategy: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_STRATEGY,
+        applied: true,
+        qualified: false,
+        reason,
+      },
+    },
+    diagnostics: {
+      ...(source?.diagnostics && typeof source.diagnostics === "object"
+        ? source.diagnostics
+        : {}),
+      momentumStrategy: momentumDiagnostics || null,
+    },
+    riskDiagnostics: {
+      ...(source?.riskDiagnostics && typeof source.riskDiagnostics === "object"
+        ? source.riskDiagnostics
+        : {}),
+      adaptiveInvalidation: riskDiagnostics?.adaptiveInvalidation || null,
+      marketRoom: riskDiagnostics?.marketRoom || null,
+    },
+  };
+}
+
+function professionalLiveApplyIntradaySwingMomentumLayer(
+  sourceAnalysis,
+  rows,
+  options = {}
+) {
+  if (!sourceAnalysis || typeof sourceAnalysis !== "object") {
+    return sourceAnalysis;
+  }
+
+  const timeframeKey = professionalLiveTimeframeKey(
+    options.timeframe || sourceAnalysis.professionalTimeframe || sourceAnalysis.timeframe
+  );
+  const config = professionalLiveMomentumConfigFor(timeframeKey);
+
+  if (!config) {
+    return sourceAnalysis;
+  }
+
+  const nowMs = candleNumber(options.nowMs, Date.now());
+  const closedResult = professionalLiveClosedRows(rows, timeframeKey, nowMs);
+  const closedRows = closedResult.rows;
+  const legacyDecision = normalizePipelineDecision(
+    sourceAnalysis.decision || sourceAnalysis.signal || sourceAnalysis.direction
+  );
+  const existingHardBlocks = Array.isArray(sourceAnalysis?.confluence?.hardBlocks)
+    ? sourceAnalysis.confluence.hardBlocks.filter(Boolean)
+    : [];
+  const selection = professionalLiveSelectMomentumDirection(
+    sourceAnalysis,
+    closedRows,
+    timeframeKey
+  );
+  const activeDirection =
+    legacyDecision === "BUY" || legacyDecision === "SELL"
+      ? legacyDecision
+      : selection.direction;
+  const activeAssessment =
+    activeDirection === "BUY"
+      ? selection.buy
+      : activeDirection === "SELL"
+        ? selection.sell
+        : selection.assessment;
+  const steps = Array.isArray(sourceAnalysis.steps)
+    ? [...sourceAnalysis.steps]
+    : [];
+
+  if (
+    legacyDecision === "HOLD" &&
+    existingHardBlocks.length > 0
+  ) {
+    steps.push(
+      livePipelineStep(
+        "Risk-Adjusted Momentum Strategy",
+        "skip",
+        `Existing hard block retained: ${existingHardBlocks.join("; ")}`,
+        {
+          version: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_VERSION,
+          strategy: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_STRATEGY,
+          buy: selection.buy,
+          sell: selection.sell,
+        }
+      )
+    );
+
+    return {
+      ...sourceAnalysis,
+      steps,
+      pipeline: steps,
+      diagnostics: {
+        ...(sourceAnalysis?.diagnostics && typeof sourceAnalysis.diagnostics === "object"
+          ? sourceAnalysis.diagnostics
+          : {}),
+        momentumStrategy: {
+          version: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_VERSION,
+          strategy: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_STRATEGY,
+          applied: false,
+          qualified: false,
+          status: "BLOCKED_BY_EXISTING_HARD_BLOCK",
+          hardBlocks: existingHardBlocks,
+          buy: selection.buy,
+          sell: selection.sell,
+        },
+      },
+    };
+  }
+
+  if (activeDirection !== "BUY" && activeDirection !== "SELL") {
+    steps.push(
+      livePipelineStep(
+        "Risk-Adjusted Momentum Strategy",
+        "fail",
+        "No H1/D1 risk-adjusted momentum candidate qualified",
+        {
+          version: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_VERSION,
+          strategy: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_STRATEGY,
+          buy: selection.buy,
+          sell: selection.sell,
+        }
+      )
+    );
+
+    return {
+      ...sourceAnalysis,
+      steps,
+      pipeline: steps,
+      diagnostics: {
+        ...(sourceAnalysis?.diagnostics && typeof sourceAnalysis.diagnostics === "object"
+          ? sourceAnalysis.diagnostics
+          : {}),
+        momentumStrategy: {
+          version: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_VERSION,
+          strategy: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_STRATEGY,
+          applied: true,
+          qualified: false,
+          selectedDirection: "HOLD",
+          buy: selection.buy,
+          sell: selection.sell,
+        },
+      },
+    };
+  }
+
+  if (
+    activeAssessment?.extension?.available === true &&
+    activeAssessment.extension.overextended === true
+  ) {
+    return professionalLiveMomentumHoldResult(
+      sourceAnalysis,
+      `${timeframeKey} ${activeDirection} entry is overextended at ${activeAssessment.extension.extensionAtr} ATR from the trend reference`,
+      {
+        legacyDecision,
+        selectedDirection: activeDirection,
+        assessment: activeAssessment,
+        buy: selection.buy,
+        sell: selection.sell,
+      },
+      null,
+      "Risk-Adjusted Momentum Overextension"
+    );
+  }
+
+  let tradePlan =
+    legacyDecision === "BUY" || legacyDecision === "SELL"
+      ? sourceAnalysis.tradePlan || sourceAnalysis.plan || null
+      : null;
+
+  if (!tradePlan && selection.direction !== "HOLD") {
+    const atrSnapshot = sourceAnalysis?.indicatorSnapshot?.atr || null;
+    const currentPrice = candleNumber(
+      sourceAnalysis.price,
+      candleNumber(sourceAnalysis.currentPrice)
+    );
+    const supportResistance =
+      sourceAnalysis.supportResistance ||
+      liveSupportResistance(closedRows, currentPrice);
+
+    tradePlan = buildLiveTradePlan({
+      direction: activeDirection,
+      price: currentPrice,
+      atr: atrSnapshot?.current,
+      atrSnapshot,
+      supportResistance,
+      pair: options.pair || sourceAnalysis.pair,
+      timeframe: timeframeKey,
+      rows: closedRows,
+    });
+  }
+
+  if (!tradePlan) {
+    if (legacyDecision === "BUY" || legacyDecision === "SELL") {
+      return professionalLiveMomentumHoldResult(
+        sourceAnalysis,
+        "Existing H1/D1 setup has no usable professional trade plan",
+        {
+          legacyDecision,
+          selectedDirection: activeDirection,
+          assessment: activeAssessment,
+          buy: selection.buy,
+          sell: selection.sell,
+        },
+        null
+      );
+    }
+
+    steps.push(
+      livePipelineStep(
+        "Risk-Adjusted Momentum Strategy",
+        "fail",
+        "Momentum direction qualified but the existing professional trade-plan builder rejected the geometry",
+        {
+          version: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_VERSION,
+          strategy: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_STRATEGY,
+          selectedDirection: activeDirection,
+          assessment: activeAssessment,
+        }
+      )
+    );
+
+    return {
+      ...sourceAnalysis,
+      steps,
+      pipeline: steps,
+      diagnostics: {
+        ...(sourceAnalysis?.diagnostics && typeof sourceAnalysis.diagnostics === "object"
+          ? sourceAnalysis.diagnostics
+          : {}),
+        momentumStrategy: {
+          version: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_VERSION,
+          strategy: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_STRATEGY,
+          applied: true,
+          qualified: false,
+          selectedDirection: activeDirection,
+          assessment: activeAssessment,
+          reason: "Existing professional trade-plan builder rejected the geometry",
+        },
+      },
+    };
+  }
+
+  const adaptiveInvalidation = professionalLiveValidateAdaptiveInvalidation({
+    direction: activeDirection,
+    plan: tradePlan,
+    rows: closedRows,
+    atrSnapshot: sourceAnalysis?.indicatorSnapshot?.atr || null,
+    pair: options.pair || sourceAnalysis.pair,
+    timeframe: timeframeKey,
+  });
+  const marketRoom = professionalLiveValidateMarketRoom({
+    direction: activeDirection,
+    plan: tradePlan,
+    rows: closedRows,
+    timeframe: timeframeKey,
+  });
+  const riskDiagnostics = {
+    adaptiveInvalidation,
+    marketRoom,
+  };
+
+  if (!adaptiveInvalidation.qualified) {
+    return professionalLiveMomentumHoldResult(
+      sourceAnalysis,
+      adaptiveInvalidation.reason,
+      {
+        legacyDecision,
+        selectedDirection: activeDirection,
+        assessment: activeAssessment,
+        buy: selection.buy,
+        sell: selection.sell,
+      },
+      riskDiagnostics,
+      "Adaptive Invalidation Validation"
+    );
+  }
+
+  if (!marketRoom.qualified) {
+    return professionalLiveMomentumHoldResult(
+      sourceAnalysis,
+      marketRoom.reason,
+      {
+        legacyDecision,
+        selectedDirection: activeDirection,
+        assessment: activeAssessment,
+        buy: selection.buy,
+        sell: selection.sell,
+      },
+      riskDiagnostics,
+      "Market-Aware Target Geometry"
+    );
+  }
+
+  if (legacyDecision === "BUY" || legacyDecision === "SELL") {
+    steps.push(
+      livePipelineStep(
+        "Risk-Adjusted Momentum Safety",
+        "pass",
+        `Existing ${legacyDecision} setup preserved; adaptive invalidation and market-room validation passed`,
+        {
+          version: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_VERSION,
+          strategy: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_STRATEGY,
+          legacyDecision,
+          momentumAssessment: activeAssessment,
+          adaptiveInvalidation,
+          marketRoom,
+        }
+      )
+    );
+
+    return {
+      ...sourceAnalysis,
+      steps,
+      pipeline: steps,
+      metadata: {
+        ...(sourceAnalysis?.metadata && typeof sourceAnalysis.metadata === "object"
+          ? sourceAnalysis.metadata
+          : {}),
+        strategyCandidate: {
+          version: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_VERSION,
+          strategy: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_STRATEGY,
+          applied: true,
+          legacyDecisionPreserved: true,
+          momentumQualified: activeAssessment?.qualified === true,
+        },
+      },
+      diagnostics: {
+        ...(sourceAnalysis?.diagnostics && typeof sourceAnalysis.diagnostics === "object"
+          ? sourceAnalysis.diagnostics
+          : {}),
+        momentumStrategy: {
+          version: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_VERSION,
+          strategy: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_STRATEGY,
+          applied: true,
+          legacyDecisionPreserved: true,
+          selectedDirection: legacyDecision,
+          assessment: activeAssessment,
+          buy: selection.buy,
+          sell: selection.sell,
+        },
+      },
+      riskDiagnostics: {
+        ...(sourceAnalysis?.riskDiagnostics && typeof sourceAnalysis.riskDiagnostics === "object"
+          ? sourceAnalysis.riskDiagnostics
+          : {}),
+        adaptiveInvalidation,
+        marketRoom,
+      },
+    };
+  }
+
+  const candidateConfidence = professionalLiveClamp(
+    Math.round(
+      55 +
+      Math.max(0, activeAssessment.strategyScore - 60) * 0.7
+    ),
+    55,
+    92
+  );
+  const signedScore =
+    activeDirection === "BUY"
+      ? activeAssessment.strategyScore
+      : -activeAssessment.strategyScore;
+  const candidateStep = livePipelineStep(
+    "Risk-Adjusted Momentum Strategy",
+    "pass",
+    `${activeDirection} qualified by risk-adjusted trend momentum with valid market geometry`,
+    {
+      version: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_VERSION,
+      strategy: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_STRATEGY,
+      assessment: activeAssessment,
+      adaptiveInvalidation,
+      marketRoom,
+    }
+  );
+  const candidateSteps = [...steps, candidateStep];
+  const entry = candleNumber(tradePlan.entry, candleNumber(tradePlan.entryPrice));
+  const stop = candleNumber(tradePlan.stopLoss, candleNumber(tradePlan.stop));
+
+  return {
+    ...sourceAnalysis,
+    decision: activeDirection,
+    signal: activeDirection,
+    action: activeDirection,
+    direction: activeDirection,
+    rawDirection: activeDirection,
+    confidence: candidateConfidence,
+    score: professionalLiveRound(signedScore, 2),
+    reason: `${activeDirection} setup qualified by ${PROFESSIONAL_INTRADAY_SWING_MOMENTUM_STRATEGY}`,
+    tradePlan,
+    plan: tradePlan,
+    entry,
+    entryPrice: entry,
+    stop,
+    stopLoss: stop,
+    sl: candleNumber(tradePlan.sl, stop),
+    target1: tradePlan.target1,
+    target2: tradePlan.target2,
+    target3: tradePlan.target3,
+    takeProfit1: tradePlan.takeProfit1,
+    takeProfit2: tradePlan.takeProfit2,
+    takeProfit3: tradePlan.takeProfit3,
+    tp1: tradePlan.tp1,
+    tp2: tradePlan.tp2,
+    tp3: tradePlan.tp3,
+    riskReward: tradePlan.riskReward,
+    rr: tradePlan.rr,
+    steps: candidateSteps,
+    pipeline: candidateSteps,
+    confluence: {
+      ...(sourceAnalysis?.confluence && typeof sourceAnalysis.confluence === "object"
+        ? sourceAnalysis.confluence
+        : {}),
+      qualified: true,
+      selectedDirection: activeDirection,
+      momentumStrategyQualified: true,
+    },
+    metadata: {
+      ...(sourceAnalysis?.metadata && typeof sourceAnalysis.metadata === "object"
+        ? sourceAnalysis.metadata
+        : {}),
+      strategyCandidate: {
+        version: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_VERSION,
+        strategy: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_STRATEGY,
+        applied: true,
+        qualified: true,
+        selectedDirection: activeDirection,
+      },
+    },
+    diagnostics: {
+      ...(sourceAnalysis?.diagnostics && typeof sourceAnalysis.diagnostics === "object"
+        ? sourceAnalysis.diagnostics
+        : {}),
+      momentumStrategy: {
+        version: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_VERSION,
+        strategy: PROFESSIONAL_INTRADAY_SWING_MOMENTUM_STRATEGY,
+        applied: true,
+        qualified: true,
+        selectedDirection: activeDirection,
+        assessment: activeAssessment,
+        buy: selection.buy,
+        sell: selection.sell,
+      },
+    },
+    riskDiagnostics: {
+      ...(sourceAnalysis?.riskDiagnostics && typeof sourceAnalysis.riskDiagnostics === "object"
+        ? sourceAnalysis.riskDiagnostics
+        : {}),
+      adaptiveInvalidation,
+      marketRoom,
+    },
+  };
+}
+
+
+// ---------------------------------------------------------------------------
 // Multi-timeframe confirmation
 // ---------------------------------------------------------------------------
 function applyLiveHigherTimeframeConfirmation(
@@ -10880,7 +12160,7 @@ function runLegacyCompatibleAnalysisPipeline(
       }
     );
 
-  const dailyAnalysis =
+  const legacyDailyAnalysis =
     frames.weekly &&
     frames.weekly.length > 0
       ? applyLiveHigherTimeframeConfirmation(
@@ -10891,6 +12171,29 @@ function runLegacyCompatibleAnalysisPipeline(
           }
         )
       : dailyBase;
+
+  const upgradedDailyBase =
+    professionalLiveApplyIntradaySwingMomentumLayer(
+      dailyBase,
+      frames.daily || [],
+      {
+        pair,
+        timeframe: "D1",
+        nowMs,
+      }
+    );
+
+  const dailyAnalysis =
+    frames.weekly &&
+    frames.weekly.length > 0
+      ? applyLiveHigherTimeframeConfirmation(
+          upgradedDailyBase,
+          weeklyAnalysis,
+          {
+            higherTimeframe: "W1",
+          }
+        )
+      : upgradedDailyBase;
 
   const intradayBase =
     analyzeLiveTimeframe(
@@ -10908,18 +12211,42 @@ function runLegacyCompatibleAnalysisPipeline(
       }
     );
 
-  const intradayAnalysis =
+  const legacyIntradayAnalysis =
     frames.daily &&
     frames.daily.length > 0
       ? applyLiveHigherTimeframeConfirmation(
           intradayBase,
-          dailyAnalysis,
+          legacyDailyAnalysis,
           {
             higherTimeframe: "D1",
             requireQualifiedHigherDecision: true,
           }
         )
       : intradayBase;
+
+  const upgradedIntradayBase =
+    professionalLiveApplyIntradaySwingMomentumLayer(
+      intradayBase,
+      frames.intraday || [],
+      {
+        pair,
+        timeframe: "H1",
+        nowMs,
+      }
+    );
+
+  const intradayAnalysis =
+    frames.daily &&
+    frames.daily.length > 0
+      ? applyLiveHigherTimeframeConfirmation(
+          upgradedIntradayBase,
+          dailyAnalysis,
+          {
+            higherTimeframe: "D1",
+            requireQualifiedHigherDecision: true,
+          }
+        )
+      : upgradedIntradayBase;
 
   const scalpAnalysis =
     analyzeLiveTimeframe(
@@ -10944,7 +12271,7 @@ function runLegacyCompatibleAnalysisPipeline(
     frames.intraday.length > 0
       ? applyLiveHigherTimeframeConfirmation(
           scalpAnalysis,
-          intradayAnalysis,
+          legacyIntradayAnalysis,
           {
             higherTimeframe: "H1",
           }

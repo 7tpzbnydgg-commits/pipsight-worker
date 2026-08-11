@@ -2760,10 +2760,37 @@ function validateBaselineBoundaries(
 
   if (
     decision === "HOLD" ||
-    proposed === null ||
-    baseline === null ||
-    normalized.baseline.decision !==
-      decision
+    proposed === null
+  ) {
+    return {
+      valid: true,
+      skipped: true,
+      errors: []
+    };
+  }
+
+  const professionalPlanProtection =
+    (
+      normalized.context.engine ===
+        "daily" &&
+      normalized.context.timeframe ===
+        "1H"
+    ) ||
+    (
+      normalized.context.engine ===
+        "weekly" &&
+      normalized.context.timeframe ===
+        "D1"
+    );
+
+  const comparableBaseline =
+    baseline !== null &&
+    normalized.baseline.decision ===
+      decision;
+
+  if (
+    !comparableBaseline &&
+    !professionalPlanProtection
   ) {
     return {
       valid: true,
@@ -2778,22 +2805,90 @@ function validateBaselineBoundaries(
 
   const errors = [];
 
-  const proposedRisk =
+  /*
+   * Professional H1/D1 plans must never be downgraded below 2R.
+   * If the deterministic same-direction baseline is stronger than 2R,
+   * autonomous optimization must preserve that stronger floor.
+   *
+   * This protection is deliberately horizon-scoped so Scalp keeps its
+   * existing configured 1.5R safety floor.
+   */
+  if (professionalPlanProtection) {
+    const proposedRiskReward =
+      toFiniteNumber(
+        proposed.riskReward
+      );
+    const baselineRiskReward =
+      comparableBaseline
+        ? toFiniteNumber(
+            baseline.riskReward
+          )
+        : null;
+    const minimumProfessionalRiskReward =
+      Math.max(
+        2,
+        baselineRiskReward || 0
+      );
+
+    if (
+      proposedRiskReward === null ||
+      proposedRiskReward +
+        Number.EPSILON <
+        minimumProfessionalRiskReward
+    ) {
+      errors.push(
+        `Professional H1/D1 plan risk/reward must be at least ${minimumProfessionalRiskReward}.`
+      );
+    }
+  }
+
+  if (!comparableBaseline) {
+    return {
+      valid:
+        errors.length === 0,
+      skipped: false,
+      errors:
+        uniqueStrings(errors)
+    };
+  }
+
+  const baselineStop =
     toFiniteNumber(
-      proposed.risk
+      baseline.stop
+    );
+  const proposedStop =
+    toFiniteNumber(
+      proposed.stop
     );
 
-  const baselineRisk =
-    toFiniteNumber(
-      baseline.risk
+  const stopWidened =
+    baselineStop !== null &&
+    proposedStop !== null &&
+    (
+      decision === "BUY"
+        ? proposedStop <
+            baselineStop -
+              Number.EPSILON
+        : proposedStop >
+            baselineStop +
+              Number.EPSILON
+    );
+
+  const stopTightened =
+    baselineStop !== null &&
+    proposedStop !== null &&
+    (
+      decision === "BUY"
+        ? proposedStop >
+            baselineStop +
+              Number.EPSILON
+        : proposedStop <
+            baselineStop -
+              Number.EPSILON
     );
 
   if (
-    proposedRisk !== null &&
-    baselineRisk !== null &&
-    proposedRisk >
-      baselineRisk +
-      Number.EPSILON &&
+    stopWidened &&
     rules.allowStopWidening !== true
   ) {
     errors.push(
@@ -2801,27 +2896,32 @@ function validateBaselineBoundaries(
     );
   }
 
-  if (
-    proposedRisk !== null &&
-    baselineRisk !== null &&
-    proposedRisk <
-      baselineRisk -
-      Number.EPSILON
-  ) {
+  if (stopTightened) {
     if (
       rules.allowStopTightening !==
       true
     ) {
       errors.push(
-        "Proposed plan tightens the stop while stop tightening is disabled."
+        "Proposed plan tightens the deterministic stop while stop tightening is disabled."
       );
     } else {
+      const baselineStopDistance =
+        Math.abs(
+          baseline.entry -
+          baselineStop
+        );
+      const tighteningDistance =
+        Math.abs(
+          proposedStop -
+          baselineStop
+        );
       const tighteningPercent =
-        (
-          1 -
-          proposedRisk /
-          baselineRisk
-        ) * 100;
+        baselineStopDistance > 0
+          ? (
+              tighteningDistance /
+              baselineStopDistance
+            ) * 100
+          : Infinity;
 
       const maximumTightening =
         toFiniteNumber(
@@ -2831,7 +2931,7 @@ function validateBaselineBoundaries(
       if (
         tighteningPercent >
         maximumTightening +
-        Number.EPSILON
+          Number.EPSILON
       ) {
         errors.push(
           "Proposed stop tightening exceeds the configured percentage limit."

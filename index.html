@@ -1907,7 +1907,7 @@
     <article class="observability-card">
       <div class="observability-card-header">
         <h3 class="observability-card-title">
-          Latest Directional Signal
+          Active Tracked Signal
         </h3>
 
         <span
@@ -1952,7 +1952,7 @@
         </div>
 
         <div class="observability-detail-row">
-          <dt>Signal time</dt>
+          <dt>Opened at</dt>
 
           <dd id="observabilityLatestSignalTime">
             —
@@ -2759,153 +2759,244 @@ function resolveObservabilityPairEntries(
 }
 
 
-function resolveLatestDirectionalSignal(
+function resolveActiveTrackedDirectionalSignal(
   liveAnalysis
 ){
-  const engineKeys = [
-    "swing",
-    "intraday",
-    "scalp",
-    "master"
-  ];
+  const pair =
+    currentPair &&
+    typeof currentPair === "object"
+      ? currentPair
+      : null;
 
-  /*
-   * Explicit equal-time priority.
-   *
-   * The newest valid BUY/SELL decision always wins.
-   * When timestamps are exactly equal, the backend
-   * Master decision has first priority.
-   *
-   * This affects dashboard observability only.
-   */
-  const equalTimeEnginePriority =
-    Object.freeze({
-      master: 4,
-      scalp: 3,
-      intraday: 2,
-      swing: 1
-    });
+  const pairKey =
+    pair &&
+    typeof pair.key === "string"
+      ? pair.key
+          .trim()
+          .toUpperCase()
+      : "";
+
+  if(!pairKey){
+    return null;
+  }
 
   const candidates =
     [];
 
-  for(
-    const [
-      pairKey,
-      pairValue
-    ] of resolveObservabilityPairEntries(
-      liveAnalysis
-    )
-  ){
-    const pair =
-      safeObject(pairValue);
+  /*
+   * Scalp observability must use the same authoritative browser
+   * open-trade store that powers the visible Open Signal Tracker.
+   * A resolved historical BUY/SELL decision must never be presented
+   * here as an active trade.
+   */
+  const scalpStore =
+    safeObject(
+      loadScalpOpen()
+    );
 
-    for(const engineKey of engineKeys){
-      const engine =
+  const storedScalp =
+    scalpStore[pairKey];
+
+  const scalpTrades =
+    Array.isArray(storedScalp)
+      ? storedScalp
+      : storedScalp &&
+        typeof storedScalp === "object" &&
+        Array.isArray(
+          storedScalp.trades
+        )
+        ? storedScalp.trades
+        : storedScalp &&
+          typeof storedScalp === "object"
+          ? [storedScalp]
+          : [];
+
+  for(const trade of scalpTrades){
+    if(
+      !trade ||
+      typeof trade !== "object" ||
+      String(
+        trade.status ||
+        ""
+      )
+        .trim()
+        .toUpperCase() !==
+        "OPEN"
+    ){
+      continue;
+    }
+
+    const direction =
+      normalizeObservabilityDecision(
+        trade.decision ??
+        trade.signal ??
+        trade.direction
+      );
+
+    const openedAt =
+      trade.openedAt ??
+      trade.signalGeneratedAt ??
+      trade.generatedAt ??
+      null;
+
+    const timestamp =
+      safeDateMs(
+        openedAt
+      );
+
+    if(
+      (
+        direction !== "BUY" &&
+        direction !== "SELL"
+      ) ||
+      timestamp == null
+    ){
+      continue;
+    }
+
+    candidates.push({
+      pair:
+        trade.pairLabel ??
+        trade.pair ??
+        pair.label ??
+        pairKey,
+
+      direction,
+
+      engine:
+        "scalp",
+
+      source:
+        trade.sourceLabel ??
+        trade.source ??
+        "dashboard scalp tracker",
+
+      confidence:
+        safeNumber(
+          trade.confidence,
+          null
+        ),
+
+      timestamp,
+
+      generatedAt:
+        openedAt
+    });
+  }
+
+  /*
+   * Intraday and Swing use the backend's resolved history projection.
+   * buildDashboardHistoryTracker() publishes only unresolved records in
+   * openTrades, so this is the authoritative active-trade projection for
+   * those engines. Fail closed unless status is explicitly OPEN.
+   */
+  const trackerPairs =
+    safeObject(
+      safeObject(
         safeObject(
-          pair[engineKey]
-        );
+          liveAnalysis
+        ).historyTracker
+      ).pairs
+    );
 
+  const pairTracker =
+    safeObject(
+      trackerPairs[pairKey]
+    );
+
+  for(
+    const engineKey of
+    [
+      "intraday",
+      "swing"
+    ]
+  ){
+    const tracker =
+      safeObject(
+        pairTracker[engineKey]
+      );
+
+    for(
+      const trade of
+      safeArray(
+        tracker.openTrades
+      )
+    ){
       if(
-        Object.keys(engine).length === 0
+        !trade ||
+        typeof trade !== "object" ||
+        String(
+          trade.status ||
+          ""
+        )
+          .trim()
+          .toUpperCase() !==
+          "OPEN"
       ){
         continue;
       }
 
-      const decision =
+      const direction =
         normalizeObservabilityDecision(
-          engine.decision ??
-          engine.signal ??
-          engine.action ??
-          engine.direction
+          trade.decision ??
+          trade.signal ??
+          trade.direction
+        );
+
+      const openedAt =
+        trade.openedAt ??
+        trade.signalTime ??
+        trade.generatedAt ??
+        null;
+
+      const timestamp =
+        safeDateMs(
+          openedAt
         );
 
       if(
-        decision !== "BUY" &&
-        decision !== "SELL"
+        (
+          direction !== "BUY" &&
+          direction !== "SELL"
+        ) ||
+        timestamp == null
       ){
         continue;
       }
 
       candidates.push({
         pair:
-          engine.pairLabel ??
-          engine.pair ??
-          engine.symbol ??
+          trade.pairLabel ??
+          trade.pair ??
+          pair.label ??
           pairKey,
 
-        direction:
-          decision,
+        direction,
 
         engine:
-          engine.engineName ??
-          engine.engine ??
-          engine.mode ??
           engineKey,
 
-        engineKey,
-
         source:
-          engine.source ??
-          engine.sourceMode ??
-          "Not reported",
+          "live-analysis history tracker",
 
         confidence:
           safeNumber(
-            engine.confidencePct ??
-            engine.confidence,
+            trade.confidence,
             null
           ),
 
-        timestamp:
-          getObservabilityDecisionTime(
-            engine
-          ),
+        timestamp,
 
         generatedAt:
-          engine.generatedAt ??
-          engine.time ??
-          engine.timestamp ??
-          null
+          openedAt
       });
     }
   }
 
   candidates.sort(
-    (first, second)=>{
-      const firstTime =
-        safeNumber(
-          first.timestamp,
-          0
-        );
-
-      const secondTime =
-        safeNumber(
-          second.timestamp,
-          0
-        );
-
-      const timeDifference =
-        secondTime -
-        firstTime;
-
-      if(timeDifference !== 0){
-        return timeDifference;
-      }
-
-      const firstPriority =
-        equalTimeEnginePriority[
-          first.engineKey
-        ] ?? 0;
-
-      const secondPriority =
-        equalTimeEnginePriority[
-          second.engineKey
-        ] ?? 0;
-
-      return secondPriority -
-        firstPriority;
-    }
+    (first, second)=>
+      second.timestamp -
+      first.timestamp
   );
 
   return candidates[0] ??
@@ -3181,7 +3272,7 @@ function renderLatestDirectionalObservability(
   liveAnalysis
 ){
   const latest =
-    resolveLatestDirectionalSignal(
+    resolveActiveTrackedDirectionalSignal(
       liveAnalysis
     );
 
@@ -3194,7 +3285,7 @@ function renderLatestDirectionalObservability(
 
     setObservabilityText(
       "observabilityLatestPair",
-      "No active directional signal"
+      "No active tracked signal"
     );
 
     setObservabilityText(

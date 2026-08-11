@@ -49,6 +49,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const zlib = require("zlib");
 
 const {
   PipSightLearner
@@ -106,6 +107,21 @@ const ANALYSIS_HISTORY_PATH =
     DATA_DIR,
     "analysis-history.json"
   );
+
+const ANALYSIS_HISTORY_ARCHIVE_ROOT =
+  path.join(
+    DATA_DIR,
+    "history-archive"
+  );
+
+const ANALYSIS_HISTORY_ARCHIVE_MANIFEST_PATH =
+  path.join(
+    ANALYSIS_HISTORY_ARCHIVE_ROOT,
+    "manifest.json"
+  );
+
+const ANALYSIS_HISTORY_ARCHIVE_VERSION =
+  1;
 
 const LEARNING_DATA_PATH =
   path.join(
@@ -1988,6 +2004,302 @@ function saveLearningState(
 // Analysis history access
 // -----------------------------------------------------------------------------
 
+function loadArchivedRichRecords() {
+
+  if (
+    !fs.existsSync(
+      ANALYSIS_HISTORY_ARCHIVE_MANIFEST_PATH
+    )
+  ) {
+
+    return [];
+
+  }
+
+  const manifestSource =
+    readJSONStrictIfExists(
+      ANALYSIS_HISTORY_ARCHIVE_MANIFEST_PATH
+    );
+
+  const manifest =
+    manifestSource.value;
+
+  if (
+    !isPlainObject(
+      manifest
+    ) ||
+    manifest.version !==
+      ANALYSIS_HISTORY_ARCHIVE_VERSION ||
+    !Array.isArray(
+      manifest.archives
+    )
+  ) {
+
+    throw new Error(
+      "analysis history archive manifest is malformed or uses an unsupported version."
+    );
+
+  }
+
+  const archiveRoot =
+    path.resolve(
+      ANALYSIS_HISTORY_ARCHIVE_ROOT
+    );
+
+  const seenFiles =
+    new Set();
+
+  const records =
+    [];
+
+  for (
+    const entry of
+      manifest.archives
+  ) {
+
+    if (
+      !isPlainObject(
+        entry
+      ) ||
+      typeof entry.file !==
+        "string" ||
+      !entry.file.trim() ||
+      typeof entry.sha256 !==
+        "string" ||
+      !/^[a-f0-9]{64}$/i.test(
+        entry.sha256
+      ) ||
+      typeof entry.uncompressedSha256 !==
+        "string" ||
+      !/^[a-f0-9]{64}$/i.test(
+        entry.uncompressedSha256
+      ) ||
+      !Number.isInteger(
+        entry.recordCount
+      ) ||
+      entry.recordCount < 0
+    ) {
+
+      throw new Error(
+        "analysis history archive manifest contains an invalid archive entry."
+      );
+
+    }
+
+    const relativePath =
+      entry.file
+        .trim()
+        .replace(
+          /\\/g,
+          "/"
+        );
+
+    if (
+      path.isAbsolute(
+        relativePath
+      ) ||
+      relativePath
+        .split("/")
+        .includes("..")
+    ) {
+
+      throw new Error(
+        `analysis history archive path is unsafe: ${entry.file}`
+      );
+
+    }
+
+    if (
+      seenFiles.has(
+        relativePath
+      )
+    ) {
+
+      throw new Error(
+        `analysis history archive manifest contains a duplicate file entry: ${entry.file}`
+      );
+
+    }
+
+    seenFiles.add(
+      relativePath
+    );
+
+    const archivePath =
+      path.resolve(
+        ANALYSIS_HISTORY_ARCHIVE_ROOT,
+        relativePath
+      );
+
+    if (
+      archivePath !==
+        archiveRoot &&
+      !archivePath.startsWith(
+        `${archiveRoot}${path.sep}`
+      )
+    ) {
+
+      throw new Error(
+        `analysis history archive path escapes the archive root: ${entry.file}`
+      );
+
+    }
+
+    if (
+      !fs.existsSync(
+        archivePath
+      )
+    ) {
+
+      throw new Error(
+        `analysis history archive file is missing: ${entry.file}`
+      );
+
+    }
+
+    const compressed =
+      fs.readFileSync(
+        archivePath
+      );
+
+    const compressedHash =
+      crypto
+        .createHash(
+          "sha256"
+        )
+        .update(
+          compressed
+        )
+        .digest(
+          "hex"
+        );
+
+    if (
+      compressedHash !==
+        entry.sha256
+          .trim()
+          .toLowerCase()
+    ) {
+
+      throw new Error(
+        `analysis history archive checksum mismatch: ${entry.file}`
+      );
+
+    }
+
+    let uncompressed;
+
+    try {
+
+      uncompressed =
+        zlib.gunzipSync(
+          compressed
+        );
+
+    } catch (
+      error
+    ) {
+
+      throw new Error(
+        `analysis history archive is unreadable: ${entry.file}: ${error.message}`
+      );
+
+    }
+
+    const uncompressedHash =
+      crypto
+        .createHash(
+          "sha256"
+        )
+        .update(
+          uncompressed
+        )
+        .digest(
+          "hex"
+        );
+
+    if (
+      uncompressedHash !==
+        entry.uncompressedSha256
+          .trim()
+          .toLowerCase()
+    ) {
+
+      throw new Error(
+        `analysis history archive uncompressed checksum mismatch: ${entry.file}`
+      );
+
+    }
+
+    let archiveDocument;
+
+    try {
+
+      archiveDocument =
+        JSON.parse(
+          uncompressed.toString(
+            "utf8"
+          )
+        );
+
+    } catch (
+      error
+    ) {
+
+      throw new Error(
+        `analysis history archive JSON is invalid: ${entry.file}: ${error.message}`
+      );
+
+    }
+
+    if (
+      !isPlainObject(
+        archiveDocument
+      ) ||
+      archiveDocument.version !==
+        ANALYSIS_HISTORY_ARCHIVE_VERSION ||
+      !Array.isArray(
+        archiveDocument.records
+      ) ||
+      archiveDocument.records.length !==
+        entry.recordCount
+    ) {
+
+      throw new Error(
+        `analysis history archive contract mismatch: ${entry.file}`
+      );
+
+    }
+
+    for (
+      const record of
+        archiveDocument.records
+    ) {
+
+      if (
+        !isPlainObject(
+          record
+        )
+      ) {
+
+        throw new Error(
+          `analysis history archive contains a non-object rich record: ${entry.file}`
+        );
+
+      }
+
+      records.push(
+        record
+      );
+
+    }
+
+  }
+
+  return records;
+
+}
+
 function loadAnalysisHistory() {
 
   const history =
@@ -3301,12 +3613,20 @@ function buildRichRecordIndex(
   history
 ) {
 
-  const records =
+  const activeRecords =
     Array.isArray(
       history?.records
     )
       ? history.records
       : [];
+
+  const archivedRecords =
+    loadArchivedRichRecords();
+
+  const records = [
+    ...activeRecords,
+    ...archivedRecords
+  ];
 
   const byMatchKey =
     new Map();

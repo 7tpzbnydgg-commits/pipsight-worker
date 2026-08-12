@@ -206,6 +206,12 @@ const ENGINE_ALIASES =
       "scalp",
 
     master:
+      "master",
+
+    "master-consensus":
+      "master",
+
+    "autonomous-master-consensus":
       "master"
   });
 
@@ -9204,47 +9210,94 @@ function replaceRichHistoryRecord(
       records
     );
 
-  let replaced =
-    false;
+  let targetIndex =
+    sourceRecords.findIndex(
+      record =>
+        record ===
+          originalRecord
+    );
+
+  if (
+    targetIndex <
+      0
+  ) {
+
+    const originalId =
+      getStableRecordId(
+        originalRecord
+      );
+
+    if (originalId) {
+
+      targetIndex =
+        sourceRecords.findIndex(
+          record =>
+            getStableRecordId(
+              record
+            ) ===
+              originalId
+        );
+
+    }
+
+  }
+
+  /*
+   * Only fall back to canonical trade equivalence when the exact record cannot
+   * be identified by object identity or stable record ID. This prevents an
+   * earlier duplicate sibling from being replaced while the actual candidate
+   * remains open and is re-resolved on every later run.
+   */
+  if (
+    targetIndex <
+      0
+  ) {
+
+    targetIndex =
+      sourceRecords.findIndex(
+        record =>
+          recordsReferToSameTrade(
+            record,
+            originalRecord
+          )
+      );
+
+  }
+
+  if (
+    targetIndex <
+      0
+  ) {
+
+    return {
+      records:
+        sourceRecords,
+
+      replaced:
+        false
+    };
+
+  }
 
   const updatedRecords =
     sourceRecords.map(
-      (
-        record
-      ) => {
-
-        if (
-          !replaced &&
-          (
-            record ===
-              originalRecord ||
-            recordsReferToSameTrade(
-              record,
-              originalRecord
-            )
-          )
-        ) {
-
-          replaced =
-            true;
-
-          return resolvedRecord;
-
-        }
-
-        return record;
-
-      }
+      (record, index) =>
+        index ===
+          targetIndex
+          ? resolvedRecord
+          : record
     );
 
   return {
     records:
       updatedRecords,
 
-    replaced
+    replaced:
+      true
   };
 
 }
+
 
 // ============================================================================
 // Legacy open integrity and statistics
@@ -10327,6 +10380,137 @@ function applyResolvedTradeToHistory(
 }
 
 // ============================================================================
+// Duplicate-safe rich open inventory
+// ============================================================================
+
+function deduplicateOpenRichRecords(
+  records
+) {
+
+  const sourceRecords =
+    asArray(
+      records
+    );
+
+  const seen =
+    new Map();
+
+  const retained =
+    [];
+
+  let removedCount =
+    0;
+
+  for (
+    const record of
+      sourceRecords
+  ) {
+
+    if (
+      !isPlainObject(
+        record
+      ) ||
+      !isRecordOpenCandidate(
+        record
+      )
+    ) {
+
+      retained.push(
+        record
+      );
+
+      continue;
+
+    }
+
+    const setupIdentity =
+      getExistingSetupIdentity(
+        record
+      ) ||
+      buildStableSetupIdentity(
+        record
+      );
+
+    const fingerprint =
+      getRecordFingerprint(
+        record
+      );
+
+    if (
+      !setupIdentity ||
+      !fingerprint
+    ) {
+
+      retained.push(
+        record
+      );
+
+      continue;
+
+    }
+
+    const key =
+      `${setupIdentity}\n${fingerprint}`;
+
+    const existing =
+      seen.get(
+        key
+      );
+
+    if (
+      !existing
+    ) {
+
+      seen.set(
+        key,
+        record
+      );
+
+      retained.push(
+        record
+      );
+
+      continue;
+
+    }
+
+    /*
+     * A complete setup identity plus identical trade geometry proves this is
+     * the same rich open lifecycle. Preserve the earliest representative.
+     * Different geometry, incomplete identity or non-open records are never
+     * removed by this pass.
+     */
+    if (
+      recordsReferToSameTrade(
+        existing,
+        record
+      )
+    ) {
+
+      removedCount +=
+        1;
+
+      continue;
+
+    }
+
+    retained.push(
+      record
+    );
+
+  }
+
+  return {
+    records:
+      retained,
+
+    removedCount
+  };
+
+}
+
+
+// ============================================================================
 // Full history resolution pass
 // ============================================================================
 
@@ -10339,6 +10523,43 @@ function resolveAnalysisHistory(
     normalizeAnalysisHistory(
       rawHistory
     );
+
+  const richDedupe =
+    deduplicateOpenRichRecords(
+      workingHistory.records
+    );
+
+  const duplicateRichRecordsRemovedCount =
+    richDedupe.removedCount;
+
+  if (
+    duplicateRichRecordsRemovedCount >
+      0
+  ) {
+
+    const deduplicatedRecords =
+      richDedupe.records;
+
+    workingHistory = {
+      ...workingHistory,
+
+      updatedAt:
+        new Date().toISOString(),
+
+      records:
+        deduplicatedRecords,
+
+      history:
+        deduplicatedRecords,
+
+      items:
+        deduplicatedRecords,
+
+      count:
+        deduplicatedRecords.length
+    };
+
+  }
 
   const originalRecords = [
     ...workingHistory.records
@@ -10766,6 +10987,8 @@ function resolveAnalysisHistory(
       workingHistory,
 
     changed:
+      duplicateRichRecordsRemovedCount >
+        0 ||
       resolvedCount > 0 ||
       staleLegacyOpenRemovedCount >
         0 ||

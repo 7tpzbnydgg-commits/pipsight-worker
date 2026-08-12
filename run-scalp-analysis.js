@@ -2,7 +2,7 @@
 
 /* =====================================================================
    PipSight Pro AI — Scalp Signal Engine
-   Version: 1.0.0
+   Version: 1.0.1
 
    Architecture:
    - Existing fetch-signals.js decision philosophy preserved.
@@ -56,6 +56,49 @@ const LOG_OUT_PATH = path.join(
   DATA_DIR,
   "scalp-signal-log.json"
 );
+
+/*
+ * Autonomous AI control plane.
+ *
+ * The Scalp Engine owns per-timeframe Scalp signal authority. Every M5/M15/M30
+ * baseline is evaluated by the existing AI Decision Engine and then by the
+ * independent AI Safety Gate before a new live BUY/SELL is published.
+ *
+ * The Safety Gate is intentionally evaluated in SIGNAL_ONLY mode with an
+ * ephemeral state snapshot here. Stateful account/exposure authority remains
+ * owned by the downstream live safety layer; this prevents pair-wide cooldown
+ * state from collapsing legitimate independent M5/M15/M30 opportunities.
+ */
+const AUTONOMOUS_CONFIG_PATH = path.join(
+  DATA_DIR,
+  "autonomous-config.json"
+);
+
+const AI_POLICY_PATH = path.join(
+  DATA_DIR,
+  "ai-policy.json"
+);
+
+const AI_POLICY_STATE_PATH = path.join(
+  DATA_DIR,
+  "ai-policy-state.json"
+);
+
+const AI_DECISION_ENGINE_PATH = path.join(
+  __dirname,
+  "ai-decision-engine.js"
+);
+
+const AI_SAFETY_GATE_PATH = path.join(
+  __dirname,
+  "ai-safety-gate.js"
+);
+
+const AUTONOMOUS_SCALP_INTEGRATION = Object.freeze({
+  enabled: true,
+  executionContext: "SIGNAL_ONLY",
+  failClosedWhenAuthorityUnavailable: true
+});
 
 const MAX_SIGNAL_LOG = 5000;
 /*
@@ -6199,17 +6242,35 @@ function analyze(
     executionLayer.entryModel ===
     "ACTIVE_SIGNAL_CONTINUATION";
 
-  if (
-    activeSignalContinuation &&
-    typeof context
-      .previousSignal
-      ?.executionCandleAt ===
-      "string"
-  ) {
-    result.executionCandleAt =
-      context
+  if (activeSignalContinuation) {
+    /*
+     * A continuing trade is one lifecycle. Preserve both original setup and
+     * execution timestamps so downstream identity/dedupe never treats the same
+     * open trade as a fresh setup merely because a newer setup candle closed.
+     */
+    if (
+      typeof context
         .previousSignal
-        .executionCandleAt;
+        ?.setupCandleAt ===
+        "string"
+    ) {
+      result.setupCandleAt =
+        context
+          .previousSignal
+          .setupCandleAt;
+    }
+
+    if (
+      typeof context
+        .previousSignal
+        ?.executionCandleAt ===
+        "string"
+    ) {
+      result.executionCandleAt =
+        context
+          .previousSignal
+          .executionCandleAt;
+    }
   }
 
   result.riskDiagnostics =
@@ -6365,6 +6426,1170 @@ function analyze(
   );
 
   return result;
+}
+
+/* =====================================================================
+   Autonomous AI Decision + Safety Authority
+   ===================================================================== */
+
+let autonomousScalpModulesCache = null;
+
+function normalizeAutonomousMode(value) {
+  const normalized =
+    String(value ?? "")
+      .trim()
+      .toUpperCase();
+
+  return [
+    "OFF",
+    "SHADOW",
+    "CONTROLLED",
+    "AUTONOMOUS",
+    "EMERGENCY_STOP"
+  ].includes(normalized)
+    ? normalized
+    : "OFF";
+}
+
+function loadAutonomousScalpModules() {
+  if (autonomousScalpModulesCache) {
+    return autonomousScalpModulesCache;
+  }
+
+  try {
+    const decisionModule =
+      require(AI_DECISION_ENGINE_PATH);
+
+    const safetyModule =
+      require(AI_SAFETY_GATE_PATH);
+
+    if (
+      typeof decisionModule?.evaluateDecision !==
+        "function" ||
+      typeof safetyModule?.evaluateSafetyGate !==
+        "function" ||
+      typeof safetyModule?.createEmptyState !==
+        "function"
+    ) {
+      throw new Error(
+        "Autonomous AI modules do not expose the required production interfaces"
+      );
+    }
+
+    autonomousScalpModulesCache = {
+      available: true,
+      reason: null,
+      decisionModule,
+      safetyModule
+    };
+  } catch (error) {
+    autonomousScalpModulesCache = {
+      available: false,
+      reason:
+        error?.message ||
+        "Autonomous AI modules are unavailable",
+      decisionModule: null,
+      safetyModule: null
+    };
+  }
+
+  return autonomousScalpModulesCache;
+}
+
+function configuredAutonomousState() {
+  const config =
+    readJsonFile(
+      AUTONOMOUS_CONFIG_PATH,
+      null
+    );
+
+  const configAvailable =
+    Boolean(
+      config &&
+      typeof config === "object" &&
+      !Array.isArray(config) &&
+      config.deployment &&
+      typeof config.deployment ===
+        "object" &&
+      !Array.isArray(
+        config.deployment
+      )
+    );
+
+  const rawMode =
+    typeof config?.deployment?.mode ===
+      "string"
+      ? config.deployment.mode
+          .trim()
+          .toUpperCase()
+      : null;
+
+  const modeValid =
+    rawMode !== null &&
+    [
+      "OFF",
+      "SHADOW",
+      "CONTROLLED",
+      "AUTONOMOUS",
+      "EMERGENCY_STOP"
+    ].includes(rawMode);
+
+  const enabled =
+    config?.deployment?.enabled === true;
+
+  const mode =
+    normalizeAutonomousMode(rawMode);
+
+  return {
+    config,
+    configAvailable,
+    modeValid,
+    enabled,
+    mode,
+    liveAuthority:
+      configAvailable &&
+      modeValid &&
+      enabled &&
+      (
+        mode === "CONTROLLED" ||
+        mode === "AUTONOMOUS"
+      ) &&
+      config?.deployment?.emergencyStop !==
+        true
+  };
+}
+
+function uniqueSignalReasons(values) {
+  const output = [];
+  const seen = new Set();
+
+  for (const value of values) {
+    if (
+      typeof value !== "string" ||
+      !value.trim()
+    ) {
+      continue;
+    }
+
+    const normalized = value.trim();
+
+    if (seen.has(normalized)) {
+      continue;
+    }
+
+    seen.add(normalized);
+    output.push(normalized);
+  }
+
+  return output;
+}
+
+function autonomousDecisionId(signal) {
+  const pair =
+    normalizePairKey(signal?.pair) ||
+    "UNKNOWN";
+
+  const mode =
+    String(
+      signal?.setupTimeframe ??
+      signal?.timeframe ??
+      signal?.mode ??
+      "UNKNOWN"
+    )
+      .trim()
+      .toUpperCase();
+
+  const direction =
+    normalizeSignalDirection(
+      signal?.signal
+    );
+
+  const setupAt =
+    toIsoTimestamp(
+      signal?.setupCandleAt ??
+      signal?.analyzedCandleAt
+    ) ||
+    "NO_SETUP_TIME";
+
+  const executionAt =
+    toIsoTimestamp(
+      signal?.executionCandleAt ??
+      signal?.analyzedCandleAt
+    ) ||
+    "NO_EXECUTION_TIME";
+
+  return [
+    "scalp-ai-v1",
+    pair,
+    mode,
+    direction,
+    setupAt,
+    executionAt
+  ].join("|");
+}
+
+function autonomousAtrValue(signal) {
+  const candidates = [
+    signal?.riskDiagnostics?.executionAtr,
+    signal?.tradePlan?.atr,
+    signal?.indicatorSnapshot?.atr?.value,
+    signal?.indicatorSnapshot?.atr?.atr
+  ];
+
+  for (const value of candidates) {
+    const numeric = Number(value);
+
+    if (
+      Number.isFinite(numeric) &&
+      numeric > 0
+    ) {
+      return numeric;
+    }
+  }
+
+  return null;
+}
+
+function autonomousCurrentPrice(
+  signal,
+  explicitPrice
+) {
+  const candidates = [
+    explicitPrice,
+    signal?.currentPrice,
+    signal?.price,
+    signal?.tradePlan?.entry,
+    signal?.indicatorSnapshot?.ema?.lastClose
+  ];
+
+  for (const value of candidates) {
+    const numeric = Number(value);
+
+    if (
+      Number.isFinite(numeric) &&
+      numeric > 0
+    ) {
+      return numeric;
+    }
+  }
+
+  return null;
+}
+
+function sameTradePlanGeometry(
+  left,
+  right
+) {
+  if (!left || !right) {
+    return false;
+  }
+
+  const fields = [
+    "entry",
+    "stopLoss",
+    "target1",
+    "target2",
+    "target3"
+  ];
+
+  return fields.every(field => {
+    const a = Number(left[field]);
+    const b = Number(right[field]);
+
+    return (
+      Number.isFinite(a) &&
+      Number.isFinite(b) &&
+      Math.abs(a - b) <= 1e-10
+    );
+  });
+}
+
+function mergeAutonomousTradePlan(
+  baselinePlan,
+  finalPlan
+) {
+  if (!finalPlan) {
+    return null;
+  }
+
+  if (
+    baselinePlan &&
+    sameTradePlanGeometry(
+      baselinePlan,
+      finalPlan
+    )
+  ) {
+    return {
+      ...baselinePlan,
+      ...finalPlan
+    };
+  }
+
+  return {
+    ...finalPlan
+  };
+}
+
+function summarizeAutonomousPolicy(policy) {
+  if (!policy || typeof policy !== "object") {
+    return null;
+  }
+
+  return {
+    key:
+      policy.key ?? null,
+    scope:
+      policy.scope ?? null,
+    action:
+      policy.action ?? null,
+    authorityLevel:
+      policy.authorityLevel ??
+      policy.authority?.level ??
+      null,
+    decisiveTrades:
+      Number.isFinite(
+        Number(policy.decisiveTrades)
+      )
+        ? Number(policy.decisiveTrades)
+        : null,
+    reliability:
+      Number.isFinite(
+        Number(policy.reliability)
+      )
+        ? Number(policy.reliability)
+        : Number.isFinite(
+            Number(
+              policy.reliability?.value
+            )
+          )
+        ? Number(
+            policy.reliability.value
+          )
+        : null,
+    edgeScore:
+      Number.isFinite(
+        Number(policy.edgeScore)
+      )
+        ? Number(policy.edgeScore)
+        : null
+  };
+}
+
+function buildAutonomousScalpDecisionInput(
+  signal,
+  context = {}
+) {
+  const baselineDirection =
+    normalizeSignalDirection(
+      signal?.signal
+    );
+
+  const decision =
+    isActionableSignal(
+      baselineDirection
+    )
+      ? baselineDirection
+      : "HOLD";
+
+  const timeframe =
+    signal?.setupTimeframe ??
+    signal?.timeframe ??
+    signal?.mode ??
+    context.mode;
+
+  const currentMarketDataAt =
+    toIsoTimestamp(
+      context.currentMarketDataAt
+    ) ||
+    toIsoTimestamp(
+      signal?.analyzedCandleAt
+    ) ||
+    toIsoTimestamp(
+      signal?.executionCandleAt
+    ) ||
+    toIsoTimestamp(
+      signal?.setupCandleAt
+    );
+
+  const confidence =
+    Number.isFinite(
+      Number(signal?.confidence)
+    )
+      ? Number(signal.confidence)
+      : 0;
+
+  return {
+    decisionId:
+      autonomousDecisionId(signal),
+    pair:
+      signal?.pair ??
+      context.pair?.label ??
+      context.pair?.key,
+    timeframe,
+    engine: "scalp",
+    marketDataAt:
+      currentMarketDataAt,
+    atr:
+      autonomousAtrValue(signal),
+    baseline: {
+      decision,
+      confidence,
+      tradePlan:
+        signal?.tradePlan ?? null,
+      reasons:
+        Array.isArray(signal?.reasons)
+          ? signal.reasons
+          : []
+    },
+    engineSignals: [
+      {
+        engine: "scalp",
+        decision,
+        confidence,
+        active:
+          decision !== "HOLD",
+        tradePlan:
+          signal?.tradePlan ?? null,
+        source:
+          `scalp-${String(timeframe ?? "unknown").toLowerCase()}`
+      }
+    ]
+  };
+}
+
+function buildAutonomousSummary({
+  decisionResult,
+  safetyResult,
+  baselineDirection,
+  finalDirection,
+  activeLifecycleChangeDeferred = false,
+  unavailableReason = null
+}) {
+  return {
+    enabled:
+      AUTONOMOUS_SCALP_INTEGRATION
+        .enabled === true,
+    evaluated:
+      Boolean(decisionResult),
+    configuredMode:
+      decisionResult?.deployment
+        ?.configuredMode ??
+      null,
+    authorityMode:
+      decisionResult?.deployment
+        ?.authorityMode ??
+      null,
+    rolloutSelected:
+      decisionResult?.deployment
+        ?.rollout?.selected ??
+      null,
+    baselineDecision:
+      baselineDirection,
+    proposedDecision:
+      decisionResult
+        ?.proposedDecision
+        ?.decision ??
+      null,
+    finalDecision:
+      finalDirection,
+    activeLifecycleChangeDeferred,
+    unavailableReason,
+    changes:
+      Array.isArray(
+        decisionResult?.changes
+      )
+        ? decisionResult.changes
+        : [],
+    blockedChanges:
+      Array.isArray(
+        decisionResult?.blockedChanges
+      )
+        ? decisionResult.blockedChanges
+        : [],
+    policy: {
+      baseline:
+        summarizeAutonomousPolicy(
+          decisionResult?.evidence
+            ?.baselinePolicy
+        ),
+      buy:
+        summarizeAutonomousPolicy(
+          decisionResult?.evidence
+            ?.buyPolicy
+        ),
+      sell:
+        summarizeAutonomousPolicy(
+          decisionResult?.evidence
+            ?.sellPolicy
+        )
+    },
+    decisionValidation: {
+      valid:
+        decisionResult?.validation
+          ?.valid === true,
+      errors:
+        Array.isArray(
+          decisionResult?.validation
+            ?.errors
+        )
+          ? decisionResult
+              .validation
+              .errors
+          : [],
+      warnings:
+        Array.isArray(
+          decisionResult?.validation
+            ?.warnings
+        )
+          ? decisionResult
+              .validation
+              .warnings
+          : []
+    },
+    safety: {
+      status:
+        safetyResult?.approval
+          ?.status ?? null,
+      signalApproved:
+        safetyResult?.approval
+          ?.signalApproved === true,
+      failClosed:
+        safetyResult?.approval
+          ?.failClosed === true,
+      blockerCount:
+        Number.isFinite(
+          Number(
+            safetyResult?.approval
+              ?.blockerCount
+          )
+        )
+          ? Number(
+              safetyResult.approval
+                .blockerCount
+            )
+          : 0,
+      blockers:
+        Array.isArray(
+          safetyResult?.approval
+            ?.blockers
+        )
+          ? safetyResult
+              .approval
+              .blockers
+          : []
+    }
+  };
+}
+
+function appendAutonomousStep(
+  signal,
+  step
+) {
+  if (!Array.isArray(signal.steps)) {
+    signal.steps = [];
+  }
+
+  signal.steps.push(step);
+}
+
+function failClosedAutonomousSignal(
+  signal,
+  reason,
+  configuredState
+) {
+  const baselineDirection =
+    normalizeSignalDirection(
+      signal?.signal
+    );
+
+  if (
+    !isActionableSignal(
+      baselineDirection
+    )
+  ) {
+    signal.aiAutonomous = {
+      enabled: true,
+      evaluated: false,
+      configuredMode:
+        configuredState?.mode ?? null,
+      authorityMode: null,
+      baselineDecision: "HOLD",
+      proposedDecision: null,
+      finalDecision: "HOLD",
+      activeLifecycleChangeDeferred:
+        false,
+      unavailableReason: reason,
+      changes: [],
+      blockedChanges: [],
+      policy: {
+        baseline: null,
+        buy: null,
+        sell: null
+      },
+      decisionValidation: {
+        valid: false,
+        errors: [reason],
+        warnings: []
+      },
+      safety: {
+        status: "HOLD",
+        signalApproved: false,
+        failClosed: true,
+        blockerCount: 1,
+        blockers: [reason]
+      }
+    };
+
+    return signal;
+  }
+
+  signal.signal = "WAIT";
+  signal.confidence = 0;
+  signal.tradePlan = null;
+  signal.reason = reason;
+  signal.reasons =
+    uniqueSignalReasons([
+      ...(Array.isArray(signal.reasons)
+        ? signal.reasons
+        : []),
+      reason
+    ]);
+
+  appendAutonomousStep(
+    signal,
+    {
+      name: "AI Autonomous Decision",
+      pass: false,
+      status: "fail",
+      detail: reason
+    }
+  );
+
+  signal.aiAutonomous = {
+    enabled: true,
+    evaluated: false,
+    configuredMode:
+      configuredState?.mode ?? null,
+    authorityMode: null,
+    baselineDecision:
+      baselineDirection,
+    proposedDecision: null,
+    finalDecision: "HOLD",
+    activeLifecycleChangeDeferred:
+      false,
+    unavailableReason: reason,
+    changes: [],
+    blockedChanges: [],
+    policy: {
+      baseline: null,
+      buy: null,
+      sell: null
+    },
+    decisionValidation: {
+      valid: false,
+      errors: [reason],
+      warnings: []
+    },
+    safety: {
+      status: "HOLD",
+      signalApproved: false,
+      failClosed: true,
+      blockerCount: 1,
+      blockers: [reason]
+    }
+  };
+
+  return signal;
+}
+
+function applyAutonomousScalpAuthority(
+  signal,
+  context = {}
+) {
+  if (
+    !signal ||
+    typeof signal !== "object" ||
+    Array.isArray(signal) ||
+    AUTONOMOUS_SCALP_INTEGRATION
+      .enabled !== true
+  ) {
+    return signal;
+  }
+
+  const configuredState =
+    configuredAutonomousState();
+
+  const baselineDirection =
+    normalizeSignalDirection(
+      signal.signal
+    );
+
+  const activeContinuation =
+    signal?.riskDiagnostics
+      ?.entryModel ===
+      "ACTIVE_SIGNAL_CONTINUATION";
+
+  const modules =
+    loadAutonomousScalpModules();
+
+  if (!modules.available) {
+    const reason =
+      `Autonomous AI authority unavailable: ${modules.reason}`;
+
+    if (
+      (
+        !configuredState.configAvailable ||
+        !configuredState.modeValid ||
+        configuredState.liveAuthority
+      ) &&
+      AUTONOMOUS_SCALP_INTEGRATION
+        .failClosedWhenAuthorityUnavailable &&
+      isActionableSignal(
+        baselineDirection
+      ) &&
+      !activeContinuation
+    ) {
+      return failClosedAutonomousSignal(
+        signal,
+        reason,
+        configuredState
+      );
+    }
+
+    signal.aiAutonomous = {
+      enabled: true,
+      evaluated: false,
+      configuredMode:
+        configuredState.mode,
+      authorityMode: null,
+      baselineDecision:
+        isActionableSignal(
+          baselineDirection
+        )
+          ? baselineDirection
+          : "HOLD",
+      proposedDecision: null,
+      finalDecision:
+        isActionableSignal(
+          baselineDirection
+        )
+          ? baselineDirection
+          : "HOLD",
+      activeLifecycleChangeDeferred:
+        activeContinuation,
+      unavailableReason: reason,
+      changes: [],
+      blockedChanges: [],
+      policy: {
+        baseline: null,
+        buy: null,
+        sell: null
+      },
+      decisionValidation: {
+        valid: false,
+        errors: [reason],
+        warnings: []
+      },
+      safety: {
+        status: null,
+        signalApproved: false,
+        failClosed: false,
+        blockerCount: 0,
+        blockers: []
+      }
+    };
+
+    return signal;
+  }
+
+  const evaluatedAt =
+    context.generatedAt ||
+    new Date().toISOString();
+
+  let decisionResult;
+  let safetyResult;
+
+  try {
+    const decisionInput =
+      buildAutonomousScalpDecisionInput(
+        signal,
+        context
+      );
+
+    decisionResult =
+      modules.decisionModule
+        .evaluateDecision(
+          decisionInput,
+          {
+            evaluatedAt,
+            autonomousConfigPath:
+              AUTONOMOUS_CONFIG_PATH,
+            aiPolicyPath:
+              AI_POLICY_PATH,
+            aiPolicyStatePath:
+              AI_POLICY_STATE_PATH
+          }
+        );
+
+    const currentPrice =
+      autonomousCurrentPrice(
+        signal,
+        context.currentPrice
+      );
+
+    const atr =
+      autonomousAtrValue(signal);
+
+    /*
+     * Stateless SIGNAL_ONLY validation is intentional in the Scalp producer.
+     * The downstream live layer owns account/open-position/cooldown state.
+     * This prevents one timeframe's state from suppressing a separate valid
+     * timeframe while retaining immutable geometry, freshness and config gates.
+     */
+    const ephemeralState =
+      modules.safetyModule
+        .createEmptyState(
+          evaluatedAt
+        );
+
+    safetyResult =
+      modules.safetyModule
+        .evaluateSafetyGate(
+          {
+            decisionResult,
+            executionContext:
+              AUTONOMOUS_SCALP_INTEGRATION
+                .executionContext,
+            executionRequested: false,
+            market: {
+              currentPrice,
+              atr,
+              marketDataAt:
+                buildAutonomousScalpDecisionInput(
+                  signal,
+                  context
+                ).marketDataAt
+            }
+          },
+          {
+            evaluatedAt,
+            autonomousConfigPath:
+              AUTONOMOUS_CONFIG_PATH,
+            state:
+              ephemeralState
+          }
+        );
+  } catch (error) {
+    const reason =
+      `Autonomous AI evaluation failed: ${error?.message || "unknown error"}`;
+
+    if (
+      (
+        !configuredState.configAvailable ||
+        !configuredState.modeValid ||
+        configuredState.liveAuthority
+      ) &&
+      AUTONOMOUS_SCALP_INTEGRATION
+        .failClosedWhenAuthorityUnavailable &&
+      isActionableSignal(
+        baselineDirection
+      ) &&
+      !activeContinuation
+    ) {
+      return failClosedAutonomousSignal(
+        signal,
+        reason,
+        configuredState
+      );
+    }
+
+    signal.aiAutonomous = {
+      enabled: true,
+      evaluated: false,
+      configuredMode:
+        configuredState.mode,
+      authorityMode: null,
+      baselineDecision:
+        isActionableSignal(
+          baselineDirection
+        )
+          ? baselineDirection
+          : "HOLD",
+      proposedDecision: null,
+      finalDecision:
+        isActionableSignal(
+          baselineDirection
+        )
+          ? baselineDirection
+          : "HOLD",
+      activeLifecycleChangeDeferred:
+        activeContinuation,
+      unavailableReason: reason,
+      changes: [],
+      blockedChanges: [],
+      policy: {
+        baseline: null,
+        buy: null,
+        sell: null
+      },
+      decisionValidation: {
+        valid: false,
+        errors: [reason],
+        warnings: []
+      },
+      safety: {
+        status: null,
+        signalApproved: false,
+        failClosed: false,
+        blockerCount: 0,
+        blockers: []
+      }
+    };
+
+    return signal;
+  }
+
+  const safetyDecision =
+    String(
+      safetyResult?.finalDecision
+        ?.decision ??
+      "HOLD"
+    )
+      .trim()
+      .toUpperCase();
+
+  const proposedDecision =
+    String(
+      decisionResult?.proposedDecision
+        ?.decision ??
+      "HOLD"
+    )
+      .trim()
+      .toUpperCase();
+
+  const baselineActionable =
+    isActionableSignal(
+      baselineDirection
+    );
+
+  const finalActionable =
+    safetyDecision === "BUY" ||
+    safetyDecision === "SELL";
+
+  const proposedPlan =
+    safetyResult?.finalDecision
+      ?.tradePlan ??
+    decisionResult?.proposedDecision
+      ?.tradePlan ??
+    null;
+
+  const directionChanged =
+    finalActionable &&
+    safetyDecision !==
+      baselineDirection;
+
+  const planChanged =
+    finalActionable &&
+    signal.tradePlan &&
+    proposedPlan &&
+    !sameTradePlanGeometry(
+      signal.tradePlan,
+      proposedPlan
+    );
+
+  const suppressionRequested =
+    baselineActionable &&
+    !finalActionable;
+
+  const activeLifecycleChangeDeferred =
+    activeContinuation &&
+    (
+      directionChanged ||
+      planChanged ||
+      suppressionRequested
+    );
+
+  if (activeLifecycleChangeDeferred) {
+    /*
+     * AI entry authority is fully live for fresh lifecycles, but an already
+     * active trade cannot be retrospectively cancelled/reversed/replanned by a
+     * signal generator. Preserve its original direction/plan until resolution.
+     * Confidence may still receive the AI's bounded update for observability.
+     */
+    const proposedConfidence =
+      Number(
+        decisionResult?.proposedDecision
+          ?.confidence
+      );
+
+    if (Number.isFinite(proposedConfidence)) {
+      signal.confidence =
+        clamp(
+          proposedConfidence,
+          0,
+          100
+        );
+    }
+
+    appendAutonomousStep(
+      signal,
+      {
+        name:
+          "AI Autonomous Decision",
+        pass: true,
+        status: "info",
+        detail:
+          "AI evaluated the active lifecycle, but direction/plan/suppression changes were deferred until the preserved trade resolves"
+      }
+    );
+
+    signal.aiAutonomous =
+      buildAutonomousSummary({
+        decisionResult,
+        safetyResult,
+        baselineDirection,
+        finalDirection:
+          baselineDirection,
+        activeLifecycleChangeDeferred:
+          true
+      });
+
+    return signal;
+  }
+
+  if (!finalActionable) {
+    signal.signal = "WAIT";
+    signal.confidence = 0;
+    signal.tradePlan = null;
+
+    const aiReasons =
+      Array.isArray(
+        safetyResult?.finalDecision
+          ?.reasons
+      )
+        ? safetyResult
+            .finalDecision
+            .reasons
+        : [];
+
+    signal.reasons =
+      uniqueSignalReasons([
+        ...(Array.isArray(signal.reasons)
+          ? signal.reasons
+          : []),
+        ...aiReasons
+      ]);
+
+    if (
+      baselineActionable ||
+      proposedDecision !== "HOLD"
+    ) {
+      signal.reason =
+        aiReasons[
+          aiReasons.length - 1
+        ] ||
+        "AI autonomous authority returned HOLD";
+    }
+
+    appendAutonomousStep(
+      signal,
+      {
+        name:
+          "AI Autonomous Decision",
+        pass:
+          !baselineActionable,
+        status:
+          baselineActionable
+            ? "fail"
+            : "info",
+        detail:
+          baselineActionable
+            ? "Live autonomous AI authority converted the deterministic Scalp candidate to HOLD"
+            : "Autonomous AI evaluated the deterministic HOLD; no validated live direction activation was approved"
+      }
+    );
+
+    signal.aiAutonomous =
+      buildAutonomousSummary({
+        decisionResult,
+        safetyResult,
+        baselineDirection:
+          baselineActionable
+            ? baselineDirection
+            : "HOLD",
+        finalDirection: "HOLD"
+      });
+
+    return signal;
+  }
+
+  const finalConfidence =
+    Number(
+      safetyResult?.finalDecision
+        ?.confidence
+    );
+
+  signal.signal =
+    safetyDecision;
+
+  signal.confidence =
+    Number.isFinite(finalConfidence)
+      ? clamp(
+          finalConfidence,
+          0,
+          100
+        )
+      : signal.confidence;
+
+  signal.tradePlan =
+    mergeAutonomousTradePlan(
+      signal.tradePlan,
+      proposedPlan
+    );
+
+  const aiReasons =
+    Array.isArray(
+      safetyResult?.finalDecision
+        ?.reasons
+    )
+      ? safetyResult
+          .finalDecision
+          .reasons
+      : [];
+
+  signal.reasons =
+    uniqueSignalReasons([
+      ...(Array.isArray(signal.reasons)
+        ? signal.reasons
+        : []),
+      ...aiReasons
+    ]);
+
+  appendAutonomousStep(
+    signal,
+    {
+      name:
+        "AI Autonomous Decision",
+      pass: true,
+      status: "pass",
+      detail:
+        `AI ${decisionResult?.deployment?.authorityMode || "UNKNOWN"} authority approved ${safetyDecision}; Safety Gate ${safetyResult?.approval?.status || "UNKNOWN"}`
+    }
+  );
+
+  signal.aiAutonomous =
+    buildAutonomousSummary({
+      decisionResult,
+      safetyResult,
+      baselineDirection:
+        baselineActionable
+          ? baselineDirection
+          : "HOLD",
+      finalDirection:
+        safetyDecision
+    });
+
+  return signal;
 }
 
 /* =====================================================================
@@ -6741,6 +7966,123 @@ function findLatestSignalLogEntry(
   return null;
 }
 
+function signalLifecycleIdentity(signal) {
+  if (
+    !signal ||
+    typeof signal !== "object"
+  ) {
+    return null;
+  }
+
+  const pair =
+    normalizePairKey(signal.pair);
+
+  const mode =
+    String(
+      signal.setupTimeframe ??
+      signal.timeframe ??
+      signal.mode ??
+      ""
+    )
+      .trim()
+      .toUpperCase();
+
+  const direction =
+    normalizeSignalDirection(
+      signal.signal
+    );
+
+  if (
+    !pair ||
+    !mode ||
+    !isActionableSignal(direction)
+  ) {
+    return null;
+  }
+
+  const setupAt =
+    toIsoTimestamp(
+      signal.setupCandleAt ??
+      signal.analyzedCandleAt
+    );
+
+  const executionAt =
+    toIsoTimestamp(
+      signal.executionCandleAt ??
+      signal.analyzedCandleAt
+    );
+
+  if (setupAt || executionAt) {
+    return [
+      "scalp-lifecycle-v1",
+      pair,
+      mode,
+      direction,
+      setupAt || "",
+      executionAt || ""
+    ].join("|");
+  }
+
+  const plan =
+    signal.tradePlan;
+
+  if (!plan || typeof plan !== "object") {
+    return null;
+  }
+
+  const fields = [
+    plan.entry,
+    plan.stopLoss,
+    plan.target1
+  ].map(value => {
+    const numeric = Number(value);
+
+    return Number.isFinite(numeric)
+      ? String(numeric)
+      : "";
+  });
+
+  if (fields.every(value => !value)) {
+    return null;
+  }
+
+  return [
+    "scalp-plan-v1",
+    pair,
+    mode,
+    direction,
+    ...fields
+  ].join("|");
+}
+
+function latestMatchingLifecycleLogEntry(
+  log,
+  signal
+) {
+  const identity =
+    signalLifecycleIdentity(signal);
+
+  if (!identity || !Array.isArray(log)) {
+    return null;
+  }
+
+  for (
+    let index = log.length - 1;
+    index >= 0;
+    index -= 1
+  ) {
+    if (
+      signalLifecycleIdentity(
+        log[index]
+      ) === identity
+    ) {
+      return log[index];
+    }
+  }
+
+  return null;
+}
+
 function shouldAppendSignalLogEntry({
   signal,
   previousSnapshot,
@@ -6769,6 +8111,24 @@ function shouldAppendSignalLogEntry({
    * previous output was unavailable. Preserve the signal in the log.
    */
   if (!previousSnapshotSignal) {
+    /*
+     * Snapshot loss/recovery must not replay an already-persisted lifecycle.
+     * Only suppress an exact pair+timeframe+direction+lifecycle identity; a
+     * genuinely new M5/M15/M30 opportunity remains appendable.
+     */
+    if (
+      latestMatchingLifecycleLogEntry(
+        log,
+        signal
+      )
+    ) {
+      return {
+        append: false,
+        reason:
+          "duplicate-lifecycle-recovery"
+      };
+    }
+
     return {
       append: true,
       reason:
@@ -6941,6 +8301,13 @@ function createSignalLogEntry(
     executionReason:
       signal.executionReason ??
       null,
+
+    aiAutonomous:
+      signal.aiAutonomous &&
+      typeof signal.aiAutonomous ===
+        "object"
+        ? signal.aiAutonomous
+        : null,
 
     logReason:
       reason
@@ -7263,6 +8630,21 @@ function run() {
         }
       };
 
+      applyAutonomousScalpAuthority(
+        analysis,
+        {
+          pair,
+          mode,
+          generatedAt,
+          currentMarketDataAt:
+            latestRow(scalp.rows)?.date ??
+            null,
+          currentPrice:
+            latestRow(scalp.rows)?.close ??
+            null
+        }
+      );
+
       signals.push(
         analysis
       );
@@ -7313,8 +8695,12 @@ function run() {
     if (!decision.append) {
 
       if (
-        decision.reason ===
-        "unchanged-active-signal"
+        (
+          decision.reason ===
+            "unchanged-active-signal" ||
+          decision.reason ===
+            "duplicate-lifecycle-recovery"
+        )
       ) {
 
         suppressedLogEntries++;
@@ -7390,6 +8776,9 @@ module.exports = {
   buildAtrSnapshot,
   inferHigherTimeframeBias,
   analyze,
+  applyAutonomousScalpAuthority,
+  signalLifecycleIdentity,
+  shouldAppendSignalLogEntry,
   run
 };
 

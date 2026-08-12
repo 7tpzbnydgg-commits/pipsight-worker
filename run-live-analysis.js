@@ -13544,10 +13544,19 @@ function isUsablePrimaryScalpSignal(
     )
   );
 
+  const nowMs = Date.now();
+
+  if (
+    !Number.isFinite(timestamp) ||
+    timestamp <= 0 ||
+    timestamp > nowMs
+  ) {
+    return false;
+  }
+
   if (
     maximumAgeMs > 0 &&
-    timestamp > 0 &&
-    Date.now() - timestamp > maximumAgeMs
+    nowMs - timestamp > maximumAgeMs
   ) {
     return false;
   }
@@ -14116,8 +14125,17 @@ function buildMasterConsensus(input = {}) {
     engines
   );
 
-  // Without a valid source plan, retain the directional consensus but expose
-  // no fabricated entry, stop or targets.
+  // Keep the Master price on the exact same source snapshot as the selected
+  // executable trade plan. If no source plan exists, preserve the legacy
+  // informational price fallback without fabricating an entry.
+  const selectedPlanEntry =
+    masterTradePlan &&
+    Number.isFinite(
+      masterTradePlan.entry
+    )
+      ? masterTradePlan.entry
+      : null;
+
   const priceCandidates = [
     engines.intraday.price,
     engines.scalp.price,
@@ -14125,9 +14143,11 @@ function buildMasterConsensus(input = {}) {
   ].filter(Number.isFinite);
 
   const price =
-    priceCandidates.length > 0
-      ? priceCandidates[0]
-      : null;
+    Number.isFinite(selectedPlanEntry)
+      ? selectedPlanEntry
+      : priceCandidates.length > 0
+        ? priceCandidates[0]
+        : null;
 
   const reasons = [];
 
@@ -19770,6 +19790,16 @@ const P6_DEFAULT_OPTIONS =
 
     createBackups: false,
 
+    // A fresh dedicated Scalp HOLD/WAIT is an authoritative engine decision.
+    // Legacy candle fallback is reserved for missing, stale or unusable primary
+    // Scalp output and must not override an explicit primary no-trade decision.
+    allowPrimaryScalpHold: true,
+
+    // Match the existing M5 producer freshness contract. A dedicated Scalp
+    // signal older than this is not a current executable market decision.
+    maximumPrimaryScalpAgeMs:
+      30 * 60 * 1000,
+
     autonomousControlEnabled:
       AUTONOMOUS_INTEGRATION_DEFAULTS.enabled,
 
@@ -20772,6 +20802,167 @@ function p6BuildPairInput(
       ]
     );
 
+  const sourceIsStale = (source) => {
+    if (!p6IsObject(source)) {
+      return false;
+    }
+
+    if (source.stale === true) {
+      return true;
+    }
+
+    if (
+      p6FindPairValue(
+        source.stale,
+        pairConfig
+      ) === true
+    ) {
+      return true;
+    }
+
+    const pairValue =
+      p6FindPairValue(
+        source,
+        pairConfig
+      );
+
+    if (
+      p6IsObject(pairValue) &&
+      pairValue.stale === true
+    ) {
+      return true;
+    }
+
+    const pairMetadata =
+      p6FindPairValue(
+        source.metadata,
+        pairConfig
+      );
+
+    if (p6IsObject(pairMetadata)) {
+      if (
+        pairMetadata.stale === true ||
+        pairMetadata.fetchSucceeded === false ||
+        pairMetadata.provider?.stale === true
+      ) {
+        return true;
+      }
+
+      if (
+        pairMetadata.fallbackUsed === true &&
+        p6NormalizeToken(
+          pairMetadata.source
+        ) === "LOCALCACHE"
+      ) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
+  const nowMs = Date.now();
+
+  const closedSourceAgeExceeded = (
+    rows,
+    timeframe,
+    maximumAgeMs
+  ) => {
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return false;
+    }
+
+    const latestClosedAt =
+      p6AutonomousLatestClosedAt(
+        rows,
+        timeframe,
+        nowMs
+      );
+
+    const latestClosedMs =
+      latestClosedAt
+        ? Date.parse(latestClosedAt)
+        : NaN;
+
+    return (
+      !Number.isFinite(latestClosedMs) ||
+      nowMs - latestClosedMs >
+        maximumAgeMs
+    );
+  };
+
+  const dailyCalendarAgeExceeded = (
+    rows,
+    maximumAgeDays
+  ) => {
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return false;
+    }
+
+    const closedRows =
+      professionalLiveClosedRows(
+        rows,
+        "D1",
+        nowMs
+      ).rows;
+
+    if (closedRows.length === 0) {
+      return true;
+    }
+
+    const latestOpenMs =
+      closedRows[
+        closedRows.length - 1
+      ].timestamp;
+
+    if (!Number.isFinite(latestOpenMs)) {
+      return true;
+    }
+
+    const ageDays = Math.floor(
+      (
+        utcDayBucketStart(nowMs) -
+        utcDayBucketStart(latestOpenMs)
+      ) / LIVE_TIMEFRAME_MS.D1
+    );
+
+    return ageDays > maximumAgeDays;
+  };
+
+  const scalpSourceStale =
+    sourceIsStale(
+      sources.scalpCandles
+    ) ||
+    closedSourceAgeExceeded(
+      scalpRows,
+      "M5",
+      30 * 60 * 1000
+    );
+
+  const h1SourceStale =
+    sourceIsStale(
+      sources.intradayH1
+    ) ||
+    closedSourceAgeExceeded(
+      h1Rows,
+      "H1",
+      6 * 60 * 60 * 1000
+    );
+
+  const directDailySourceStale =
+    sourceIsStale(
+      sources.dailyOhlc
+    ) ||
+    dailyCalendarAgeExceeded(
+      dailyRows,
+      4
+    );
+
+  const dailySourceStale =
+    dailyRows.length > 0
+      ? directDailySourceStale
+      : h1SourceStale;
+
   return {
     pair:
       pairConfig.label,
@@ -20790,12 +20981,17 @@ function p6BuildPairInput(
     scalpRows,
     m5Rows: scalpRows,
     lowerTimeframeRows: scalpRows,
+    scalpSourceStale,
 
     h1Rows,
     intradayRows: h1Rows,
+    h1SourceStale,
 
     dailyRows,
     dailyCandles: dailyRows,
+    dailySourceStale,
+    weeklySourceStale:
+      dailySourceStale,
 
     analysisHistory:
       sources.analysisHistory,

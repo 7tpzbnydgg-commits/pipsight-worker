@@ -13379,6 +13379,17 @@ function buildCanonicalEngineResult(
     "setupSourceTimeframe",
     "setupSourceTimestamp",
 
+    // Dedicated Scalp per-timeframe lifecycle provenance. Preserve the
+    // producer-owned setup/execution identity so M5/M15/M30 remain distinct
+    // without changing the legacy canonical fields.
+    "setupTimeframe",
+    "confirmationTimeframe",
+    "executionTimeframe",
+    "entryTimeframe",
+    "setupCandleAt",
+    "executionCandleAt",
+    "analyzedCandleAt",
+
     // Autonomous extension 1.4.0 diagnostics.
     "autonomous",
     "autonomousDecision",
@@ -13527,6 +13538,340 @@ function extractPrimaryScalpSignal(
         ...nestedSignal,
       }
     : record;
+}
+
+function liveScalpTimeframeRank(
+  value
+) {
+  const timeframe =
+    normalizeAIMemoryTimeframe(
+      value
+    );
+
+  const rank = {
+    "5m": 0,
+    "15m": 1,
+    "30m": 2,
+  };
+
+  return Object.prototype.hasOwnProperty.call(
+    rank,
+    timeframe
+  )
+    ? rank[timeframe]
+    : 99;
+}
+
+function extractPrimaryScalpSignals(
+  scalpSignalsData,
+  pair
+) {
+  if (!scalpSignalsData) {
+    return [];
+  }
+
+  const normalizedPair =
+    liveNormalizePairLabel(pair);
+
+  const compactPair =
+    liveCompactPair(
+      normalizedPair
+    );
+
+  const candidateContainers = [
+    scalpSignalsData.signals,
+    scalpSignalsData.results,
+    scalpSignalsData.data,
+    scalpSignalsData.analysis,
+    scalpSignalsData.scalp,
+    scalpSignalsData.pairs,
+    scalpSignalsData,
+  ];
+
+  let records = [];
+
+  for (const container of candidateContainers) {
+    if (!container) {
+      continue;
+    }
+
+    if (Array.isArray(container)) {
+      const matches =
+        container.filter((item) => {
+          if (!liveIsPlainObject(item)) {
+            return false;
+          }
+
+          const itemPair =
+            liveNormalizePairLabel(
+              item.pair ||
+              item.symbol ||
+              item.pairLabel ||
+              item.instrument
+            );
+
+          return (
+            itemPair === normalizedPair ||
+            liveCompactPair(itemPair) ===
+              compactPair
+          );
+        });
+
+      if (matches.length > 0) {
+        records = matches;
+        break;
+      }
+
+      continue;
+    }
+
+    if (!liveIsPlainObject(container)) {
+      continue;
+    }
+
+    const pairValue =
+      liveFindPairRecord(
+        container,
+        normalizedPair
+      );
+
+    if (Array.isArray(pairValue)) {
+      const matches =
+        pairValue.filter(
+          liveIsPlainObject
+        );
+
+      if (matches.length > 0) {
+        records = matches;
+        break;
+      }
+    } else if (
+      liveIsPlainObject(pairValue)
+    ) {
+      records = [pairValue];
+      break;
+    }
+  }
+
+  if (records.length === 0) {
+    const single =
+      extractPrimaryScalpSignal(
+        scalpSignalsData,
+        normalizedPair
+      );
+
+    if (liveIsPlainObject(single)) {
+      records = [single];
+    }
+  }
+
+  const normalizedRecords =
+    records
+      .map((record) => {
+        const nestedSignal =
+          liveIsPlainObject(record.signal)
+            ? record.signal
+            : liveIsPlainObject(record.analysis)
+              ? record.analysis
+              : liveIsPlainObject(record.result)
+                ? record.result
+                : record;
+
+        return liveIsPlainObject(nestedSignal)
+          ? {
+              ...record,
+              ...nestedSignal,
+            }
+          : null;
+      })
+      .filter(liveIsPlainObject);
+
+  /*
+   * scalp-signals.json is a current-state document: at most one current
+   * lifecycle per pair/timeframe is authoritative. If an upstream publication
+   * accidentally repeats a timeframe, retain the newest record deterministically
+   * instead of emitting duplicate live signals.
+   */
+  const byTimeframe =
+    new Map();
+
+  const withoutTimeframe = [];
+
+  for (const record of normalizedRecords) {
+    const timeframe =
+      normalizeAIMemoryTimeframe(
+        firstString(
+          record.timeframe,
+          record.setupTimeframe,
+          record.sourceTimeframe,
+          record.tf,
+          record.interval,
+          record.indicatorSnapshot
+            ?.timeframe
+        )
+      );
+
+    if (!timeframe) {
+      withoutTimeframe.push(
+        record
+      );
+      continue;
+    }
+
+    const existing =
+      byTimeframe.get(
+        timeframe
+      );
+
+    if (!existing) {
+      byTimeframe.set(
+        timeframe,
+        record
+      );
+      continue;
+    }
+
+    const existingTimestamp =
+      liveExtractTimestamp(
+        existing,
+        0
+      );
+
+    const candidateTimestamp =
+      liveExtractTimestamp(
+        record,
+        0
+      );
+
+    if (
+      candidateTimestamp >
+      existingTimestamp
+    ) {
+      byTimeframe.set(
+        timeframe,
+        record
+      );
+    }
+  }
+
+  return [
+    ...byTimeframe.values(),
+    ...withoutTimeframe,
+  ].sort((left, right) => {
+    const leftTimeframe =
+      firstString(
+        left.timeframe,
+        left.setupTimeframe,
+        left.sourceTimeframe,
+        left.tf,
+        left.interval,
+        left.indicatorSnapshot
+          ?.timeframe
+      );
+
+    const rightTimeframe =
+      firstString(
+        right.timeframe,
+        right.setupTimeframe,
+        right.sourceTimeframe,
+        right.tf,
+        right.interval,
+        right.indicatorSnapshot
+          ?.timeframe
+      );
+
+    return (
+      liveScalpTimeframeRank(
+        leftTimeframe
+      ) -
+        liveScalpTimeframeRank(
+          rightTimeframe
+        ) ||
+      liveExtractTimestamp(
+        right,
+        0
+      ) -
+        liveExtractTimestamp(
+          left,
+          0
+        )
+    );
+  });
+}
+
+function selectScalpEngineResults(
+  input = {}
+) {
+  const pair =
+    liveNormalizePairLabel(
+      input.pair ||
+      input.symbol ||
+      input.pairLabel
+    );
+
+  const primarySignals =
+    extractPrimaryScalpSignals(
+      input.scalpSignalsData ||
+      input.scalpSignals ||
+      input.primaryScalpData,
+      pair
+    );
+
+  const allowPrimaryHold =
+    input.allowPrimaryHold === true;
+
+  const usablePrimary =
+    primarySignals.filter(
+      (signal) =>
+        isUsablePrimaryScalpSignal(
+          signal,
+          {
+            allowHold:
+              allowPrimaryHold,
+            maximumAgeMs:
+              input
+                .maximumPrimaryScalpAgeMs,
+          }
+        )
+    );
+
+  if (usablePrimary.length > 0) {
+    return usablePrimary.map(
+      (primarySignal) => ({
+        ...buildCanonicalEngineResult(
+          primarySignal,
+          {
+            pair,
+            mode: "scalp",
+            engineName:
+              "scalp-signals",
+            source:
+              "data/scalp-signals.json",
+            requireTradePlan: true,
+          }
+        ),
+
+        selection: {
+          selected:
+            "primary-signal",
+          primaryAvailable: true,
+          fallbackAvailable:
+            Boolean(
+              input
+                .fallbackScalpAnalysis
+            ),
+          reason:
+            "Primary per-timeframe Scalp signal selected from data/scalp-signals.json",
+        },
+      })
+    );
+  }
+
+  return [
+    selectScalpEngineResult(
+      input
+    ),
+  ];
 }
 
 function isUsablePrimaryScalpSignal(
@@ -15423,7 +15768,34 @@ function buildPairEngineBundle(
       }
     );
 
+  const selectedBaseScalpTimeframes =
+    selectScalpEngineResults({
+      pair,
+
+      scalpSignalsData:
+        input.scalpSignalsData ||
+        input.scalpSignals,
+
+      fallbackScalpAnalysis:
+        input.fallbackScalpAnalysis ||
+        input.legacyScalpAnalysis ||
+        pipeline.scalp,
+
+      allowPrimaryHold:
+        input.allowPrimaryScalpHold,
+
+      maximumPrimaryScalpAgeMs:
+        input.maximumPrimaryScalpAgeMs,
+    });
+
+  /*
+   * Preserve the previous representative Scalp contract for Master consensus:
+   * current professional output is ordered M5 -> M15 -> M30, so M5 remains
+   * the backward-compatible representative while all component timeframes are
+   * carried independently for lifecycle/history/AI consumers.
+   */
   const selectedBaseScalp =
+    selectedBaseScalpTimeframes[0] ||
     selectScalpEngineResult({
       pair,
 
@@ -15466,12 +15838,6 @@ function buildPairEngineBundle(
     ) ||
     "15m";
 
-  const selectedScalpPrice =
-    liveExtractPrice(
-      selectedBaseScalp,
-      null
-    );
-
   const latestClosedScalpPrice =
     input.scalpSourceStale !== true &&
     Array.isArray(
@@ -15486,42 +15852,83 @@ function buildPairEngineBundle(
         )
       : null;
 
-  const baseScalpPrice =
-    Number.isFinite(selectedScalpPrice)
-      ? selectedScalpPrice
-      : normalizeLiveDecision(
-            selectedBaseScalp.decision
-          ) === "HOLD" &&
-          Number.isFinite(latestClosedScalpPrice)
-        ? latestClosedScalpPrice
-        : null;
+  function buildBaseScalpComponent(
+    selected
+  ) {
+    const componentTimeframe =
+      normalizeAIMemoryTimeframe(
+        firstString(
+          selected.timeframe,
+          selected.sourceTimeframe,
+          selected.tf,
+          selected.interval,
+          selected.setupTimeframe,
+          selected.indicatorSnapshot
+            ?.timeframe
+        )
+      ) ||
+      scalpTimeframe;
 
-  const baseScalp = {
-    ...selectedBaseScalp,
+    const componentPrice =
+      liveExtractPrice(
+        selected,
+        null
+      );
 
-    price:
-      baseScalpPrice,
+    const resolvedPrice =
+      Number.isFinite(
+        componentPrice
+      )
+        ? componentPrice
+        : normalizeLiveDecision(
+              selected.decision
+            ) === "HOLD" &&
+            Number.isFinite(
+              latestClosedScalpPrice
+            )
+          ? latestClosedScalpPrice
+          : null;
 
-    currentPrice:
-      baseScalpPrice,
+    return {
+      ...selected,
 
-    lastPrice:
-      baseScalpPrice,
+      price:
+        resolvedPrice,
 
-    timeframe:
-      scalpTimeframe,
+      currentPrice:
+        resolvedPrice,
 
-    sourceTimeframe:
-      scalpTimeframe,
+      lastPrice:
+        resolvedPrice,
 
-    timeframeSource:
-      selectedBaseScalp.timeframe
-        ? (
-            selectedBaseScalp.timeframeSource ||
-            "source"
-          )
-        : "live-analysis-scalp-anchor",
-  };
+      timeframe:
+        componentTimeframe,
+
+      sourceTimeframe:
+        componentTimeframe,
+
+      timeframeSource:
+        selected.timeframe
+          ? (
+              selected
+                .timeframeSource ||
+              "source"
+            )
+          : "live-analysis-scalp-anchor",
+    };
+  }
+
+  const baseScalpTimeframes =
+    selectedBaseScalpTimeframes
+      .map(
+        buildBaseScalpComponent
+      );
+
+  const baseScalp =
+    baseScalpTimeframes[0] ||
+    buildBaseScalpComponent(
+      selectedBaseScalp
+    );
 
   // --------------------------------------------------------
   // Master consensus intentionally uses original confidence.
@@ -15568,7 +15975,24 @@ function buildPairEngineBundle(
       intradayAIMemoryAssessment
     );
 
+  const scalpTimeframes =
+    baseScalpTimeframes.map(
+      (component) =>
+        attachAIMemoryAssessment(
+          component,
+          aiMemoryState,
+          {
+            pair,
+            engine: "scalp",
+            mode: "scalp",
+            timeframe:
+              component.timeframe,
+          }
+        )
+    );
+
   const scalp =
+    scalpTimeframes[0] ||
     attachAIMemoryAssessment(
       baseScalp,
       aiMemoryState,
@@ -15579,6 +16003,21 @@ function buildPairEngineBundle(
         timeframe:
           scalpTimeframe,
       }
+    );
+
+  const scalpByTimeframe =
+    Object.fromEntries(
+      scalpTimeframes
+        .map((component) => [
+          normalizeAIMemoryTimeframe(
+            component.timeframe
+          ),
+          component,
+        ])
+        .filter(
+          ([timeframe]) =>
+            Boolean(timeframe)
+        )
     );
 
   const master =
@@ -15607,6 +16046,13 @@ function buildPairEngineBundle(
     swing,
     intraday,
     scalp,
+
+    // Additive per-timeframe Scalp contract. The legacy `scalp` field remains
+    // the M5-compatible representative, while these fields preserve all
+    // independently generated M5/M15/M30 lifecycles.
+    scalpTimeframes,
+    scalpByTimeframe,
+
     master,
 
     engines: {
@@ -15747,6 +16193,50 @@ function buildLiveAnalysisOutput(input = {}) {
       }
     );
 
+    const rawScalpTimeframes =
+      liveAsArray(
+        rawBundle.scalpTimeframes
+      ).filter(
+        liveIsPlainObject
+      );
+
+    const scalpTimeframes =
+      (
+        rawScalpTimeframes.length > 0
+          ? rawScalpTimeframes
+          : [scalp]
+      ).map((component) =>
+        buildCanonicalEngineResult(
+          component,
+          {
+            pair,
+            mode: "scalp",
+            engineName:
+              component.engineName ||
+              component.engine ||
+              "scalp",
+            source:
+              component.source ||
+              "data/scalp-signals.json",
+          }
+        )
+      );
+
+    const scalpByTimeframe =
+      Object.fromEntries(
+        scalpTimeframes
+          .map((component) => [
+            normalizeAIMemoryTimeframe(
+              component.timeframe
+            ),
+            component,
+          ])
+          .filter(
+            ([timeframe]) =>
+              Boolean(timeframe)
+          )
+      );
+
     const master = buildCanonicalEngineResult(
       rawBundle.master ||
         rawBundle.engines?.master ||
@@ -15774,6 +16264,8 @@ function buildLiveAnalysisOutput(input = {}) {
       swing,
       intraday,
       scalp,
+      scalpTimeframes,
+      scalpByTimeframe,
       master,
 
       engines: {
@@ -16101,13 +16593,18 @@ function liveHistorySetupIdentity(record) {
     return null;
   }
 
+  /*
+   * Canonical mode is the lifecycle category. Prefer it over engineName
+   * because dedicated sources legitimately use names such as "scalp-signals"
+   * and "legacy-scalp-candles", which must not erase a valid Scalp identity.
+   */
   const rawEngine = liveNonEmptyString(
-    record.engine ??
+    record.mode ??
+      record.engine ??
       record.engineName ??
-      record.mode ??
       record.strategy ??
-      record.snapshot?.engine ??
-      record.snapshot?.mode,
+      record.snapshot?.mode ??
+      record.snapshot?.engine,
     ""
   ).toLowerCase();
 
@@ -16120,6 +16617,8 @@ function liveHistorySetupIdentity(record) {
     "scalp-5m": "scalp",
     "scalp-15m": "scalp",
     "scalp-30m": "scalp",
+    "scalp-signals": "scalp",
+    "legacy-scalp-candles": "scalp",
     master: "master",
     "master-consensus": "master",
     "autonomous-master-consensus": "master",
@@ -16145,8 +16644,16 @@ function liveHistorySetupIdentity(record) {
     liveExtractDecision(record);
 
   const openedCandidates = [
+    record.setupSourceTimestamp,
+    record.setupCandleAt,
+    record.riskDiagnostics?.setupCandleAt,
     record.analyzedCandleAt,
+    record.indicatorSnapshot?.analyzedCandleAt,
+    record.snapshot?.setupSourceTimestamp,
+    record.snapshot?.setupCandleAt,
+    record.snapshot?.riskDiagnostics?.setupCandleAt,
     record.snapshot?.analyzedCandleAt,
+    record.snapshot?.indicatorSnapshot?.analyzedCandleAt,
     record.signalTimestamp,
     record.signalTime,
     record.openedAt,
@@ -16262,12 +16769,23 @@ function liveHistoryRecordFromEngine(
     canonical.aiMemory?.applied ===
     true;
 
+  const setupIdentity =
+    liveHistorySetupIdentity(
+      canonical
+    );
+
+  const historyTimeframe =
+    normalizeAIMemoryTimeframe(
+      canonical.timeframe
+    ) ||
+    "na";
+
   return {
     id:
       options.id ||
       `${Date.now()}-${liveCompactPair(
         canonical.pair
-      )}-${canonical.mode}`,
+      )}-${canonical.mode}-${historyTimeframe}`,
 
     recordedAt,
     createdAt: recordedAt,
@@ -16418,10 +16936,7 @@ function liveHistoryRecordFromEngine(
     outcome: null,
     resolvedAt: null,
 
-    setupIdentity:
-      liveHistorySetupIdentity(
-        canonical
-      ),
+    setupIdentity,
 
     fingerprint:
       liveHistoryFingerprint(
@@ -17069,40 +17584,56 @@ function collectHistoryRecordsFromOutput(
       );
 
     for (const mode of modes) {
-      const engineResult =
+      const primaryEngineResult =
         pairRecord[mode] ||
         pairRecord.engines?.[mode] ||
         pairRecord.modes?.[mode];
 
-      if (
-        !liveIsPlainObject(
-          engineResult
-        )
-      ) {
-        continue;
-      }
+      const engineResults =
+        mode === "scalp" &&
+        Array.isArray(
+          pairRecord.scalpTimeframes
+        ) &&
+        pairRecord
+          .scalpTimeframes.length > 0
+          ? pairRecord
+              .scalpTimeframes
+          : [primaryEngineResult];
 
-      const decision =
-        liveExtractDecision(
-          engineResult
+      for (
+        const engineResult of
+        engineResults
+      ) {
+        if (
+          !liveIsPlainObject(
+            engineResult
+          )
+        ) {
+          continue;
+        }
+
+        const decision =
+          liveExtractDecision(
+            engineResult
+          );
+
+        if (
+          decision === "HOLD" &&
+          options.includeHold !== true
+        ) {
+          continue;
+        }
+
+        records.push(
+          liveHistoryRecordFromEngine(
+            engineResult,
+            {
+              pair,
+              mode,
+            }
+          )
         );
-
-      if (
-        decision === "HOLD" &&
-        options.includeHold !== true
-      ) {
-        continue;
       }
-
-      records.push(
-        liveHistoryRecordFromEngine(
-          engineResult,
-          {
-            pair,
-            mode,
-          }
-        )
-      );
     }
   }
 
@@ -21156,7 +21687,14 @@ function p6BuildPairInput(
   sources,
   runtimeOptions
 ) {
+  const dedicatedScalpSignals =
+    extractPrimaryScalpSignals(
+      sources.scalpSignals,
+      pairConfig.label
+    );
+
   const dedicatedScalp =
+    dedicatedScalpSignals[0] ||
     p6ExtractPairSignal(
       sources.scalpSignals,
       pairConfig
@@ -21371,6 +21909,7 @@ function p6BuildPairInput(
       sources.scalpSignals,
 
     dedicatedScalp,
+    dedicatedScalpSignals,
 
     scalpRows,
     m5Rows: scalpRows,
@@ -21499,6 +22038,16 @@ function p6RunPairPipeline(
         scalp:
           pairInput.scalpRows.length,
 
+        dedicatedScalpTimeframes:
+          Array.isArray(
+            pairInput
+              .dedicatedScalpSignals
+          )
+            ? pairInput
+                .dedicatedScalpSignals
+                .length
+            : 0,
+
         h1:
           pairInput.h1Rows.length,
 
@@ -21559,6 +22108,27 @@ function p6BuildRuntimeSummary(
             pairRecord.scalp
               ?.decision ||
             "HOLD",
+
+          scalpTimeframes:
+            Array.isArray(
+              pairRecord
+                .scalpTimeframes
+            )
+              ? pairRecord
+                  .scalpTimeframes
+                  .map(
+                    (component) => ({
+                      timeframe:
+                        component
+                          .timeframe ||
+                        null,
+                      decision:
+                        component
+                          .decision ||
+                        "HOLD",
+                    })
+                  )
+              : [],
 
           master:
             pairRecord.master
@@ -22391,7 +22961,9 @@ if (
     professionalLiveDmiAdx,
     professionalLiveAtrSnapshot,
 
+    extractPrimaryScalpSignals,
     selectScalpEngineResult,
+    selectScalpEngineResults,
     selectSwingEngineResult,
     selectIntradayEngineResult,
 

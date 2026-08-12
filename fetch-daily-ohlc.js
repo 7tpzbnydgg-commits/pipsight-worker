@@ -117,6 +117,15 @@ const REQUEST_GAP_MS = 1_000;
 const STALE_AFTER_DAYS = 4;
 
 /*
+ * Twelve Data 1day candles for both configured markets are labeled in
+ * Australia/Sydney market time. Daily intervals ignore the timezone request
+ * parameter, so closed/open classification must use the market calendar rather
+ * than the runner's UTC calendar.
+ */
+const DAILY_MARKET_TIME_ZONE =
+  "Australia/Sydney";
+
+/*
  * Prevent unexpectedly large output files while retaining more history
  * than the normal provider request size.
  */
@@ -428,6 +437,49 @@ function currentUtcDate(
     .slice(0, 10);
 }
 
+function currentMarketDate(
+  now = new Date()
+) {
+  const current =
+    resolveRuntimeDate(
+      now,
+      "Current daily-market date"
+    );
+
+  const parts =
+    new Intl.DateTimeFormat(
+      "en-US",
+      {
+        timeZone:
+          DAILY_MARKET_TIME_ZONE,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
+      }
+    ).formatToParts(current);
+
+  const byType =
+    Object.fromEntries(
+      parts.map(part => [
+        part.type,
+        part.value
+      ])
+    );
+
+  const normalized =
+    safeIsoDate(
+      `${byType.year}-${byType.month}-${byType.day}`
+    );
+
+  if (!normalized) {
+    throw new Error(
+      "Could not resolve the current Australia/Sydney daily-market date."
+    );
+  }
+
+  return normalized;
+}
+
 function calendarAgeDays(
   dateString,
   now = new Date()
@@ -448,23 +500,22 @@ function calendarAgeDays(
     return null;
   }
 
-  const current =
-    resolveRuntimeDate(
-      now,
-      "Calendar-age reference time"
+  const marketDate =
+    currentMarketDate(now);
+
+  const marketDateTime =
+    Date.parse(
+      `${marketDate}T00:00:00.000Z`
     );
 
-  const todayUtc =
-    Date.UTC(
-      current.getUTCFullYear(),
-      current.getUTCMonth(),
-      current.getUTCDate()
-    );
+  if (!Number.isFinite(marketDateTime)) {
+    return null;
+  }
 
   return Math.max(
     0,
     Math.floor(
-      (todayUtc - candleTime) /
+      (marketDateTime - candleTime) /
       86_400_000
     )
   );
@@ -476,7 +527,7 @@ function isPossiblyOpenCandle(
 ) {
   return (
     safeIsoDate(dateString) ===
-    currentUtcDate(now)
+    currentMarketDate(now)
   );
 }
 
@@ -715,6 +766,9 @@ function normalizeCandles(
   const candlesByDate =
     new Map();
 
+  const marketDate =
+    currentMarketDate(now);
+
   const rejectedReasons = {};
 
   let rejectedCount = 0;
@@ -741,18 +795,26 @@ function normalizeCandles(
     }
 
     /*
-     * Twelve Data can return the current UTC daily candle
-     * while it is still forming.
+     * Twelve Data labels 1day bars in the market calendar. For the two
+     * configured markets that calendar is Australia/Sydney. The bar carrying
+     * today's market date is still forming and any later label is invalid.
      *
-     * Daily analysis must use completed D1 candles only.
-     * This also removes an open candle inherited from cache.
+     * Daily analysis must use completed D1 candles only. This also removes an
+     * open/future candle inherited from cache.
      */
-    if (
-      isPossiblyOpenCandle(
-        result.candle.date,
-        now
-      )
-    ) {
+    if (result.candle.date > marketDate) {
+      rejectedCount++;
+
+      rejectedReasons["future-candle"] =
+        (
+          rejectedReasons["future-candle"] ||
+          0
+        ) + 1;
+
+      continue;
+    }
+
+    if (result.candle.date === marketDate) {
       rejectedCount++;
 
       rejectedReasons["open-candle"] =

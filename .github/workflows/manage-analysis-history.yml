@@ -118,6 +118,7 @@ jobs:
             "resolve-analysis-history.js"
             "run-live-analysis.js"
             "data/analysis-history.json"
+            "data/live-analysis.json"
             "data/learning-data.json"
           )
 
@@ -194,34 +195,60 @@ jobs:
           const resolver = require(path.join(ROOT, "resolve-analysis-history.js"));
           const live = require(path.join(ROOT, "run-live-analysis.js"));
           
-          function loadExactLearningHelpers() {
+          function compileLearningMaintenanceModule(options = {}) {
             const learningPath = path.join(ROOT, "run-learning-engine.js");
             const source = fs.readFileSync(learningPath, "utf8");
+            const disableArchives = options.disableArchives === true;
             const augmented =
               `${source}\n` +
+              (disableArchives
+                ? `loadArchivedRichRecords = function () { return []; };\n`
+                : "") +
               `module.exports.__maintenanceBuildRichRecordIndex = buildRichRecordIndex;\n` +
-              `module.exports.__maintenanceFindMatchingRichRecord = findMatchingRichRecord;\n`;
+              `module.exports.__maintenanceFindMatchingRichRecord = findMatchingRichRecord;\n` +
+              `module.exports.__maintenanceBuildRecordMatchKey = buildRecordMatchKey;\n` +
+              `module.exports.__maintenanceNormalizeFingerprint = normalizeFingerprint;\n` +
+              `module.exports.__maintenanceLoadArchivedRichRecords = loadArchivedRichRecords;\n`;
             const maintenanceModule = new Module(`${learningPath}.maintenance`, module);
             maintenanceModule.filename = learningPath;
             maintenanceModule.paths = Module._nodeModulePaths(ROOT);
             maintenanceModule._compile(augmented, learningPath);
-          
-            const buildRichRecordIndex =
-              maintenanceModule.exports.__maintenanceBuildRichRecordIndex;
-            const findMatchingRichRecord =
-              maintenanceModule.exports.__maintenanceFindMatchingRichRecord;
-          
-            if (typeof buildRichRecordIndex !== "function" ||
-                typeof findMatchingRichRecord !== "function") {
-              throw new Error(
-                "Current Learning Engine does not expose the expected rich-record matching implementation."
-              );
-            }
-          
-            return { buildRichRecordIndex, findMatchingRichRecord };
+            return maintenanceModule.exports;
           }
-          
-          const exactLearningHelpers = loadExactLearningHelpers();
+
+          const exactLearningModule = compileLearningMaintenanceModule();
+          const noArchiveLearning = compileLearningMaintenanceModule({ disableArchives: true });
+          const exactLearningHelpers = {
+            buildRichRecordIndex: exactLearningModule.__maintenanceBuildRichRecordIndex,
+            findMatchingRichRecord: exactLearningModule.__maintenanceFindMatchingRichRecord,
+            buildRecordMatchKey: exactLearningModule.__maintenanceBuildRecordMatchKey,
+            normalizeFingerprint: exactLearningModule.__maintenanceNormalizeFingerprint,
+            loadArchivedRichRecords: exactLearningModule.__maintenanceLoadArchivedRichRecords
+          };
+
+          for (const [name, helper] of Object.entries(exactLearningHelpers)) {
+            if (typeof helper !== "function") {
+              throw new Error(`Current Learning Engine maintenance helper is unavailable: ${name}`);
+            }
+          }
+
+          function buildRichRecordIndexFromRecords(records) {
+            const source = Array.isArray(records) ? records : [];
+            const byMatchKey = new Map();
+            const byFingerprint = new Map();
+
+            for (const record of source) {
+              if (!plain(record)) continue;
+              const matchKey = exactLearningHelpers.buildRecordMatchKey(record);
+              if (matchKey && !byMatchKey.has(matchKey)) byMatchKey.set(matchKey, record);
+              const fingerprint = exactLearningHelpers.normalizeFingerprint(record.fingerprint);
+              if (fingerprint && !byFingerprint.has(fingerprint)) {
+                byFingerprint.set(fingerprint, record);
+              }
+            }
+
+            return { records: source, byMatchKey, byFingerprint };
+          }
           
           function plain(value) {
             return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -274,28 +301,108 @@ jobs:
             }
           }
           
-          function validateNoActiveArchives() {
-            let manifestArchiveCount = 0;
-            if (fs.existsSync(ARCHIVE_MANIFEST)) {
-              const manifest = JSON.parse(fs.readFileSync(ARCHIVE_MANIFEST, "utf8"));
-              if (!plain(manifest) || manifest.version !== 1 || !Array.isArray(manifest.archives)) {
-                throw new Error("Existing history archive manifest is invalid or unsupported.");
+          function listGzipShards(root) {
+            const output = [];
+            if (!fs.existsSync(root)) return output;
+
+            function walk(directory) {
+              for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+                const absolute = path.join(directory, entry.name);
+                if (entry.isDirectory()) {
+                  walk(absolute);
+                } else if (entry.isFile() && entry.name.endsWith(".json.gz")) {
+                  output.push(path.relative(ARCHIVE_ROOT, absolute).replace(/\\/g, "/"));
+                }
               }
-              manifestArchiveCount = manifest.archives.length;
             }
-          
-            let shardCount = 0;
-            const richDir = path.join(ARCHIVE_ROOT, "rich");
-            if (fs.existsSync(richDir)) {
-              shardCount = fs.readdirSync(richDir).filter(name => name.endsWith(".json.gz")).length;
+
+            walk(root);
+            return output.sort();
+          }
+
+          function assertArchiveMigrationOrderingSafe(activeRecords, archiveRecords) {
+            if (!archiveRecords.length) return;
+            const activeIndex = buildRichRecordIndexFromRecords(activeRecords);
+
+            for (const record of archiveRecords) {
+              if (!plain(record)) continue;
+              const matchKey = exactLearningHelpers.buildRecordMatchKey(record);
+              if (matchKey && activeIndex.byMatchKey.has(matchKey)) {
+                throw new Error(
+                  `Legacy archive overlaps an active rich-record match key (${matchKey}); refusing reorder/migration.`
+                );
+              }
+              const fingerprint = exactLearningHelpers.normalizeFingerprint(record.fingerprint);
+              if (fingerprint && activeIndex.byFingerprint.has(fingerprint)) {
+                throw new Error(
+                  `Legacy archive overlaps an active rich-record fingerprint (${fingerprint}); refusing reorder/migration.`
+                );
+              }
             }
-          
-            if (manifestArchiveCount > 0 || shardCount > 0) {
+          }
+
+          function loadLegacyArchiveState() {
+            const manifestPresent = fs.existsSync(ARCHIVE_MANIFEST);
+            const discoveredShards = listGzipShards(ARCHIVE_ROOT);
+
+            if (!manifestPresent) {
+              if (discoveredShards.length > 0) {
+                throw new Error(
+                  `History archive gzip shard(s) exist without a manifest: ${discoveredShards.join(", ")}`
+                );
+              }
+              return {
+                manifestPresent: false,
+                records: [],
+                manifestFiles: [],
+                filesToDelete: [],
+                archiveRecordCount: 0
+              };
+            }
+
+            // Current Learning Engine is the archive contract authority. This call
+            // validates manifest version, entry structure, safe paths, compressed
+            // and uncompressed hashes, gzip readability, JSON contract and record counts.
+            const records = exactLearningHelpers.loadArchivedRichRecords();
+            const manifest = JSON.parse(fs.readFileSync(ARCHIVE_MANIFEST, "utf8"));
+            const manifestFiles = manifest.archives
+              .map(entry => String(entry.file || "").trim().replace(/\\/g, "/"))
+              .sort();
+
+            for (const relative of manifestFiles) {
+              if (!/^rich\/[^/]+\.json\.gz$/.test(relative)) {
+                throw new Error(
+                  `Unsupported legacy archive layout: ${relative}. Only rich/*.json.gz is migration-owned.`
+                );
+              }
+            }
+
+            if (JSON.stringify(manifestFiles) !== JSON.stringify(discoveredShards)) {
               throw new Error(
-                `Existing history archives are present (${manifestArchiveCount} manifest entries, ${shardCount} gzip shards). ` +
-                "One-file bounded compaction refuses to orphan or silently discard an existing archive chain."
+                "History archive manifest/shard inventory mismatch; refusing automatic migration."
               );
             }
+
+            const expectedRecords = manifest.archives.reduce(
+              (sum, entry) => sum + Number(entry.recordCount || 0),
+              0
+            );
+            if (records.length !== expectedRecords) {
+              throw new Error(
+                `History archive record-count mismatch: loaded ${records.length}, expected ${expectedRecords}.`
+              );
+            }
+
+            return {
+              manifestPresent: true,
+              records,
+              manifestFiles,
+              filesToDelete: [
+                ARCHIVE_MANIFEST,
+                ...manifestFiles.map(relative => path.join(ARCHIVE_ROOT, relative))
+              ],
+              archiveRecordCount: records.length
+            };
           }
           
           function validateHistoryShape(history) {
@@ -586,27 +693,35 @@ jobs:
             };
           }
           
+          function preparedWorkView(prepared) {
+            return prepared.accepted.map(item => ({
+              tradeKey: item.tradeKey,
+              resolutionHash: item.resolutionHash,
+              revision: item.revision,
+              correction: item.correction,
+              migrationReplay: item.migrationReplay,
+              learnerPayload: item.learnerPayload
+            }));
+          }
+
           function compareCurrentLearningWork(original, candidate, state) {
             const options = { learningStartAt: state.learningStartAt };
             const before = learning.prepareClosedHistory(original, state, options);
-            const after = learning.prepareClosedHistory(candidate, state, options);
-          
-            function view(prepared) {
-              return prepared.accepted.map(item => ({
-                tradeKey: item.tradeKey,
-                resolutionHash: item.resolutionHash,
-                revision: item.revision,
-                correction: item.correction,
-                migrationReplay: item.migrationReplay,
-                learnerPayload: item.learnerPayload
-              }));
+            const after = noArchiveLearning.prepareClosedHistory(candidate, state, options);
+            const beforeView = preparedWorkView(before);
+            const afterView = preparedWorkView(after);
+
+            if (JSON.stringify(beforeView) !== JSON.stringify(afterView)) {
+              throw new Error(
+                "Current Learning Engine accepted worklist changed after archive-free bounded maintenance."
+              );
             }
-          
-            if (JSON.stringify(view(before)) !== JSON.stringify(view(after))) {
-              throw new Error("Current Learning Engine accepted worklist changed after bounded maintenance.");
-            }
-          
-            return { before, after };
+
+            return {
+              before,
+              after,
+              afterHash: semanticHash(afterView)
+            };
           }
           
           function loadExactStatisticsRebuilder() {
@@ -636,9 +751,13 @@ jobs:
             return next;
           }
           
-          function validateRetainedLearningEquivalence(original, candidate, originalClosedInfo) {
-            const originalRichIndex = exactLearningHelpers.buildRichRecordIndex(original);
-            const candidateRichIndex = exactLearningHelpers.buildRichRecordIndex(candidate);
+          function validateRetainedLearningEquivalence(
+            original,
+            candidate,
+            originalClosedInfo,
+            originalRichIndex
+          ) {
+            const candidateRichIndex = buildRichRecordIndexFromRecords(candidate.records);
             const originalViewsByTradeKey = new Map();
             let checked = 0;
           
@@ -681,15 +800,28 @@ jobs:
           
           function buildPlan(original) {
             validateHistoryShape(original);
-            validateNoActiveArchives();
+            const archiveState = loadLegacyArchiveState();
           
             const originalProtectedHash = semanticHash(protectedProjection(original));
             const originalDashboard = live.buildDashboardHistoryTracker(original);
-            const originalRichIndex = exactLearningHelpers.buildRichRecordIndex(original);
-            const closedInfo = original.closed.map((record, index) => compactClosedRecord(record, index, originalRichIndex));
+            const baselineRichRecords = [
+              ...original.records,
+              ...archiveState.records
+            ];
+            assertArchiveMigrationOrderingSafe(original.records, archiveState.records);
+            const sourceRichRecords = archiveState.records.length > 0
+              ? [
+                  ...archiveState.records,
+                  ...original.records
+                ]
+              : original.records;
+            const originalRichIndex = buildRichRecordIndexFromRecords(baselineRichRecords);
+            const closedInfo = original.closed.map((record, index) =>
+              compactClosedRecord(record, index, originalRichIndex)
+            );
             const invalidClosedCount = closedInfo.filter(item => !item.valid).length;
             const richCompaction = compactRichRecords(
-              original.records,
+              sourceRichRecords,
               closedInfo,
               originalRichIndex
             );
@@ -726,7 +858,12 @@ jobs:
               throw new Error("Open trade state changed during maintenance planning.");
             }
           
-            const retainedEquivalentCount = validateRetainedLearningEquivalence(original, candidate, closedInfo);
+            const retainedEquivalentCount = validateRetainedLearningEquivalence(
+              original,
+              candidate,
+              closedInfo,
+              originalRichIndex
+            );
             const worklists = compareCurrentLearningWork(original, candidate, state);
           
             const candidateDashboard = live.buildDashboardHistoryTracker(candidate);
@@ -749,7 +886,8 @@ jobs:
             const afterBytes = bytes(candidate);
             const sizeTriggered = beforeBytes > TARGET_BYTES;
             const retentionTriggered = removedTradeKeys.length > 0;
-            const shouldMaintain = sizeTriggered || retentionTriggered;
+            const archiveMigrationTriggered = archiveState.manifestPresent;
+            const shouldMaintain = sizeTriggered || retentionTriggered || archiveMigrationTriggered;
           
             let finalHistory = original;
             let finalDashboard = originalDashboard;
@@ -758,7 +896,7 @@ jobs:
           
             if (shouldMaintain) {
               finalHistory = candidate;
-              finalDashboard = dashboardSemanticallyChanged
+              finalDashboard = closedPruned && dashboardSemanticallyChanged
                 ? candidateDashboard
                 : originalDashboard;
               historyChanged = JSON.stringify(finalHistory) !== JSON.stringify(original);
@@ -766,15 +904,14 @@ jobs:
             }
           
             const finalBytes = bytes(finalHistory);
-            if (historyChanged && finalBytes > HARD_BYTES) {
+            if (shouldMaintain && finalBytes > HARD_BYTES) {
               throw new Error(
                 `Bounded maintenance cannot keep analysis-history below the ${Math.round(HARD_BYTES / 1024 / 1024)} MiB hard ceiling. ` +
                 `Planned size is ${(finalBytes / 1024 / 1024).toFixed(2)} MiB. Protected/unlearned evidence was not deleted.`
               );
             }
           
-            // If current file is above the hard ceiling but no safe maintenance trigger can reduce it, fail closed.
-            if (!historyChanged && beforeBytes > HARD_BYTES) {
+            if (!shouldMaintain && beforeBytes > HARD_BYTES) {
               throw new Error(
                 `analysis-history is ${(beforeBytes / 1024 / 1024).toFixed(2)} MiB, above hard ceiling, ` +
                 "but no fully proven bounded change is available."
@@ -791,7 +928,9 @@ jobs:
               beforeBytes,
               plannedBytes: afterBytes,
               finalBytes,
-              richCountBefore: original.records.length,
+              activeRichCountBefore: original.records.length,
+              archivedRichCount: archiveState.archiveRecordCount,
+              richCountBefore: sourceRichRecords.length,
               richCountAfter: finalHistory.records.length,
               closedCountBefore: original.closed.length,
               closedCountAfter: finalHistory.closed.length,
@@ -800,12 +939,15 @@ jobs:
               retainedEquivalentCount,
               learningAcceptedBefore: worklists.before.accepted.length,
               learningAcceptedAfter: worklists.after.accepted.length,
+              learningWorkAfterHash: worklists.afterHash,
               learnerMaxHistory: retention.maxHistory,
               learningSignalCount: retention.signalCount,
               retentionTrusted: retention.retentionTrusted,
               signalsWithoutSourceKey: retention.signalsWithoutSourceKey,
               removableClosedCount: retention.removable.size,
-              removedTradeKeys
+              removedTradeKeys,
+              archiveMigrationTriggered,
+              archiveFilesToDelete: archiveState.filesToDelete
             };
           }
           
@@ -817,9 +959,19 @@ jobs:
           }
           
           function applyPlan(plan) {
-            if (!plan.historyChanged) return { historyWritten: false, liveWritten: false };
-            atomicWrite(HISTORY_PATH, pretty(plan.finalHistory));
+            let historyWritten = false;
             let liveWritten = false;
+            let archiveFilesDeleted = 0;
+
+            if (plan.historyChanged) {
+              atomicWrite(HISTORY_PATH, pretty(plan.finalHistory));
+              const written = readJson(HISTORY_PATH).value;
+              if (JSON.stringify(written) !== JSON.stringify(plan.finalHistory)) {
+                throw new Error("Immediate post-write history verification failed before archive retirement.");
+              }
+              historyWritten = true;
+            }
+
             if (plan.dashboardChanged) {
               const output = loadLiveOutput();
               if (!output) throw new Error("Closed-history pruning requires data/live-analysis.json to refresh historyTracker.");
@@ -827,20 +979,48 @@ jobs:
               atomicWrite(LIVE_PATH, pretty(output));
               liveWritten = true;
             }
-            return { historyWritten: true, liveWritten };
+
+            if (plan.archiveMigrationTriggered) {
+              // Manifest first: after the compact active history is safely written,
+              // removing the manifest makes any remaining local shard inert. The
+              // repository is not published until every later verification passes.
+              const manifestPath = ARCHIVE_MANIFEST;
+              if (fs.existsSync(manifestPath)) {
+                fs.unlinkSync(manifestPath);
+                archiveFilesDeleted += 1;
+              }
+              for (const filePath of plan.archiveFilesToDelete) {
+                if (filePath === manifestPath) continue;
+                if (fs.existsSync(filePath)) {
+                  fs.unlinkSync(filePath);
+                  archiveFilesDeleted += 1;
+                }
+              }
+
+              const residual = loadLegacyArchiveState();
+              if (residual.manifestPresent || residual.archiveRecordCount !== 0) {
+                throw new Error("Legacy history archive retirement verification failed.");
+              }
+            }
+
+            return { historyWritten, liveWritten, archiveFilesDeleted };
           }
           
           function summarize(plan, mode) {
             console.log("");
-            console.log("PipSight Pro bounded Analysis-history governor");
+            console.log("PipSight Pro archive-free bounded Analysis-history governor");
             console.log(`Mode: ${mode}`);
             console.log(`Active history: ${(plan.beforeBytes / 1024 / 1024).toFixed(2)} -> ${(plan.finalBytes / 1024 / 1024).toFixed(2)} MiB`);
-            console.log(`Rich records: ${plan.richCountBefore} -> ${plan.richCountAfter}; compactable resolved: ${plan.richCompactedCount}`);
+            console.log(
+              `Rich records represented: active ${plan.activeRichCountBefore} + archived ${plan.archivedRichCount} ` +
+              `-> ${plan.richCountAfter}; compactable resolved: ${plan.richCompactedCount}`
+            );
             console.log(`Closed records: ${plan.closedCountBefore} -> ${plan.closedCountAfter}; invalid/protected: ${plan.invalidClosedCount}`);
             console.log(`Learner retention: ${plan.learningSignalCount}/${plan.learnerMaxHistory}; trusted=${plan.retentionTrusted}`);
             console.log(`Closed records safely removable now: ${plan.removableClosedCount}`);
             console.log(`Current Learning accepted worklist: ${plan.learningAcceptedBefore} -> ${plan.learningAcceptedAfter}`);
             console.log(`Retained exact learner-equivalent trades checked: ${plan.retainedEquivalentCount}`);
+            console.log(`Legacy archive migration required: ${plan.archiveMigrationTriggered ? "YES" : "NO"}`);
             console.log(`History change required: ${plan.historyChanged ? "YES" : "NO"}`);
             console.log(`Dashboard refresh required: ${plan.dashboardChanged ? "YES" : "NO"}`);
             console.log("");
@@ -869,9 +1049,25 @@ jobs:
                 throw new Error("Post-apply live historyTracker verification failed.");
               }
             }
+
+            // Now use the unmodified current Learning Engine after archive retirement.
+            // Its normal behavior must equal the archive-free plan exactly.
+            const state = learning.loadLearningState();
+            const postPrepared = learning.prepareClosedHistory(
+              writtenHistory,
+              state,
+              { learningStartAt: state.learningStartAt }
+            );
+            if (semanticHash(preparedWorkView(postPrepared)) !== plan.learningWorkAfterHash) {
+              throw new Error(
+                "Post-archive current Learning Engine worklist differs from the verified archive-free plan."
+              );
+            }
+
             console.log(`History written: ${writes.historyWritten ? "YES" : "NO"}`);
             console.log(`Live dashboard written: ${writes.liveWritten ? "YES" : "NO"}`);
-            console.log("Post-apply exact-write verification PASS.");
+            console.log(`Legacy archive files retired: ${writes.archiveFilesDeleted}`);
+            console.log("Post-apply archive-free exact-write verification PASS.");
           }
           
           main();
@@ -913,6 +1109,12 @@ jobs:
             case "$file" in
               data/analysis-history.json|data/live-analysis.json)
                 ;;
+              data/history-archive/manifest.json|data/history-archive/*.json.gz|data/history-archive/*/*.json.gz)
+                if [[ -e "$file" ]]; then
+                  echo "::error file=$file::Archive migration may only delete legacy archive files."
+                  exit 1
+                fi
+                ;;
               *)
                 echo "::error file=$file::Unexpected file changed during bounded history maintenance."
                 exit 1
@@ -952,9 +1154,10 @@ jobs:
           git config user.name "pipsight-robot"
           git config user.email "pipsight-robot@users.noreply.github.com"
 
-          git add -- \
+          git add -A -- \
             data/analysis-history.json \
-            data/live-analysis.json
+            data/live-analysis.json \
+            data/history-archive
 
           mapfile -t staged_files < <(
             git diff --cached --name-only
@@ -969,6 +1172,13 @@ jobs:
             case "$file" in
               data/analysis-history.json|data/live-analysis.json)
                 ;;
+              data/history-archive/manifest.json|data/history-archive/*.json.gz|data/history-archive/*/*.json.gz)
+                status="$(git diff --cached --name-status -- "$file" | awk 'NR==1 {print $1}')"
+                if [[ "$status" != D* ]]; then
+                  echo "::error file=$file::Legacy archive paths may only be staged as deletions."
+                  exit 1
+                fi
+                ;;
               *)
                 echo "::error file=$file::Unexpected staged file in bounded maintenance commit."
                 exit 1
@@ -979,7 +1189,7 @@ jobs:
           git diff --cached --check
 
           git commit \
-            -m "maintenance: compact bounded analysis history"
+            -m "maintenance: compact archive-free analysis history"
 
           git fetch --no-tags origin "$MAINTENANCE_BRANCH"
 

@@ -13233,6 +13233,188 @@ function saveScalpOpen(openTrades){
   );
 }
 
+function scalpTradeExactFallbackKey(
+  trade
+){
+  if(
+    !trade ||
+    typeof trade !== "object"
+  ){
+    return null;
+  }
+
+  const pairKey =
+    String(
+      trade.pairKey ||
+      trade.pair ||
+      trade.pairLabel ||
+      ""
+    )
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, "");
+
+  const setupTimeframe =
+    normalizeScalpTrackerTimeframe(
+      trade.setupTimeframe ||
+      trade.confirmationTimeframe ||
+      trade.mode ||
+      trade.timeframe
+    ) ||
+    "";
+
+  const decision =
+    normalizeSignalDecision(
+      trade.decision ||
+      trade.signal
+    );
+
+  const entry =
+    safeNumber(
+      trade.entry,
+      null
+    );
+
+  const stop =
+    safeNumber(
+      trade.stop ??
+      trade.stopLoss,
+      null
+    );
+
+  const target1 =
+    safeNumber(
+      trade.target1 ??
+      trade.target ??
+      trade.tp1,
+      null
+    );
+
+  const openedAt =
+    safeISODate(
+      trade.openedAt
+    ) ||
+    "";
+
+  const closedAt =
+    safeISODate(
+      trade.closedAt
+    ) ||
+    "";
+
+  const setupCandleAt =
+    safeISODate(
+      trade.setupCandleAt ||
+      trade.analyzedCandleAt
+    ) ||
+    "";
+
+  const executionCandleAt =
+    safeISODate(
+      trade.executionCandleAt
+    ) ||
+    "";
+
+  const result =
+    String(
+      trade.result ||
+      trade.status ||
+      ""
+    )
+      .trim()
+      .toUpperCase();
+
+  /*
+   * Legacy records without a canonical identity are deduplicated only when
+   * their exact execution evidence is identical. Timeframe and timestamps are
+   * part of the key so legitimate simultaneous M5/M15/M30 opportunities are
+   * never collapsed into one trade.
+   */
+  if(
+    !pairKey ||
+    (
+      entry == null &&
+      stop == null &&
+      target1 == null &&
+      !openedAt &&
+      !closedAt
+    )
+  ){
+    return null;
+  }
+
+  return [
+    "legacy-exact",
+    pairKey,
+    setupTimeframe,
+    decision,
+    setupCandleAt,
+    executionCandleAt,
+    openedAt,
+    closedAt,
+    entry == null ? "" : entry,
+    stop == null ? "" : stop,
+    target1 == null ? "" : target1,
+    result
+  ].join("|");
+}
+
+function scalpTradeDeduplicationKey(
+  trade
+){
+  const identity =
+    scalpTradeIdentityFromStoredTrade(
+      trade
+    );
+
+  if(identity){
+    return `identity:${identity}`;
+  }
+
+  return scalpTradeExactFallbackKey(
+    trade
+  );
+}
+
+function deduplicateScalpTrades(
+  trades
+){
+  const unique = [];
+  const seen =
+    new Set();
+
+  for(const trade of safeArray(trades)){
+    if(
+      !trade ||
+      typeof trade !== "object"
+    ){
+      continue;
+    }
+
+    const key =
+      scalpTradeDeduplicationKey(
+        trade
+      );
+
+    if(
+      key &&
+      seen.has(key)
+    ){
+      continue;
+    }
+
+    if(key){
+      seen.add(key);
+    }
+
+    unique.push(
+      trade
+    );
+  }
+
+  return unique;
+}
+
 function loadScalpHistory(){
   const stored =
     loadJSON(
@@ -13240,12 +13422,33 @@ function loadScalpHistory(){
       []
     );
 
-  return safeArray(stored)
-    .filter(
-      entry=>
-        entry &&
-        typeof entry === "object"
+  const filtered =
+    safeArray(stored)
+      .filter(
+        entry=>
+          entry &&
+          typeof entry === "object"
+      );
+
+  const normalized =
+    deduplicateScalpTrades(
+      filtered
     );
+
+  /*
+   * One-time self-heal for exact duplicate local records left by older
+   * dashboard builds. No distinct timeframe/lifecycle identity is removed.
+   */
+  if(
+    normalized.length !==
+    filtered.length
+  ){
+    saveScalpHistory(
+      normalized
+    );
+  }
+
+  return normalized;
 }
 
 function saveScalpHistory(history){
@@ -13255,12 +13458,9 @@ function saveScalpHistory(history){
       .maximumScalpHistoryEntries;
 
   const normalized =
-    safeArray(history)
-      .filter(
-        entry=>
-          entry &&
-          typeof entry === "object"
-      )
+    deduplicateScalpTrades(
+      history
+    )
       .slice(
         -maximumEntries
       );
@@ -13561,6 +13761,206 @@ function scalpSignalLogEntriesForPair(
         .replace(/[^A-Z0-9]/g, "") ===
         normalizedPairKey
   );
+}
+
+function normalizeScalpSignalLogReason(
+  value
+){
+  return typeof value === "string"
+    ? value
+        .trim()
+        .toLowerCase()
+    : "";
+}
+
+function scalpSignalLogLifecycleEntries(
+  entries
+){
+  const ordered =
+    safeArray(entries)
+      .filter(
+        entry=>
+          entry &&
+          typeof entry === "object"
+      )
+      .slice()
+      .sort(
+        (first, second)=>
+          (
+            safeDateMs(
+              first.generatedAt ||
+              first.updatedAt ||
+              first.timestamp
+            ) ??
+            Number.MAX_SAFE_INTEGER
+          ) -
+          (
+            safeDateMs(
+              second.generatedAt ||
+              second.updatedAt ||
+              second.timestamp
+            ) ??
+            Number.MAX_SAFE_INTEGER
+          )
+      );
+
+  const activeBySlot =
+    new Map();
+
+  const lifecycleEntries = [];
+
+  const continuationReasons =
+    new Set([
+      "trade-plan-changed",
+      "confidence-changed"
+    ]);
+
+  const explicitLifecycleReasons =
+    new Set([
+      "signal-reactivated",
+      "direction-changed",
+      "log-direction-changed"
+    ]);
+
+  const recoveryReasons =
+    new Set([
+      "no-previous-snapshot",
+      "missing-log-history"
+    ]);
+
+  for(const entry of ordered){
+    const decision =
+      normalizeSignalDecision(
+        entry.decision ||
+        entry.signal
+      );
+
+    if(
+      decision !== "BUY" &&
+      decision !== "SELL"
+    ){
+      continue;
+    }
+
+    const slotKey =
+      scalpSignalSlotKey(
+        String(
+          entry.pair ||
+          ""
+        )
+          .trim()
+          .toUpperCase()
+          .replace(/[^A-Z0-9]/g, ""),
+        entry
+      );
+
+    const reason =
+      normalizeScalpSignalLogReason(
+        entry.logReason
+      );
+
+    const previous =
+      activeBySlot.get(
+        slotKey
+      ) ||
+      null;
+
+    const entryIdentity =
+      scalpSignalIdentity(
+        String(
+          entry.pair ||
+          ""
+        )
+          .trim()
+          .toUpperCase()
+          .replace(/[^A-Z0-9]/g, ""),
+        entry
+      );
+
+    const directionChanged =
+      Boolean(
+        previous &&
+        previous.decision !==
+          decision
+      );
+
+    const explicitLifecycleStart =
+      explicitLifecycleReasons.has(
+        reason
+      );
+
+    const continuation =
+      Boolean(
+        previous &&
+        previous.decision ===
+          decision &&
+        continuationReasons.has(
+          reason
+        )
+      );
+
+    const sameRecoveredLifecycle =
+      Boolean(
+        previous &&
+        previous.decision ===
+          decision &&
+        recoveryReasons.has(
+          reason
+        ) &&
+        previous.identity &&
+        entryIdentity &&
+        previous.identity ===
+          entryIdentity
+      );
+
+    /*
+     * Producer contract:
+     * - trade-plan-changed / confidence-changed are updates to an already
+     *   active same-direction signal, not fresh trade lifecycles;
+     * - signal-reactivated / direction-changed are fresh lifecycles.
+     *
+     * Recovery reasons are suppressed only when their exact canonical
+     * lifecycle identity matches the active slot. A different execution/setup
+     * identity is preserved because the producer cannot prove it is the same
+     * trade after snapshot/log recovery. Unknown legacy reasons are retained
+     * rather than guessed away.
+     */
+    if(
+      continuation ||
+      sameRecoveredLifecycle
+    ){
+      continue;
+    }
+
+    if(
+      !previous ||
+      directionChanged ||
+      explicitLifecycleStart ||
+      recoveryReasons.has(reason) ||
+      !reason ||
+      (
+        !continuationReasons.has(reason) &&
+        !recoveryReasons.has(reason)
+      )
+    ){
+      lifecycleEntries.push(
+        entry
+      );
+
+      activeBySlot.set(
+        slotKey,
+        {
+          decision,
+          reason,
+          identity:
+            entryIdentity ||
+            null
+        }
+      );
+    }
+  }
+
+  return lifecycleEntries;
 }
 
 async function fetchBackendScalpSignalLog({
@@ -15009,21 +15409,25 @@ function scalpOpenTradeList(
     ){
       continue;
     }
-    const identity =
-      scalpTradeIdentityFromStoredTrade(
+
+    const key =
+      scalpTradeDeduplicationKey(
         trade
       );
-    if(!identity){
+
+    if(!key){
       legacy.push(trade);
       continue;
     }
-    if(!unique.has(identity)){
+
+    if(!unique.has(key)){
       unique.set(
-        identity,
+        key,
         trade
       );
     }
   }
+
   return [
     ...unique.values(),
     ...legacy
@@ -15036,13 +15440,15 @@ function saveScalpOpenTradesForPair(
   trades
 ){
   const active =
-    safeArray(trades)
-      .filter(
-        trade=>
-          trade &&
-          typeof trade === "object" &&
-          trade.status === "OPEN"
-      );
+    deduplicateScalpTrades(
+      safeArray(trades)
+        .filter(
+          trade=>
+            trade &&
+            typeof trade === "object" &&
+            trade.status === "OPEN"
+        )
+    );
 
   if(!active.length){
     delete openTrades[pairKey];
@@ -15238,11 +15644,19 @@ async function getScalpTrackerSignalsForPair(
       forceRefresh
     });
 
-  const rawCandidates = [
-    ...scalpSignalLogEntriesForPair(
+  const pairSignalLog =
+    scalpSignalLogEntriesForPair(
       persistentLog,
       pair.key
-    ),
+    );
+
+  const lifecycleSignalLog =
+    scalpSignalLogLifecycleEntries(
+      pairSignalLog
+    );
+
+  const rawCandidates = [
+    ...lifecycleSignalLog,
     ...backendScalpEntriesForPair(
       SCALP_SIGNALS_DATA,
       pair.key
@@ -16221,6 +16635,13 @@ function recordScalpOutcomeInLearner(
 
         pair:
           closedTrade.pairKey,
+
+        timeframe:
+          closedTrade.setupTimeframe ||
+          closedTrade.confirmationTimeframe ||
+          closedTrade.executionTimeframe ||
+          closedTrade.entryTimeframe ||
+          "M5",
 
         signal:
           closedTrade.decision,
@@ -17534,6 +17955,23 @@ function renderScalpHistory(
         null
       );
 
+    const setupTimeframe =
+      normalizeScalpTrackerTimeframe(
+        entry.setupTimeframe ||
+        entry.confirmationTimeframe ||
+        entry.mode ||
+        entry.timeframe
+      ) ||
+      "SCALP";
+
+    const entryTimeframe =
+      normalizeScalpTrackerTimeframe(
+        entry.entryTimeframe ||
+        entry.executionTimeframe ||
+        "M5"
+      ) ||
+      "M5";
+
     return `
       <div class="log-row">
         <div>
@@ -17548,6 +17986,7 @@ function renderScalpHistory(
             </span>
 
             <span style="color:var(--muted);">
+              · ${escapeHTML(setupTimeframe)} setup
               · Entry ${safeFixed(entry.entry,decimals)}
             </span>
           </div>
@@ -17559,7 +17998,8 @@ function renderScalpHistory(
               font-size:10px;
             "
           >
-            ${
+            Entry TF ${escapeHTML(entryTimeframe)}
+            · ${
               closePrice == null
                 ? "No close price"
                 : `Closed ${safeFixed(closePrice,decimals)}`

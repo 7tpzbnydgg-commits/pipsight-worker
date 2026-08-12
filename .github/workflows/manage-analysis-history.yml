@@ -1,6 +1,14 @@
 name: PipSight Pro — reusable Analysis history maintenance
 
 on:
+  workflow_run:
+    workflows:
+      - "PipSight Pro — unified scalp and live analysis"
+    types:
+      - completed
+    branches:
+      - main
+
   workflow_dispatch:
     inputs:
       confirmation:
@@ -17,6 +25,11 @@ concurrency:
 
 jobs:
   maintain-analysis-history:
+    if: >-
+      ${{
+        github.event_name != 'workflow_run' ||
+        github.event.workflow_run.conclusion == 'success'
+      }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -26,32 +39,51 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: true
+          ref: ${{ github.event.workflow_run.head_branch || github.ref_name }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      - name: Confirm maintenance and capture branch tip
+      - name: Confirm trigger and capture current branch tip
         env:
-          CONFIRMATION: ${{ inputs.confirmation }}
+          EVENT_NAME: ${{ github.event_name }}
+          CONFIRMATION: ${{ inputs.confirmation || '' }}
+          TRIGGER_CONCLUSION: ${{ github.event.workflow_run.conclusion || '' }}
+          TRIGGER_BRANCH: ${{ github.event.workflow_run.head_branch || '' }}
+          TRIGGER_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name || '' }}
         run: |
           set -euo pipefail
 
           expected="MAINTAIN_ANALYSIS_HISTORY"
 
-          if [[ "${CONFIRMATION:-}" != "$expected" ]]; then
-            echo "::error::Confirmation must exactly equal $expected"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ "${CONFIRMATION:-}" != "$expected" ]]; then
+              echo "::error::Confirmation must exactly equal $expected"
+              exit 1
+            fi
+
+            branch="${GITHUB_REF_NAME:-}"
+          elif [[ "$EVENT_NAME" == "workflow_run" ]]; then
+            if [[ "$TRIGGER_CONCLUSION" != "success" ]]; then
+              echo "Automatic maintenance only follows a successful unified workflow."
+              exit 0
+            fi
+
+            if [[ "$TRIGGER_REPOSITORY" != "$GITHUB_REPOSITORY" ]]; then
+              echo "::error::Refusing workflow_run from a different repository."
+              exit 1
+            fi
+
+            branch="$TRIGGER_BRANCH"
+          else
+            echo "::error::Unsupported maintenance trigger: $EVENT_NAME"
             exit 1
           fi
 
-          if [[ "${GITHUB_REF_TYPE:-}" != "branch" ]]; then
-            echo "::error::Analysis-history maintenance may only run from a branch."
-            exit 1
-          fi
-
-          if [[ -z "${GITHUB_REF_NAME:-}" ]]; then
-            echo "::error::GITHUB_REF_NAME is unavailable."
+          if [[ -z "$branch" ]]; then
+            echo "::error::Maintenance branch is unavailable."
             exit 1
           fi
 
@@ -61,27 +93,32 @@ jobs:
             exit 1
           fi
 
-          git fetch --no-tags origin "$GITHUB_REF_NAME"
+          git fetch --no-tags origin "$branch"
+          git reset --hard "origin/$branch"
 
+          remote_sha="$(git rev-parse "origin/$branch")"
           local_sha="$(git rev-parse HEAD)"
-          remote_sha="$(git rev-parse "origin/$GITHUB_REF_NAME")"
 
           if [[ "$local_sha" != "$remote_sha" ]]; then
-            echo "::error::Checked-out commit is not the current remote branch tip. Refusing history maintenance."
+            echo "::error::Unable to synchronize to the current remote branch tip."
             exit 1
           fi
 
+          echo "MAINTENANCE_BRANCH=$branch" >> "$GITHUB_ENV"
           echo "MAINTENANCE_BASE_SHA=$remote_sha" >> "$GITHUB_ENV"
           echo "Maintenance base: $remote_sha"
 
-      - name: Validate maintenance dependencies and source contract
+      - name: Validate maintenance dependencies and source contracts
         run: |
           set -euo pipefail
 
           required_files=(
-            "manage-analysis-history.js"
             "run-learning-engine.js"
+            "learner.js"
+            "resolve-analysis-history.js"
+            "run-live-analysis.js"
             "data/analysis-history.json"
+            "data/learning-data.json"
           )
 
           for file in "${required_files[@]}"; do
@@ -91,337 +128,770 @@ jobs:
             fi
           done
 
-          node --check manage-analysis-history.js
           node --check run-learning-engine.js
+          node --check learner.js
+          node --check resolve-analysis-history.js
+          node --check run-live-analysis.js
 
           node <<'NODE'
           "use strict";
 
           const fs = require("fs");
-          const crypto = require("crypto");
+          const resolver = require("./resolve-analysis-history.js");
 
-          const filePath =
-            "data/analysis-history.json";
-
-          const raw =
+          const history = JSON.parse(
             fs.readFileSync(
-              filePath,
+              "data/analysis-history.json",
               "utf8"
-            );
-
-          if (!raw.trim()) {
-            throw new Error(
-              `${filePath} is empty.`
-            );
-          }
-
-          const history =
-            JSON.parse(raw);
-
-          if (
-            history === null ||
-            typeof history !== "object" ||
-            Array.isArray(history)
-          ) {
-            throw new Error(
-              `${filePath} must contain a JSON object.`
-            );
-          }
-
-          for (const field of [
-            "records",
-            "history",
-            "items",
-            "closed"
-          ]) {
-            if (!Array.isArray(history[field])) {
-              throw new Error(
-                `${filePath}.${field} must be an array.`
-              );
-            }
-          }
-
-          if (
-            JSON.stringify(history.records) !==
-              JSON.stringify(history.history) ||
-            JSON.stringify(history.records) !==
-              JSON.stringify(history.items)
-          ) {
-            throw new Error(
-              "analysis-history records/history/items aliases are not exactly synchronized."
-            );
-          }
-
-          if (
-            history.open !== undefined &&
-            (
-              history.open === null ||
-              typeof history.open !== "object" ||
-              Array.isArray(history.open)
             )
-          ) {
-            throw new Error(
-              "analysis-history.open must remain an object when present."
-            );
-          }
-
-          if (
-            history.count !== undefined &&
-            Number(history.count) !==
-              history.records.length
-          ) {
-            throw new Error(
-              "analysis-history.count does not equal records.length."
-            );
-          }
-
-          const protectedProjection = {};
-
-          for (const [key, value] of Object.entries(history)) {
-            if (
-              key === "records" ||
-              key === "history" ||
-              key === "items" ||
-              key === "count"
-            ) {
-              continue;
-            }
-
-            protectedProjection[key] =
-              value;
-          }
-
-          const protectedHash =
-            crypto
-              .createHash("sha256")
-              .update(
-                JSON.stringify(
-                  protectedProjection
-                )
-              )
-              .digest("hex");
-
-          fs.appendFileSync(
-            process.env.GITHUB_ENV,
-            `HISTORY_PROTECTED_HASH=${protectedHash}\n`
           );
 
-          fs.appendFileSync(
-            process.env.GITHUB_ENV,
-            `HISTORY_ORIGINAL_RECORD_COUNT=${history.records.length}\n`
-          );
+          const validation =
+            resolver.validateResolvedHistory(
+              history
+            );
+
+          if (validation.valid !== true) {
+            throw new Error(
+              `Source analysis-history failed resolver validation: ${validation.errors.join("; ")}`
+            );
+          }
 
           console.log(
-            `Preflight PASS: ${(Buffer.byteLength(raw) / 1024 / 1024).toFixed(2)} MiB, ` +
-            `${history.records.length} rich records, ${history.closed.length} verified closed records.`
+            `Source contract PASS: ${history.records.length} rich records, ` +
+            `${history.closed.length} closed records.`
           );
           NODE
 
-      - name: Dry-run verified history maintenance
+      - name: Build ephemeral bounded-history governor
         run: |
           set -euo pipefail
-          node manage-analysis-history.js
 
-      - name: Apply verified history maintenance
+          governor="$RUNNER_TEMP/pipsight-history-governor.cjs"
+
+          cat > "$governor" <<'NODE'
+          "use strict";
+          
+          const fs = require("fs");
+          const path = require("path");
+          const crypto = require("crypto");
+          const Module = require("module");
+          
+          const ROOT = process.cwd();
+          const HISTORY_PATH = path.join(ROOT, "data", "analysis-history.json");
+          const LIVE_PATH = path.join(ROOT, "data", "live-analysis.json");
+          const ARCHIVE_ROOT = path.join(ROOT, "data", "history-archive");
+          const ARCHIVE_MANIFEST = path.join(ARCHIVE_ROOT, "manifest.json");
+          const TARGET_BYTES = 20 * 1024 * 1024;
+          const HARD_BYTES = 32 * 1024 * 1024;
+          const APPLY_TOKEN = "MAINTAIN_ANALYSIS_HISTORY";
+          const APPLY_ENV = "PIPSIGHT_HISTORY_MAINTENANCE_CONFIRM";
+          const RESOLVED_OUTCOMES = new Set(["WIN", "LOSS", "BREAKEVEN"]);
+          const RESOLVED_STATUSES = new Set(["closed", "resolved", "complete", "completed"]);
+          
+          const learning = require(path.join(ROOT, "run-learning-engine.js"));
+          const learnerModule = require(path.join(ROOT, "learner.js"));
+          const resolver = require(path.join(ROOT, "resolve-analysis-history.js"));
+          const live = require(path.join(ROOT, "run-live-analysis.js"));
+          
+          function loadExactLearningHelpers() {
+            const learningPath = path.join(ROOT, "run-learning-engine.js");
+            const source = fs.readFileSync(learningPath, "utf8");
+            const augmented =
+              `${source}\n` +
+              `module.exports.__maintenanceBuildRichRecordIndex = buildRichRecordIndex;\n` +
+              `module.exports.__maintenanceFindMatchingRichRecord = findMatchingRichRecord;\n`;
+            const maintenanceModule = new Module(`${learningPath}.maintenance`, module);
+            maintenanceModule.filename = learningPath;
+            maintenanceModule.paths = Module._nodeModulePaths(ROOT);
+            maintenanceModule._compile(augmented, learningPath);
+          
+            const buildRichRecordIndex =
+              maintenanceModule.exports.__maintenanceBuildRichRecordIndex;
+            const findMatchingRichRecord =
+              maintenanceModule.exports.__maintenanceFindMatchingRichRecord;
+          
+            if (typeof buildRichRecordIndex !== "function" ||
+                typeof findMatchingRichRecord !== "function") {
+              throw new Error(
+                "Current Learning Engine does not expose the expected rich-record matching implementation."
+              );
+            }
+          
+            return { buildRichRecordIndex, findMatchingRichRecord };
+          }
+          
+          const exactLearningHelpers = loadExactLearningHelpers();
+          
+          function plain(value) {
+            return Boolean(value && typeof value === "object" && !Array.isArray(value));
+          }
+          
+          function clone(value) {
+            return JSON.parse(JSON.stringify(value));
+          }
+          
+          function iso(value) {
+            if (value === null || value === undefined || value === "") return "";
+            const date = new Date(value);
+            return Number.isFinite(date.getTime()) ? date.toISOString() : "";
+          }
+          
+          function numberOrNull(value) {
+            const number = Number(value);
+            return Number.isFinite(number) ? number : null;
+          }
+          
+          function pretty(value) {
+            return `${JSON.stringify(value, null, 2)}\n`;
+          }
+          
+          function bytes(value) {
+            return Buffer.byteLength(pretty(value));
+          }
+          
+          function sha256(value) {
+            return crypto.createHash("sha256").update(value).digest("hex");
+          }
+          
+          function semanticHash(value) {
+            return sha256(Buffer.from(JSON.stringify(value), "utf8"));
+          }
+          
+          function readJson(filePath) {
+            const raw = fs.readFileSync(filePath, "utf8");
+            if (!raw.trim()) throw new Error(`${filePath} is empty.`);
+            return { raw, value: JSON.parse(raw) };
+          }
+          
+          function atomicWrite(filePath, content) {
+            const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+            try {
+              fs.writeFileSync(temporaryPath, content, "utf8");
+              fs.renameSync(temporaryPath, filePath);
+            } finally {
+              if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+            }
+          }
+          
+          function validateNoActiveArchives() {
+            let manifestArchiveCount = 0;
+            if (fs.existsSync(ARCHIVE_MANIFEST)) {
+              const manifest = JSON.parse(fs.readFileSync(ARCHIVE_MANIFEST, "utf8"));
+              if (!plain(manifest) || manifest.version !== 1 || !Array.isArray(manifest.archives)) {
+                throw new Error("Existing history archive manifest is invalid or unsupported.");
+              }
+              manifestArchiveCount = manifest.archives.length;
+            }
+          
+            let shardCount = 0;
+            const richDir = path.join(ARCHIVE_ROOT, "rich");
+            if (fs.existsSync(richDir)) {
+              shardCount = fs.readdirSync(richDir).filter(name => name.endsWith(".json.gz")).length;
+            }
+          
+            if (manifestArchiveCount > 0 || shardCount > 0) {
+              throw new Error(
+                `Existing history archives are present (${manifestArchiveCount} manifest entries, ${shardCount} gzip shards). ` +
+                "One-file bounded compaction refuses to orphan or silently discard an existing archive chain."
+              );
+            }
+          }
+          
+          function validateHistoryShape(history) {
+            if (!plain(history)) throw new Error("analysis-history.json must contain an object.");
+            for (const field of ["records", "history", "items", "closed"]) {
+              if (!Array.isArray(history[field])) throw new Error(`analysis-history.${field} must be an array.`);
+            }
+            if (JSON.stringify(history.records) !== JSON.stringify(history.history) ||
+                JSON.stringify(history.records) !== JSON.stringify(history.items)) {
+              throw new Error("analysis-history records/history/items aliases are not exactly synchronized.");
+            }
+            if (history.open !== undefined && !plain(history.open)) {
+              throw new Error("analysis-history.open must remain an object when present.");
+            }
+            if (history.count !== undefined && Number(history.count) !== history.records.length) {
+              throw new Error("analysis-history.count does not equal records.length.");
+            }
+            const validation = resolver.validateResolvedHistory(history);
+            if (validation.valid !== true) {
+              throw new Error(`Resolver validation failed before maintenance: ${validation.errors.join("; ")}`);
+            }
+          }
+          
+          function protectedProjection(history) {
+            const output = {};
+            for (const [key, value] of Object.entries(history)) {
+              if (["records", "history", "items", "closed", "count", "stats", "updatedAt"].includes(key)) continue;
+              output[key] = value;
+            }
+            return output;
+          }
+          
+          function normalizedKeyFromRecord(record) {
+            const pair = learning.normalizePair(record?.pair ?? record?.symbol ?? record?.pairLabel) || "";
+            const engine = learning.normalizeEngineName(record?.engine ?? record?.engineName ?? record?.mode ?? record?.strategy) || "";
+            const direction = learning.normalizeDirection(record?.direction ?? record?.decision ?? record?.signal ?? record?.action) || "";
+            const entry = numberOrNull(record?.entry ?? record?.entryPrice ?? record?.price);
+            const openedAt = iso(record?.openedAt ?? record?.signalTime ?? record?.createdAt ?? record?.recordedAt);
+            return [pair, engine, direction, entry, openedAt].join("|");
+          }
+          
+          function normalizedKeyFromTrade(trade) {
+            return [trade.pair, trade.engine, trade.direction, trade.entry, trade.openedAt].join("|");
+          }
+          
+          function tradeKeyForNormalized(normalizedTrade) {
+            return learning.createTradeKey({
+              ...normalizedTrade.raw,
+              strategy: normalizedTrade.strategy,
+              timeframe: normalizedTrade.timeframe,
+              openedAt: normalizedTrade.openedAt
+            });
+          }
+          
+          function learningView(normalizedTrade, richRecord, index) {
+            const tradeKey = tradeKeyForNormalized(normalizedTrade);
+            const resolutionHash = learning.createTradeResolutionHash(normalizedTrade, richRecord);
+            const learnerPayload = learning.buildLearnerOutcomePayload(
+              normalizedTrade,
+              richRecord,
+              { tradeKey, resolutionHash }
+            );
+            return { tradeKey, resolutionHash, learnerPayload, index };
+          }
+          
+          function dashboardProjection(value) {
+            const output = clone(value);
+            if (plain(output)) delete output.updatedAt;
+            return output;
+          }
+          
+          function copyIfPresent(target, source, field) {
+            const value = source?.[field];
+            if (value !== undefined && value !== null && value !== "") target[field] = value;
+          }
+          
+          function compactClosedRecord(raw, index, originalRichIndex) {
+            const validation = learning.validateClosedTrade(raw, index);
+            if (!validation.valid) {
+              return { record: clone(raw), valid: false, normalized: null, tradeKey: null, originalView: null };
+            }
+          
+            const normalized = validation.normalized;
+            const rich = exactLearningHelpers.findMatchingRichRecord(
+              normalized,
+              originalRichIndex
+            );
+            const originalView = learningView(normalized, rich, index);
+          
+            const compact = {
+              pair: normalized.pair,
+              engine: normalized.engine,
+              strategy: normalized.strategy,
+              timeframe: normalized.timeframe,
+              direction: normalized.direction,
+              entry: normalized.entry,
+              stop: normalized.stopLoss,
+              target: normalized.takeProfit,
+              outcome: normalized.outcome,
+              openedAt: normalized.openedAt,
+              closedAt: normalized.closedAt
+            };
+          
+            for (const field of [
+              "historyRecordId", "recordId", "sourceTradeKey", "tradeKey", "setupIdentity", "setupId", "fingerprint"
+            ]) copyIfPresent(compact, raw, field);
+          
+            for (const field of [
+              "closePrice", "exitPrice", "close", "exitReason", "resolutionReason", "reason", "correctionReason", "revisionReason"
+            ]) copyIfPresent(compact, raw, field);
+          
+            for (const field of [
+              "source", "session", "marketSession", "pattern", "patternName", "marketRegime", "regime", "marketState",
+              "qualityGrade", "highestTargetReached", "mfeR", "maeR", "atr"
+            ]) copyIfPresent(compact, raw, field);
+          
+            for (const field of [
+              "source", "reason", "correctionReason", "session", "pattern", "marketRegime", "marketState", "exitReason",
+              "qualityGrade", "highestTargetReached", "mfeR", "maeR"
+            ]) {
+              if ((compact[field] === undefined || compact[field] === null || compact[field] === "") &&
+                  originalView.learnerPayload[field] !== undefined &&
+                  originalView.learnerPayload[field] !== null &&
+                  originalView.learnerPayload[field] !== "") {
+                compact[field] = originalView.learnerPayload[field];
+              }
+            }
+          
+            const compactValidation = learning.validateClosedTrade(compact, index);
+            if (!compactValidation.valid) {
+              throw new Error(`Compacted closed record ${index} failed learning validation: ${compactValidation.errors.join("; ")}`);
+            }
+          
+            return {
+              record: compact,
+              valid: true,
+              normalized,
+              tradeKey: originalView.tradeKey,
+              originalView
+            };
+          }
+          
+          function compactRichRecords(records, closedInfo, originalRichIndex) {
+            const matchesByRecord = new Map();
+          
+            closedInfo.forEach((item, index) => {
+              if (!item.valid || !item.normalized) return;
+              const rich = exactLearningHelpers.findMatchingRichRecord(
+                item.normalized,
+                originalRichIndex
+              );
+              if (!rich) return;
+              if (!matchesByRecord.has(rich)) matchesByRecord.set(rich, []);
+              matchesByRecord.get(rich).push({ index, normalized: item.normalized });
+            });
+          
+            const output = clone(records);
+            let compactedCount = 0;
+          
+            for (let index = 0; index < records.length; index += 1) {
+              const record = records[index];
+              if (!plain(record)) continue;
+          
+              const outcome = String(record?.outcome ?? record?.result ?? "").toUpperCase();
+              const status = String(record?.status ?? "").toLowerCase();
+              if (!RESOLVED_OUTCOMES.has(outcome) || !RESOLVED_STATUSES.has(status)) continue;
+          
+              const matches = matchesByRecord.get(record) || [];
+              if (matches.length !== 1) continue;
+          
+              const normalized = matches[0].normalized;
+              const originalView = learningView(normalized, record, matches[0].index);
+          
+              const compact = {
+                id: record.id,
+                pair: normalized.pair,
+                engine: normalized.engine,
+                mode: record.mode ?? normalized.engine,
+                strategy: normalized.strategy,
+                timeframe: normalized.timeframe,
+                direction: normalized.direction,
+                entry: normalized.entry,
+                stop: normalized.stopLoss,
+                target1: normalized.takeProfit,
+                outcome: normalized.outcome,
+                status: "closed",
+                openedAt: normalized.openedAt,
+                closedAt: normalized.closedAt,
+                resolvedAt: iso(record.resolvedAt ?? record.closedAt) || normalized.closedAt
+              };
+          
+              for (const field of [
+                "setupIdentity", "setupId", "fingerprint", "sourceTradeKey", "historyRecordId", "recordId"
+              ]) copyIfPresent(compact, record, field);
+          
+              for (const field of [
+                "exitPrice", "closePrice", "exitReason", "resolutionReason", "reason", "correctionReason", "revisionReason"
+              ]) copyIfPresent(compact, record, field);
+          
+              for (const field of [
+                "source", "reason", "correctionReason", "session", "pattern", "marketRegime", "marketState", "exitReason",
+                "qualityGrade", "highestTargetReached", "mfeR", "maeR", "confidence", "aiScore"
+              ]) {
+                const value = originalView.learnerPayload[field];
+                if (value !== undefined && value !== null && value !== "") compact[field] = value;
+              }
+          
+              if (plain(originalView.learnerPayload.indicatorSnapshot)) {
+                for (const [field, value] of Object.entries(originalView.learnerPayload.indicatorSnapshot)) {
+                  if (value !== undefined && value !== null) compact[field] = value;
+                }
+              }
+          
+              if (
+                originalView.learnerPayload.atr !== undefined &&
+                originalView.learnerPayload.atr !== null &&
+                !(plain(originalView.learnerPayload.indicatorSnapshot) &&
+                  Object.prototype.hasOwnProperty.call(originalView.learnerPayload.indicatorSnapshot, "atr"))
+              ) {
+                compact.snapshot = { tradePlan: { atr: originalView.learnerPayload.atr } };
+              }
+          
+              const compactHash = learning.createTradeResolutionHash(normalized, compact);
+              const compactPayload = learning.buildLearnerOutcomePayload(
+                normalized,
+                compact,
+                { tradeKey: originalView.tradeKey, resolutionHash: compactHash }
+              );
+          
+              if (compactHash !== originalView.resolutionHash ||
+                  JSON.stringify(compactPayload) !== JSON.stringify(originalView.learnerPayload)) {
+                throw new Error(`Rich record ${index} failed exact learner/resolution equivalence during compaction.`);
+              }
+          
+              output[index] = compact;
+              compactedCount += 1;
+            }
+          
+            return { records: output, compactedCount };
+          }
+          
+          function getLearningSignals() {
+            const existing = learning.loadExistingLearningExport();
+            if (!existing || !plain(existing.learning) || !Array.isArray(existing.learning.signals)) return [];
+            return existing.learning.signals;
+          }
+          
+          function buildRetention(closedInfo, state) {
+            const signals = getLearningSignals();
+            const maxHistory = Number(learnerModule?.LearningConfig?.MAX_HISTORY);
+            if (!Number.isInteger(maxHistory) || maxHistory <= 0) {
+              throw new Error("learner.js LearningConfig.MAX_HISTORY is unavailable or invalid.");
+            }
+            if (signals.length > maxHistory) {
+              throw new Error(`learning-data contains ${signals.length} signals, above learner MAX_HISTORY ${maxHistory}.`);
+            }
+          
+            const activeKeys = new Set();
+            let signalsWithoutSourceKey = 0;
+            for (const signal of signals) {
+              const key = typeof signal?.sourceTradeKey === "string" && signal.sourceTradeKey.trim()
+                ? signal.sourceTradeKey.trim()
+                : (typeof signal?.tradeKey === "string" && signal.tradeKey.trim() ? signal.tradeKey.trim() : null);
+              if (!key) signalsWithoutSourceKey += 1;
+              else activeKeys.add(key);
+            }
+          
+            const processed = new Set(Array.isArray(state?.processedTradeKeys) ? state.processedTradeKeys : []);
+            const atCapacity = signals.length === maxHistory;
+            const retentionTrusted = atCapacity && signalsWithoutSourceKey === 0 && activeKeys.size === signals.length;
+          
+            const removable = new Set();
+            if (retentionTrusted) {
+              closedInfo.forEach((item, index) => {
+                if (!item.valid || !item.tradeKey) return;
+                if (!activeKeys.has(item.tradeKey) && processed.has(item.tradeKey)) removable.add(index);
+              });
+            }
+          
+            return {
+              maxHistory,
+              signalCount: signals.length,
+              activeKeys,
+              processed,
+              retentionTrusted,
+              signalsWithoutSourceKey,
+              removable
+            };
+          }
+          
+          function compareCurrentLearningWork(original, candidate, state) {
+            const options = { learningStartAt: state.learningStartAt };
+            const before = learning.prepareClosedHistory(original, state, options);
+            const after = learning.prepareClosedHistory(candidate, state, options);
+          
+            function view(prepared) {
+              return prepared.accepted.map(item => ({
+                tradeKey: item.tradeKey,
+                resolutionHash: item.resolutionHash,
+                revision: item.revision,
+                correction: item.correction,
+                migrationReplay: item.migrationReplay,
+                learnerPayload: item.learnerPayload
+              }));
+            }
+          
+            if (JSON.stringify(view(before)) !== JSON.stringify(view(after))) {
+              throw new Error("Current Learning Engine accepted worklist changed after bounded maintenance.");
+            }
+          
+            return { before, after };
+          }
+          
+          function loadExactStatisticsRebuilder() {
+            const resolverPath = path.join(ROOT, "resolve-analysis-history.js");
+            const source = fs.readFileSync(resolverPath, "utf8");
+            const augmented = `${source}\nmodule.exports.__maintenanceRebuildExistingStatistics = rebuildExistingStatistics;\n`;
+            const maintenanceModule = new Module(`${resolverPath}.maintenance`, module);
+            maintenanceModule.filename = resolverPath;
+            maintenanceModule.paths = Module._nodeModulePaths(ROOT);
+            maintenanceModule._compile(augmented, resolverPath);
+            const helper = maintenanceModule.exports.__maintenanceRebuildExistingStatistics;
+            if (typeof helper !== "function") {
+              throw new Error("Current resolver does not expose the expected rebuildExistingStatistics implementation.");
+            }
+            return helper;
+          }
+          
+          const exactStatisticsRebuilder = loadExactStatisticsRebuilder();
+          
+          function rebuildStatsWithoutLifecycleMutation(candidate) {
+            const next = exactStatisticsRebuilder(clone(candidate));
+            for (const field of ["records", "history", "items", "closed", "open"]) {
+              if (JSON.stringify(next[field]) !== JSON.stringify(candidate[field])) {
+                throw new Error(`Exact statistics refresh attempted to mutate lifecycle field ${field}; refusing maintenance.`);
+              }
+            }
+            return next;
+          }
+          
+          function validateRetainedLearningEquivalence(original, candidate, originalClosedInfo) {
+            const originalRichIndex = exactLearningHelpers.buildRichRecordIndex(original);
+            const candidateRichIndex = exactLearningHelpers.buildRichRecordIndex(candidate);
+            const originalViewsByTradeKey = new Map();
+            let checked = 0;
+          
+            for (const item of originalClosedInfo) {
+              if (!item.valid || !item.normalized || !item.tradeKey) continue;
+              const rich = exactLearningHelpers.findMatchingRichRecord(
+                item.normalized,
+                originalRichIndex
+              );
+              const view = learningView(item.normalized, rich, item.originalView.index);
+              if (!originalViewsByTradeKey.has(view.tradeKey)) originalViewsByTradeKey.set(view.tradeKey, []);
+              originalViewsByTradeKey.get(view.tradeKey).push(view);
+            }
+          
+            for (let index = 0; index < candidate.closed.length; index += 1) {
+              const current = candidate.closed[index];
+              const validation = learning.validateClosedTrade(current, index);
+              if (!validation.valid) continue;
+              const normalized = validation.normalized;
+              const candidateRich = exactLearningHelpers.findMatchingRichRecord(
+                normalized,
+                candidateRichIndex
+              );
+              const candidateView = learningView(normalized, candidateRich, index);
+              const originals = originalViewsByTradeKey.get(candidateView.tradeKey) || [];
+          
+              const matched = originals.some(originalView =>
+                candidateView.resolutionHash === originalView.resolutionHash &&
+                JSON.stringify(candidateView.learnerPayload) === JSON.stringify(originalView.learnerPayload)
+              );
+          
+              if (!matched) {
+                throw new Error(`Retained trade ${candidateView.tradeKey} failed exact learner equivalence.`);
+              }
+              checked += 1;
+            }
+          
+            return checked;
+          }
+          
+          function buildPlan(original) {
+            validateHistoryShape(original);
+            validateNoActiveArchives();
+          
+            const originalProtectedHash = semanticHash(protectedProjection(original));
+            const originalDashboard = live.buildDashboardHistoryTracker(original);
+            const originalRichIndex = exactLearningHelpers.buildRichRecordIndex(original);
+            const closedInfo = original.closed.map((record, index) => compactClosedRecord(record, index, originalRichIndex));
+            const invalidClosedCount = closedInfo.filter(item => !item.valid).length;
+            const richCompaction = compactRichRecords(
+              original.records,
+              closedInfo,
+              originalRichIndex
+            );
+            const state = learning.loadLearningState();
+            const retention = buildRetention(closedInfo, state);
+          
+            const retainedClosedInfo = [];
+            const removedTradeKeys = [];
+            closedInfo.forEach((item, index) => {
+              if (retention.removable.has(index)) {
+                removedTradeKeys.push(item.tradeKey);
+                return;
+              }
+              retainedClosedInfo.push(item);
+            });
+          
+            let candidate = {
+              ...clone(original),
+              records: richCompaction.records,
+              history: clone(richCompaction.records),
+              items: clone(richCompaction.records),
+              closed: retainedClosedInfo.map(item => item.record),
+              count: richCompaction.records.length
+            };
+          
+            const closedPruned = candidate.closed.length !== original.closed.length;
+            if (closedPruned) candidate = rebuildStatsWithoutLifecycleMutation(candidate);
+          
+            validateHistoryShape(candidate);
+            if (semanticHash(protectedProjection(candidate)) !== originalProtectedHash) {
+              throw new Error("Protected non-history state changed during maintenance planning.");
+            }
+            if (JSON.stringify(candidate.open) !== JSON.stringify(original.open)) {
+              throw new Error("Open trade state changed during maintenance planning.");
+            }
+          
+            const retainedEquivalentCount = validateRetainedLearningEquivalence(original, candidate, closedInfo);
+            const worklists = compareCurrentLearningWork(original, candidate, state);
+          
+            const candidateDashboard = live.buildDashboardHistoryTracker(candidate);
+            const dashboardSemanticallyChanged =
+              JSON.stringify(dashboardProjection(candidateDashboard)) !==
+              JSON.stringify(dashboardProjection(originalDashboard));
+            if (!closedPruned && dashboardSemanticallyChanged) {
+              throw new Error(
+                "Dashboard history tracker changed semantically even though no closed-history retention pruning occurred."
+              );
+            }
+          
+            for (const key of removedTradeKeys) {
+              if (!retention.retentionTrusted || retention.activeKeys.has(key) || !retention.processed.has(key)) {
+                throw new Error(`Closed trade ${key} was selected for removal without complete retention proof.`);
+              }
+            }
+          
+            const beforeBytes = bytes(original);
+            const afterBytes = bytes(candidate);
+            const sizeTriggered = beforeBytes > TARGET_BYTES;
+            const retentionTriggered = removedTradeKeys.length > 0;
+            const shouldMaintain = sizeTriggered || retentionTriggered;
+          
+            let finalHistory = original;
+            let finalDashboard = originalDashboard;
+            let historyChanged = false;
+            let dashboardChanged = false;
+          
+            if (shouldMaintain) {
+              finalHistory = candidate;
+              finalDashboard = dashboardSemanticallyChanged
+                ? candidateDashboard
+                : originalDashboard;
+              historyChanged = JSON.stringify(finalHistory) !== JSON.stringify(original);
+              dashboardChanged = closedPruned && dashboardSemanticallyChanged;
+            }
+          
+            const finalBytes = bytes(finalHistory);
+            if (historyChanged && finalBytes > HARD_BYTES) {
+              throw new Error(
+                `Bounded maintenance cannot keep analysis-history below the ${Math.round(HARD_BYTES / 1024 / 1024)} MiB hard ceiling. ` +
+                `Planned size is ${(finalBytes / 1024 / 1024).toFixed(2)} MiB. Protected/unlearned evidence was not deleted.`
+              );
+            }
+          
+            // If current file is above the hard ceiling but no safe maintenance trigger can reduce it, fail closed.
+            if (!historyChanged && beforeBytes > HARD_BYTES) {
+              throw new Error(
+                `analysis-history is ${(beforeBytes / 1024 / 1024).toFixed(2)} MiB, above hard ceiling, ` +
+                "but no fully proven bounded change is available."
+              );
+            }
+          
+            return {
+              finalHistory,
+              finalDashboard,
+              historyChanged,
+              dashboardChanged,
+              shouldMaintain,
+              closedPruned,
+              beforeBytes,
+              plannedBytes: afterBytes,
+              finalBytes,
+              richCountBefore: original.records.length,
+              richCountAfter: finalHistory.records.length,
+              closedCountBefore: original.closed.length,
+              closedCountAfter: finalHistory.closed.length,
+              richCompactedCount: richCompaction.compactedCount,
+              invalidClosedCount,
+              retainedEquivalentCount,
+              learningAcceptedBefore: worklists.before.accepted.length,
+              learningAcceptedAfter: worklists.after.accepted.length,
+              learnerMaxHistory: retention.maxHistory,
+              learningSignalCount: retention.signalCount,
+              retentionTrusted: retention.retentionTrusted,
+              signalsWithoutSourceKey: retention.signalsWithoutSourceKey,
+              removableClosedCount: retention.removable.size,
+              removedTradeKeys
+            };
+          }
+          
+          function loadLiveOutput() {
+            if (!fs.existsSync(LIVE_PATH)) return null;
+            const value = JSON.parse(fs.readFileSync(LIVE_PATH, "utf8"));
+            if (!plain(value)) throw new Error("data/live-analysis.json must contain an object when present.");
+            return value;
+          }
+          
+          function applyPlan(plan) {
+            if (!plan.historyChanged) return { historyWritten: false, liveWritten: false };
+            atomicWrite(HISTORY_PATH, pretty(plan.finalHistory));
+            let liveWritten = false;
+            if (plan.dashboardChanged) {
+              const output = loadLiveOutput();
+              if (!output) throw new Error("Closed-history pruning requires data/live-analysis.json to refresh historyTracker.");
+              output.historyTracker = plan.finalDashboard;
+              atomicWrite(LIVE_PATH, pretty(output));
+              liveWritten = true;
+            }
+            return { historyWritten: true, liveWritten };
+          }
+          
+          function summarize(plan, mode) {
+            console.log("");
+            console.log("PipSight Pro bounded Analysis-history governor");
+            console.log(`Mode: ${mode}`);
+            console.log(`Active history: ${(plan.beforeBytes / 1024 / 1024).toFixed(2)} -> ${(plan.finalBytes / 1024 / 1024).toFixed(2)} MiB`);
+            console.log(`Rich records: ${plan.richCountBefore} -> ${plan.richCountAfter}; compactable resolved: ${plan.richCompactedCount}`);
+            console.log(`Closed records: ${plan.closedCountBefore} -> ${plan.closedCountAfter}; invalid/protected: ${plan.invalidClosedCount}`);
+            console.log(`Learner retention: ${plan.learningSignalCount}/${plan.learnerMaxHistory}; trusted=${plan.retentionTrusted}`);
+            console.log(`Closed records safely removable now: ${plan.removableClosedCount}`);
+            console.log(`Current Learning accepted worklist: ${plan.learningAcceptedBefore} -> ${plan.learningAcceptedAfter}`);
+            console.log(`Retained exact learner-equivalent trades checked: ${plan.retainedEquivalentCount}`);
+            console.log(`History change required: ${plan.historyChanged ? "YES" : "NO"}`);
+            console.log(`Dashboard refresh required: ${plan.dashboardChanged ? "YES" : "NO"}`);
+            console.log("");
+          }
+          
+          function main() {
+            const apply = process.argv.includes("--apply");
+            if (apply && process.env[APPLY_ENV] !== APPLY_TOKEN) {
+              throw new Error(`Apply mode requires ${APPLY_ENV}=${APPLY_TOKEN}.`);
+            }
+          
+            const { value: original } = readJson(HISTORY_PATH);
+            const plan = buildPlan(original);
+            summarize(plan, apply ? "APPLY" : "DRY RUN");
+          
+            if (!apply) return;
+            const writes = applyPlan(plan);
+            const { value: writtenHistory } = readJson(HISTORY_PATH);
+            validateHistoryShape(writtenHistory);
+            if (JSON.stringify(writtenHistory) !== JSON.stringify(plan.finalHistory)) {
+              throw new Error("Post-apply history verification failed: written history differs from the validated plan.");
+            }
+            if (plan.dashboardChanged) {
+              const output = loadLiveOutput();
+              if (!output || JSON.stringify(output.historyTracker) !== JSON.stringify(plan.finalDashboard)) {
+                throw new Error("Post-apply live historyTracker verification failed.");
+              }
+            }
+            console.log(`History written: ${writes.historyWritten ? "YES" : "NO"}`);
+            console.log(`Live dashboard written: ${writes.liveWritten ? "YES" : "NO"}`);
+            console.log("Post-apply exact-write verification PASS.");
+          }
+          
+          main();
+          NODE
+
+          node --check "$governor"
+          echo "HISTORY_GOVERNOR=$governor" >> "$GITHUB_ENV"
+          echo "Ephemeral bounded-history governor syntax PASS."
+
+      - name: Dry-run bounded history maintenance
+        run: |
+          set -euo pipefail
+          node "$HISTORY_GOVERNOR"
+
+      - name: Apply verified bounded history maintenance
         env:
           PIPSIGHT_HISTORY_MAINTENANCE_CONFIRM: MAINTAIN_ANALYSIS_HISTORY
         run: |
           set -euo pipefail
-          node manage-analysis-history.js --apply
-
-      - name: Validate maintained history and archive-aware learning
-        run: |
-          set -euo pipefail
-
-          node <<'NODE'
-          "use strict";
-
-          const fs = require("fs");
-          const crypto = require("crypto");
-
-          const targetBytes =
-            20 * 1024 * 1024;
-
-          const historyPath =
-            "data/analysis-history.json";
-
-          const raw =
-            fs.readFileSync(
-              historyPath,
-              "utf8"
-            );
-
-          const history =
-            JSON.parse(raw);
-
-          for (const field of [
-            "records",
-            "history",
-            "items",
-            "closed"
-          ]) {
-            if (!Array.isArray(history[field])) {
-              throw new Error(
-                `Maintained history field ${field} must be an array.`
-              );
-            }
-          }
-
-          if (
-            JSON.stringify(history.records) !==
-              JSON.stringify(history.history) ||
-            JSON.stringify(history.records) !==
-              JSON.stringify(history.items)
-          ) {
-            throw new Error(
-              "Maintained records/history/items aliases are not exactly synchronized."
-            );
-          }
-
-          if (
-            history.count !== undefined &&
-            Number(history.count) !==
-              history.records.length
-          ) {
-            throw new Error(
-              "Maintained history count is inconsistent."
-            );
-          }
-
-          if (
-            Buffer.byteLength(raw) >
-              targetBytes
-          ) {
-            throw new Error(
-              `Maintained analysis-history.json exceeds the 20 MiB target: ` +
-              `${(Buffer.byteLength(raw) / 1024 / 1024).toFixed(2)} MiB.`
-            );
-          }
-
-          const protectedProjection = {};
-
-          for (const [key, value] of Object.entries(history)) {
-            if (
-              key === "records" ||
-              key === "history" ||
-              key === "items" ||
-              key === "count"
-            ) {
-              continue;
-            }
-
-            protectedProjection[key] =
-              value;
-          }
-
-          const protectedHash =
-            crypto
-              .createHash("sha256")
-              .update(
-                JSON.stringify(
-                  protectedProjection
-                )
-              )
-              .digest("hex");
-
-          if (
-            protectedHash !==
-              process.env.HISTORY_PROTECTED_HASH
-          ) {
-            throw new Error(
-              "Protected analysis-history state changed during maintenance."
-            );
-          }
-
-          const manifestPath =
-            "data/history-archive/manifest.json";
-
-          let archivedRichRecords =
-            0;
-
-          if (
-            fs.existsSync(
-              manifestPath
-            )
-          ) {
-            const manifest =
-              JSON.parse(
-                fs.readFileSync(
-                  manifestPath,
-                  "utf8"
-                )
-              );
-
-            if (
-              manifest === null ||
-              typeof manifest !== "object" ||
-              Array.isArray(manifest) ||
-              manifest.version !== 1 ||
-              !Array.isArray(
-                manifest.archives
-              )
-            ) {
-              throw new Error(
-                "History archive manifest is invalid."
-              );
-            }
-
-            archivedRichRecords =
-              manifest.archives.reduce(
-                (sum, entry) =>
-                  sum +
-                  Number(
-                    entry?.recordCount ||
-                    0
-                  ),
-                0
-              );
-          }
-
-          const learning =
-            require(
-              "./run-learning-engine.js"
-            );
-
-          const loaded =
-            learning
-              .loadAnalysisHistory();
-
-          const state =
-            learning
-              .loadLearningState();
-
-          const prepared =
-            learning
-              .prepareClosedHistory(
-                loaded.raw,
-                state,
-                {
-                  learningStartAt:
-                    state.learningStartAt
-                }
-              );
-
-          const expectedRichCount =
-            history.records.length +
-            archivedRichRecords;
-
-          if (
-            prepared.richRecordCount !==
-              expectedRichCount
-          ) {
-            throw new Error(
-              `Archive-aware Learning Engine rich-record count mismatch: ` +
-              `${prepared.richRecordCount} !== ${expectedRichCount}.`
-            );
-          }
-
-          console.log(
-            `Post-maintenance PASS: ${(Buffer.byteLength(raw) / 1024 / 1024).toFixed(2)} MiB active history, ` +
-            `${history.records.length} active rich records, ${archivedRichRecords} archived rich records, ` +
-            `${history.closed.length} verified closed records.`
-          );
-          NODE
+          node "$HISTORY_GOVERNOR" --apply
 
       - name: Enforce maintenance change ownership
         id: ownership
@@ -435,20 +905,16 @@ jobs:
 
           if [[ "${#changed_files[@]}" -eq 0 ]]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "Maintenance produced no repository changes."
+            echo "Bounded maintenance produced no repository changes."
             exit 0
           fi
 
           for file in "${changed_files[@]}"; do
             case "$file" in
-              data/analysis-history.json)
-                ;;
-              data/history-archive/manifest.json)
-                ;;
-              data/history-archive/rich/analysis-history-rich-*.json.gz)
+              data/analysis-history.json|data/live-analysis.json)
                 ;;
               *)
-                echo "::error file=$file::Unexpected file changed during analysis-history maintenance."
+                echo "::error file=$file::Unexpected file changed during bounded history maintenance."
                 exit 1
                 ;;
             esac
@@ -465,21 +931,20 @@ jobs:
         run: |
           set -euo pipefail
 
-          git fetch --no-tags origin "$GITHUB_REF_NAME"
+          git fetch --no-tags origin "$MAINTENANCE_BRANCH"
 
-          remote_sha="$(
-            git rev-parse \
-              "origin/$GITHUB_REF_NAME"
-          )"
+          remote_sha="$(git rev-parse "origin/$MAINTENANCE_BRANCH")"
 
           if [[ "$remote_sha" != "$MAINTENANCE_BASE_SHA" ]]; then
             echo "::error::Remote branch moved during maintenance. Refusing stale publication."
+            echo "Expected: $MAINTENANCE_BASE_SHA"
+            echo "Actual:   $remote_sha"
             exit 1
           fi
 
           echo "Remote branch guard PASS: $remote_sha"
 
-      - name: Commit and push maintained history
+      - name: Commit and push bounded history state
         if: steps.ownership.outputs.changed == 'true'
         run: |
           set -euo pipefail
@@ -487,29 +952,25 @@ jobs:
           git config user.name "pipsight-robot"
           git config user.email "pipsight-robot@users.noreply.github.com"
 
-          git add -A -- \
+          git add -- \
             data/analysis-history.json \
-            data/history-archive
+            data/live-analysis.json
 
           mapfile -t staged_files < <(
             git diff --cached --name-only
           )
 
           if [[ "${#staged_files[@]}" -eq 0 ]]; then
-            echo "No staged maintenance changes remain."
+            echo "No staged bounded-maintenance changes remain."
             exit 0
           fi
 
           for file in "${staged_files[@]}"; do
             case "$file" in
-              data/analysis-history.json)
-                ;;
-              data/history-archive/manifest.json)
-                ;;
-              data/history-archive/rich/analysis-history-rich-*.json.gz)
+              data/analysis-history.json|data/live-analysis.json)
                 ;;
               *)
-                echo "::error file=$file::Unexpected staged file in maintenance commit."
+                echo "::error file=$file::Unexpected staged file in bounded maintenance commit."
                 exit 1
                 ;;
             esac
@@ -518,22 +979,20 @@ jobs:
           git diff --cached --check
 
           git commit \
-            -m "maintenance: archive resolved analysis history"
+            -m "maintenance: compact bounded analysis history"
 
-          git fetch --no-tags origin "$GITHUB_REF_NAME"
+          git fetch --no-tags origin "$MAINTENANCE_BRANCH"
 
-          remote_sha="$(
-            git rev-parse \
-              "origin/$GITHUB_REF_NAME"
-          )"
+          remote_sha="$(git rev-parse "origin/$MAINTENANCE_BRANCH")"
 
           if [[ "$remote_sha" != "$MAINTENANCE_BASE_SHA" ]]; then
             echo "::error::Remote branch moved after maintenance commit. Refusing stale push."
             exit 1
           fi
 
-          git push \
-            origin \
-            "HEAD:$GITHUB_REF_NAME"
+          if ! git push origin "HEAD:$MAINTENANCE_BRANCH"; then
+            echo "::error::Push rejected. No rebase, force-push or stale merge will be attempted."
+            exit 1
+          fi
 
-          echo "Analysis-history maintenance committed successfully."
+          echo "Bounded analysis-history maintenance committed successfully."

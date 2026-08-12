@@ -14136,11 +14136,20 @@ function buildMasterConsensus(input = {}) {
       ? masterTradePlan.entry
       : null;
 
-  const priceCandidates = [
-    engines.intraday.price,
-    engines.scalp.price,
-    engines.swing.price,
-  ].filter(Number.isFinite);
+  const priceCandidates =
+    (
+      decision === "HOLD"
+        ? [
+            engines.scalp.price,
+            engines.intraday.price,
+            engines.swing.price,
+          ]
+        : [
+            engines.intraday.price,
+            engines.scalp.price,
+            engines.swing.price,
+          ]
+    ).filter(Number.isFinite);
 
   const price =
     Number.isFinite(selectedPlanEntry)
@@ -15391,8 +15400,47 @@ function buildPairEngineBundle(
     ) ||
     "15m";
 
+  const selectedScalpPrice =
+    liveExtractPrice(
+      selectedBaseScalp,
+      null
+    );
+
+  const latestClosedScalpPrice =
+    input.scalpSourceStale !== true &&
+    Array.isArray(
+      pipeline.frames?.scalp
+    ) &&
+    pipeline.frames.scalp.length > 0
+      ? liveFiniteNumber(
+          pipeline.frames.scalp[
+            pipeline.frames.scalp.length - 1
+          ]?.close,
+          null
+        )
+      : null;
+
+  const baseScalpPrice =
+    Number.isFinite(selectedScalpPrice)
+      ? selectedScalpPrice
+      : normalizeLiveDecision(
+            selectedBaseScalp.decision
+          ) === "HOLD" &&
+          Number.isFinite(latestClosedScalpPrice)
+        ? latestClosedScalpPrice
+        : null;
+
   const baseScalp = {
     ...selectedBaseScalp,
+
+    price:
+      baseScalpPrice,
+
+    currentPrice:
+      baseScalpPrice,
+
+    lastPrice:
+      baseScalpPrice,
 
     timeframe:
       scalpTimeframe,

@@ -13371,6 +13371,14 @@ function buildCanonicalEngineResult(
     "aiMemory",
     "confidenceExplainability",
 
+    // Stable signal-lifecycle identity. These additive fields let history and
+    // Telegram distinguish the same setup from a genuinely new market setup
+    // without changing the existing canonical timestamp contract.
+    "setupIdentity",
+    "setupSourceEngine",
+    "setupSourceTimeframe",
+    "setupSourceTimestamp",
+
     // Autonomous extension 1.4.0 diagnostics.
     "autonomous",
     "autonomousDecision",
@@ -14125,6 +14133,53 @@ function buildMasterConsensus(input = {}) {
     engines
   );
 
+  const setupSourceEngine =
+    decision !== "HOLD"
+      ? liveNonEmptyString(
+          masterTradePlan?.sourceEngine,
+          null
+        )
+      : null;
+
+  const setupSourceResult =
+    setupSourceEngine &&
+    liveIsPlainObject(
+      engines[setupSourceEngine]
+    )
+      ? engines[setupSourceEngine]
+      : null;
+
+  const setupSourceAnchor =
+    liveStableSetupAnchor(
+      setupSourceResult
+    );
+
+  const setupSourceTimeframe =
+    setupSourceAnchor.timeframe;
+
+  const setupSourceTimestamp =
+    Number.isFinite(
+      setupSourceAnchor.timestamp
+    )
+      ? new Date(
+          setupSourceAnchor.timestamp
+        ).toISOString()
+      : null;
+
+  const setupIdentity =
+    decision !== "HOLD" &&
+    setupSourceTimeframe &&
+    setupSourceTimestamp
+      ? [
+          "setup-v1",
+          liveCompactPair(pair),
+          "master",
+          setupSourceTimeframe,
+          decision,
+          setupSourceTimestamp,
+        ].join("|")
+      : null;
+
   // Keep the Master price on the exact same source snapshot as the selected
   // executable trade plan. If no source plan exists, preserve the legacy
   // informational price fallback without fabricating an entry.
@@ -14232,6 +14287,17 @@ function buildMasterConsensus(input = {}) {
     timestamp,
     time: new Date(timestamp).toISOString(),
     generatedAt: new Date(timestamp).toISOString(),
+
+    ...(
+      setupIdentity
+        ? {
+            setupIdentity,
+            setupSourceEngine,
+            setupSourceTimeframe,
+            setupSourceTimestamp,
+          }
+        : {}
+    ),
 
     reason: reasons.join("; "),
     reasons,
@@ -15870,6 +15936,90 @@ function buildLiveAnalysisOutput(input = {}) {
 
 
 // ---------------------------------------------------------------------------
+// Stable setup lifecycle anchor
+// ---------------------------------------------------------------------------
+function liveStableSetupAnchor(record) {
+  if (!liveIsPlainObject(record)) {
+    return {
+      timeframe: null,
+      timestamp: null,
+    };
+  }
+
+  const timeframe =
+    normalizeAIMemoryTimeframe(
+      firstString(
+        record.setupSourceTimeframe,
+        record.timeframe,
+        record.sourceTimeframe,
+        record.tf,
+        record.interval,
+        record.period,
+        record.indicatorSnapshot?.timeframe,
+        record.riskDiagnostics?.executionTimeframe,
+        record.tradePlan?.timeframe,
+        record.snapshot?.setupSourceTimeframe,
+        record.snapshot?.timeframe,
+        record.snapshot?.sourceTimeframe,
+        record.snapshot?.period,
+        record.snapshot?.indicatorSnapshot?.timeframe,
+        record.snapshot?.riskDiagnostics?.executionTimeframe
+      )
+    );
+
+  const candidates = [
+    record.setupSourceTimestamp,
+    record.setupCandleAt,
+    record.analyzedCandleAt,
+    record.indicatorSnapshot?.analyzedCandleAt,
+    record.riskDiagnostics?.setupCandleAt,
+    record.executionCandleAt,
+    record.riskDiagnostics?.executionCandleAt,
+    record.signalTimestamp,
+    record.signalTime,
+    record.openedAt,
+    record.timestamp,
+    record.time,
+    record.generatedAt,
+    record.createdAt,
+    record.recordedAt,
+    record.snapshot?.setupSourceTimestamp,
+    record.snapshot?.setupCandleAt,
+    record.snapshot?.analyzedCandleAt,
+    record.snapshot?.indicatorSnapshot?.analyzedCandleAt,
+    record.snapshot?.riskDiagnostics?.setupCandleAt,
+    record.snapshot?.executionCandleAt,
+    record.snapshot?.riskDiagnostics?.executionCandleAt,
+    record.snapshot?.signalTimestamp,
+    record.snapshot?.signalTime,
+    record.snapshot?.timestamp,
+    record.snapshot?.time,
+    record.snapshot?.generatedAt,
+  ];
+
+  let timestamp = null;
+
+  for (const candidate of candidates) {
+    const parsed =
+      liveStableTimestamp(
+        candidate,
+        null
+      );
+
+    if (Number.isFinite(parsed)) {
+      timestamp = parsed;
+      break;
+    }
+  }
+
+  return {
+    timeframe,
+    timestamp,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
 // History fingerprinting
 // ---------------------------------------------------------------------------
 function liveHistoryFingerprint(record) {
@@ -15971,6 +16121,8 @@ function liveHistorySetupIdentity(record) {
     "scalp-15m": "scalp",
     "scalp-30m": "scalp",
     master: "master",
+    "master-consensus": "master",
+    "autonomous-master-consensus": "master",
   };
 
   const engine =
@@ -16266,6 +16418,11 @@ function liveHistoryRecordFromEngine(
     outcome: null,
     resolvedAt: null,
 
+    setupIdentity:
+      liveHistorySetupIdentity(
+        canonical
+      ),
+
     fingerprint:
       liveHistoryFingerprint(
         canonical
@@ -16366,6 +16523,13 @@ function shouldAppendHistoryRecord(
   const setupIdentity =
     liveHistorySetupIdentity(record);
 
+  const setupSourceTimestamp =
+    liveStableTimestamp(
+      record.setupSourceTimestamp ??
+        record.snapshot?.setupSourceTimestamp,
+      null
+    );
+
   const dedupeWindowMs = Math.max(
     0,
     liveFiniteNumber(
@@ -16390,10 +16554,18 @@ function shouldAppendHistoryRecord(
 
     if (
       setupIdentity &&
-      existingSetupIdentity ===
-        setupIdentity
+      existingSetupIdentity
     ) {
-      return false;
+      if (
+        existingSetupIdentity ===
+        setupIdentity
+      ) {
+        return false;
+      }
+
+      // Both records prove distinct complete market lifecycles. Do not let an
+      // identical rounded trade geometry collapse a genuinely new setup.
+      continue;
     }
 
     const existingTimestamp =
@@ -16401,6 +16573,35 @@ function shouldAppendHistoryRecord(
         existing,
         0
       );
+
+    const existingFingerprint =
+      existing.fingerprint ||
+      liveHistoryFingerprint(existing);
+
+    if (
+      setupIdentity &&
+      !existingSetupIdentity &&
+      existingFingerprint ===
+        fingerprint &&
+      Number.isFinite(
+        setupSourceTimestamp
+      ) &&
+      existingTimestamp > 0
+    ) {
+      if (
+        setupSourceTimestamp <=
+        existingTimestamp
+      ) {
+        // Migration bridge for pre-lifecycle Master history: the current
+        // source candle already existed when the legacy record was written,
+        // so matching geometry is the same lifecycle, not a new setup.
+        return false;
+      }
+
+      // The source candle is newer than the legacy record. This proves a new
+      // lifecycle even when rounded entry/SL/TP1 geometry is unchanged.
+      continue;
+    }
 
     if (
       dedupeWindowMs > 0 &&
@@ -16415,10 +16616,6 @@ function shouldAppendHistoryRecord(
        */
       continue;
     }
-
-    const existingFingerprint =
-      existing.fingerprint ||
-      liveHistoryFingerprint(existing);
 
     if (
       existingFingerprint ===
@@ -17052,6 +17249,11 @@ function shouldSendTelegramNotification(
       ? state.signals[key]
       : null;
 
+  const setupIdentity =
+    liveHistorySetupIdentity(
+      canonical
+    );
+
   const cooldownMs = Math.max(
     0,
     liveFiniteNumber(
@@ -17061,6 +17263,46 @@ function shouldSendTelegramNotification(
   );
 
   if (previous) {
+    const previousSetupIdentity =
+      liveNonEmptyString(
+        previous.setupIdentity,
+        null
+      );
+
+    if (
+      setupIdentity &&
+      previousSetupIdentity
+    ) {
+      if (
+        previousSetupIdentity ===
+        setupIdentity
+      ) {
+        return {
+          shouldSend: false,
+          reason:
+            "The same signal lifecycle was already notified",
+          state,
+          canonical,
+          key,
+          signature,
+          setupIdentity,
+        };
+      }
+
+      // A different complete lifecycle is a genuinely new setup even if its
+      // rounded entry/SL/TP1 geometry happens to match the previous signal.
+      return {
+        shouldSend: true,
+        reason:
+          "A new signal lifecycle is eligible for notification",
+        state,
+        canonical,
+        key,
+        signature,
+        setupIdentity,
+      };
+    }
+
     const previousSignature =
       liveNonEmptyString(
         previous.signature ||
@@ -17074,6 +17316,49 @@ function shouldSendTelegramNotification(
           previous.updatedAt,
         0
       );
+
+    const setupSourceTimestamp =
+      liveStableTimestamp(
+        canonical.setupSourceTimestamp,
+        null
+      );
+
+    if (
+      setupIdentity &&
+      !previousSetupIdentity &&
+      previousSignature === signature &&
+      previousSentAt > 0 &&
+      Number.isFinite(
+        setupSourceTimestamp
+      )
+    ) {
+      if (
+        setupSourceTimestamp <=
+        previousSentAt
+      ) {
+        return {
+          shouldSend: false,
+          reason:
+            "Legacy notify state matches the same signal lifecycle",
+          state,
+          canonical,
+          key,
+          signature,
+          setupIdentity,
+        };
+      }
+
+      return {
+        shouldSend: true,
+        reason:
+          "A newer source candle proves a new signal lifecycle",
+        state,
+        canonical,
+        key,
+        signature,
+        setupIdentity,
+      };
+    }
 
     const stillInCooldown =
       cooldownMs > 0 &&
@@ -17104,6 +17389,7 @@ function shouldSendTelegramNotification(
     canonical,
     key,
     signature,
+    setupIdentity,
   };
 }
 
@@ -17137,6 +17423,12 @@ function updateNotifyStateAfterSend(
   const signature =
     eligibility.signature ||
     liveNotifySignature(
+      canonical
+    );
+
+  const setupIdentity =
+    eligibility.setupIdentity ||
+    liveHistorySetupIdentity(
       canonical
     );
 
@@ -17198,6 +17490,8 @@ function updateNotifyStateAfterSend(
           ?.applied === true,
 
       signature,
+
+      setupIdentity,
 
       fingerprint:
         signature,
@@ -18937,9 +19231,61 @@ function p6AutonomousMasterFromSafety(
           "Autonomous Safety Gate returned no explanation",
         ];
 
+  const setupSourceTimeframe =
+    normalizeAIMemoryTimeframe(
+      legacyMaster
+        ?.setupSourceTimeframe
+    );
+
+  const setupSourceTimestampValue =
+    liveStableTimestamp(
+      legacyMaster
+        ?.setupSourceTimestamp,
+      null
+    );
+
+  const setupSourceTimestamp =
+    Number.isFinite(
+      setupSourceTimestampValue
+    )
+      ? new Date(
+          setupSourceTimestampValue
+        ).toISOString()
+      : null;
+
+  const setupIdentity =
+    safeDecision !== "HOLD" &&
+    setupSourceTimeframe &&
+    setupSourceTimestamp
+      ? [
+          "setup-v1",
+          liveCompactPair(
+            legacyMaster?.pair
+          ),
+          "master",
+          setupSourceTimeframe,
+          safeDecision,
+          setupSourceTimestamp,
+        ].join("|")
+      : null;
+
   return buildCanonicalEngineResult(
     {
       ...legacyMaster,
+      ...(
+        setupIdentity
+          ? {
+              setupIdentity,
+              setupSourceTimeframe,
+              setupSourceTimestamp,
+            }
+          : {
+              setupIdentity: null,
+              setupSourceEngine: null,
+              setupSourceTimeframe: null,
+              setupSourceTimestamp: null,
+            }
+      ),
       decision:
         safeDecision,
       signal:

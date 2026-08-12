@@ -1,0 +1,1054 @@
+name: PipSight Pro — one-time Swing + Master history reset
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type DELETE_SWING_MASTER_HISTORY to execute the Swing + Master reset"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pipsight-analysis-writes-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  reset-swing-master:
+    name: Purge Swing + Master history and rebuild adaptive state
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Confirm destructive Swing + Master reset
+        env:
+          RESET_CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$RESET_CONFIRMATION" != "DELETE_SWING_MASTER_HISTORY" ]]; then
+            echo "::error::Confirmation mismatch. Type DELETE_SWING_MASTER_HISTORY exactly."
+            exit 1
+          fi
+
+          if [[ "${GITHUB_REF_TYPE}" != "branch" ]]; then
+            echo "::error::Swing + Master reset may run only from a branch."
+            exit 1
+          fi
+
+          git fetch origin "${GITHUB_REF_NAME}"
+
+          base_sha="$(git rev-parse HEAD)"
+          remote_sha="$(git rev-parse "origin/${GITHUB_REF_NAME}")"
+
+          if [[ "$base_sha" != "$remote_sha" ]]; then
+            echo "::error::Checked-out commit is not the current remote branch tip. Refusing destructive reset."
+            exit 1
+          fi
+
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "::error::Repository is not clean before reset."
+            git status --short
+            exit 1
+          fi
+
+          echo "RESET_BASE_SHA=$base_sha" >> "$GITHUB_ENV"
+          echo "RESET_AT=$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')" >> "$GITHUB_ENV"
+
+      - name: Validate reset dependencies and learning contract
+        run: |
+          set -euo pipefail
+
+          scripts=(
+            "run-live-analysis.js"
+            "run-learning-engine.js"
+            "learner.js"
+            "learning-enrichment.js"
+            "ai-memory.js"
+            "ai-policy-engine.js"
+          )
+
+          for script in "${scripts[@]}"; do
+            node --check "$script"
+          done
+
+          node <<'NODE'
+          "use strict";
+          const fs = require("fs");
+
+          const requiredFiles = [
+            "data/analysis-history.json",
+            "data/live-analysis.json",
+            "data/notify-state.json",
+            "data/autonomous-config.json",
+            "run-live-analysis.js",
+            "run-learning-engine.js",
+            "learner.js",
+            "learning-enrichment.js",
+            "ai-memory.js",
+            "ai-policy-engine.js",
+          ];
+
+          for (const filePath of requiredFiles) {
+            if (!fs.existsSync(filePath)) {
+              throw new Error(`Required reset dependency is missing: ${filePath}`);
+            }
+          }
+
+          function readObject(filePath) {
+            const raw = fs.readFileSync(filePath, "utf8").trim();
+            if (!raw) throw new Error(`${filePath} is empty.`);
+            const value = JSON.parse(raw);
+            if (value === null || typeof value !== "object" || Array.isArray(value)) {
+              throw new Error(`${filePath} must contain a JSON object.`);
+            }
+            return value;
+          }
+
+          const config = readObject("data/autonomous-config.json");
+          const eligibility =
+            config.learningEligibility &&
+            typeof config.learningEligibility === "object" &&
+            !Array.isArray(config.learningEligibility)
+              ? config.learningEligibility
+              : {};
+
+          if (eligibility.learningStartAt || eligibility.freshDataStartAt) {
+            throw new Error(
+              "Global learningStartAt/freshDataStartAt is already configured. " +
+              "Swing + Master reset refuses to proceed because that cutoff could also discard historical Scalp/Intraday learning."
+            );
+          }
+
+          const history = readObject("data/analysis-history.json");
+          if (
+            !Array.isArray(history.records) ||
+            !Array.isArray(history.history) ||
+            !Array.isArray(history.items) ||
+            !Array.isArray(history.closed)
+          ) {
+            throw new Error("analysis-history.json records/history/items/closed must all be arrays.");
+          }
+
+          if (
+            JSON.stringify(history.records) !== JSON.stringify(history.history) ||
+            JSON.stringify(history.records) !== JSON.stringify(history.items)
+          ) {
+            throw new Error("analysis-history.json aliases are not exactly synchronized.");
+          }
+
+          console.log(
+            `Preflight PASS: ${history.records.length} rich records, ${history.closed.length} closed records.`
+          );
+          NODE
+
+      - name: Purge Swing + Master history and notification state
+        id: purge
+        env:
+          RESET_AT: ${{ env.RESET_AT }}
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          "use strict";
+
+          const fs = require("fs");
+
+          const historyPath = process.env.HISTORY_PATH || "data/analysis-history.json";
+          const notifyPath = process.env.NOTIFY_PATH || "data/notify-state.json";
+          const resetAt = process.env.RESET_AT || new Date().toISOString();
+
+          function isPlainObject(value) {
+            return value !== null && typeof value === "object" && !Array.isArray(value);
+          }
+
+          function readObject(filePath) {
+            const raw = fs.readFileSync(filePath, "utf8").trim();
+            if (!raw) throw new Error(`${filePath} is empty.`);
+            const value = JSON.parse(raw);
+            if (!isPlainObject(value)) throw new Error(`${filePath} must contain a JSON object.`);
+            return value;
+          }
+
+          function atomicWriteJSON(filePath, value) {
+            const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+            fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+            fs.renameSync(tempPath, filePath);
+          }
+
+          function normalizeToken(value) {
+            return typeof value === "string"
+              ? value.trim().toLowerCase().replace(/[^a-z0-9]/g, "")
+              : "";
+          }
+
+          const tokenGroup = new Map([
+            ["intraday", "intraday"],
+            ["daily", "intraday"],
+            ["day", "intraday"],
+            ["daytrade", "intraday"],
+            ["daytrading", "intraday"],
+            ["h1", "intraday"],
+            ["scalp", "scalp"],
+            ["scalping", "scalp"],
+            ["scalp5m", "scalp"],
+            ["scalp15m", "scalp"],
+            ["scalp30m", "scalp"],
+            ["swing", "swing"],
+            ["weekly", "swing"],
+            ["week", "swing"],
+            ["master", "master"],
+            ["masterconsensus", "master"],
+            ["autonomousmasterconsensus", "master"],
+          ]);
+
+          const resetGroups = new Set(["swing", "master"]);
+
+          function explicitClassification(record, label) {
+            if (!isPlainObject(record)) return { group: null, groups: [] };
+
+            const values = [
+              record.engine,
+              record.engineName,
+              record.mode,
+              record.strategy,
+              record.snapshot?.engine,
+              record.snapshot?.engineName,
+              record.snapshot?.mode,
+              record.snapshot?.strategy,
+              record.resolution?.attribution?.engine,
+              record.autonomousFeedback?.attribution?.engine,
+            ];
+
+            const groups = new Set();
+            for (const value of values) {
+              const group = tokenGroup.get(normalizeToken(value));
+              if (group) groups.add(group);
+            }
+
+            if (groups.size > 1) {
+              throw new Error(
+                `Conflicting engine classification at ${label}: ${Array.from(groups).join(", ")}`
+              );
+            }
+
+            if (groups.size === 1) {
+              return { group: Array.from(groups)[0], groups: Array.from(groups) };
+            }
+
+            const identities = [
+              record.setupIdentity,
+              record.setupId,
+              record.snapshot?.setupIdentity,
+              record.snapshot?.setupId,
+              record.tradeIdentity,
+              record.snapshot?.tradeIdentity,
+              record.resolutionEvidence?.setupIdentity,
+              record.resolution?.setupIdentity,
+            ].filter((value) => typeof value === "string");
+
+            const identityGroups = new Set();
+            for (const value of identities) {
+              if (/(^|\|)swing(\||$)/i.test(value)) identityGroups.add("swing");
+              if (/(^|\|)master(\||$)/i.test(value)) identityGroups.add("master");
+            }
+
+            if (identityGroups.size > 1) {
+              throw new Error(
+                `Conflicting setup identity classification at ${label}: ${Array.from(identityGroups).join(", ")}`
+              );
+            }
+
+            return {
+              group: identityGroups.size === 1 ? Array.from(identityGroups)[0] : null,
+              groups: Array.from(identityGroups),
+            };
+          }
+
+          function resetGroupOf(record, label) {
+            const group = explicitClassification(record, label).group;
+            return resetGroups.has(group) ? group : null;
+          }
+
+          function isResetRecord(record, label) {
+            return resetGroupOf(record, label) !== null;
+          }
+
+          function outcomeOf(record) {
+            const raw =
+              record?.outcome ??
+              record?.result ??
+              record?.resolution?.outcome ??
+              null;
+            const value = typeof raw === "string" ? raw.trim().toUpperCase() : "";
+            return ["WIN", "LOSS", "BREAKEVEN"].includes(value) ? value : null;
+          }
+
+          function countOutcomes(records) {
+            const result = { totalClosed: 0, wins: 0, losses: 0, breakevens: 0 };
+            for (const record of records) {
+              const outcome = outcomeOf(record);
+              if (!outcome) continue;
+              result.totalClosed += 1;
+              if (outcome === "WIN") result.wins += 1;
+              else if (outcome === "LOSS") result.losses += 1;
+              else result.breakevens += 1;
+            }
+            return result;
+          }
+
+          function countOutcomesByGroup(records) {
+            const output = {
+              swing: { totalClosed: 0, wins: 0, losses: 0, breakevens: 0 },
+              master: { totalClosed: 0, wins: 0, losses: 0, breakevens: 0 },
+            };
+
+            records.forEach((record, index) => {
+              const group = resetGroupOf(record, `closed[${index}]`);
+              if (!group) return;
+              const outcome = outcomeOf(record);
+              if (!outcome) return;
+              output[group].totalClosed += 1;
+              if (outcome === "WIN") output[group].wins += 1;
+              else if (outcome === "LOSS") output[group].losses += 1;
+              else output[group].breakevens += 1;
+            });
+
+            return output;
+          }
+
+          function winRate(stats) {
+            const decisive = stats.wins + stats.losses;
+            return decisive > 0 ? Number(((stats.wins / decisive) * 100).toFixed(2)) : 0;
+          }
+
+          function finiteNonNegative(value, label) {
+            const number = Number(value);
+            if (!Number.isFinite(number) || number < 0) {
+              throw new Error(`${label} must be a finite non-negative number.`);
+            }
+            return number;
+          }
+
+          function zeroStats(stats) {
+            return {
+              ...stats,
+              totalClosed: 0,
+              wins: 0,
+              losses: 0,
+              breakevens: 0,
+              winRate: 0,
+              openCount: 0,
+            };
+          }
+
+          function sanitizeStatisticsContainer(container, beforeClosedCounts, removedByGroup) {
+            if (!isPlainObject(container)) return container;
+            if (!isPlainObject(container.overall) || !isPlainObject(container.swing)) {
+              throw new Error("Statistics container must include overall and swing objects before purge.");
+            }
+
+            const overall = container.overall;
+            const expectedOverall = {
+              totalClosed: finiteNonNegative(overall.totalClosed, "stats.overall.totalClosed"),
+              wins: finiteNonNegative(overall.wins, "stats.overall.wins"),
+              losses: finiteNonNegative(overall.losses, "stats.overall.losses"),
+              breakevens: finiteNonNegative(overall.breakevens ?? 0, "stats.overall.breakevens"),
+            };
+
+            for (const key of ["totalClosed", "wins", "losses", "breakevens"]) {
+              if (expectedOverall[key] !== beforeClosedCounts[key]) {
+                throw new Error(
+                  `Pre-purge overall statistics mismatch for ${key}: stats=${expectedOverall[key]}, closed=${beforeClosedCounts[key]}`
+                );
+              }
+            }
+
+            const swing = container.swing;
+            for (const key of ["totalClosed", "wins", "losses", "breakevens"]) {
+              const actual = finiteNonNegative(swing[key] ?? 0, `stats.swing.${key}`);
+              if (actual !== removedByGroup.swing[key]) {
+                throw new Error(
+                  `Pre-purge Swing statistics mismatch for ${key}: stats=${actual}, closed=${removedByGroup.swing[key]}`
+                );
+              }
+            }
+
+            const master = isPlainObject(container.master) ? container.master : null;
+            if (master) {
+              for (const key of ["totalClosed", "wins", "losses", "breakevens"]) {
+                const actual = finiteNonNegative(master[key] ?? 0, `stats.master.${key}`);
+                if (actual !== removedByGroup.master[key]) {
+                  throw new Error(
+                    `Pre-purge Master statistics mismatch for ${key}: stats=${actual}, closed=${removedByGroup.master[key]}`
+                  );
+                }
+              }
+            } else if (removedByGroup.master.totalClosed !== 0) {
+              throw new Error(
+                "Master closed history exists but stats.master is absent; refusing an ambiguous destructive reset."
+              );
+            }
+
+            const overallOpen = finiteNonNegative(overall.openCount ?? 0, "stats.overall.openCount");
+            const swingOpen = finiteNonNegative(swing.openCount ?? 0, "stats.swing.openCount");
+            const masterOpen = master
+              ? finiteNonNegative(master.openCount ?? 0, "stats.master.openCount")
+              : 0;
+            const representedOpenToRemove = swingOpen + masterOpen;
+
+            if (representedOpenToRemove > overallOpen) {
+              throw new Error("Swing/Master represented openCount exceeds overall openCount.");
+            }
+
+            const removedClosedCounts = {
+              totalClosed: removedByGroup.swing.totalClosed + removedByGroup.master.totalClosed,
+              wins: removedByGroup.swing.wins + removedByGroup.master.wins,
+              losses: removedByGroup.swing.losses + removedByGroup.master.losses,
+              breakevens: removedByGroup.swing.breakevens + removedByGroup.master.breakevens,
+            };
+
+            const afterCounts = {
+              totalClosed: beforeClosedCounts.totalClosed - removedClosedCounts.totalClosed,
+              wins: beforeClosedCounts.wins - removedClosedCounts.wins,
+              losses: beforeClosedCounts.losses - removedClosedCounts.losses,
+              breakevens: beforeClosedCounts.breakevens - removedClosedCounts.breakevens,
+            };
+
+            const output = {
+              ...container,
+              overall: {
+                ...overall,
+                ...afterCounts,
+                winRate: winRate(afterCounts),
+                openCount: overallOpen - representedOpenToRemove,
+              },
+              swing: zeroStats(swing),
+            };
+
+            if (master) output.master = zeroStats(master);
+            return output;
+          }
+
+          function resetOpenKey(key) {
+            if (typeof key !== "string") return false;
+            const parts = key.split(":");
+            if (parts.length < 2) return false;
+            return resetGroups.has(tokenGroup.get(normalizeToken(parts[1])));
+          }
+
+          function sanitizeOpenContainer(openValue) {
+            if (Array.isArray(openValue)) {
+              return openValue.filter((record, index) => !isResetRecord(record, `open[${index}]`));
+            }
+            if (!isPlainObject(openValue)) return openValue;
+
+            const output = {};
+            for (const [key, value] of Object.entries(openValue)) {
+              const byKey = resetOpenKey(key);
+              const byValue = isPlainObject(value)
+                ? isResetRecord(value, `open.${key}`)
+                : false;
+              if (byKey || byValue) continue;
+              output[key] = value;
+            }
+            return output;
+          }
+
+          function stripResetNotifyEntries(notifyState) {
+            const output = { ...notifyState, updatedAt: resetAt };
+
+            for (const key of Object.keys(output)) {
+              if (resetOpenKey(key)) delete output[key];
+            }
+
+            for (const rootKey of ["signals", "notifications", "state"]) {
+              const root = output[rootKey];
+              if (!isPlainObject(root)) continue;
+              const cleaned = {};
+              for (const [key, value] of Object.entries(root)) {
+                const byKey = resetOpenKey(key);
+                const byValue = isPlainObject(value)
+                  ? isResetRecord(value, `notify.${rootKey}.${key}`)
+                  : false;
+                if (byKey || byValue) continue;
+                cleaned[key] = value;
+              }
+              output[rootKey] = cleaned;
+            }
+
+            return output;
+          }
+
+          const history = readObject(historyPath);
+          if (
+            !Array.isArray(history.records) ||
+            !Array.isArray(history.history) ||
+            !Array.isArray(history.items) ||
+            !Array.isArray(history.closed)
+          ) {
+            throw new Error("analysis-history.json records/history/items/closed must all be arrays.");
+          }
+
+          if (
+            JSON.stringify(history.records) !== JSON.stringify(history.history) ||
+            JSON.stringify(history.records) !== JSON.stringify(history.items)
+          ) {
+            throw new Error("analysis-history.json records/history/items aliases are not exactly synchronized before purge.");
+          }
+
+          const beforeRecords = history.records;
+          const beforeClosed = history.closed;
+          const removedRecords = [];
+          const retainedRecords = [];
+          const removedRecordGroups = { swing: 0, master: 0 };
+
+          beforeRecords.forEach((record, index) => {
+            const group = resetGroupOf(record, `records[${index}]`);
+            if (group) {
+              removedRecords.push(record);
+              removedRecordGroups[group] += 1;
+            } else {
+              retainedRecords.push(record);
+            }
+          });
+
+          const removedClosed = [];
+          const retainedClosed = [];
+          beforeClosed.forEach((record, index) => {
+            if (isResetRecord(record, `closed[${index}]`)) removedClosed.push(record);
+            else retainedClosed.push(record);
+          });
+
+          if (removedRecords.length === 0 && removedClosed.length === 0) {
+            throw new Error("No Swing or Master history records were found; refusing a no-op destructive reset.");
+          }
+
+          const beforeClosedCounts = countOutcomes(beforeClosed);
+          const removedByGroup = countOutcomesByGroup(removedClosed);
+
+          const nextHistory = {
+            ...history,
+            records: retainedRecords,
+            history: retainedRecords,
+            items: retainedRecords,
+            closed: retainedClosed,
+            count: retainedRecords.length,
+            updatedAt: resetAt,
+            open: sanitizeOpenContainer(history.open),
+          };
+
+          if (Array.isArray(history.signals)) {
+            nextHistory.signals = history.signals.filter(
+              (record, index) => !isResetRecord(record, `signals[${index}]`)
+            );
+          }
+
+          if (isPlainObject(history.stats)) {
+            nextHistory.stats = sanitizeStatisticsContainer(
+              history.stats,
+              beforeClosedCounts,
+              removedByGroup
+            );
+          }
+          if (isPlainObject(history.statistics) && Object.keys(history.statistics).length > 0) {
+            nextHistory.statistics = sanitizeStatisticsContainer(
+              history.statistics,
+              beforeClosedCounts,
+              removedByGroup
+            );
+          }
+
+          const remainingResetRecords = nextHistory.records.filter((record, index) =>
+            isResetRecord(record, `post.records[${index}]`)
+          );
+          const remainingResetClosed = nextHistory.closed.filter((record, index) =>
+            isResetRecord(record, `post.closed[${index}]`)
+          );
+          if (remainingResetRecords.length || remainingResetClosed.length) {
+            throw new Error("Post-purge validation found remaining Swing/Master history.");
+          }
+          if (
+            nextHistory.records.length !== nextHistory.history.length ||
+            nextHistory.records.length !== nextHistory.items.length ||
+            JSON.stringify(nextHistory.records) !== JSON.stringify(nextHistory.history) ||
+            JSON.stringify(nextHistory.records) !== JSON.stringify(nextHistory.items)
+          ) {
+            throw new Error("Post-purge history aliases are not synchronized.");
+          }
+
+          const afterClosedCounts = countOutcomes(nextHistory.closed);
+          if (isPlainObject(nextHistory.stats?.overall)) {
+            for (const key of ["totalClosed", "wins", "losses", "breakevens"]) {
+              if (Number(nextHistory.stats.overall[key]) !== afterClosedCounts[key]) {
+                throw new Error(`Post-purge overall stats mismatch for ${key}.`);
+              }
+            }
+          }
+
+          atomicWriteJSON(historyPath, nextHistory);
+
+          if (fs.existsSync(notifyPath)) {
+            const notify = readObject(notifyPath);
+            atomicWriteJSON(notifyPath, stripResetNotifyEntries(notify));
+          }
+
+          const summary = {
+            resetAt,
+            recordsBefore: beforeRecords.length,
+            swingRecordsRemoved: removedRecordGroups.swing,
+            masterRecordsRemoved: removedRecordGroups.master,
+            recordsAfter: retainedRecords.length,
+            closedBefore: beforeClosed.length,
+            swingClosedRemoved: removedByGroup.swing.totalClosed,
+            masterClosedRemoved: removedByGroup.master.totalClosed,
+            closedAfter: retainedClosed.length,
+            removedSwingOutcomes: removedByGroup.swing,
+            removedMasterOutcomes: removedByGroup.master,
+            afterOverall: nextHistory.stats?.overall ?? null,
+            afterSwing: nextHistory.stats?.swing ?? null,
+            afterMaster: nextHistory.stats?.master ?? null,
+          };
+
+          console.log(JSON.stringify(summary, null, 2));
+          if (process.env.GITHUB_OUTPUT) {
+            fs.appendFileSync(
+              process.env.GITHUB_OUTPUT,
+              [
+                `records_before=${summary.recordsBefore}`,
+                `swing_records_removed=${summary.swingRecordsRemoved}`,
+                `master_records_removed=${summary.masterRecordsRemoved}`,
+                `records_after=${summary.recordsAfter}`,
+                `closed_before=${summary.closedBefore}`,
+                `swing_closed_removed=${summary.swingClosedRemoved}`,
+                `master_closed_removed=${summary.masterClosedRemoved}`,
+                `closed_after=${summary.closedAfter}`,
+              ].join("\n") + "\n",
+              "utf8"
+            );
+          }
+          NODE
+      - name: Remove derived adaptive artifacts before clean rebuild
+        run: |
+          set -euo pipefail
+
+          rm -f --             data/learning-data.json             data/confidence-data.json             data/learning-engine-state.json             data/learning-enrichment.json             data/learning-enrichment-state.json             data/ai-memory.json             data/ai-memory-state.json
+
+          echo "Removed derived Learning/Enrichment/AI Memory artifacts from the working tree."
+          echo "AI Policy and AI Policy state are intentionally retained for governed rebuild/LKG recovery."
+
+      - name: Rebuild Learning, Enrichment, AI Memory and AI Policy
+        run: |
+          set -euo pipefail
+          node run-learning-engine.js
+
+      - name: Validate Swing + Master purge and rebuilt adaptive chain
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          "use strict";
+          const fs = require("fs");
+          const crypto = require("crypto");
+
+          function isPlainObject(value) {
+            return value !== null && typeof value === "object" && !Array.isArray(value);
+          }
+
+          function readObject(filePath) {
+            if (!fs.existsSync(filePath)) {
+              throw new Error(`Required rebuilt file is missing: ${filePath}`);
+            }
+            const raw = fs.readFileSync(filePath, "utf8").trim();
+            if (!raw) throw new Error(`${filePath} is empty.`);
+            const value = JSON.parse(raw);
+            if (!isPlainObject(value)) throw new Error(`${filePath} must contain a JSON object.`);
+            return value;
+          }
+
+          function normalizeToken(value) {
+            return typeof value === "string"
+              ? value.trim().toLowerCase().replace(/[^a-z0-9]/g, "")
+              : "";
+          }
+
+          const resetTokens = new Set([
+            "swing",
+            "weekly",
+            "week",
+            "master",
+            "masterconsensus",
+            "autonomousmasterconsensus",
+          ]);
+
+          function recordIsResetTarget(record) {
+            if (!isPlainObject(record)) return false;
+            const values = [
+              record.engine,
+              record.engineName,
+              record.mode,
+              record.strategy,
+              record.snapshot?.engine,
+              record.snapshot?.engineName,
+              record.snapshot?.mode,
+              record.snapshot?.strategy,
+              record.resolution?.attribution?.engine,
+              record.autonomousFeedback?.attribution?.engine,
+            ];
+            if (values.some((value) => resetTokens.has(normalizeToken(value)))) {
+              return true;
+            }
+            const identities = [
+              record.setupIdentity,
+              record.setupId,
+              record.snapshot?.setupIdentity,
+              record.snapshot?.setupId,
+              record.tradeIdentity,
+              record.snapshot?.tradeIdentity,
+              record.resolutionEvidence?.setupIdentity,
+              record.resolution?.setupIdentity,
+            ].filter((value) => typeof value === "string");
+            return identities.some((value) => /(^|\|)(swing|master)(\||$)/i.test(value));
+          }
+
+          const history = readObject("data/analysis-history.json");
+          for (const field of ["records", "history", "items", "closed"]) {
+            if (!Array.isArray(history[field])) {
+              throw new Error(`analysis-history.json ${field} must be an array.`);
+            }
+          }
+          if (
+            JSON.stringify(history.records) !== JSON.stringify(history.history) ||
+            JSON.stringify(history.records) !== JSON.stringify(history.items)
+          ) {
+            throw new Error("Post-reset history aliases are not synchronized.");
+          }
+          if (history.records.some(recordIsResetTarget) || history.closed.some(recordIsResetTarget)) {
+            throw new Error("Post-reset analysis history still contains Swing/Master records.");
+          }
+          if (Number(history.count) !== history.records.length) {
+            throw new Error("analysis-history.json count does not match records length.");
+          }
+
+          const swingStats = history.stats?.swing;
+          if (!isPlainObject(swingStats)) {
+            throw new Error("analysis-history.json stats.swing is missing after reset.");
+          }
+          for (const key of ["totalClosed", "wins", "losses", "breakevens", "openCount"]) {
+            if (Number(swingStats[key] ?? 0) !== 0) {
+              throw new Error(`stats.swing.${key} is not zero after reset.`);
+            }
+          }
+
+          if (isPlainObject(history.stats?.master)) {
+            for (const key of ["totalClosed", "wins", "losses", "breakevens", "openCount"]) {
+              if (Number(history.stats.master[key] ?? 0) !== 0) {
+                throw new Error(`stats.master.${key} is not zero after reset.`);
+              }
+            }
+          }
+
+          const learningState = readObject("data/learning-engine-state.json");
+          const memoryState = readObject("data/ai-memory-state.json");
+          const policyState = readObject("data/ai-policy-state.json");
+          for (const [name, state] of [
+            ["learning-engine-state", learningState],
+            ["ai-memory-state", memoryState],
+            ["ai-policy-state", policyState],
+          ]) {
+            if (state.pendingTransaction !== null) {
+              throw new Error(`${name}.json has a pending transaction after rebuild.`);
+            }
+          }
+
+          const learningData = readObject("data/learning-data.json");
+          const learningRoot = isPlainObject(learningData.learning)
+            ? learningData.learning
+            : learningData;
+          if (!Array.isArray(learningRoot.signals)) {
+            throw new Error("learning-data.json learning.signals must be an array.");
+          }
+          const learnedResetTargets = learningRoot.signals.filter((signal) => {
+            const tokens = [signal?.strategy, signal?.engine, signal?.mode].map(normalizeToken);
+            if (tokens.some((token) => resetTokens.has(token))) return true;
+            const identity = signal?.setupIdentity ?? signal?.sourceSetupIdentity ?? null;
+            return typeof identity === "string" && /(^|\|)(swing|master)(\||$)/i.test(identity);
+          });
+          if (learnedResetTargets.length !== 0) {
+            throw new Error(
+              `Rebuilt learning-data.json still contains ${learnedResetTargets.length} Swing/Master signal(s).`
+            );
+          }
+
+          const confidenceData = readObject("data/confidence-data.json");
+          const confidenceRoot = isPlainObject(confidenceData.confidence)
+            ? confidenceData.confidence
+            : confidenceData;
+          if (isPlainObject(confidenceRoot.strategies)) {
+            for (const key of Object.keys(confidenceRoot.strategies)) {
+              if (resetTokens.has(normalizeToken(key))) {
+                throw new Error(`Rebuilt confidence-data.json still contains Swing/Master strategy bucket: ${key}`);
+              }
+            }
+          }
+
+          const aiMemory = readObject("data/ai-memory.json");
+          if (aiMemory.engineVersion !== "1.0.1") {
+            throw new Error(`ai-memory.json engineVersion ${String(aiMemory.engineVersion)} is unsupported.`);
+          }
+          if (isPlainObject(aiMemory.memory?.engines)) {
+            for (const key of Object.keys(aiMemory.memory.engines)) {
+              if (resetTokens.has(normalizeToken(key))) {
+                throw new Error(`Rebuilt ai-memory.json still contains Swing/Master engine evidence: ${key}`);
+              }
+            }
+          }
+          for (const combinationName of [
+            "pairEngine",
+            "pairEngineDirection",
+            "engineDirection",
+          ]) {
+            const container = aiMemory.combinations?.[combinationName];
+            if (!isPlainObject(container)) continue;
+            for (const key of Object.keys(container)) {
+              const parts = key.split("::").map((part) => normalizeToken(part));
+              if (parts.some((part) => resetTokens.has(part))) {
+                throw new Error(
+                  `Rebuilt ai-memory.json still contains Swing/Master evidence: ${combinationName}.${key}`
+                );
+              }
+            }
+          }
+
+          const policy = readObject("data/ai-policy.json");
+          if (
+            policy.engineName !== "PipSight Pro Autonomous AI Policy Engine" ||
+            policy.engineVersion !== "1.4.0" ||
+            policy.validation?.valid !== true
+          ) {
+            throw new Error("Rebuilt AI Policy failed its governance identity/validation contract.");
+          }
+          for (const policyItem of Array.isArray(policy.policies) ? policy.policies : []) {
+            const engine = normalizeToken(policyItem?.dimensions?.engine);
+            if (resetTokens.has(engine)) {
+              throw new Error(
+                `Rebuilt AI Policy still contains a Swing/Master policy bucket: ${policyItem.key || "unknown"}`
+              );
+            }
+          }
+
+          function hashFile(filePath) {
+            return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+          }
+
+          const policySources = {
+            autonomousConfig: "data/autonomous-config.json",
+            learningData: "data/learning-data.json",
+            confidenceData: "data/confidence-data.json",
+            aiMemory: "data/ai-memory.json",
+          };
+          for (const [key, filePath] of Object.entries(policySources)) {
+            const expected = hashFile(filePath);
+            if (
+              policy.source?.[key]?.hash !== expected ||
+              policyState.sourceHashes?.[key] !== expected
+            ) {
+              throw new Error(`AI Policy source hash mismatch after reset: ${key}`);
+            }
+          }
+
+          if (
+            policyState.policyHash !== policy.metadata?.policyContentHash ||
+            policyState.lastKnownGoodPolicyHash !== policy.metadata?.policyContentHash
+          ) {
+            throw new Error("AI Policy state is not committed to the rebuilt policy hash.");
+          }
+
+          console.log(
+            `Adaptive rebuild PASS: ${learningRoot.signals.length} retained Scalp/Intraday learned signals, ` +
+            `${Array.isArray(policy.policies) ? policy.policies.length : 0} policy buckets, zero Swing/Master evidence.`
+          );
+          NODE
+      - name: Refresh dashboard history projection
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          "use strict";
+          const fs = require("fs");
+
+          const {
+            buildDashboardHistoryTracker,
+          } = require("./run-live-analysis.js");
+
+          if (typeof buildDashboardHistoryTracker !== "function") {
+            throw new Error("run-live-analysis.js does not export buildDashboardHistoryTracker().");
+          }
+
+          function readObject(filePath) {
+            const raw = fs.readFileSync(filePath, "utf8").trim();
+            if (!raw) throw new Error(`${filePath} is empty.`);
+            const value = JSON.parse(raw);
+            if (value === null || typeof value !== "object" || Array.isArray(value)) {
+              throw new Error(`${filePath} must contain a JSON object.`);
+            }
+            return value;
+          }
+
+          function atomicWriteJSON(filePath, value) {
+            const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+            fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+            fs.renameSync(tempPath, filePath);
+          }
+
+          const history = readObject("data/analysis-history.json");
+          const live = readObject("data/live-analysis.json");
+          const tracker = buildDashboardHistoryTracker(history);
+
+          for (const pairKey of ["XAUUSD", "GBPJPY"]) {
+            const swing = tracker?.pairs?.[pairKey]?.swing;
+            if (!swing || typeof swing !== "object" || Array.isArray(swing)) {
+              throw new Error(`Dashboard Swing tracker is missing ${pairKey}.`);
+            }
+            const stats = swing.stats || {};
+            for (const key of ["resolved", "wins", "losses", "breakevens", "openCount"]) {
+              if (Number(stats[key] ?? 0) !== 0) {
+                throw new Error(`Dashboard ${pairKey} Swing ${key} is not zero after reset.`);
+              }
+            }
+            if (
+              !Array.isArray(swing.openTrades) ||
+              swing.openTrades.length !== 0 ||
+              !Array.isArray(swing.recentResolved) ||
+              swing.recentResolved.length !== 0
+            ) {
+              throw new Error(`Dashboard ${pairKey} Swing history projection is not empty.`);
+            }
+          }
+
+          live.historyTracker = tracker;
+          atomicWriteJSON("data/live-analysis.json", live);
+          console.log("Dashboard Swing tracker reset PASS for XAUUSD and GBPJPY; current Master analysis output preserved.");
+          NODE
+      - name: Enforce reset change ownership
+        run: |
+          set -euo pipefail
+
+          allowed_files=(
+            "data/analysis-history.json"
+            "data/notify-state.json"
+            "data/live-analysis.json"
+            "data/learning-data.json"
+            "data/confidence-data.json"
+            "data/learning-engine-state.json"
+            "data/learning-enrichment.json"
+            "data/learning-enrichment-state.json"
+            "data/ai-memory.json"
+            "data/ai-memory-state.json"
+            "data/ai-policy.json"
+            "data/ai-policy-state.json"
+          )
+
+          mapfile -t changed_files < <(
+            {
+              git diff --name-only
+              git ls-files --others --exclude-standard
+            } | sort -u
+          )
+
+          if [[ "${#changed_files[@]}" -eq 0 ]]; then
+            echo "::error::Reset produced no repository changes."
+            exit 1
+          fi
+
+          for changed in "${changed_files[@]}"; do
+            allowed=false
+
+            for owned in "${allowed_files[@]}"; do
+              if [[ "$changed" == "$owned" ]]; then
+                allowed=true
+                break
+              fi
+            done
+
+            if [[ "$allowed" != "true" ]]; then
+              echo "::error file=$changed::Unexpected file changed during Swing + Master reset."
+              exit 1
+            fi
+          done
+
+          echo "Changed files are restricted to reset-owned state:"
+          printf '  %s\n' "${changed_files[@]}"
+
+      - name: Guard remote branch before publication
+        run: |
+          set -euo pipefail
+
+          git fetch origin "${GITHUB_REF_NAME}"
+          remote_sha="$(git rev-parse "origin/${GITHUB_REF_NAME}")"
+
+          if [[ "$remote_sha" != "$RESET_BASE_SHA" ]]; then
+            echo "::error::Remote branch moved during reset. Refusing to merge/rebase a destructive state reset."
+            echo "Expected: $RESET_BASE_SHA"
+            echo "Actual:   $remote_sha"
+            exit 1
+          fi
+
+      - name: Commit and push clean Swing + Master epoch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "pipsight-robot"
+          git config user.email "actions@users.noreply.github.com"
+
+          reset_files=(
+            "data/analysis-history.json"
+            "data/notify-state.json"
+            "data/live-analysis.json"
+            "data/learning-data.json"
+            "data/confidence-data.json"
+            "data/learning-engine-state.json"
+            "data/learning-enrichment.json"
+            "data/learning-enrichment-state.json"
+            "data/ai-memory.json"
+            "data/ai-memory-state.json"
+            "data/ai-policy.json"
+            "data/ai-policy-state.json"
+          )
+
+          git add -A -- "${reset_files[@]}"
+
+          if git diff --cached --quiet; then
+            echo "::error::Nothing is staged after the Swing + Master reset."
+            exit 1
+          fi
+
+          git commit -m "reset: start clean Swing and Master learning history"
+
+          if ! git push origin "HEAD:${GITHUB_REF_NAME}"; then
+            echo "::error::Push was rejected. No rebase, force-push or stale merge will be attempted."
+            exit 1
+          fi
+
+          echo "Swing + Master reset committed successfully."
+          echo "Swing rich records removed: ${{ steps.purge.outputs.swing_records_removed }}"
+          echo "Master rich records removed: ${{ steps.purge.outputs.master_records_removed }}"
+          echo "Closed Swing records removed: ${{ steps.purge.outputs.swing_closed_removed }}"
+          echo "Closed Master records removed: ${{ steps.purge.outputs.master_closed_removed }}"
+          echo "Remaining rich records: ${{ steps.purge.outputs.records_after }}"
+          echo "Remaining closed records: ${{ steps.purge.outputs.closed_after }}"

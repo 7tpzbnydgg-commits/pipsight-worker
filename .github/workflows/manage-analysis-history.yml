@@ -3,7 +3,7 @@ name: PipSight Pro — reusable Analysis history maintenance
 on:
   workflow_run:
     workflows:
-      - "PipSight Pro — unified scalp and live analysis"
+      - "PipSight Pro — hourly resolver, learning and AI memory"
     types:
       - completed
     branches:
@@ -22,6 +22,7 @@ permissions:
 concurrency:
   group: pipsight-analysis-writes-${{ github.ref }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   maintain-analysis-history:
@@ -37,7 +38,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: true
           ref: ${{ github.event.workflow_run.head_branch || github.ref_name }}
 
@@ -67,7 +68,7 @@ jobs:
             branch="${GITHUB_REF_NAME:-}"
           elif [[ "$EVENT_NAME" == "workflow_run" ]]; then
             if [[ "$TRIGGER_CONCLUSION" != "success" ]]; then
-              echo "Automatic maintenance only follows a successful unified workflow."
+              echo "Automatic maintenance only follows a successful hourly learning workflow."
               exit 0
             fi
 
@@ -234,20 +235,25 @@ jobs:
 
           function buildRichRecordIndexFromRecords(records) {
             const source = Array.isArray(records) ? records : [];
-            const byMatchKey = new Map();
-            const byFingerprint = new Map();
+            const index = noArchiveLearning.__maintenanceBuildRichRecordIndex({
+              records: source
+            });
 
-            for (const record of source) {
-              if (!plain(record)) continue;
-              const matchKey = exactLearningHelpers.buildRecordMatchKey(record);
-              if (matchKey && !byMatchKey.has(matchKey)) byMatchKey.set(matchKey, record);
-              const fingerprint = exactLearningHelpers.normalizeFingerprint(record.fingerprint);
-              if (fingerprint && !byFingerprint.has(fingerprint)) {
-                byFingerprint.set(fingerprint, record);
-              }
+            if (
+              !index ||
+              !Array.isArray(index.records) ||
+              !(index.byId instanceof Map) ||
+              !(index.bySourceTradeKey instanceof Map) ||
+              !(index.bySetupIdentity instanceof Map) ||
+              !(index.byMatchKey instanceof Map) ||
+              !(index.byFingerprint instanceof Map)
+            ) {
+              throw new Error(
+                "Current Learning Engine returned an invalid archive-free rich-record index."
+              );
             }
 
-            return { records: source, byMatchKey, byFingerprint };
+            return index;
           }
           
           function plain(value) {
@@ -507,7 +513,7 @@ jobs:
             };
           
             for (const field of [
-              "historyRecordId", "recordId", "sourceTradeKey", "tradeKey", "setupIdentity", "setupId", "fingerprint"
+              "sourceHistoryRecordId", "historyRecordId", "recordId", "sourceTradeKey", "tradeKey", "setupIdentity", "setupId", "fingerprint"
             ]) copyIfPresent(compact, raw, field);
           
             for (const field of [
@@ -517,6 +523,10 @@ jobs:
             for (const field of [
               "source", "session", "marketSession", "pattern", "patternName", "marketRegime", "regime", "marketState",
               "qualityGrade", "highestTargetReached", "mfeR", "maeR", "atr"
+            ]) copyIfPresent(compact, raw, field);
+
+            for (const field of [
+              "resolutionHash", "resolutionRevision"
             ]) copyIfPresent(compact, raw, field);
           
             for (const field of [
@@ -600,6 +610,10 @@ jobs:
           
               for (const field of [
                 "exitPrice", "closePrice", "exitReason", "resolutionReason", "reason", "correctionReason", "revisionReason"
+              ]) copyIfPresent(compact, record, field);
+
+              for (const field of [
+                "resolutionHash", "resolutionRevision"
               ]) copyIfPresent(compact, record, field);
           
               for (const field of [

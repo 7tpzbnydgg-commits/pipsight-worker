@@ -1556,6 +1556,166 @@ function getRecordOpenedTimestamp(
 
 }
 
+function getRecordResolutionStartTimestamp(
+  record
+) {
+
+  const fallbackTimestamp =
+    getRecordOpenedTimestamp(
+      record
+    );
+
+  if (
+    !isPlainObject(
+      record
+    )
+  ) {
+
+    return fallbackTimestamp;
+
+  }
+
+  const engine =
+    getRecordEngine(
+      record
+    );
+
+  const timeframe =
+    getRecordTimeframe(
+      record
+    );
+
+  if (
+    engine !==
+      "scalp" ||
+    (
+      timeframe !==
+        "15m" &&
+      timeframe !==
+        "30m"
+    )
+  ) {
+
+    return fallbackTimestamp;
+
+  }
+
+  /*
+   * M15/M30 Scalp signals are built from complete closed M5 source candles.
+   * The setup candle timestamp is the higher-timeframe bucket start, while
+   * executionCandleAt identifies the final closed M5 candle inside that setup
+   * bucket. Resolution must never inspect an earlier M5 candle from the same
+   * setup bucket as if the trade already existed.
+   */
+  const executionCandidates = [
+    record.executionCandleAt,
+    record.riskDiagnostics?.executionCandleAt,
+    record.snapshot?.executionCandleAt,
+    record.snapshot?.riskDiagnostics?.executionCandleAt
+  ];
+
+  for (
+    const candidate of
+      executionCandidates
+  ) {
+
+    const timestamp =
+      toTimestamp(
+        candidate
+      );
+
+    if (
+      timestamp !==
+        null
+    ) {
+
+      return fallbackTimestamp ===
+        null
+        ? timestamp
+        : Math.max(
+            fallbackTimestamp,
+            timestamp
+          );
+
+    }
+
+  }
+
+  const setupCandidates = [
+    record.setupCandleAt,
+    record.analyzedCandleAt,
+    record.riskDiagnostics?.setupCandleAt,
+    record.snapshot?.setupCandleAt,
+    record.snapshot?.analyzedCandleAt,
+    record.snapshot?.riskDiagnostics?.setupCandleAt
+  ];
+
+  let setupTimestamp =
+    null;
+
+  for (
+    const candidate of
+      setupCandidates
+  ) {
+
+    setupTimestamp =
+      toTimestamp(
+        candidate
+      );
+
+    if (
+      setupTimestamp !==
+        null
+    ) {
+
+      break;
+
+    }
+
+  }
+
+  const timeframeMinutes =
+    getTimeframeIntervalMinutes(
+      timeframe
+    );
+
+  const sourceMinutes =
+    MARKET_SOURCE_INTERVAL_MINUTES
+      .scalp;
+
+  if (
+    setupTimestamp !==
+      null &&
+    Number.isFinite(
+      timeframeMinutes
+    ) &&
+    timeframeMinutes >
+      sourceMinutes
+  ) {
+
+    const finalSourceCandleStart =
+      setupTimestamp +
+      (
+        timeframeMinutes -
+        sourceMinutes
+      ) *
+      60 *
+      1000;
+
+    return fallbackTimestamp ===
+      null
+      ? finalSourceCandleStart
+      : Math.max(
+          fallbackTimestamp,
+          finalSourceCandleStart
+        );
+
+  }
+
+  return fallbackTimestamp;
+
+}
+
 function getRecordCreationTimestamp(
   record
 ) {
@@ -3965,12 +4125,12 @@ function validateTradeGeometry(
   ) {
 
     if (
-      stopPrice >=
+      stopPrice >
         entryPrice
     ) {
 
       errors.push(
-        "BUY stop must be below entry"
+        "BUY stop must not be above entry"
       );
 
     }
@@ -4005,12 +4165,12 @@ function validateTradeGeometry(
   ) {
 
     if (
-      stopPrice <=
+      stopPrice <
         entryPrice
     ) {
 
       errors.push(
-        "SELL stop must be above entry"
+        "SELL stop must not be below entry"
       );
 
     }
@@ -5342,7 +5502,7 @@ function buildPreparedTradeSnapshot(
     );
 
   const openedTimestamp =
-    getRecordOpenedTimestamp(
+    getRecordResolutionStartTimestamp(
       record
     );
 
@@ -6452,7 +6612,7 @@ function prepareRecordForResolution(
     );
 
   const openedTimestamp =
-    getRecordOpenedTimestamp(
+    getRecordResolutionStartTimestamp(
       record
     );
 
@@ -11573,6 +11733,52 @@ function validateResolvedHistory(
 
     errors.push(
       "records and items aliases are not synchronized"
+    );
+
+  }
+
+  if (
+    Array.isArray(
+      history.records
+    ) &&
+    Array.isArray(
+      history.history
+    ) &&
+    history.records.length ===
+      history.history.length &&
+    createCanonicalHash(
+      history.records
+    ) !==
+      createCanonicalHash(
+        history.history
+      )
+  ) {
+
+    errors.push(
+      "records and history aliases differ in content"
+    );
+
+  }
+
+  if (
+    Array.isArray(
+      history.records
+    ) &&
+    Array.isArray(
+      history.items
+    ) &&
+    history.records.length ===
+      history.items.length &&
+    createCanonicalHash(
+      history.records
+    ) !==
+      createCanonicalHash(
+        history.items
+      )
+  ) {
+
+    errors.push(
+      "records and items aliases differ in content"
     );
 
   }

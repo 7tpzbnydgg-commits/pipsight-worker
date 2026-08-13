@@ -423,72 +423,6 @@ jobs:
           }
           NODE
 
-      - name: Run scalp analysis
-        run: |
-          set -euo pipefail
-
-          node run-scalp-analysis.js
-
-      - name: Validate scalp analysis outputs
-        run: |
-          set -euo pipefail
-
-          node <<'NODE'
-          "use strict";
-
-          const fs = require("fs");
-
-          const outputFiles = [
-            "data/scalp-signals.json",
-            "data/scalp-signal-log.json"
-          ];
-
-          for (const filePath of outputFiles) {
-            if (!fs.existsSync(filePath)) {
-              throw new Error(
-                `Required output file was not created: ${filePath}`
-              );
-            }
-
-            const raw =
-              fs.readFileSync(
-                filePath,
-                "utf8"
-              ).trim();
-
-            if (!raw) {
-              throw new Error(
-                `Output file is empty: ${filePath}`
-              );
-            }
-
-            let data;
-
-            try {
-              data =
-                JSON.parse(raw);
-            } catch (error) {
-              throw new Error(
-                `${filePath} contains invalid JSON: ${error.message}`
-              );
-            }
-
-            if (
-              data === null ||
-              typeof data !== "object"
-            ) {
-              throw new Error(
-                `${filePath} must contain valid JSON data.`
-              );
-            }
-
-            console.log(
-              `Validated ${filePath}`
-            );
-          }
-          NODE
-
-
       - name: Prepare validated autonomous policy snapshot
         id: autonomous-policy
         run: |
@@ -761,6 +695,180 @@ jobs:
             `in ${policy.mode} mode with ${policy.summary?.policyCount ?? 0} policy buckets.`
           );
           NODE
+
+      - name: Run scalp analysis
+        run: |
+          set -euo pipefail
+
+          node run-scalp-analysis.js
+
+      - name: Validate scalp analysis outputs
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          "use strict";
+
+          const fs = require("fs");
+
+          const signalsPath =
+            "data/scalp-signals.json";
+
+          const logPath =
+            "data/scalp-signal-log.json";
+
+          function readRequiredJson(filePath) {
+            if (!fs.existsSync(filePath)) {
+              throw new Error(
+                `Required output file was not created: ${filePath}`
+              );
+            }
+
+            const raw =
+              fs.readFileSync(
+                filePath,
+                "utf8"
+              ).trim();
+
+            if (!raw) {
+              throw new Error(
+                `Output file is empty: ${filePath}`
+              );
+            }
+
+            try {
+              return JSON.parse(raw);
+            } catch (error) {
+              throw new Error(
+                `${filePath} contains invalid JSON: ${error.message}`
+              );
+            }
+          }
+
+          const data =
+            readRequiredJson(
+              signalsPath
+            );
+
+          if (
+            data === null ||
+            typeof data !== "object" ||
+            Array.isArray(data)
+          ) {
+            throw new Error(
+              `${signalsPath} must contain a JSON object.`
+            );
+          }
+
+          if (!Array.isArray(data.signals)) {
+            throw new Error(
+              `${signalsPath} must contain a signals array.`
+            );
+          }
+
+          const expected =
+            new Set([
+              "XAU/USD|M5",
+              "XAU/USD|M15",
+              "XAU/USD|M30",
+              "GBP/JPY|M5",
+              "GBP/JPY|M15",
+              "GBP/JPY|M30"
+            ]);
+
+          if (
+            data.signals.length !==
+              expected.size
+          ) {
+            throw new Error(
+              `${signalsPath} must contain exactly ${expected.size} ` +
+              "independent pair/timeframe Scalp records."
+            );
+          }
+
+          const seen = new Set();
+
+          for (
+            let index = 0;
+            index < data.signals.length;
+            index++
+          ) {
+            const signal =
+              data.signals[index];
+
+            if (
+              !signal ||
+              typeof signal !== "object" ||
+              Array.isArray(signal)
+            ) {
+              throw new Error(
+                `${signalsPath} signal ${index} is invalid.`
+              );
+            }
+
+            const pair =
+              typeof signal.pair === "string"
+                ? signal.pair.trim()
+                : "";
+
+            const mode =
+              typeof signal.mode === "string"
+                ? signal.mode.trim().toUpperCase()
+                : "";
+
+            const timeframe =
+              typeof signal.timeframe === "string"
+                ? signal.timeframe.trim().toUpperCase()
+                : "";
+
+            const key =
+              `${pair}|${mode}`;
+
+            if (!expected.has(key)) {
+              throw new Error(
+                `${signalsPath} contains unexpected pair/timeframe record: ${key || "missing"}.`
+              );
+            }
+
+            if (timeframe !== mode) {
+              throw new Error(
+                `${signalsPath} ${key} has mismatched timeframe metadata.`
+              );
+            }
+
+            if (seen.has(key)) {
+              throw new Error(
+                `${signalsPath} contains duplicate pair/timeframe record: ${key}.`
+              );
+            }
+
+            seen.add(key);
+          }
+
+          for (const key of expected) {
+            if (!seen.has(key)) {
+              throw new Error(
+                `${signalsPath} is missing required pair/timeframe record: ${key}.`
+              );
+            }
+          }
+
+          const log =
+            readRequiredJson(
+              logPath
+            );
+
+          if (!Array.isArray(log)) {
+            throw new Error(
+              `${logPath} must contain a JSON array.`
+            );
+          }
+
+          console.log(
+            `Validated ${data.signals.length} independent Scalp records and ${log.length} log entries.`
+          );
+          NODE
+
 
       - name: Run live analysis
         env:

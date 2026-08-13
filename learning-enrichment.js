@@ -1585,7 +1585,61 @@ function createNormalizedTradeKey(
 
   }
 
-  const identity = {
+  const explicitIdentities = [
+    [
+      "learningIdentity",
+      trade.learningIdentity
+    ],
+    [
+      "sourceTradeKey",
+      trade.sourceTradeKey
+    ],
+    [
+      "historyRecordId",
+      trade.historyRecordId
+    ],
+    [
+      "fingerprint",
+      trade.fingerprint
+    ],
+    [
+      "setupIdentity",
+      trade.setupIdentity
+    ]
+  ];
+
+  for (
+    const [
+      field,
+      value
+    ] of
+    explicitIdentities
+  ) {
+
+    const normalizedValue =
+      toNonEmptyStringOrNull(
+        value
+      );
+
+    if (
+      normalizedValue
+    ) {
+
+      return createHash({
+        [field]:
+          normalizedValue
+      });
+
+    }
+
+  }
+
+  /*
+   * Immutable fallback opening identity. Mutable resolution fields such as
+   * outcome, stop/target changes and closedAt must never turn one lifecycle
+   * into a second enrichment trade.
+   */
+  return createHash({
     pair:
       trade.pair,
 
@@ -1598,28 +1652,12 @@ function createNormalizedTradeKey(
     direction:
       trade.direction,
 
-    outcome:
-      trade.outcome,
-
     entry:
       trade.entry,
 
-    stopLoss:
-      trade.stopLoss,
-
-    takeProfit:
-      trade.takeProfit,
-
     openedAt:
-      trade.openedAt,
-
-    closedAt:
-      trade.closedAt
-  };
-
-  return createHash(
-    identity
-  );
+      trade.openedAt
+  });
 
 }
 
@@ -1964,6 +2002,47 @@ function normalizeLearningTrade(
         source.id
       ),
 
+    learningIdentity:
+      toNonEmptyStringOrNull(
+        source.learningIdentity ??
+        source.autonomousLearning
+          ?.identity
+          ?.key
+      ),
+
+    sourceTradeKey:
+      toNonEmptyStringOrNull(
+        source.sourceTradeKey ??
+        source.tradeKey
+      ),
+
+    historyRecordId:
+      toNonEmptyStringOrNull(
+        source.historyRecordId
+      ),
+
+    fingerprint:
+      toNonEmptyStringOrNull(
+        source.fingerprint
+      ),
+
+    setupIdentity:
+      toNonEmptyStringOrNull(
+        source.setupIdentity ??
+        source.setupId
+      ),
+
+    learningRevision:
+      Math.max(
+        1,
+        toNonNegativeInteger(
+          source.learningRevision ??
+          source.revision ??
+          source.autonomousLearning
+            ?.revision
+        ) ?? 1
+      ),
+
     pair,
 
     strategy,
@@ -2178,8 +2257,8 @@ function normalizeLearningTrades(
 
   }
 
-  const seenTradeKeys =
-    new Set();
+  const acceptedIndexByTradeKey =
+    new Map();
 
   for (
     let sourceIndex = 0;
@@ -2218,28 +2297,99 @@ function normalizeLearningTrades(
 
     }
 
-    if (
-      seenTradeKeys.has(
+    const existingAcceptedIndex =
+      acceptedIndexByTradeKey.get(
         result.trade.tradeKey
-      )
+      );
+
+    if (
+      existingAcceptedIndex !==
+        undefined
     ) {
 
-      duplicates.push({
-        sourceIndex,
+      const existingTrade =
+        accepted[
+          existingAcceptedIndex
+        ];
 
-        tradeKey:
-          result.trade.tradeKey,
+      const candidateRevision =
+        Math.max(
+          1,
+          toNonNegativeInteger(
+            result.trade
+              .learningRevision
+          ) ?? 1
+        );
 
-        sourceId:
-          result.trade.sourceId
-      });
+      const existingRevision =
+        Math.max(
+          1,
+          toNonNegativeInteger(
+            existingTrade
+              ?.learningRevision
+          ) ?? 1
+        );
+
+      if (
+        candidateRevision >
+          existingRevision
+      ) {
+
+        duplicates.push({
+          sourceIndex:
+            existingTrade
+              .sourceIndex,
+
+          tradeKey:
+            result.trade.tradeKey,
+
+          sourceId:
+            existingTrade
+              .sourceId,
+
+          retainedSourceIndex:
+            sourceIndex,
+
+          reason:
+            "SUPERSEDED_BY_HIGHER_REVISION"
+        });
+
+        accepted[
+          existingAcceptedIndex
+        ] =
+          result.trade;
+
+      } else {
+
+        duplicates.push({
+          sourceIndex,
+
+          tradeKey:
+            result.trade.tradeKey,
+
+          sourceId:
+            result.trade.sourceId,
+
+          retainedSourceIndex:
+            existingTrade
+              .sourceIndex,
+
+          reason:
+            candidateRevision <
+              existingRevision
+              ? "OLDER_REVISION"
+              : "DUPLICATE_IMMUTABLE_IDENTITY"
+        });
+
+      }
 
       continue;
 
     }
 
-    seenTradeKeys.add(
-      result.trade.tradeKey
+    acceptedIndexByTradeKey.set(
+      result.trade.tradeKey,
+      accepted.length
     );
 
     accepted.push(
@@ -3350,6 +3500,18 @@ function finalizePerformanceAccumulator(
       accumulator.totalTrades
     ) ?? 0;
 
+  const decisiveTrades =
+    (
+      toNonNegativeInteger(
+        accumulator.wins
+      ) ?? 0
+    ) +
+    (
+      toNonNegativeInteger(
+        accumulator.losses
+      ) ?? 0
+    );
+
   const profitPointSamples =
     toNonNegativeInteger(
       accumulator.profitPointSamples
@@ -3421,13 +3583,13 @@ function finalizePerformanceAccumulator(
     winRate:
       calculateRate(
         accumulator.wins,
-        totalTrades
+        decisiveTrades
       ),
 
     lossRate:
       calculateRate(
         accumulator.losses,
-        totalTrades
+        decisiveTrades
       ),
 
     breakevenRate:
@@ -4003,6 +4165,13 @@ function finalizeWeightedAccumulator(
       12
     ) ?? 0;
 
+  const decisiveWeight =
+    round(
+      accumulator.winWeight +
+        accumulator.lossWeight,
+      12
+    ) ?? 0;
+
   return {
     tradeCount:
       accumulator.tradeCount,
@@ -4015,13 +4184,13 @@ function finalizeWeightedAccumulator(
     weightedWinRate:
       calculateWeightedPercentage(
         accumulator.winWeight,
-        totalWeight
+        decisiveWeight
       ),
 
     weightedLossRate:
       calculateWeightedPercentage(
         accumulator.lossWeight,
-        totalWeight
+        decisiveWeight
       ),
 
     weightedBreakevenRate:
@@ -5074,6 +5243,24 @@ function getConfidenceBucketBounds(
 
   }
 
+  if (
+    normalizedConfidence ===
+      MAX_CONFIDENCE
+  ) {
+
+    return {
+      lower:
+        MAX_CONFIDENCE,
+
+      upper:
+        MAX_CONFIDENCE,
+
+      key:
+        `${MAX_CONFIDENCE}-${MAX_CONFIDENCE}`
+    };
+
+  }
+
   const lower =
     Math.floor(
       normalizedConfidence /
@@ -5376,6 +5563,18 @@ function finalizeCalibrationAccumulator(
       accumulator.totalTrades
     ) ?? 0;
 
+  const decisiveTrades =
+    (
+      toNonNegativeInteger(
+        accumulator.wins
+      ) ?? 0
+    ) +
+    (
+      toNonNegativeInteger(
+        accumulator.losses
+      ) ?? 0
+    );
+
   const averageConfidence =
     accumulator.confidenceSamples >
       0
@@ -5389,14 +5588,14 @@ function finalizeCalibrationAccumulator(
   const observedWinRate =
     calculateRate(
       accumulator.wins,
-      totalTrades
+      decisiveTrades
     );
 
   const calibration =
     classifyCalibration(
       averageConfidence,
       observedWinRate,
-      totalTrades
+      decisiveTrades
     );
 
   return {
@@ -5421,7 +5620,7 @@ function finalizeCalibrationAccumulator(
     observedLossRate:
       calculateRate(
         accumulator.losses,
-        totalTrades
+        decisiveTrades
       ),
 
     observedBreakevenRate:
@@ -5617,6 +5816,18 @@ function buildConfidenceCalibration(
       overallAccumulator
     );
 
+  const overallDecisiveTrades =
+    (
+      toNonNegativeInteger(
+        overallMetrics?.wins
+      ) ?? 0
+    ) +
+    (
+      toNonNegativeInteger(
+        overallMetrics?.losses
+      ) ?? 0
+    );
+
   const overallCalibration =
     classifyCalibration(
       overallMetrics
@@ -5624,8 +5835,7 @@ function buildConfidenceCalibration(
         ?.average,
       overallMetrics
         ?.winRate,
-      overallMetrics
-        ?.totalTrades
+      overallDecisiveTrades
     );
 
   return {
@@ -5847,6 +6057,26 @@ function buildContextCalibration(
               trade.pair,
               trade.strategy,
               trade.direction
+            ])
+        ),
+
+      pairTimeframe:
+        buildCalibrationGroupMap(
+          normalizedTrades,
+          trade =>
+            createCombinationKey([
+              trade.pair,
+              trade.timeframe
+            ])
+        ),
+
+      strategyTimeframe:
+        buildCalibrationGroupMap(
+          normalizedTrades,
+          trade =>
+            createCombinationKey([
+              trade.strategy,
+              trade.timeframe
             ])
         )
     }

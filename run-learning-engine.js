@@ -1001,6 +1001,7 @@ function inferStrategyAndTimeframe(
   const explicitTimeframe =
     normalizeTimeframe(
       record?.timeframe ??
+      record?.sourceTimeframe ??
       record?.interval ??
       record?.period
     );
@@ -1038,7 +1039,7 @@ function inferStrategyAndTimeframe(
       timeframe =
         normalizeTimeframe(
           suffix
-        ) || "15m";
+        );
 
     }
 
@@ -1420,10 +1421,122 @@ function buildTradeResolutionSource(
 
 }
 
+function normalizeAuthoritativeResolutionHash(
+  value
+) {
+
+  const normalized =
+    toTrimmedString(
+      value
+    ).toLowerCase();
+
+  return /^[a-f0-9]{64}$/.test(
+    normalized
+  )
+    ? normalized
+    : null;
+
+}
+
+function getAuthoritativeResolutionHash(
+  normalizedTrade,
+  richRecord = null
+) {
+
+  const candidates = [
+    normalizedTrade?.raw
+      ?.resolutionHash,
+    normalizedTrade?.raw
+      ?.resolutionEvidence
+      ?.resolutionHash,
+    normalizedTrade?.raw
+      ?.autonomousResolution
+      ?.resolutionHash,
+    richRecord?.resolutionHash,
+    richRecord?.resolutionEvidence
+      ?.resolutionHash,
+    richRecord?.autonomousResolution
+      ?.resolutionHash
+  ];
+
+  for (
+    const candidate of candidates
+  ) {
+
+    const normalized =
+      normalizeAuthoritativeResolutionHash(
+        candidate
+      );
+
+    if (normalized) {
+
+      return normalized;
+
+    }
+
+  }
+
+  return null;
+
+}
+
+function getAuthoritativeResolutionRevision(
+  normalizedTrade,
+  richRecord = null
+) {
+
+  const candidates = [
+    normalizedTrade?.raw
+      ?.resolutionRevision,
+    normalizedTrade?.raw
+      ?.revision,
+    richRecord?.resolutionRevision,
+    richRecord?.revision
+  ];
+
+  for (
+    const candidate of candidates
+  ) {
+
+    const numeric =
+      toFiniteNumber(
+        candidate
+      );
+
+    if (
+      numeric !== null &&
+      Number.isInteger(
+        numeric
+      ) &&
+      numeric >= 1
+    ) {
+
+      return numeric;
+
+    }
+
+  }
+
+  return 1;
+
+}
+
 function createTradeResolutionHash(
   normalizedTrade,
   richRecord = null
 ) {
+
+  const authoritative =
+    getAuthoritativeResolutionHash(
+      normalizedTrade,
+      richRecord
+    );
+
+  if (authoritative) {
+
+    return authoritative;
+
+  }
 
   return createHash(
     buildTradeResolutionSource(
@@ -3063,6 +3176,34 @@ function validateClosedTrade(
       record.updatedAt
     );
 
+  const lifecycleStatus =
+    toTrimmedString(
+      record.status
+    )
+      .toLowerCase()
+      .replace(
+        /[\s_-]+/g,
+        ""
+      );
+
+  if (
+    [
+      "open",
+      "active",
+      "pending",
+      "hold",
+      "waiting"
+    ].includes(
+      lifecycleStatus
+    )
+  ) {
+
+    errors.push(
+      "Closed history record is explicitly open or unresolved."
+    );
+
+  }
+
   if (
     !pair
   ) {
@@ -3215,11 +3356,17 @@ function validateClosedTrade(
     direction === "BUY" &&
     entry !== null &&
     stopLoss !== null &&
-    stopLoss >= entry
+    (
+      stopLoss > entry ||
+      (
+        stopLoss === entry &&
+        outcome !== "BREAKEVEN"
+      )
+    )
   ) {
 
     errors.push(
-      "BUY trade stop loss must be below entry."
+      "BUY trade stop loss must be below entry unless a verified BREAKEVEN stop equals entry."
     );
 
   }
@@ -3241,11 +3388,17 @@ function validateClosedTrade(
     direction === "SELL" &&
     entry !== null &&
     stopLoss !== null &&
-    stopLoss <= entry
+    (
+      stopLoss < entry ||
+      (
+        stopLoss === entry &&
+        outcome !== "BREAKEVEN"
+      )
+    )
   ) {
 
     errors.push(
-      "SELL trade stop loss must be above entry."
+      "SELL trade stop loss must be above entry unless a verified BREAKEVEN stop equals entry."
     );
 
   }
@@ -3574,6 +3727,13 @@ function buildRecordMatchKey(
       record?.strategy
     );
 
+  const {
+    timeframe
+  } =
+    inferStrategyAndTimeframe(
+      record
+    );
+
   const direction =
     normalizeDirection(
       record?.direction ??
@@ -3600,6 +3760,7 @@ function buildRecordMatchKey(
   return [
     pair,
     engine,
+    timeframe || "",
     direction,
     entry,
     openedAt
@@ -3628,6 +3789,15 @@ function buildRichRecordIndex(
     ...archivedRecords
   ];
 
+  const byId =
+    new Map();
+
+  const bySourceTradeKey =
+    new Map();
+
+  const bySetupIdentity =
+    new Map();
+
   const byMatchKey =
     new Map();
 
@@ -3645,6 +3815,73 @@ function buildRichRecordIndex(
     ) {
 
       continue;
+
+    }
+
+    const recordId =
+      firstNonEmptyString(
+        record.id,
+        record.historyRecordId,
+        record.recordId
+      );
+
+    if (
+      recordId &&
+      !byId.has(
+        recordId
+      )
+    ) {
+
+      byId.set(
+        recordId,
+        record
+      );
+
+    }
+
+    const sourceTradeKey =
+      firstNonEmptyString(
+        record.sourceTradeKey,
+        record.tradeKey,
+        record.resolutionEvidence
+          ?.sourceTradeKey,
+        record.autonomousResolution
+          ?.sourceTradeKey
+      );
+
+    if (
+      sourceTradeKey &&
+      !bySourceTradeKey.has(
+        sourceTradeKey
+      )
+    ) {
+
+      bySourceTradeKey.set(
+        sourceTradeKey,
+        record
+      );
+
+    }
+
+    const setupIdentity =
+      firstNonEmptyString(
+        record.setupIdentity,
+        record.setupId,
+        record.snapshot?.setupIdentity,
+        record.snapshot?.setupId
+      );
+
+    if (
+      setupIdentity &&
+      !bySetupIdentity.has(
+        setupIdentity
+      )
+    ) {
+
+      bySetupIdentity.set(
+        setupIdentity,
+        record
+      );
 
     }
 
@@ -3690,6 +3927,9 @@ function buildRichRecordIndex(
 
   return {
     records,
+    byId,
+    bySourceTradeKey,
+    bySetupIdentity,
     byMatchKey,
     byFingerprint
   };
@@ -3710,6 +3950,105 @@ function findMatchingRichRecord(
 
   }
 
+  const raw =
+    isPlainObject(
+      normalizedTrade.raw
+    )
+      ? normalizedTrade.raw
+      : {};
+
+  const sourceHistoryRecordId =
+    firstNonEmptyString(
+      raw.sourceHistoryRecordId,
+      raw.historyRecordId,
+      raw.recordId,
+      raw.id
+    );
+
+  if (
+    sourceHistoryRecordId &&
+    richRecordIndex.byId
+      ?.has(
+        sourceHistoryRecordId
+      )
+  ) {
+
+    return richRecordIndex.byId.get(
+      sourceHistoryRecordId
+    );
+
+  }
+
+  const sourceTradeKey =
+    firstNonEmptyString(
+      raw.sourceTradeKey,
+      raw.tradeKey,
+      raw.resolutionEvidence
+        ?.sourceTradeKey,
+      raw.autonomousResolution
+        ?.sourceTradeKey
+    );
+
+  if (
+    sourceTradeKey &&
+    richRecordIndex.bySourceTradeKey
+      ?.has(
+        sourceTradeKey
+      )
+  ) {
+
+    return richRecordIndex
+      .bySourceTradeKey
+      .get(
+        sourceTradeKey
+      );
+
+  }
+
+  const setupIdentity =
+    firstNonEmptyString(
+      normalizedTrade.setupIdentity,
+      raw.setupIdentity,
+      raw.setupId
+    );
+
+  if (
+    setupIdentity &&
+    richRecordIndex.bySetupIdentity
+      ?.has(
+        setupIdentity
+      )
+  ) {
+
+    return richRecordIndex
+      .bySetupIdentity
+      .get(
+        setupIdentity
+      );
+
+  }
+
+  const fingerprint =
+    normalizeFingerprint(
+      raw.fingerprint
+    );
+
+  if (
+    fingerprint &&
+    richRecordIndex.byFingerprint
+      ?.has(
+        fingerprint
+      )
+  ) {
+
+    return richRecordIndex
+      .byFingerprint
+      .get(
+        fingerprint
+      );
+
+  }
+
   const matchKey =
     buildRecordMatchKey({
       pair:
@@ -3717,6 +4056,9 @@ function findMatchingRichRecord(
 
       engine:
         normalizedTrade.engine,
+
+      timeframe:
+        normalizedTrade.timeframe,
 
       direction:
         normalizedTrade.direction,
@@ -3736,36 +4078,6 @@ function findMatchingRichRecord(
 
     return richRecordIndex.byMatchKey.get(
       matchKey
-    );
-
-  }
-
-  const candidateFingerprint =
-    [
-      normalizedTrade.pair,
-      normalizedTrade.engine,
-      normalizedTrade.direction,
-      normalizeIdentityNumber(
-        normalizedTrade.entry
-      ),
-      normalizeIdentityNumber(
-        normalizedTrade.stopLoss
-      ),
-      normalizeIdentityNumber(
-        normalizedTrade.takeProfit
-      )
-    ].join(
-      "|"
-    );
-
-  if (
-    richRecordIndex.byFingerprint.has(
-      candidateFingerprint
-    )
-  ) {
-
-    return richRecordIndex.byFingerprint.get(
-      candidateFingerprint
     );
 
   }
@@ -4921,9 +5233,32 @@ function prepareClosedHistory(
     index += 1
   ) {
 
+    const rawRecord =
+      closedRecords[index];
+
+    const rawOpenedAt =
+      toISOStringOrNull(
+        rawRecord?.openedAt ??
+        rawRecord?.signalTime ??
+        rawRecord?.createdAt
+      );
+
+    if (
+      learningStartTimestamp !== null &&
+      rawOpenedAt &&
+      new Date(
+        rawOpenedAt
+      ).getTime() <
+        learningStartTimestamp
+    ) {
+
+      continue;
+
+    }
+
     const validation =
       validateClosedTrade(
-        closedRecords[index],
+        rawRecord,
         index
       );
 
@@ -5001,6 +5336,68 @@ function prepareClosedHistory(
     const rawRecord =
       closedRecords[index];
 
+    const rawOpenedAt =
+      toISOStringOrNull(
+        rawRecord?.openedAt ??
+        rawRecord?.signalTime ??
+        rawRecord?.createdAt
+      );
+
+    if (
+      learningStartTimestamp !== null &&
+      rawOpenedAt &&
+      new Date(
+        rawOpenedAt
+      ).getTime() <
+        learningStartTimestamp
+    ) {
+
+      const inferred =
+        inferStrategyAndTimeframe(
+          rawRecord
+        );
+
+      cutoffSkipped.push({
+        index,
+
+        pair:
+          normalizePair(
+            rawRecord?.pair ??
+            rawRecord?.symbol ??
+            rawRecord?.pairLabel
+          ),
+
+        strategy:
+          inferred.strategy,
+
+        timeframe:
+          inferred.timeframe,
+
+        direction:
+          normalizeDirection(
+            rawRecord?.direction ??
+            rawRecord?.decision ??
+            rawRecord?.signal ??
+            rawRecord?.action
+          ),
+
+        openedAt:
+          rawOpenedAt,
+
+        closedAt:
+          toISOStringOrNull(
+            rawRecord?.closedAt ??
+            rawRecord?.resolvedAt ??
+            rawRecord?.updatedAt
+          ),
+
+        learningStartAt
+      });
+
+      continue;
+
+    }
+
     const validation =
       validateClosedTrade(
         rawRecord,
@@ -5047,41 +5444,6 @@ function prepareClosedHistory(
     const normalizedTrade =
       validation.normalized;
 
-    if (
-      learningStartTimestamp !== null &&
-      new Date(
-        normalizedTrade.openedAt
-      ).getTime() <
-        learningStartTimestamp
-    ) {
-
-      cutoffSkipped.push({
-        index,
-
-        pair:
-          normalizedTrade.pair,
-
-        strategy:
-          normalizedTrade.strategy,
-
-        timeframe:
-          normalizedTrade.timeframe,
-
-        direction:
-          normalizedTrade.direction,
-
-        openedAt:
-          normalizedTrade.openedAt,
-
-        closedAt:
-          normalizedTrade.closedAt,
-
-        learningStartAt
-      });
-
-      continue;
-
-    }
 
     const richRecord =
       findMatchingRichRecord(
@@ -5105,6 +5467,12 @@ function prepareClosedHistory(
 
     const resolutionHash =
       createTradeResolutionHash(
+        normalizedTrade,
+        richRecord
+      );
+
+    const authoritativeRevision =
+      getAuthoritativeResolutionRevision(
         normalizedTrade,
         richRecord
       );
@@ -5275,12 +5643,16 @@ function prepareClosedHistory(
       correction
         ? Math.max(
             2,
+            authoritativeRevision,
             toNonNegativeInteger(
               previousVersion.revision,
               1
             ) + 1
           )
-        : 1;
+        : Math.max(
+            1,
+            authoritativeRevision
+          );
 
     const learnerPayload =
       buildLearnerOutcomePayload(
@@ -8290,6 +8662,8 @@ module.exports = {
   createTradeKey,
   buildTradeResolutionSource,
   createTradeResolutionHash,
+  getAuthoritativeResolutionHash,
+  getAuthoritativeResolutionRevision,
   calculateResolvedClosePrice,
   calculateProfitPoints,
 

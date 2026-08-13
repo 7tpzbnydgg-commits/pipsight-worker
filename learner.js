@@ -1218,7 +1218,25 @@ class PipSightLearner {
                 source.setupId,
 
             reason:
-                source.reason
+                source.reason,
+
+            exitReason:
+                source.exitReason ??
+                source.resolutionReason,
+
+            qualityGrade:
+                source.qualityGrade,
+
+            correctionReason:
+                source.correctionReason ??
+                source.revisionReason,
+
+            sourceResolutionHash:
+                source.sourceResolutionHash ??
+                source.resolutionHash,
+
+            resolverVersion:
+                source.resolverVersion
         };
 
         for (
@@ -1254,7 +1272,19 @@ class PipSightLearner {
 
             durationMinutes:
                 source.durationMinutes ??
-                source.tradeDurationMinutes
+                source.tradeDurationMinutes,
+
+            highestTargetReached:
+                source.highestTargetReached,
+
+            mfeR:
+                source.mfeR,
+
+            maeR:
+                source.maeR,
+
+            atr:
+                source.atr
         };
 
         for (
@@ -2282,14 +2312,39 @@ class PipSightLearner {
                     .MAX_CORRECTION_HISTORY
             );
 
-        signal.learningRevision =
-            (
-                Number.isInteger(
-                    signal.learningRevision
+        const currentRevision =
+            Number.isInteger(
+                signal.learningRevision
+            )
+                ? signal.learningRevision
+                : 1;
+
+        const requestedRevision =
+            Number.isInteger(
+                Number(
+                    correction.revision
                 )
-                    ? signal.learningRevision
-                    : 1
-            ) + 1;
+            )
+                ? Number(
+                    correction.revision
+                )
+                : null;
+
+        signal.learningRevision =
+            Math.max(
+                currentRevision + 1,
+                requestedRevision || 1
+            );
+
+        const correctionContext =
+            this.normalizeAutonomousContext(
+                correction
+            );
+
+        Object.assign(
+            signal,
+            correctionContext
+        );
 
         signal.outcome =
             outcome;
@@ -3004,20 +3059,6 @@ class PipSightLearner {
             signal &&
             signal.outcome !== null
         ) {
-            if (
-                this.isEquivalentResolution(
-                    signal,
-                    {
-                        outcome,
-                        profitPoints,
-                        closePrice,
-                        closedAt
-                    }
-                )
-            ) {
-                return signal.id;
-            }
-
             const correctionAllowed =
                 outcomeData.corrected === true ||
                 outcomeData.correction === true ||
@@ -3040,6 +3081,67 @@ class PipSightLearner {
                     )
                 );
 
+            const incomingResolutionHash =
+                toTrimmedStringOrNull(
+                    outcomeData
+                        .sourceResolutionHash ??
+                    outcomeData.resolutionHash
+                );
+
+            const currentResolutionHash =
+                toTrimmedStringOrNull(
+                    signal.sourceResolutionHash
+                );
+
+            const requestedRevision =
+                Number.isInteger(
+                    Number(
+                        outcomeData.revision
+                    )
+                )
+                    ? Number(
+                        outcomeData.revision
+                    )
+                    : null;
+
+            const currentRevision =
+                Number.isInteger(
+                    signal.learningRevision
+                )
+                    ? signal.learningRevision
+                    : 1;
+
+            const equivalentResolution =
+                this.isEquivalentResolution(
+                    signal,
+                    {
+                        outcome,
+                        profitPoints,
+                        closePrice,
+                        closedAt
+                    }
+                );
+
+            if (
+                equivalentResolution &&
+                (
+                    !correctionAllowed ||
+                    (
+                        incomingResolutionHash &&
+                        incomingResolutionHash ===
+                            currentResolutionHash
+                    ) ||
+                    (
+                        !incomingResolutionHash &&
+                        requestedRevision !== null &&
+                        requestedRevision <=
+                            currentRevision
+                    )
+                )
+            ) {
+                return signal.id;
+            }
+
             if (!correctionAllowed) {
                 console.warn(
                     "Legacy outcome recording rejected: immutable trade identity is already resolved with different mutable fields. Mark the source as a correction."
@@ -3051,6 +3153,7 @@ class PipSightLearner {
             return this.correctSignalOutcome(
                 signal.id,
                 {
+                    ...outcomeData,
                     outcome,
                     profitPoints,
                     closePrice,
@@ -3157,13 +3260,26 @@ class PipSightLearner {
                     )
             };
 
+            const breakevenStopAtEntry =
+                outcome === "BREAKEVEN" &&
+                stopLoss !== null &&
+                stopLoss === entry;
+
             if (
                 stopLoss !== null &&
-                stopLoss > 0
+                stopLoss > 0 &&
+                !breakevenStopAtEntry
             ) {
                 signalPayload.stopLoss =
                     stopLoss;
             }
+
+            Object.assign(
+                signalPayload,
+                this.normalizeAutonomousContext(
+                    outcomeData
+                )
+            );
 
             if (
                 takeProfit !== null &&
@@ -3241,6 +3357,17 @@ class PipSightLearner {
                         signalId
                     );
             }
+        }
+
+        if (
+            signal &&
+            outcome === "BREAKEVEN" &&
+            stopLoss !== null &&
+            stopLoss === entry &&
+            signal.outcome === null
+        ) {
+            signal.stopLoss =
+                stopLoss;
         }
 
         if (

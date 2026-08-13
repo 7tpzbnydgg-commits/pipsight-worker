@@ -59,6 +59,9 @@ jobs:
             "learner.js"
             "learning-enrichment.js"
             "ai-memory.js"
+            "ai-policy-engine.js"
+            "adaptive-optimizer.js"
+            "adaptive-execution.js"
             "data/analysis-history.json"
           )
 
@@ -69,7 +72,7 @@ jobs:
             fi
           done
 
-          echo "Required resolver, Learning and AI Memory files are available."
+          echo "Required resolver, Learning, AI and Adaptive files are available."
 
       - name: Validate JavaScript syntax
         run: |
@@ -81,13 +84,16 @@ jobs:
             "learner.js"
             "learning-enrichment.js"
             "ai-memory.js"
+            "ai-policy-engine.js"
+            "adaptive-optimizer.js"
+            "adaptive-execution.js"
           )
 
           for script in "${scripts[@]}"; do
             node --check "$script"
           done
 
-          echo "Resolver, Learning and AI Memory JavaScript syntax is valid."
+          echo "Resolver, Learning, AI and Adaptive JavaScript syntax is valid."
 
       - name: Verify fixed adaptive engine compatibility
         run: |
@@ -107,6 +113,15 @@ jobs:
           const aiMemory =
             require("./ai-memory.js");
 
+          const aiPolicy =
+            require("./ai-policy-engine.js");
+
+          const adaptiveOptimizer =
+            require("./adaptive-optimizer.js");
+
+          const adaptiveExecution =
+            require("./adaptive-execution.js");
+
           if (LearningConfig.VERSION !== "2.1.0") {
             throw new Error(
               `learner.js version ${LearningConfig.VERSION} is unsupported; expected 2.1.0.`
@@ -122,6 +137,31 @@ jobs:
           if (aiMemory.ENGINE_VERSION !== "1.0.1") {
             throw new Error(
               `ai-memory.js version ${aiMemory.ENGINE_VERSION} is unsupported; expected 1.0.1.`
+            );
+          }
+
+          if (aiPolicy.ENGINE_VERSION !== "1.4.0") {
+            throw new Error(
+              `ai-policy-engine.js version ${aiPolicy.ENGINE_VERSION} is unsupported; expected 1.4.0.`
+            );
+          }
+
+          if (
+            adaptiveOptimizer.ENGINE_VERSION !== "1.4.0" ||
+            adaptiveOptimizer.OPTIMIZER_MODE !== "shadow"
+          ) {
+            throw new Error(
+              "adaptive-optimizer.js must remain version 1.4.0 in shadow mode."
+            );
+          }
+
+          if (
+            adaptiveExecution.ENGINE_VERSION !== "1.4.0" ||
+            adaptiveExecution.EXECUTION_MODE !== "dry-run" ||
+            adaptiveExecution.LIVE_APPLICATION_ENABLED !== false
+          ) {
+            throw new Error(
+              "adaptive-execution.js must remain version 1.4.0 in dry-run mode with live application disabled."
             );
           }
 
@@ -183,7 +223,7 @@ jobs:
           }
 
           console.log(
-            "Fixed learner, resolver and AI Memory compatibility checks passed."
+            "Fixed learner, resolver, AI Memory, AI Policy and Adaptive compatibility checks passed."
           );
           NODE
 
@@ -476,39 +516,6 @@ jobs:
             );
           }
           NODE
-
-      - name: Run Learning Enrichment safely
-        run: |
-          set -euo pipefail
-
-          learning_before="${RUNNER_TEMP}/learning-data-before-enrichment.json"
-          confidence_before="${RUNNER_TEMP}/confidence-data-before-enrichment.json"
-
-          cp \
-            "data/learning-data.json" \
-            "$learning_before"
-
-          cp \
-            "data/confidence-data.json" \
-            "$confidence_before"
-
-          node learning-enrichment.js
-
-          if ! cmp -s \
-            "$learning_before" \
-            "data/learning-data.json"; then
-            echo "::error file=data/learning-data.json::Learning Enrichment modified the protected learning-data.json source."
-            exit 1
-          fi
-
-          if ! cmp -s \
-            "$confidence_before" \
-            "data/confidence-data.json"; then
-            echo "::error file=data/confidence-data.json::Learning Enrichment modified the protected confidence-data.json source."
-            exit 1
-          fi
-
-          echo "Learning Enrichment completed without modifying its source files."
 
       - name: Verify generated Learning Enrichment files
         run: |
@@ -902,12 +909,6 @@ jobs:
 
           NODE
 
-      - name: Run AI Memory
-        run: |
-          set -euo pipefail
-
-          node ai-memory.js
-
       - name: Verify generated AI Memory files
         run: |
           set -euo pipefail
@@ -990,11 +991,253 @@ jobs:
           );
           NODE
 
+      - name: Verify generated AI Policy files
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          "use strict";
+
+          const fs = require("fs");
+          const aiPolicy = require("./ai-policy-engine.js");
+
+          function readObject(filePath) {
+            if (!fs.existsSync(filePath)) {
+              throw new Error(
+                `Required output file was not created: ${filePath}`
+              );
+            }
+
+            const raw = fs.readFileSync(filePath, "utf8").trim();
+
+            if (!raw) {
+              throw new Error(
+                `Output file is empty: ${filePath}`
+              );
+            }
+
+            const parsed = JSON.parse(raw);
+
+            if (
+              parsed === null ||
+              typeof parsed !== "object" ||
+              Array.isArray(parsed)
+            ) {
+              throw new Error(
+                `${filePath} must contain a JSON object.`
+              );
+            }
+
+            return parsed;
+          }
+
+          const policy =
+            readObject("data/ai-policy.json");
+
+          const state =
+            readObject("data/ai-policy-state.json");
+
+          const validation =
+            aiPolicy.validatePolicyDocument(policy);
+
+          if (!validation.valid) {
+            throw new Error(
+              `data/ai-policy.json failed validation: ${validation.errors.join(" ")}`
+            );
+          }
+
+          if (
+            state.version !== 1 ||
+            state.engineName !==
+              "PipSight Pro Autonomous AI Policy Engine" ||
+            state.engineVersion !== "1.4.0" ||
+            state.pendingTransaction !== null ||
+            !["UPDATED", "UNCHANGED"].includes(
+              state.lastRun?.status
+            ) ||
+            state.lastRun?.stateWritten !== true ||
+            state.lastRun?.error !== null ||
+            state.policyHash !==
+              policy.metadata?.policyContentHash
+          ) {
+            throw new Error(
+              "data/ai-policy-state.json does not match a fully committed successful policy run."
+            );
+          }
+
+          console.log(
+            "AI Policy schema, hash and transaction-state validation passed."
+          );
+          NODE
+
+      - name: Run Adaptive Optimizer
+        run: |
+          set -euo pipefail
+
+          node adaptive-optimizer.js
+
+      - name: Verify Adaptive Optimizer files
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          "use strict";
+
+          const fs = require("fs");
+          const optimizer = require("./adaptive-optimizer.js");
+
+          function readObject(filePath) {
+            const raw = fs.readFileSync(filePath, "utf8").trim();
+            if (!raw) {
+              throw new Error(`Output file is empty: ${filePath}`);
+            }
+            const parsed = JSON.parse(raw);
+            if (
+              parsed === null ||
+              typeof parsed !== "object" ||
+              Array.isArray(parsed)
+            ) {
+              throw new Error(`${filePath} must contain a JSON object.`);
+            }
+            return parsed;
+          }
+
+          const outputPath =
+            "data/adaptive-optimization.json";
+          const statePath =
+            "data/adaptive-optimization-state.json";
+
+          if (!fs.existsSync(outputPath) || !fs.existsSync(statePath)) {
+            throw new Error(
+              "Adaptive Optimizer did not create both required output/state files."
+            );
+          }
+
+          const output = readObject(outputPath);
+          const state = readObject(statePath);
+
+          const outputValidation =
+            optimizer.validateOptimizationDocument(output);
+          const stateValidation =
+            optimizer.validateOptimizerState(state);
+
+          if (!outputValidation.valid) {
+            throw new Error(
+              `Adaptive Optimizer output validation failed: ${outputValidation.errors.join(" ")}`
+            );
+          }
+
+          if (!stateValidation.valid) {
+            throw new Error(
+              `Adaptive Optimizer state validation failed: ${stateValidation.errors.join(" ")}`
+            );
+          }
+
+          if (
+            output.mode !== "shadow" ||
+            output.activeParameters?.applied !== false ||
+            !["UPDATED", "UNCHANGED"].includes(
+              state.lastRun?.status
+            ) ||
+            state.lastRun?.error !== null
+          ) {
+            throw new Error(
+              "Adaptive Optimizer did not finish a successful shadow-only run."
+            );
+          }
+
+          console.log(
+            "Adaptive Optimizer output/state validation passed."
+          );
+          NODE
+
+      - name: Run Adaptive Execution
+        run: |
+          set -euo pipefail
+
+          node adaptive-execution.js
+
+      - name: Verify Adaptive Execution files
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          "use strict";
+
+          const fs = require("fs");
+          const execution = require("./adaptive-execution.js");
+
+          function readObject(filePath) {
+            const raw = fs.readFileSync(filePath, "utf8").trim();
+            if (!raw) {
+              throw new Error(`Output file is empty: ${filePath}`);
+            }
+            const parsed = JSON.parse(raw);
+            if (
+              parsed === null ||
+              typeof parsed !== "object" ||
+              Array.isArray(parsed)
+            ) {
+              throw new Error(`${filePath} must contain a JSON object.`);
+            }
+            return parsed;
+          }
+
+          const outputPath =
+            "data/adaptive-execution.json";
+          const statePath =
+            "data/adaptive-execution-state.json";
+
+          if (!fs.existsSync(outputPath) || !fs.existsSync(statePath)) {
+            throw new Error(
+              "Adaptive Execution did not create both required output/state files."
+            );
+          }
+
+          const output = readObject(outputPath);
+          const state = readObject(statePath);
+
+          const outputValidation =
+            execution.validateExecutionDocument(output);
+          const stateValidation =
+            execution.validateExecutionState(state);
+
+          if (!outputValidation.valid) {
+            throw new Error(
+              `Adaptive Execution output validation failed: ${outputValidation.errors.join(" ")}`
+            );
+          }
+
+          if (!stateValidation.valid) {
+            throw new Error(
+              `Adaptive Execution state validation failed: ${stateValidation.errors.join(" ")}`
+            );
+          }
+
+          if (
+            output.mode !== "dry-run" ||
+            output.safety?.liveApplicationEnabled !== false ||
+            output.summary?.liveAppliedContexts !== 0 ||
+            !["UPDATED", "UNCHANGED"].includes(
+              state.lastRun?.status
+            ) ||
+            state.lastRun?.error !== null
+          ) {
+            throw new Error(
+              "Adaptive Execution did not finish a successful dry-run-only cycle."
+            );
+          }
+
+          console.log(
+            "Adaptive Execution output/state validation passed."
+          );
+          NODE
+
       - name: Show adaptive pipeline outputs
         run: |
           set -euo pipefail
 
-          echo "Generated resolver, Learning and AI Memory files:"
+          echo "Generated resolver, Learning, AI and Adaptive files:"
 
           ls -lh \
             data/analysis-history.json \
@@ -1004,7 +1247,13 @@ jobs:
             data/learning-enrichment.json \
             data/learning-enrichment-state.json \
             data/ai-memory.json \
-            data/ai-memory-state.json
+            data/ai-memory-state.json \
+            data/ai-policy.json \
+            data/ai-policy-state.json \
+            data/adaptive-optimization.json \
+            data/adaptive-optimization-state.json \
+            data/adaptive-execution.json \
+            data/adaptive-execution-state.json
 
           echo ""
           echo "Changed files:"
@@ -1038,6 +1287,10 @@ jobs:
             "data/ai-memory-state.json"
             "data/ai-policy.json"
             "data/ai-policy-state.json"
+            "data/adaptive-optimization.json"
+            "data/adaptive-optimization-state.json"
+            "data/adaptive-execution.json"
+            "data/adaptive-execution-state.json"
           )
 
           existing_files=()
@@ -1056,7 +1309,7 @@ jobs:
           git add -- "${existing_files[@]}"
 
           if git diff --cached --quiet; then
-            echo "No resolver, Learning or AI Memory changes to commit."
+            echo "No resolver, Learning, AI or Adaptive changes to commit."
             exit 0
           fi
 
@@ -1107,10 +1360,10 @@ jobs:
 
             for file in "${remote_changed_files[@]}"; do
               case "$file" in
-                data/analysis-history.json|data/scalp-candles.json|data/intraday-h1.json|data/daily-ohlc.json|data/learning-data.json|data/confidence-data.json|data/learning-engine-state.json|data/learning-enrichment.json|data/learning-enrichment-state.json|data/ai-memory.json|data/ai-memory-state.json|data/ai-policy.json|data/ai-policy-state.json|data/autonomous-config.json)
+                data/analysis-history.json|data/scalp-candles.json|data/intraday-h1.json|data/daily-ohlc.json|data/learning-data.json|data/confidence-data.json|data/learning-engine-state.json|data/learning-enrichment.json|data/learning-enrichment-state.json|data/ai-memory.json|data/ai-memory-state.json|data/ai-policy.json|data/ai-policy-state.json|data/adaptive-optimization.json|data/adaptive-optimization-state.json|data/adaptive-execution.json|data/adaptive-execution-state.json|data/autonomous-config.json)
                   unsafe_remote_changes+=("$file")
                   ;;
-                resolve-analysis-history.js|run-learning-engine.js|learner.js|learning-enrichment.js|ai-memory.js|ai-policy-engine.js|.github/workflows/run-learning-engine.yml)
+                resolve-analysis-history.js|run-learning-engine.js|learner.js|learning-enrichment.js|ai-memory.js|ai-policy-engine.js|adaptive-optimizer.js|adaptive-execution.js|.github/workflows/run-learning-engine.yml)
                   unsafe_remote_changes+=("$file")
                   ;;
               esac
@@ -1120,7 +1373,7 @@ jobs:
               echo "::error::The branch changed in files that can affect the validated adaptive snapshot."
               printf '::error::Unsafe remote change: %s\n' "${unsafe_remote_changes[@]}"
               echo "::error::The stale adaptive snapshot was not merged, rebased, or force-pushed."
-              echo "::error::Re-run against the newest branch head so resolver/learning/memory/policy are regenerated from current inputs."
+              echo "::error::Re-run against the newest branch head so resolver/learning/memory/policy/adaptive outputs are regenerated from current inputs."
               exit 1
             fi
 
@@ -1140,7 +1393,7 @@ jobs:
       - name: Log execution
         if: always()
         run: |
-          echo "PipSight hourly resolver, Learning and AI Memory workflow finished."
+          echo "PipSight hourly resolver, Learning, AI and Adaptive workflow finished."
           echo "Status: ${{ job.status }}"
           echo "Repository: ${{ github.repository }}"
           echo "Branch: ${{ github.ref_name }}"

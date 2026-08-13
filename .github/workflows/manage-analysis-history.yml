@@ -585,6 +585,51 @@ jobs:
           
               const normalized = matches[0].normalized;
               const originalView = learningView(normalized, record, matches[0].index);
+
+              /*
+               * buildDashboardHistoryTracker() suppresses open Intraday/Swing
+               * lifecycles with setup identities taken from resolved rich records.
+               * Legacy records can have only a computed identity (no stored
+               * setupIdentity/setupId). Compaction rewrites timestamp fields and
+               * can therefore change that computed identity even though the trade
+               * lifecycle itself did not change. Such dashboard-sensitive legacy
+               * records must remain rich and untouched.
+               */
+              const dashboardEngine = String(
+                record?.mode ??
+                record?.engine ??
+                record?.engineName ??
+                record?.strategy ??
+                record?.snapshot?.mode ??
+                record?.snapshot?.engine ??
+                ""
+              ).trim().toLowerCase();
+
+              const topLevelSetupIdentity =
+                typeof record?.setupIdentity === "string" && record.setupIdentity.trim()
+                  ? record.setupIdentity.trim()
+                  : (
+                      typeof record?.setupId === "string" && record.setupId.trim()
+                        ? record.setupId.trim()
+                        : null
+                    );
+
+              const snapshotSetupIdentity =
+                typeof record?.snapshot?.setupIdentity === "string" &&
+                record.snapshot.setupIdentity.trim()
+                  ? record.snapshot.setupIdentity.trim()
+                  : null;
+
+              const dashboardSensitive =
+                ["intraday", "daily", "swing", "weekly"].includes(dashboardEngine);
+
+              if (
+                dashboardSensitive &&
+                !topLevelSetupIdentity &&
+                !snapshotSetupIdentity
+              ) {
+                continue;
+              }
           
               const compact = {
                 id: record.id,
@@ -637,6 +682,13 @@ jobs:
                   Object.prototype.hasOwnProperty.call(originalView.learnerPayload.indicatorSnapshot, "atr"))
               ) {
                 compact.snapshot = { tradePlan: { atr: originalView.learnerPayload.atr } };
+              }
+
+              if (snapshotSetupIdentity) {
+                compact.snapshot = {
+                  ...(plain(compact.snapshot) ? compact.snapshot : {}),
+                  setupIdentity: snapshotSetupIdentity
+                };
               }
           
               const compactHash = learning.createTradeResolutionHash(normalized, compact);

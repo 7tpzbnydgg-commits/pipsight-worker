@@ -894,14 +894,22 @@ jobs:
             const state = learning.loadLearningState();
             const retention = buildRetention(closedInfo, state);
           
-            const retainedClosedInfo = [];
+            const retainedClosedRecords = [];
             const removedTradeKeys = [];
             closedInfo.forEach((item, index) => {
               if (retention.removable.has(index)) {
                 removedTradeKeys.push(item.tradeKey);
                 return;
               }
-              retainedClosedInfo.push(item);
+
+              // Closed-history entries are dashboard-facing lifecycle evidence.
+              // Maintenance may remove only fully proven retained-out records;
+              // every retained entry must remain byte-semantically identical to
+              // the source history rather than being rewritten into the compact
+              // learning-validation representation produced above.
+              retainedClosedRecords.push(
+                clone(original.closed[index])
+              );
             });
           
             let candidate = {
@@ -909,11 +917,24 @@ jobs:
               records: richCompaction.records,
               history: clone(richCompaction.records),
               items: clone(richCompaction.records),
-              closed: retainedClosedInfo.map(item => item.record),
+              closed: retainedClosedRecords,
               count: richCompaction.records.length
             };
           
-            const closedPruned = candidate.closed.length !== original.closed.length;
+            const closedPruned =
+              retainedClosedRecords.length !==
+              original.closed.length;
+
+            if (
+              !closedPruned &&
+              JSON.stringify(candidate.closed) !==
+                JSON.stringify(original.closed)
+            ) {
+              throw new Error(
+                "Closed history changed without retention pruning."
+              );
+            }
+
             if (closedPruned) candidate = rebuildStatsWithoutLifecycleMutation(candidate);
           
             validateHistoryShape(candidate);

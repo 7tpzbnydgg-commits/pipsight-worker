@@ -1,0 +1,359 @@
+name: PipSight Pro — Remove Stuck GBPJPY Intraday Track
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pipsight-analysis-writes-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  remove-stuck-track:
+    name: Quarantine exact unresolved GBPJPY Intraday record
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
+
+      - name: Sync to latest branch head
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_REF_TYPE}" != "branch" ]]; then
+            echo "::error::This maintenance action can only run from a branch."
+            exit 1
+          fi
+
+          git fetch origin "${GITHUB_REF_NAME}"
+          git reset --hard "origin/${GITHUB_REF_NAME}"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Validate required files
+        run: |
+          set -euo pipefail
+
+          for file in data/analysis-history.json run-live-analysis.js; do
+            if [[ ! -s "$file" ]]; then
+              echo "::error file=$file::Required file is missing or empty."
+              exit 1
+            fi
+          done
+
+          node --check run-live-analysis.js
+
+      - name: Quarantine exact stuck record
+        id: quarantine
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          "use strict";
+
+          const fs = require("fs");
+          const path = "data/analysis-history.json";
+          const TARGET = Object.freeze({
+            id: "1786414991088-GBPJPY-intraday",
+            pair: "GBPJPY",
+            engine: "intraday",
+            direction: "BUY",
+            entry: 215.07,
+            stop: 214.725,
+            target1: 215.76
+          });
+          const REASON = "HISTORICAL_LIFECYCLE_EVIDENCE_UNAVAILABLE";
+
+          function isObject(value) {
+            return Boolean(value && typeof value === "object" && !Array.isArray(value));
+          }
+
+          function finite(...values) {
+            for (const value of values) {
+              if (value === null || value === undefined || value === "") continue;
+              const number = Number(value);
+              if (Number.isFinite(number)) return number;
+            }
+            return null;
+          }
+
+          function string(...values) {
+            for (const value of values) {
+              if (typeof value === "string" && value.trim()) return value.trim();
+            }
+            return "";
+          }
+
+          function pairOf(record) {
+            const compact = string(
+              record?.pair,
+              record?.symbol,
+              record?.pairLabel,
+              record?.snapshot?.pair,
+              record?.snapshot?.symbol
+            ).toUpperCase().replace(/[^A-Z0-9]/g, "");
+            return compact;
+          }
+
+          function engineOf(record) {
+            let value = string(
+              record?.engine,
+              record?.engineName,
+              record?.mode,
+              record?.strategy,
+              record?.snapshot?.engine,
+              record?.snapshot?.mode
+            ).toLowerCase().replace(/_/g, "-").replace(/\s+/g, "-");
+            if (value === "daily") value = "intraday";
+            if (value === "weekly") value = "swing";
+            if (value.startsWith("scalp")) value = "scalp";
+            return value;
+          }
+
+          function directionOf(record) {
+            return string(
+              record?.direction,
+              record?.decision,
+              record?.signal,
+              record?.action,
+              record?.snapshot?.direction,
+              record?.snapshot?.decision
+            ).toUpperCase();
+          }
+
+          function sameNumber(left, right) {
+            return Number.isFinite(left) && Number.isFinite(right) &&
+              Math.abs(left - right) <= 1e-10;
+          }
+
+          const history = JSON.parse(fs.readFileSync(path, "utf8"));
+
+          if (!isObject(history)) {
+            throw new Error("analysis-history.json root must be an object.");
+          }
+
+          for (const field of ["records", "history", "items", "closed"]) {
+            if (!Array.isArray(history[field])) {
+              throw new Error(`analysis-history.${field} must be an array.`);
+            }
+          }
+
+          if (
+            JSON.stringify(history.records) !== JSON.stringify(history.history) ||
+            JSON.stringify(history.records) !== JSON.stringify(history.items)
+          ) {
+            throw new Error("records/history/items aliases are not synchronized before maintenance.");
+          }
+
+          const indices = [];
+          history.records.forEach((record, index) => {
+            if (isObject(record) && record.id === TARGET.id) indices.push(index);
+          });
+
+          if (indices.length !== 1) {
+            throw new Error(`Target must match exactly one rich record; matched ${indices.length}.`);
+          }
+
+          const index = indices[0];
+          const record = history.records[index];
+          const facts = {
+            pair: pairOf(record),
+            engine: engineOf(record),
+            direction: directionOf(record),
+            entry: finite(record.entry, record.entryPrice, record.snapshot?.entry, record.snapshot?.tradePlan?.entry),
+            stop: finite(record.stop, record.stopLoss, record.sl, record.snapshot?.stop, record.snapshot?.tradePlan?.stop),
+            target1: finite(record.target1, record.takeProfit1, record.tp1, record.snapshot?.target1, record.snapshot?.tradePlan?.target1)
+          };
+
+          const mismatches = [];
+          if (facts.pair !== TARGET.pair) mismatches.push("pair");
+          if (facts.engine !== TARGET.engine) mismatches.push("engine");
+          if (facts.direction !== TARGET.direction) mismatches.push("direction");
+          if (!sameNumber(facts.entry, TARGET.entry)) mismatches.push("entry");
+          if (!sameNumber(facts.stop, TARGET.stop)) mismatches.push("stop");
+          if (!sameNumber(facts.target1, TARGET.target1)) mismatches.push("target1");
+
+          if (mismatches.length) {
+            throw new Error(`Target identity/geometry mismatch: ${mismatches.join(", ")}.`);
+          }
+
+          const outcome = string(record.outcome, record.result, record.resolution?.outcome).toUpperCase();
+          const resolvedAt = string(record.resolvedAt, record.closedAt, record.resolution?.resolvedAt);
+          const status = string(record.status).toLowerCase();
+          const alreadyInvalid =
+            status === "invalid" &&
+            !outcome &&
+            !resolvedAt &&
+            record.administrativeDisposition?.type === "INVALIDATED" &&
+            record.administrativeDisposition?.reason === REASON &&
+            record.administrativeDisposition?.outcomeAssigned === false &&
+            record.administrativeDisposition?.marketResolutionClaimed === false;
+
+          if (alreadyInvalid) {
+            console.log("Target is already safely invalidated; no history mutation required.");
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, "changed=false\n");
+            process.exit(0);
+          }
+
+          if (outcome || resolvedAt) {
+            throw new Error("Refusing maintenance: target already has a lifecycle outcome/timestamp.");
+          }
+
+          if (!["open", "pending", "active", ""].includes(status)) {
+            throw new Error(`Refusing maintenance: unsupported current status ${status || "<empty>"}.`);
+          }
+
+          const appliedAt = new Date().toISOString();
+          const updatedRecord = {
+            ...record,
+            status: "invalid",
+            administrativeDisposition: {
+              type: "INVALIDATED",
+              reason: REASON,
+              appliedAt,
+              source: "workflow:remove-stuck-gbpjpy-intraday",
+              preserveForAudit: true,
+              originalStatus: status || "open",
+              outcomeAssigned: false,
+              marketResolutionClaimed: false
+            }
+          };
+
+          const records = history.records.slice();
+          records[index] = updatedRecord;
+
+          history.records = records;
+          history.history = JSON.parse(JSON.stringify(records));
+          history.items = JSON.parse(JSON.stringify(records));
+          history.updatedAt = appliedAt;
+
+          if (history.count !== undefined) {
+            history.count = records.length;
+          }
+
+          fs.writeFileSync(path, `${JSON.stringify(history, null, 2)}\n`, "utf8");
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, "changed=true\n");
+          console.log("Exact stuck GBPJPY Intraday record administratively invalidated.");
+          NODE
+
+      - name: Verify Open Track removal and zero fake outcome
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          "use strict";
+
+          const fs = require("fs");
+          const live = require("./run-live-analysis.js");
+          const TARGET_ID = "1786414991088-GBPJPY-intraday";
+          const history = JSON.parse(fs.readFileSync("data/analysis-history.json", "utf8"));
+
+          if (
+            JSON.stringify(history.records) !== JSON.stringify(history.history) ||
+            JSON.stringify(history.records) !== JSON.stringify(history.items)
+          ) {
+            throw new Error("records/history/items aliases are not synchronized after maintenance.");
+          }
+
+          const matches = history.records.filter(record => record?.id === TARGET_ID);
+          if (matches.length !== 1) {
+            throw new Error(`Expected exactly one target rich record; found ${matches.length}.`);
+          }
+
+          const record = matches[0];
+          if (
+            record.status !== "invalid" ||
+            record.outcome !== null ||
+            record.resolvedAt !== null ||
+            record.closedAt != null ||
+            record.exitPrice != null ||
+            record.exitReason != null ||
+            record.administrativeDisposition?.preserveForAudit !== true ||
+            record.administrativeDisposition?.outcomeAssigned !== false ||
+            record.administrativeDisposition?.marketResolutionClaimed !== false
+          ) {
+            throw new Error("Target record was not quarantined with zero invented resolution fields.");
+          }
+
+          const tracker = live.buildDashboardHistoryTracker(history);
+          const openTrades = tracker?.pairs?.GBPJPY?.intraday?.openTrades || [];
+
+          const stillOpen = openTrades.some(trade =>
+            trade?.decision === "BUY" &&
+            Number(trade?.entry) === 215.07 &&
+            Number(trade?.stop) === 214.725 &&
+            Number(trade?.target1) === 215.76
+          );
+
+          if (stillOpen) {
+            throw new Error("Target GBPJPY Intraday trade still appears in Open Track.");
+          }
+
+          const closedMatch = history.closed.some(trade =>
+            trade?.sourceHistoryRecordId === TARGET_ID || trade?.id === TARGET_ID
+          );
+
+          if (closedMatch) {
+            throw new Error("Target was incorrectly added to closed history.");
+          }
+
+          console.log("PASS: target is absent from Open Track and no WIN/LOSS was invented.");
+          NODE
+
+      - name: Commit and push
+        if: steps.quarantine.outputs.changed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "pipsight-history-robot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -- data/analysis-history.json
+          git commit -m "fix: quarantine stuck GBPJPY intraday open record"
+
+          push_succeeded=false
+
+          for attempt in 1 2 3; do
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              push_succeeded=true
+              break
+            fi
+
+            if [[ "$attempt" -eq 3 ]]; then
+              break
+            fi
+
+            git fetch origin "${GITHUB_REF_NAME}"
+            merge_base="$(git merge-base HEAD "origin/${GITHUB_REF_NAME}")"
+
+            if git diff --name-only "$merge_base" "origin/${GITHUB_REF_NAME}" | grep -Fxq "data/analysis-history.json"; then
+              echo "::error::analysis-history.json changed remotely. Re-run this workflow against the latest branch head; stale history will not be force-merged."
+              exit 1
+            fi
+
+            git rebase "origin/${GITHUB_REF_NAME}"
+            sleep $((attempt * 2))
+          done
+
+          if [[ "$push_succeeded" != "true" ]]; then
+            echo "::error::Unable to publish the validated history maintenance after 3 safe attempts."
+            exit 1
+          fi
+
+          echo "Stuck GBPJPY Intraday Open Track record removed safely."

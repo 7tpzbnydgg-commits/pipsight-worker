@@ -13391,6 +13391,8 @@ function buildCanonicalEngineResult(
     "analyzedCandleAt",
 
     // Autonomous extension 1.4.0 diagnostics.
+    // Dedicated Scalp producer provenance must remain end-to-end visible.
+    "aiAutonomous",
     "autonomous",
     "autonomousDecision",
     "autonomousSafety",

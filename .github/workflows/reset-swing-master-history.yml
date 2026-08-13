@@ -14,6 +14,7 @@ permissions:
 concurrency:
   group: pipsight-analysis-writes-${{ github.ref }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   reset-swing-master:
@@ -79,6 +80,8 @@ jobs:
             "learning-enrichment.js"
             "ai-memory.js"
             "ai-policy-engine.js"
+            "adaptive-optimizer.js"
+            "adaptive-execution.js"
           )
 
           for script in "${scripts[@]}"; do
@@ -100,6 +103,8 @@ jobs:
             "learning-enrichment.js",
             "ai-memory.js",
             "ai-policy-engine.js",
+            "adaptive-optimizer.js",
+            "adaptive-execution.js",
           ];
 
           for (const filePath of requiredFiles) {
@@ -645,15 +650,33 @@ jobs:
         run: |
           set -euo pipefail
 
-          rm -f --             data/learning-data.json             data/confidence-data.json             data/learning-engine-state.json             data/learning-enrichment.json             data/learning-enrichment-state.json             data/ai-memory.json             data/ai-memory-state.json
+          rm -f -- \
+            data/learning-data.json \
+            data/confidence-data.json \
+            data/learning-engine-state.json \
+            data/learning-enrichment.json \
+            data/learning-enrichment-state.json \
+            data/ai-memory.json \
+            data/ai-memory-state.json \
+            data/adaptive-optimization.json \
+            data/adaptive-optimization-state.json \
+            data/adaptive-execution.json \
+            data/adaptive-execution-state.json
 
-          echo "Removed derived Learning/Enrichment/AI Memory artifacts from the working tree."
+          echo "Removed derived Learning/Enrichment/AI Memory/Adaptive artifacts from the working tree."
           echo "AI Policy and AI Policy state are intentionally retained for governed rebuild/LKG recovery."
 
       - name: Rebuild Learning, Enrichment, AI Memory and AI Policy
         run: |
           set -euo pipefail
           node run-learning-engine.js
+
+      - name: Rebuild Adaptive Optimizer and Execution
+        run: |
+          set -euo pipefail
+
+          node adaptive-optimizer.js
+          node adaptive-execution.js
 
       - name: Validate Swing + Master purge and rebuilt adaptive chain
         run: |
@@ -877,9 +900,94 @@ jobs:
             throw new Error("AI Policy state is not committed to the rebuilt policy hash.");
           }
 
+          const optimizer = require("./adaptive-optimizer.js");
+          const execution = require("./adaptive-execution.js");
+
+          if (
+            optimizer.ENGINE_VERSION !== "1.4.0" ||
+            optimizer.OPTIMIZER_MODE !== "shadow" ||
+            execution.ENGINE_VERSION !== "1.4.0" ||
+            execution.EXECUTION_MODE !== "dry-run" ||
+            execution.LIVE_APPLICATION_ENABLED !== false
+          ) {
+            throw new Error(
+              "Adaptive Optimizer/Execution compatibility mode is not the approved 1.4.0 shadow/dry-run contract."
+            );
+          }
+
+          const optimization = readObject("data/adaptive-optimization.json");
+          const optimizationState = readObject("data/adaptive-optimization-state.json");
+          const adaptiveExecution = readObject("data/adaptive-execution.json");
+          const adaptiveExecutionState = readObject("data/adaptive-execution-state.json");
+
+          const optimizationValidation =
+            optimizer.validateOptimizationDocument(optimization);
+          const optimizationStateValidation =
+            optimizer.validateOptimizerState(optimizationState);
+          const executionValidation =
+            execution.validateExecutionDocument(adaptiveExecution);
+          const executionStateValidation =
+            execution.validateExecutionState(adaptiveExecutionState);
+
+          if (!optimizationValidation.valid) {
+            throw new Error(
+              `Adaptive Optimizer output validation failed after reset: ${optimizationValidation.errors.join(" ")}`
+            );
+          }
+
+          if (!optimizationStateValidation.valid) {
+            throw new Error(
+              `Adaptive Optimizer state validation failed after reset: ${optimizationStateValidation.errors.join(" ")}`
+            );
+          }
+
+          if (!executionValidation.valid) {
+            throw new Error(
+              `Adaptive Execution output validation failed after reset: ${executionValidation.errors.join(" ")}`
+            );
+          }
+
+          if (!executionStateValidation.valid) {
+            throw new Error(
+              `Adaptive Execution state validation failed after reset: ${executionStateValidation.errors.join(" ")}`
+            );
+          }
+
+          const aiMemoryHash =
+            hashFile("data/ai-memory.json");
+          const optimizationHash =
+            hashFile("data/adaptive-optimization.json");
+
+          if (
+            optimization.mode !== "shadow" ||
+            optimization.activeParameters?.applied !== false ||
+            optimization.source?.aiMemoryHash !== aiMemoryHash ||
+            !["UPDATED", "UNCHANGED"].includes(optimizationState.lastRun?.status) ||
+            optimizationState.lastRun?.error !== null
+          ) {
+            throw new Error(
+              "Adaptive Optimizer is not bound to the rebuilt AI Memory shadow state."
+            );
+          }
+
+          if (
+            adaptiveExecution.mode !== "dry-run" ||
+            adaptiveExecution.safety?.liveApplicationEnabled !== false ||
+            adaptiveExecution.summary?.liveAppliedContexts !== 0 ||
+            adaptiveExecution.source?.optimizationHash !== optimizationHash ||
+            !["UPDATED", "UNCHANGED"].includes(adaptiveExecutionState.lastRun?.status) ||
+            adaptiveExecutionState.lastRun?.error !== null
+          ) {
+            throw new Error(
+              "Adaptive Execution is not bound to the rebuilt Optimizer dry-run state."
+            );
+          }
+
           console.log(
             `Adaptive rebuild PASS: ${learningRoot.signals.length} retained Scalp/Intraday learned signals, ` +
-            `${Array.isArray(policy.policies) ? policy.policies.length : 0} policy buckets, zero Swing/Master evidence.`
+            `${Array.isArray(policy.policies) ? policy.policies.length : 0} policy buckets, ` +
+            `${optimization.summary?.totalScopes ?? 0} optimizer scopes, ` +
+            `${adaptiveExecution.summary?.totalContexts ?? 0} execution contexts, zero Swing/Master evidence.`
           );
           NODE
       - name: Refresh dashboard history projection
@@ -960,6 +1068,10 @@ jobs:
             "data/ai-memory-state.json"
             "data/ai-policy.json"
             "data/ai-policy-state.json"
+            "data/adaptive-optimization.json"
+            "data/adaptive-optimization-state.json"
+            "data/adaptive-execution.json"
+            "data/adaptive-execution-state.json"
           )
 
           mapfile -t changed_files < <(
@@ -1029,6 +1141,10 @@ jobs:
             "data/ai-memory-state.json"
             "data/ai-policy.json"
             "data/ai-policy-state.json"
+            "data/adaptive-optimization.json"
+            "data/adaptive-optimization-state.json"
+            "data/adaptive-execution.json"
+            "data/adaptive-execution-state.json"
           )
 
           git add -A -- "${reset_files[@]}"

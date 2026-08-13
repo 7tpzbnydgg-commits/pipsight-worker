@@ -116,6 +116,7 @@ const MIN_M5_ROWS = 40;
 const MIN_M15_ROWS = 35;
 const MIN_M30_ROWS = 35;
 const MIN_H1_ROWS = 20;
+const NEWS_MAX_AGE_HOURS = 72;
 
 const PAIRS = Object.freeze([
   {
@@ -1436,6 +1437,7 @@ function normalizeNewsItem(item) {
       String(
         item.title ??
         item.headline ??
+        item.text ??
         ""
       ).trim(),
 
@@ -1451,10 +1453,13 @@ function normalizeNewsItem(item) {
       ),
 
     publishedAt:
-      item.publishedAt ??
-      item.time ??
-      item.datetime ??
-      null,
+      toIsoTimestamp(
+        item.publishedAt ??
+        item.timestamp ??
+        item.time ??
+        item.datetime ??
+        null
+      ),
 
     source:
       item.source ??
@@ -1466,7 +1471,51 @@ function normalizeNewsItem(item) {
 
 }
 
-function readNewsFeed() {
+function newsItemIsFresh(
+  news,
+  referenceTime = new Date()
+) {
+  if (
+    !news ||
+    typeof news !== "object"
+  ) {
+    return false;
+  }
+
+  const published =
+    parseTimestamp(
+      news.publishedAt
+    );
+
+  const reference =
+    referenceTime instanceof Date
+      ? referenceTime
+      : parseTimestamp(
+          referenceTime
+        );
+
+  if (
+    !published ||
+    !reference
+  ) {
+    return false;
+  }
+
+  const ageMs =
+    reference.getTime() -
+    published.getTime();
+
+  return (
+    ageMs >= 0 &&
+    ageMs <=
+      NEWS_MAX_AGE_HOURS *
+      60 * 60 * 1000
+  );
+}
+
+function readNewsFeed(
+  referenceTime = new Date()
+) {
 
   const raw =
     readJsonFile(
@@ -1483,7 +1532,14 @@ function readNewsFeed() {
 
   return list
     .map(normalizeNewsItem)
-    .filter(Boolean);
+    .filter(
+      item =>
+        item &&
+        newsItemIsFresh(
+          item,
+          referenceTime
+        )
+    );
 
 }
 
@@ -1544,10 +1600,20 @@ function newsScoreForPair(
 
 function conflictingHighImpactNews(
   direction,
-  newsItems
+  newsItems,
+  referenceTime = new Date()
 ) {
 
   for (const news of newsItems) {
+
+    if (
+      !newsItemIsFresh(
+        news,
+        referenceTime
+      )
+    ) {
+      continue;
+    }
 
     if (
       news.impact !== "high"
@@ -6186,7 +6252,8 @@ function analyze(
   const conflict =
     conflictingHighImpactNews(
       direction,
-      newsItems
+      newsItems,
+      context.newsReferenceTime
     );
 
   result.steps.push({
@@ -8411,13 +8478,15 @@ function run() {
       }
     );
 
-  const news =
-    readNewsFeed();
-
-  const signals = [];
-
   const generatedAt =
     new Date().toISOString();
+
+  const news =
+    readNewsFeed(
+      generatedAt
+    );
+
+  const signals = [];
 
   for (const pair of PAIRS) {
 
@@ -8560,6 +8629,8 @@ function run() {
           pairNews,
           {
             mode,
+            newsReferenceTime:
+              generatedAt,
             executionRows:
               scalp.rows,
             executionTimeframe:

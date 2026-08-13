@@ -273,7 +273,7 @@ function fmtDate(date) {
 
 function parsePublicationDate(value) {
   if (!value) {
-    return new Date();
+    return null;
   }
 
   const parsedDate =
@@ -284,7 +284,7 @@ function parsePublicationDate(value) {
       parsedDate.getTime()
     )
   ) {
-    return new Date();
+    return null;
   }
 
   return parsedDate;
@@ -363,6 +363,10 @@ async function collectFeedItems(feed) {
         entry?.pubDate
       );
 
+    if (!date) {
+      continue;
+    }
+
     const sentiment =
       scoreSentiment(
         articleText
@@ -375,6 +379,8 @@ async function collectFeedItems(feed) {
       collected.push({
         pair,
         date: fmtDate(date),
+        publishedAt:
+          date.toISOString(),
         sentiment,
         source: feed.source,
         text,

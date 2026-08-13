@@ -1158,10 +1158,8 @@ function aggregateCandles(
         high: row.high,
         low: row.low,
         close: row.close,
-        volume:
-          isFiniteNumber(row.volume)
-            ? row.volume
-            : 0,
+        volume: 0,
+        volumeComplete: true,
         hasOHLC:
           row.hasOHLC === true,
         isClosed: false,
@@ -1190,10 +1188,13 @@ function aggregateCandles(
     candle.close =
       row.close;
 
-    candle.volume +=
-      isFiniteNumber(row.volume)
-        ? row.volume
-        : 0;
+    if (isFiniteNumber(row.volume)) {
+      candle.volume +=
+        row.volume;
+    } else {
+      candle.volumeComplete =
+        false;
+    }
 
     candle.hasOHLC =
       candle.hasOHLC &&
@@ -1259,6 +1260,12 @@ function aggregateCandles(
     candle.isClosed =
       contiguous;
 
+    candle.volume =
+      candle.volumeComplete
+        ? candle.volume
+        : null;
+
+    delete candle.volumeComplete;
     delete candle.sourceTimestamps;
 
     if (candle.isClosed) {

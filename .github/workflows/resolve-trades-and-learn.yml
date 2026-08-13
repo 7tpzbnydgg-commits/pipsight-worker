@@ -9,6 +9,7 @@ permissions:
 concurrency:
   group: pipsight-analysis-writes-${{ github.ref }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   resolve-and-learn:
@@ -266,12 +267,6 @@ jobs:
             );
           }
           NODE
-
-      - name: Run AI Memory
-        run: |
-          set -euo pipefail
-
-          node ai-memory.js
 
       - name: Validate AI Memory outputs
         run: |

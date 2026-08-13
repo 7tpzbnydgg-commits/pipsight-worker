@@ -2994,6 +2994,66 @@ function validateBaselineBoundaries(
   };
 }
 
+function signalRateLimitScopeKey(
+  value
+) {
+  const context =
+    isPlainObject(value?.context)
+      ? value.context
+      : {};
+
+  const pair =
+    normalizePair(
+      context.pair
+    );
+
+  if (!pair) {
+    return null;
+  }
+
+  const signalOnly =
+    value?.executionContext ===
+      "SIGNAL_ONLY" ||
+    value?.deployment
+      ?.signalOnly === true;
+
+  const engine =
+    normalizeLower(
+      context.engine,
+      null
+    );
+
+  const timeframe =
+    normalizeTimeframe(
+      context.timeframe
+    );
+
+  /*
+   * Dedicated Scalp M5/M15/M30 signals are independent SIGNAL_ONLY
+   * lifecycles. Rate-limit state must therefore be isolated per timeframe,
+   * while portfolio/open-position risk controls remain unchanged and pair-wide.
+   * Exact lifecycle replay is still rejected independently by the fingerprint
+   * duplicate gate below.
+   */
+  if (
+    signalOnly &&
+    engine === "scalp" &&
+    [
+      "5m",
+      "15m",
+      "30m"
+    ].includes(timeframe)
+  ) {
+    return [
+      pair,
+      timeframe,
+      "scalp"
+    ].join("|");
+  }
+
+  return pair;
+}
+
 function createSignalFingerprint(
   normalized
 ) {
@@ -3032,6 +3092,11 @@ function mergeRiskSnapshotFromState(
   const pair =
     normalized.context.pair;
 
+  const rateLimitScope =
+    signalRateLimitScopeKey(
+      normalized
+    ) || pair;
+
   const evaluatedDate =
     dateKey(
       normalized.evaluatedAt
@@ -3041,7 +3106,7 @@ function mergeRiskSnapshotFromState(
     toInteger(
       state.dailyPairCounts
         ?.[evaluatedDate]
-        ?.[pair]
+        ?.[rateLimitScope]
     ) || 0;
 
   const inputDailyCount =
@@ -3051,7 +3116,7 @@ function mergeRiskSnapshotFromState(
   const lastFromState =
     toISOStringOrNull(
       state.lastApprovedSignalAtByPair
-        ?.[pair]
+        ?.[rateLimitScope]
     );
 
   return {
@@ -4899,21 +4964,26 @@ function applyResultToState(
     const pair =
       result.context.pair;
 
+    const rateLimitScope =
+      signalRateLimitScopeKey(
+        result
+      ) || pair;
+
     if (!isPlainObject(
       next.dailyPairCounts[date]
     )) {
       next.dailyPairCounts[date] = {};
     }
 
-    next.dailyPairCounts[date][pair] =
+    next.dailyPairCounts[date][rateLimitScope] =
       (
         toInteger(
           next.dailyPairCounts
-            [date][pair]
+            [date][rateLimitScope]
         ) || 0
       ) + 1;
 
-    next.lastApprovedSignalAtByPair[pair] =
+    next.lastApprovedSignalAtByPair[rateLimitScope] =
       result.evaluatedAt;
 
     next.recentFingerprints.push({

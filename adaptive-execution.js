@@ -55,6 +55,18 @@ const ENGINE_NAME =
 const ENGINE_VERSION =
   "1.4.0";
 
+const REQUIRED_OPTIMIZER_ENGINE_NAME =
+  "PipSight Pro Professional Adaptive Optimization Engine";
+
+const REQUIRED_OPTIMIZER_ENGINE_VERSION =
+  "1.4.0";
+
+const REQUIRED_MIN_RECOMMENDED_CONFIDENCE =
+  50;
+
+const REQUIRED_MAX_RECOMMENDED_CONFIDENCE =
+  95;
+
 /*
  * In-place compatibility is limited to this engine's own persisted
  * 1.0.0 output/state documents. The JSON schemas and public API stay
@@ -200,6 +212,7 @@ const HASH_ALGORITHM =
  */
 const ALLOWED_SCOPE_TYPES =
   new Set([
+    "pairTimeframeEngineDirection",
     "pairEngineDirection",
     "pairEngine",
     "engineDirection",
@@ -235,6 +248,7 @@ const ALLOWED_SCOPE_TYPES =
  */
 const SCOPE_PRECEDENCE =
   Object.freeze([
+    "pairTimeframeEngineDirection",
     "pairEngineDirection",
     "pairEngine",
     "engineDirection",
@@ -1067,6 +1081,28 @@ function validateOptimizationSafety(
   }
 
   if (
+    document.engineName !==
+      REQUIRED_OPTIMIZER_ENGINE_NAME
+  ) {
+
+    errors.push(
+      "Adaptive optimization engine name is unsupported."
+    );
+
+  }
+
+  if (
+    document.engineVersion !==
+      REQUIRED_OPTIMIZER_ENGINE_VERSION
+  ) {
+
+    errors.push(
+      "Adaptive optimization engine version is unsupported."
+    );
+
+  }
+
+  if (
     document.mode !==
       REQUIRED_OPTIMIZER_MODE
   ) {
@@ -1246,6 +1282,30 @@ function validateOptimizationSafety(
     }
 
     if (
+      document.safety
+        .minimumRecommendedConfidence !==
+        REQUIRED_MIN_RECOMMENDED_CONFIDENCE
+    ) {
+
+      errors.push(
+        `Adaptive optimization minimumRecommendedConfidence must equal ${REQUIRED_MIN_RECOMMENDED_CONFIDENCE}.`
+      );
+
+    }
+
+    if (
+      document.safety
+        .maximumRecommendedConfidence !==
+        REQUIRED_MAX_RECOMMENDED_CONFIDENCE
+    ) {
+
+      errors.push(
+        `Adaptive optimization maximumRecommendedConfidence must equal ${REQUIRED_MAX_RECOMMENDED_CONFIDENCE}.`
+      );
+
+    }
+
+    if (
       document.safety.exactScopeOnly !==
         true
     ) {
@@ -1332,6 +1392,171 @@ function validateOptimizationSafety(
    Recommendation Validation
    ===================================================================== */
 
+const EXECUTION_SCOPE_FIELDS =
+  Object.freeze({
+    overall: [],
+    pair: ["pair"],
+    engine: ["engine"],
+    direction: ["direction"],
+    timeframe: ["timeframe"],
+    pairEngine: [
+      "pair",
+      "engine"
+    ],
+    engineDirection: [
+      "engine",
+      "direction"
+    ],
+    pairDirection: [
+      "pair",
+      "direction"
+    ],
+    pairEngineDirection: [
+      "pair",
+      "engine",
+      "direction"
+    ],
+    pairTimeframeEngineDirection: [
+      "pair",
+      "timeframe",
+      "engine",
+      "direction"
+    ]
+  });
+
+function buildCanonicalExecutionScopeKey(
+  scope
+) {
+
+  if (
+    !isPlainObject(
+      scope
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const type =
+    toTrimmedString(
+      scope.type
+    );
+
+  const fields =
+    EXECUTION_SCOPE_FIELDS[
+      type
+    ];
+
+  if (
+    !Array.isArray(
+      fields
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const normalized = {
+    pair:
+      scope.pair === null ||
+      scope.pair === undefined
+        ? null
+        : normalizePair(
+            scope.pair
+          ),
+
+    engine:
+      scope.engine === null ||
+      scope.engine === undefined
+        ? null
+        : (
+            toTrimmedString(
+              scope.engine
+            ).toLowerCase() ===
+              TARGET_ENGINE
+              ? TARGET_ENGINE
+              : null
+          ),
+
+    direction:
+      scope.direction === null ||
+      scope.direction === undefined
+        ? null
+        : normalizeDirection(
+            scope.direction
+          ),
+
+    timeframe:
+      scope.timeframe === null ||
+      scope.timeframe === undefined
+        ? null
+        : normalizeTimeframe(
+            scope.timeframe
+          )
+  };
+
+  for (
+    const fieldName of
+    [
+      "pair",
+      "engine",
+      "direction",
+      "timeframe"
+    ]
+  ) {
+
+    if (
+      fields.includes(
+        fieldName
+      )
+    ) {
+
+      if (
+        normalized[fieldName] ===
+          null
+      ) {
+
+        return null;
+
+      }
+
+    } else if (
+      scope[fieldName] !==
+        null &&
+      scope[fieldName] !==
+        undefined &&
+      scope[fieldName] !==
+        ""
+    ) {
+
+      return null;
+
+    }
+
+  }
+
+  if (
+    type ===
+      "overall"
+  ) {
+
+    return "overall";
+
+  }
+
+  return fields
+    .map(
+      fieldName =>
+        normalized[fieldName]
+    )
+    .join(
+      "::"
+    );
+
+}
+
 function validateScopeIdentity(
   scope,
   label
@@ -1387,62 +1612,24 @@ function validateScopeIdentity(
 
   }
 
+  const canonicalKey =
+    ALLOWED_SCOPE_TYPES.has(
+      type
+    )
+      ? buildCanonicalExecutionScopeKey(
+          scope
+        )
+      : null;
+
   if (
-    scope.pair !== null &&
-    scope.pair !== undefined &&
-    normalizePair(
-      scope.pair
-    ) ===
-      null
+    canonicalKey ===
+      null ||
+    canonicalKey !==
+      key
   ) {
 
     errors.push(
-      `${label}.pair is invalid.`
-    );
-
-  }
-
-  if (
-    scope.engine !== null &&
-    scope.engine !== undefined &&
-    toTrimmedString(
-      scope.engine
-    ).toLowerCase() !==
-      TARGET_ENGINE
-  ) {
-
-    errors.push(
-      `${label}.engine is not a scalp engine.`
-    );
-
-  }
-
-  if (
-    scope.direction !== null &&
-    scope.direction !== undefined &&
-    normalizeDirection(
-      scope.direction
-    ) ===
-      null
-  ) {
-
-    errors.push(
-      `${label}.direction is invalid.`
-    );
-
-  }
-
-  if (
-    scope.timeframe !== null &&
-    scope.timeframe !== undefined &&
-    normalizeTimeframe(
-      scope.timeframe
-    ) ===
-      null
-  ) {
-
-    errors.push(
-      `${label}.timeframe is unsupported for the current scalp modes.`
+      `${label}.key does not match its canonical scope fields.`
     );
 
   }
@@ -1588,6 +1775,37 @@ function validateRecommendationEligibility(
 
   }
 
+  const status =
+    toTrimmedString(
+      eligibility.status
+    );
+
+  if (
+    eligibility.eligible ===
+      true &&
+    status !==
+      "ELIGIBLE"
+  ) {
+
+    errors.push(
+      `${label}.status must be ELIGIBLE when eligible is true.`
+    );
+
+  }
+
+  if (
+    eligibility.eligible ===
+      false &&
+    status ===
+      "ELIGIBLE"
+  ) {
+
+    errors.push(
+      `${label}.status cannot be ELIGIBLE when eligible is false.`
+    );
+
+  }
+
   return {
     valid:
       errors.length === 0,
@@ -1713,16 +1931,16 @@ function validateConfidenceRecommendation(
     baseline =
       clamp(
         recommendation.baseline,
-        MIN_CONFIDENCE,
-        MAX_CONFIDENCE
+        REQUIRED_MIN_RECOMMENDED_CONFIDENCE,
+        REQUIRED_MAX_RECOMMENDED_CONFIDENCE
       );
 
     recommendedConfidence =
       clamp(
         recommendation
           .recommendedConfidence,
-        MIN_CONFIDENCE,
-        MAX_CONFIDENCE
+        REQUIRED_MIN_RECOMMENDED_CONFIDENCE,
+        REQUIRED_MAX_RECOMMENDED_CONFIDENCE
       );
 
     if (
@@ -1824,6 +2042,246 @@ function validateConfidenceRecommendation(
                   )
           }
         : null,
+
+    errors:
+      uniqueSortedStrings(
+        errors
+      )
+  };
+
+}
+
+
+function validateOptimizationRecommendationSemantics(
+  recommendation,
+  label
+) {
+
+  const errors =
+    [];
+
+  const eligibility =
+    recommendation
+      ?.eligibility;
+
+  const confidence =
+    recommendation
+      ?.confidenceRecommendation;
+
+  const profitability =
+    recommendation
+      ?.profitability;
+
+  if (
+    !isPlainObject(
+      eligibility
+    ) ||
+    !isPlainObject(
+      confidence
+    )
+  ) {
+
+    return {
+      valid: false,
+      errors: [
+        `${label} recommendation semantics are incomplete.`
+      ]
+    };
+
+  }
+
+  const requestedAdjustment =
+    toFiniteNumber(
+      confidence
+        .requestedAdjustment
+    );
+
+  const boundedAdjustment =
+    toFiniteNumber(
+      confidence
+        .boundedAdjustment
+    );
+
+  if (
+    requestedAdjustment ===
+      null ||
+    boundedAdjustment ===
+      null
+  ) {
+
+    errors.push(
+      `${label} recommendation adjustments are invalid.`
+    );
+
+  }
+
+  if (
+    eligibility.eligible !==
+      true
+  ) {
+
+    if (
+      confidence.available !==
+        false ||
+      requestedAdjustment !==
+        0 ||
+      boundedAdjustment !==
+        0
+    ) {
+
+      errors.push(
+        `${label} ineligible scope must not expose a confidence adjustment.`
+      );
+
+    }
+
+    return {
+      valid:
+        errors.length === 0,
+
+      errors:
+        uniqueSortedStrings(
+          errors
+        )
+    };
+
+  }
+
+  if (
+    !isPlainObject(
+      profitability
+    ) ||
+    profitability.valid !==
+      true
+  ) {
+
+    errors.push(
+      `${label} eligible scope requires valid profitability evidence.`
+    );
+
+    return {
+      valid: false,
+      errors:
+        uniqueSortedStrings(
+          errors
+        )
+    };
+
+  }
+
+  const classification =
+    toTrimmedString(
+      profitability
+        .classification
+    );
+
+  const expectedAdjustment =
+    classification ===
+      "SUPPORTIVE"
+      ? 1
+      : classification ===
+          "CAUTION"
+        ? -1
+        : classification ===
+            "NEUTRAL"
+          ? 0
+          : null;
+
+  if (
+    expectedAdjustment ===
+      null
+  ) {
+
+    errors.push(
+      `${label} profitability classification is invalid.`
+    );
+
+  } else if (
+    requestedAdjustment !==
+      expectedAdjustment
+  ) {
+
+    errors.push(
+      `${label} requested adjustment does not match profitability classification.`
+    );
+
+  }
+
+  if (
+    confidence.available ===
+      true
+  ) {
+
+    if (
+      boundedAdjustment !==
+        expectedAdjustment
+    ) {
+
+      errors.push(
+        `${label} bounded adjustment does not match profitability classification.`
+      );
+
+    }
+
+    const baseline =
+      clamp(
+        confidence.baseline,
+        REQUIRED_MIN_RECOMMENDED_CONFIDENCE,
+        REQUIRED_MAX_RECOMMENDED_CONFIDENCE
+      );
+
+    const recommendedConfidence =
+      clamp(
+        confidence
+          .recommendedConfidence,
+        REQUIRED_MIN_RECOMMENDED_CONFIDENCE,
+        REQUIRED_MAX_RECOMMENDED_CONFIDENCE
+      );
+
+    const expectedConfidence =
+      baseline ===
+        null
+        ? null
+        : clamp(
+            baseline +
+              expectedAdjustment,
+            REQUIRED_MIN_RECOMMENDED_CONFIDENCE,
+            REQUIRED_MAX_RECOMMENDED_CONFIDENCE
+          );
+
+    if (
+      baseline ===
+        null ||
+      recommendedConfidence ===
+        null ||
+      expectedConfidence ===
+        null ||
+      Math.abs(
+        recommendedConfidence -
+        expectedConfidence
+      ) > 1e-9
+    ) {
+
+      errors.push(
+        `${label} recommendedConfidence is inconsistent with baseline and bounded adjustment.`
+      );
+
+    }
+
+  } else if (
+    boundedAdjustment !==
+      0
+  ) {
+
+    errors.push(
+      `${label} unavailable confidence recommendation must have bounded adjustment 0.`
+    );
+
+  }
+
+  return {
+    valid:
+      errors.length === 0,
 
     errors:
       uniqueSortedStrings(
@@ -1942,6 +2400,16 @@ function normalizeOptimizationRecommendation(
     );
 
   }
+
+  const semanticResult =
+    validateOptimizationRecommendationSemantics(
+      recommendation,
+      label
+    );
+
+  errors.push(
+    ...semanticResult.errors
+  );
 
   if (
     errors.length >
@@ -2124,7 +2592,9 @@ function isRecommendationRelevantToScalp(
    */
   if (
     scopeType ===
-    "timeframe"
+      "timeframe" ||
+    scopeType ===
+      "pairTimeframeEngineDirection"
   ) {
 
     const timeframe =
@@ -2403,6 +2873,28 @@ function validateOptimizationState(
   }
 
   if (
+    state.engineName !==
+      REQUIRED_OPTIMIZER_ENGINE_NAME
+  ) {
+
+    errors.push(
+      "Adaptive optimization state engine name is unsupported."
+    );
+
+  }
+
+  if (
+    state.engineVersion !==
+      REQUIRED_OPTIMIZER_ENGINE_VERSION
+  ) {
+
+    errors.push(
+      "Adaptive optimization state engine version is unsupported."
+    );
+
+  }
+
+  if (
     state.mode !==
       REQUIRED_OPTIMIZER_MODE
   ) {
@@ -2603,6 +3095,74 @@ function loadOptimizationSources() {
     ...stateValidation.errors
   );
 
+  const optimizationSource =
+    optimizationRead.value
+      ?.source;
+
+  const optimizationStateSources =
+    optimizationStateRead.value
+      ?.sourceHashes;
+
+  if (
+    isPlainObject(
+      optimizationSource
+    ) &&
+    isPlainObject(
+      optimizationStateSources
+    )
+  ) {
+
+    const sourcePairs = [
+      [
+        optimizationSource
+          .aiMemoryHash,
+        optimizationStateSources
+          .aiMemory,
+        "aiMemory"
+      ]
+    ];
+
+    for (
+      const [
+        documentHash,
+        stateHash,
+        label
+      ] of sourcePairs
+    ) {
+
+      const left =
+        toTrimmedString(
+          documentHash
+        );
+
+      const right =
+        toTrimmedString(
+          stateHash
+        );
+
+      if (
+        !left ||
+        !right ||
+        left !==
+          right
+      ) {
+
+        errors.push(
+          `Adaptive optimization document/state source hash mismatch for ${label}.`
+        );
+
+      }
+
+    }
+
+  } else {
+
+    errors.push(
+      "Adaptive optimization document/state source hash sections are missing."
+    );
+
+  }
+
   const optimizationHash =
     createFileContentHash(
       OPTIMIZATION_PATH
@@ -2763,6 +3323,21 @@ function buildScalpCandidateIds(
         1,
 
       scopeType:
+        "pairTimeframeEngineDirection",
+
+      recommendationId:
+        (
+          "pairTimeframeEngineDirection::" +
+          `${pair}::${timeframe}::` +
+          `${TARGET_ENGINE}::${direction}`
+        )
+    },
+
+    {
+      precedence:
+        2,
+
+      scopeType:
         "pairEngineDirection",
 
       recommendationId:
@@ -2774,7 +3349,7 @@ function buildScalpCandidateIds(
 
     {
       precedence:
-        2,
+        3,
 
       scopeType:
         "pairEngine",
@@ -2788,7 +3363,7 @@ function buildScalpCandidateIds(
 
     {
       precedence:
-        3,
+        4,
 
       scopeType:
         "engineDirection",
@@ -2802,7 +3377,7 @@ function buildScalpCandidateIds(
 
     {
       precedence:
-        4,
+        5,
 
       scopeType:
         "pairDirection",
@@ -2816,7 +3391,7 @@ function buildScalpCandidateIds(
 
     {
       precedence:
-        5,
+        6,
 
       scopeType:
         "pair",
@@ -2827,7 +3402,7 @@ function buildScalpCandidateIds(
 
     {
       precedence:
-        6,
+        7,
 
       scopeType:
         "engine",
@@ -2838,7 +3413,7 @@ function buildScalpCandidateIds(
 
     {
       precedence:
-        7,
+        8,
 
       scopeType:
         "direction",
@@ -2849,7 +3424,7 @@ function buildScalpCandidateIds(
 
     {
       precedence:
-        8,
+        9,
 
       scopeType:
         "timeframe",
@@ -2860,7 +3435,7 @@ function buildScalpCandidateIds(
 
     {
       precedence:
-        9,
+        10,
 
       scopeType:
         "overall",
@@ -3196,6 +3771,93 @@ function resolveScalpContext({
 
   const inspectedCandidates =
     [];
+
+  const exactCandidate =
+    candidateDefinitions[0] ||
+    null;
+
+  const exactRecommendation =
+    exactCandidate
+      ? (
+          recommendationIndex.get(
+            exactCandidate
+              .recommendationId
+          ) ||
+          null
+        )
+      : null;
+
+  if (
+    exactCandidate ===
+      null ||
+    exactRecommendation ===
+      null
+  ) {
+
+    return {
+      valid: true,
+
+      context:
+        normalizedContext,
+
+      status:
+        "NO_RECOMMENDATION",
+
+      selectedScope:
+        null,
+
+      proposedAdjustment: 0,
+
+      liveApplied:
+        false,
+
+      candidates:
+        exactCandidate
+          ? [
+              {
+                precedence:
+                  exactCandidate
+                    .precedence,
+
+                scopeType:
+                  exactCandidate
+                    .scopeType,
+
+                recommendationId:
+                  exactCandidate
+                    .recommendationId,
+
+                present:
+                  false,
+
+                usable:
+                  false,
+
+                status:
+                  "MISSING",
+
+                adjustment: 0,
+
+                reasons: [
+                  "Exact pair/timeframe/engine/direction recommendation is absent."
+                ]
+              }
+            ]
+          : [],
+
+      reasons: [
+        (
+          "Exact pair/timeframe/engine/direction evidence is required; " +
+          "broader scopes are not used for an MTF Scalp context."
+        )
+      ],
+
+      errors: [],
+
+      warnings: []
+    };
+
+  }
 
   let firstPresentCandidate =
     null;
@@ -4234,6 +4896,28 @@ function validateSelectedScope(
 
   }
 
+  if (
+    type &&
+    toTrimmedString(
+      selectedScope.key
+    ) &&
+    toTrimmedString(
+      selectedScope.recommendationId
+    ) !==
+      (
+        `${type}::` +
+        `${toTrimmedString(
+          selectedScope.key
+        )}`
+      )
+  ) {
+
+    errors.push(
+      `${label}.recommendationId does not match type and key.`
+    );
+
+  }
+
   return {
     valid:
       errors.length === 0,
@@ -4396,6 +5080,25 @@ function validateInspectedCandidate(
 
     errors.push(
       `${label}.reasons must be an array.`
+    );
+
+  }
+
+  const candidateRecommendationId =
+    toTrimmedString(
+      candidate.recommendationId
+    );
+
+  if (
+    scopeType &&
+    candidateRecommendationId &&
+    !candidateRecommendationId.startsWith(
+      `${scopeType}::`
+    )
+  ) {
+
+    errors.push(
+      `${label}.recommendationId does not match scopeType.`
     );
 
   }
@@ -4685,6 +5388,88 @@ function validateExecutionResolution(
     warnings.push(
       ...resolution.warnings
     );
+
+  }
+
+  if (
+    isPlainObject(
+      resolution.context
+    )
+  ) {
+
+    const normalizedContext =
+      createScalpContext(
+        resolution.context
+      );
+
+    const expectedExactKey =
+      normalizedContext
+        ? (
+            `${normalizedContext.pair}::` +
+            `${normalizedContext.timeframe}::` +
+            `${TARGET_ENGINE}::` +
+            `${normalizedContext.direction}`
+          )
+        : null;
+
+    const expectedExactId =
+      expectedExactKey
+        ? (
+            "pairTimeframeEngineDirection::" +
+            expectedExactKey
+          )
+        : null;
+
+    if (
+      resolution.selectedScope !==
+        null
+    ) {
+
+      if (
+        resolution.selectedScope.type !==
+          "pairTimeframeEngineDirection" ||
+        resolution.selectedScope.key !==
+          expectedExactKey ||
+        resolution.selectedScope
+          .recommendationId !==
+          expectedExactId
+      ) {
+
+        errors.push(
+          `${label}.selectedScope does not match the exact MTF context identity.`
+        );
+
+      }
+
+    }
+
+    if (
+      Array.isArray(
+        resolution.candidates
+      ) &&
+      resolution.candidates.length >
+        0
+    ) {
+
+      const firstCandidate =
+        resolution.candidates[0];
+
+      if (
+        firstCandidate
+          ?.scopeType !==
+          "pairTimeframeEngineDirection" ||
+        firstCandidate
+          ?.recommendationId !==
+          expectedExactId
+      ) {
+
+        errors.push(
+          `${label}.candidates[0] does not represent the exact MTF context.`
+        );
+
+      }
+
+    }
 
   }
 
@@ -6139,6 +6924,42 @@ function hasExecutionOutputChanged({
 
   generatedComparable.generatedAt =
     null;
+
+  if (
+    isPlainObject(
+      existingComparable.source
+    )
+  ) {
+
+    existingComparable
+      .source
+      .optimizationStateHash =
+      null;
+
+    existingComparable
+      .source
+      .optimizerLastSuccessfulRunAt =
+      null;
+
+  }
+
+  if (
+    isPlainObject(
+      generatedComparable.source
+    )
+  ) {
+
+    generatedComparable
+      .source
+      .optimizationStateHash =
+      null;
+
+    generatedComparable
+      .source
+      .optimizerLastSuccessfulRunAt =
+      null;
+
+  }
 
   return (
     createHash(

@@ -3,7 +3,7 @@
 // PipSight Pro — Analysis History Trade Resolver.
 //
 // Phase 9 goals:
-// - Resolve existing open history records against verified market candles.
+// - Resolve existing open history records against verified market evidence.
 // - Preserve the existing analysis-history.json schema.
 // - Preserve legacy open / closed collections.
 // - Preserve current records / history / items aliases.
@@ -17,6 +17,7 @@
 //   data/scalp-candles.json
 //   data/intraday-h1.json
 //   data/daily-ohlc.json
+//   data/execution-evidence.json             (optional verified broker evidence)
 //
 // Writes:
 //   data/analysis-history.json
@@ -27,9 +28,9 @@
 // - Existing Telegram logic remains unchanged.
 // - Existing Learning and AI Memory schemas remain unchanged.
 // - Existing legacy history records remain supported.
-// - Autonomous extension 1.4.0 adds immutable trade identity, evidence hashes,
-//   exact exit-price validation and correction-safe attribution without
-//   changing the established ENGINE_VERSION compatibility contract.
+// - Autonomous extension 1.5.0 adds verified execution-tick evidence support
+//   while preserving candle resolution, immutable trade identity, evidence
+//   hashes, correction-safe attribution and the ENGINE_VERSION contract.
 
 "use strict";
 
@@ -57,10 +58,19 @@ const ENGINE_VERSION =
  * it explicitly. Autonomous resolution evidence is versioned independently.
  */
 const AUTONOMOUS_RESOLVER_VERSION =
-  "1.4.0";
+  "1.5.0";
 
 const RESOLUTION_EVIDENCE_SCHEMA_VERSION =
+  2;
+
+const EXECUTION_EVIDENCE_SCHEMA_VERSION =
   1;
+
+const EXECUTION_EVIDENCE_AUTHORITY_MODES =
+  new Set([
+    "CANDLE_FALLBACK",
+    "EXECUTION_ONLY"
+  ]);
 
 const MAX_RESOLUTION_CORRECTION_HISTORY =
   20;
@@ -139,6 +149,12 @@ const DAILY_CANDLES_PATH =
   path.join(
     DATA_DIR,
     "daily-ohlc.json"
+  );
+
+const EXECUTION_EVIDENCE_PATH =
+  path.join(
+    DATA_DIR,
+    "execution-evidence.json"
   );
 
 // ============================================================================
@@ -3366,6 +3382,720 @@ function loadMarketSourceDocument(
 
 }
 
+
+function normalizeExecutionEvidenceAuthorityMode(
+  value
+) {
+
+  const mode =
+    normalizeUpperString(
+      value
+    );
+
+  return EXECUTION_EVIDENCE_AUTHORITY_MODES.has(
+    mode
+  )
+    ? mode
+    : null;
+
+}
+
+function normalizeExecutionEvidenceEvent(
+  rawEvent,
+  index,
+  options = {}
+) {
+
+  if (
+    !isPlainObject(
+      rawEvent
+    )
+  ) {
+
+    throw new Error(
+      `execution-evidence events[${index}] must be an object`
+    );
+
+  }
+
+  if (
+    rawEvent.verified !==
+      true
+  ) {
+
+    throw new Error(
+      `execution-evidence events[${index}] must set verified=true`
+    );
+
+  }
+
+  if (
+    rawEvent.firstDecisiveTouch !==
+      true
+  ) {
+
+    throw new Error(
+      `execution-evidence events[${index}] must set firstDecisiveTouch=true`
+    );
+
+  }
+
+  const pairKey =
+    normalizePairKey(
+      rawEvent.pair ??
+      rawEvent.symbol ??
+      rawEvent.canonicalSymbol
+    );
+
+  if (!pairKey) {
+
+    throw new Error(
+      `execution-evidence events[${index}] has an unsupported pair`
+    );
+
+  }
+
+  const source =
+    toTrimmedString(
+      rawEvent.source
+    );
+
+  if (!source) {
+
+    throw new Error(
+      `execution-evidence events[${index}] is missing source`
+    );
+
+  }
+
+  const brokerSymbol =
+    toTrimmedString(
+      rawEvent.brokerSymbol
+    );
+
+  if (!brokerSymbol) {
+
+    throw new Error(
+      `execution-evidence events[${index}] is missing brokerSymbol`
+    );
+
+  }
+
+  const sourceTradeKey =
+    toTrimmedString(
+      rawEvent.sourceTradeKey ??
+      rawEvent.tradeIdentity
+    ) ||
+    null;
+
+  const setupIdentity =
+    toTrimmedString(
+      rawEvent.setupIdentity ??
+      rawEvent.setupId
+    ) ||
+    null;
+
+  const recordId =
+    toTrimmedString(
+      rawEvent.recordId ??
+      rawEvent.sourceHistoryRecordId
+    ) ||
+    null;
+
+  if (
+    !sourceTradeKey &&
+    !setupIdentity &&
+    !recordId
+  ) {
+
+    throw new Error(
+      `execution-evidence events[${index}] must identify a trade by sourceTradeKey, setupIdentity or recordId`
+    );
+
+  }
+
+  const observedAt =
+    toISOStringOrNull(
+      rawEvent.observedAt ??
+      rawEvent.timeUtc ??
+      rawEvent.timestamp ??
+      rawEvent.time
+    );
+
+  if (!observedAt) {
+
+    throw new Error(
+      `execution-evidence events[${index}] has an invalid observedAt timestamp`
+    );
+
+  }
+
+  const observedTimestamp =
+    toTimestamp(
+      observedAt
+    );
+
+  const safeNowMs =
+    Number.isFinite(
+      options.nowMs
+    )
+      ? options.nowMs
+      : Date.now();
+
+  if (
+    observedTimestamp ===
+      null ||
+    observedTimestamp >
+      safeNowMs +
+      RECORD_CLOCK_SKEW_TOLERANCE_MS
+  ) {
+
+    throw new Error(
+      `execution-evidence events[${index}] has a future or invalid observedAt timestamp`
+    );
+
+  }
+
+  const bid =
+    toFiniteNumber(
+      rawEvent.bid
+    );
+
+  const ask =
+    toFiniteNumber(
+      rawEvent.ask
+    );
+
+  if (
+    bid ===
+      null ||
+    ask ===
+      null ||
+    bid <=
+      0 ||
+    ask <=
+      0 ||
+    ask <
+      bid
+  ) {
+
+    throw new Error(
+      `execution-evidence events[${index}] must contain positive bid/ask with ask >= bid`
+    );
+
+  }
+
+  let timeMsc =
+    null;
+
+  if (
+    rawEvent.timeMsc !==
+      undefined &&
+    rawEvent.timeMsc !==
+      null &&
+    rawEvent.timeMsc !==
+      ""
+  ) {
+
+    const parsedTimeMsc =
+      Number(
+        rawEvent.timeMsc
+      );
+
+    if (
+      !Number.isSafeInteger(
+        parsedTimeMsc
+      ) ||
+      parsedTimeMsc <
+        0
+    ) {
+
+      throw new Error(
+        `execution-evidence events[${index}] has an invalid timeMsc`
+      );
+
+    }
+
+    timeMsc =
+      parsedTimeMsc;
+
+  }
+
+  const engine =
+    rawEvent.engine ===
+      undefined ||
+    rawEvent.engine ===
+      null ||
+    rawEvent.engine ===
+      ""
+      ? null
+      : normalizeEngine(
+          rawEvent.engine
+        );
+
+  if (
+    rawEvent.engine !==
+      undefined &&
+    rawEvent.engine !==
+      null &&
+    rawEvent.engine !==
+      "" &&
+    !engine
+  ) {
+
+    throw new Error(
+      `execution-evidence events[${index}] has an unsupported engine`
+    );
+
+  }
+
+  const timeframe =
+    rawEvent.timeframe ===
+      undefined ||
+    rawEvent.timeframe ===
+      null ||
+    rawEvent.timeframe ===
+      ""
+      ? null
+      : normalizeTimeframe(
+          rawEvent.timeframe
+        );
+
+  if (
+    rawEvent.timeframe !==
+      undefined &&
+    rawEvent.timeframe !==
+      null &&
+    rawEvent.timeframe !==
+      "" &&
+    !timeframe
+  ) {
+
+    throw new Error(
+      `execution-evidence events[${index}] has an unsupported timeframe`
+    );
+
+  }
+
+  const direction =
+    rawEvent.direction ===
+      undefined ||
+    rawEvent.direction ===
+      null ||
+    rawEvent.direction ===
+      ""
+      ? null
+      : normalizeDirection(
+          rawEvent.direction
+        );
+
+  if (
+    rawEvent.direction !==
+      undefined &&
+    rawEvent.direction !==
+      null &&
+    rawEvent.direction !==
+      "" &&
+    !direction
+  ) {
+
+    throw new Error(
+      `execution-evidence events[${index}] has an unsupported direction`
+    );
+
+  }
+
+  const entry =
+    toFiniteNumber(
+      rawEvent.entry
+    );
+
+  const stop =
+    toFiniteNumber(
+      rawEvent.stop ??
+      rawEvent.stopLoss
+    );
+
+  const target1 =
+    toFiniteNumber(
+      rawEvent.target1 ??
+      rawEvent.takeProfit1 ??
+      rawEvent.target ??
+      rawEvent.takeProfit
+    );
+
+  for (
+    const [
+      fieldName,
+      fieldValue
+    ] of [
+      [
+        "entry",
+        entry
+      ],
+      [
+        "stop",
+        stop
+      ],
+      [
+        "target1",
+        target1
+      ]
+    ]
+  ) {
+
+    const supplied =
+      rawEvent[
+        fieldName
+      ] !==
+        undefined ||
+      (
+        fieldName ===
+          "stop" &&
+        rawEvent.stopLoss !==
+          undefined
+      ) ||
+      (
+        fieldName ===
+          "target1" &&
+        (
+          rawEvent.takeProfit1 !==
+            undefined ||
+          rawEvent.target !==
+            undefined ||
+          rawEvent.takeProfit !==
+            undefined
+        )
+      );
+
+    if (
+      supplied &&
+      (
+        fieldValue ===
+          null ||
+        fieldValue <=
+          0
+      )
+    ) {
+
+      throw new Error(
+        `execution-evidence events[${index}] has an invalid ${fieldName}`
+      );
+
+    }
+
+  }
+
+  const normalizedPayload = {
+    schemaVersion:
+      EXECUTION_EVIDENCE_SCHEMA_VERSION,
+
+    source,
+    brokerSymbol,
+    pair:
+      pairKey,
+
+    engine,
+    timeframe,
+    direction,
+
+    sourceTradeKey,
+    setupIdentity,
+    recordId,
+
+    observedAt,
+    observedTimestamp,
+    timeMsc,
+
+    bid,
+    ask,
+
+    entry,
+    stop,
+    target1,
+
+    verified:
+      true,
+
+    firstDecisiveTouch:
+      true
+  };
+
+  const evidenceIdentity =
+    createCanonicalHash(
+      normalizedPayload
+    );
+
+  const suppliedEvidenceHash =
+    toTrimmedString(
+      rawEvent.evidenceHash
+    );
+
+  if (
+    suppliedEvidenceHash &&
+    suppliedEvidenceHash !==
+      evidenceIdentity
+  ) {
+
+    throw new Error(
+      `execution-evidence events[${index}] evidenceHash does not match normalized content`
+    );
+
+  }
+
+  return {
+    ...normalizedPayload,
+
+    id:
+      toTrimmedString(
+        rawEvent.id
+      ) ||
+      `execution_${evidenceIdentity}`,
+
+    evidenceHash:
+      evidenceIdentity
+  };
+
+}
+
+function loadExecutionEvidenceDocument(
+  options = {}
+) {
+
+  if (
+    !fs.existsSync(
+      EXECUTION_EVIDENCE_PATH
+    )
+  ) {
+
+    return {
+      available:
+        false,
+
+      source:
+        "data/execution-evidence.json",
+
+      filePath:
+        EXECUTION_EVIDENCE_PATH,
+
+      authorityMode:
+        "CANDLE_FALLBACK",
+
+      document:
+        null,
+
+      events:
+        [],
+
+      error:
+        null
+    };
+
+  }
+
+  const document =
+    readJSON(
+      EXECUTION_EVIDENCE_PATH,
+      {
+        required:
+          true
+      }
+    );
+
+  if (
+    !isPlainObject(
+      document
+    )
+  ) {
+
+    throw new Error(
+      "data/execution-evidence.json must contain an object"
+    );
+
+  }
+
+  const schemaVersion =
+    Number(
+      document.version ??
+      document.schemaVersion
+    );
+
+  if (
+    schemaVersion !==
+      EXECUTION_EVIDENCE_SCHEMA_VERSION
+  ) {
+
+    throw new Error(
+      `data/execution-evidence.json schema version must be ${EXECUTION_EVIDENCE_SCHEMA_VERSION}`
+    );
+
+  }
+
+  const authorityMode =
+    normalizeExecutionEvidenceAuthorityMode(
+      document.authorityMode
+    );
+
+  if (!authorityMode) {
+
+    throw new Error(
+      "data/execution-evidence.json authorityMode must be CANDLE_FALLBACK or EXECUTION_ONLY"
+    );
+
+  }
+
+  if (
+    !Array.isArray(
+      document.events
+    )
+  ) {
+
+    throw new Error(
+      "data/execution-evidence.json events must be an array"
+    );
+
+  }
+
+  const safeNowMs =
+    Number.isFinite(
+      options.nowMs
+    )
+      ? options.nowMs
+      : Date.now();
+
+  const events =
+    document.events.map(
+      (
+        rawEvent,
+        index
+      ) =>
+        normalizeExecutionEvidenceEvent(
+          rawEvent,
+          index,
+          {
+            nowMs:
+              safeNowMs
+          }
+        )
+    );
+
+  const eventsById =
+    new Map();
+
+  for (
+    const event of
+    events
+  ) {
+
+    const existing =
+      eventsById.get(
+        event.id
+      );
+
+    if (!existing) {
+
+      eventsById.set(
+        event.id,
+        event
+      );
+
+      continue;
+
+    }
+
+    if (
+      existing.evidenceHash !==
+        event.evidenceHash
+    ) {
+
+      throw new Error(
+        `data/execution-evidence.json contains conflicting duplicate event id ${event.id}`
+      );
+
+    }
+
+  }
+
+  const uniqueEvents =
+    Array.from(
+      eventsById.values()
+    ).sort(
+      (
+        left,
+        right
+      ) =>
+        left.observedTimestamp -
+        right.observedTimestamp
+    );
+
+  return {
+    available:
+      true,
+
+    source:
+      "data/execution-evidence.json",
+
+    filePath:
+      EXECUTION_EVIDENCE_PATH,
+
+    authorityMode,
+
+    document,
+
+    events:
+      uniqueEvents,
+
+    error:
+      null
+  };
+
+}
+
+function buildExecutionEvidenceIndex(
+  sourceDocument
+) {
+
+  if (
+    !sourceDocument ||
+    sourceDocument.available !==
+      true
+  ) {
+
+    return {
+      available:
+        false,
+
+      source:
+        sourceDocument?.source ||
+        "data/execution-evidence.json",
+
+      authorityMode:
+        "CANDLE_FALLBACK",
+
+      events:
+        []
+    };
+
+  }
+
+  return {
+    available:
+      true,
+
+    source:
+      sourceDocument.source,
+
+    authorityMode:
+      sourceDocument.authorityMode,
+
+    events:
+      asArray(
+        sourceDocument.events
+      )
+  };
+
+}
+
 function loadMarketDocuments() {
 
   return {
@@ -3385,7 +4115,10 @@ function loadMarketDocuments() {
       loadMarketSourceDocument(
         DAILY_CANDLES_PATH,
         "data/daily-ohlc.json"
-      )
+      ),
+
+    execution:
+      loadExecutionEvidenceDocument()
   };
 
 }
@@ -5660,6 +6393,960 @@ function getExpectedExitPrice(
 
 }
 
+
+function getExecutionEvidenceType(
+  resolution
+) {
+
+  const explicit =
+    normalizeUpperString(
+      resolution?.evidenceType
+    );
+
+  if (
+    explicit ===
+      "MARKET_CANDLE" ||
+    explicit ===
+      "EXECUTION_TICK"
+  ) {
+
+    return explicit;
+
+  }
+
+  if (
+    isPlainObject(
+      resolution?.resolvingExecutionTick
+    )
+  ) {
+
+    return "EXECUTION_TICK";
+
+  }
+
+  return "MARKET_CANDLE";
+
+}
+
+function getExecutionSideForDirection(
+  direction
+) {
+
+  const normalizedDirection =
+    normalizeDirection(
+      direction
+    );
+
+  if (
+    normalizedDirection ===
+      "BUY"
+  ) {
+
+    return "BID";
+
+  }
+
+  if (
+    normalizedDirection ===
+      "SELL"
+  ) {
+
+    return "ASK";
+
+  }
+
+  return null;
+
+}
+
+function getExecutionPriceFromTick(
+  direction,
+  tick
+) {
+
+  if (
+    !isPlainObject(
+      tick
+    )
+  ) {
+
+    return {
+      side:
+        null,
+
+      price:
+        null
+    };
+
+  }
+
+  const side =
+    getExecutionSideForDirection(
+      direction
+    );
+
+  const price =
+    side ===
+      "BID"
+      ? toFiniteNumber(
+          tick.bid
+        )
+      : side ===
+          "ASK"
+        ? toFiniteNumber(
+            tick.ask
+          )
+        : null;
+
+  return {
+    side,
+    price
+  };
+
+}
+
+function executionPriceTouchesStop(
+  direction,
+  executionPrice,
+  stop
+) {
+
+  const normalizedDirection =
+    normalizeDirection(
+      direction
+    );
+
+  const price =
+    toFiniteNumber(
+      executionPrice
+    );
+
+  const stopPrice =
+    toFiniteNumber(
+      stop
+    );
+
+  if (
+    !normalizedDirection ||
+    price ===
+      null ||
+    stopPrice ===
+      null
+  ) {
+
+    return false;
+
+  }
+
+  return normalizedDirection ===
+    "BUY"
+      ? price <=
+          stopPrice
+      : price >=
+          stopPrice;
+
+}
+
+function executionPriceTouchesTarget(
+  direction,
+  executionPrice,
+  target
+) {
+
+  const normalizedDirection =
+    normalizeDirection(
+      direction
+    );
+
+  const price =
+    toFiniteNumber(
+      executionPrice
+    );
+
+  const targetPrice =
+    toFiniteNumber(
+      target
+    );
+
+  if (
+    !normalizedDirection ||
+    price ===
+      null ||
+    targetPrice ===
+      null
+  ) {
+
+    return false;
+
+  }
+
+  return normalizedDirection ===
+    "BUY"
+      ? price >=
+          targetPrice
+      : price <=
+          targetPrice;
+
+}
+
+function executionEvidenceEventMatchesTrade(
+  event,
+  preparedTrade
+) {
+
+  if (
+    !isPlainObject(
+      event
+    ) ||
+    !isPlainObject(
+      preparedTrade
+    )
+  ) {
+
+    return false;
+
+  }
+
+  if (
+    event.verified !==
+      true ||
+    event.firstDecisiveTouch !==
+      true ||
+    event.pair !==
+      preparedTrade.pairKey
+  ) {
+
+    return false;
+
+  }
+
+  const identifiers = [
+    {
+      supplied:
+        Boolean(
+          event.sourceTradeKey
+        ),
+
+      matches:
+        Boolean(
+          event.sourceTradeKey &&
+          preparedTrade.sourceTradeKey &&
+          event.sourceTradeKey ===
+            preparedTrade.sourceTradeKey
+        )
+    },
+    {
+      supplied:
+        Boolean(
+          event.setupIdentity
+        ),
+
+      matches:
+        Boolean(
+          event.setupIdentity &&
+          preparedTrade.setupIdentity &&
+          event.setupIdentity ===
+            preparedTrade.setupIdentity
+        )
+    },
+    {
+      supplied:
+        Boolean(
+          event.recordId
+        ),
+
+      matches:
+        Boolean(
+          event.recordId &&
+          getStableRecordId(
+            preparedTrade.record
+          ) ===
+            event.recordId
+        )
+    }
+  ];
+
+  const suppliedIdentifiers =
+    identifiers.filter(
+      item =>
+        item.supplied
+    );
+
+  if (
+    suppliedIdentifiers.length ===
+      0 ||
+    suppliedIdentifiers.some(
+      item =>
+        item.matches !==
+          true
+    )
+  ) {
+
+    return false;
+
+  }
+
+  if (
+    event.engine &&
+    event.engine !==
+      preparedTrade.engine
+  ) {
+
+    return false;
+
+  }
+
+  if (
+    event.timeframe &&
+    event.timeframe !==
+      preparedTrade.timeframe
+  ) {
+
+    return false;
+
+  }
+
+  if (
+    event.direction &&
+    event.direction !==
+      preparedTrade.direction
+  ) {
+
+    return false;
+
+  }
+
+  if (
+    event.entry !==
+      null &&
+    !approximatelyEqual(
+      event.entry,
+      preparedTrade.entry,
+      1e-8
+    )
+  ) {
+
+    return false;
+
+  }
+
+  if (
+    event.stop !==
+      null &&
+    !approximatelyEqual(
+      event.stop,
+      preparedTrade.stop,
+      1e-8
+    )
+  ) {
+
+    return false;
+
+  }
+
+  if (
+    event.target1 !==
+      null &&
+    !approximatelyEqual(
+      event.target1,
+      preparedTrade.targets?.[0],
+      1e-8
+    )
+  ) {
+
+    return false;
+
+  }
+
+  return (
+    Number.isFinite(
+      event.observedTimestamp
+    ) &&
+    event.observedTimestamp >
+      preparedTrade.openedTimestamp
+  );
+
+}
+
+function selectExecutionEvidenceForTrade(
+  executionEvidenceIndex,
+  preparedTrade
+) {
+
+  const index =
+    isPlainObject(
+      executionEvidenceIndex
+    )
+      ? executionEvidenceIndex
+      : {
+          available:
+            false,
+
+          authorityMode:
+            "CANDLE_FALLBACK",
+
+          events:
+            []
+        };
+
+  const authorityMode =
+    normalizeExecutionEvidenceAuthorityMode(
+      index.authorityMode
+    ) ||
+    "CANDLE_FALLBACK";
+
+  if (
+    index.available !==
+      true
+  ) {
+
+    return {
+      available:
+        false,
+
+      authoritative:
+        false,
+
+      authorityMode,
+
+      matched:
+        false,
+
+      event:
+        null,
+
+      error:
+        null
+    };
+
+  }
+
+  const matchingEvents =
+    asArray(
+      index.events
+    ).filter(
+      event =>
+        executionEvidenceEventMatchesTrade(
+          event,
+          preparedTrade
+        )
+    );
+
+  if (
+    matchingEvents.length >
+      1
+  ) {
+
+    return {
+      available:
+        true,
+
+      authoritative:
+        true,
+
+      authorityMode,
+
+      matched:
+        true,
+
+      event:
+        null,
+
+      error:
+        "Conflicting verified execution evidence records claim first decisive touch for the same trade"
+    };
+
+  }
+
+  if (
+    matchingEvents.length ===
+      1
+  ) {
+
+    return {
+      available:
+        true,
+
+      authoritative:
+        true,
+
+      authorityMode,
+
+      matched:
+        true,
+
+      event:
+        matchingEvents[0],
+
+      error:
+        null
+    };
+
+  }
+
+  return {
+    available:
+      true,
+
+    authoritative:
+      authorityMode ===
+        "EXECUTION_ONLY",
+
+    authorityMode,
+
+    matched:
+      false,
+
+    event:
+      null,
+
+    error:
+      null
+  };
+
+}
+
+function evaluateExecutionEvidenceForPreparedTrade(
+  preparedTrade,
+  executionEvidenceIndex
+) {
+
+  const selection =
+    selectExecutionEvidenceForTrade(
+      executionEvidenceIndex,
+      preparedTrade
+    );
+
+  if (
+    selection.error
+  ) {
+
+    return {
+      resolved:
+        false,
+
+      eligible:
+        false,
+
+      executionEvidenceMatched:
+        true,
+
+      executionEvidenceAuthoritative:
+        true,
+
+      reason:
+        selection.error,
+
+      executionEvidenceSelection:
+        selection
+    };
+
+  }
+
+  if (
+    selection.matched !==
+      true ||
+    !selection.event
+  ) {
+
+    return {
+      resolved:
+        false,
+
+      eligible:
+        true,
+
+      executionEvidenceMatched:
+        false,
+
+      executionEvidenceAuthoritative:
+        selection.authoritative ===
+          true,
+
+      reason:
+        selection.authoritative ===
+          true
+          ? "AUTHORITATIVE_EXECUTION_EVIDENCE_UNAVAILABLE"
+          : "No matching verified execution evidence",
+
+      executionEvidenceSelection:
+        selection
+    };
+
+  }
+
+  const event =
+    selection.event;
+
+  const execution =
+    getExecutionPriceFromTick(
+      preparedTrade.direction,
+      event
+    );
+
+  if (
+    !execution.side ||
+    execution.price ===
+      null
+  ) {
+
+    return {
+      resolved:
+        false,
+
+      eligible:
+        false,
+
+      executionEvidenceMatched:
+        true,
+
+      executionEvidenceAuthoritative:
+        true,
+
+      reason:
+        "Verified execution evidence does not contain the required executable price side",
+
+      executionEvidenceSelection:
+        selection
+    };
+
+  }
+
+  const stopTouched =
+    executionPriceTouchesStop(
+      preparedTrade.direction,
+      execution.price,
+      preparedTrade.stop
+    );
+
+  const winningTarget =
+    preparedTrade.targets[
+      RESOLUTION_POLICY
+        .winningTarget -
+      1
+    ];
+
+  const targetTouched =
+    executionPriceTouchesTarget(
+      preparedTrade.direction,
+      execution.price,
+      winningTarget
+    );
+
+  if (
+    stopTouched ===
+      targetTouched
+  ) {
+
+    return {
+      resolved:
+        false,
+
+      eligible:
+        false,
+
+      executionEvidenceMatched:
+        true,
+
+      executionEvidenceAuthoritative:
+        true,
+
+      reason:
+        stopTouched
+          ? "Verified execution evidence is internally ambiguous"
+          : "Verified first-decisive-touch evidence does not touch the configured stop or target1",
+
+      executionEvidenceSelection:
+        selection
+    };
+
+  }
+
+  const outcome =
+    stopTouched
+      ? "LOSS"
+      : "WIN";
+
+  const exitPrice =
+    stopTouched
+      ? preparedTrade.stop
+      : winningTarget;
+
+  const exitReason =
+    stopTouched
+      ? approximatelyEqual(
+          preparedTrade.stop,
+          preparedTrade.entry,
+          1e-8
+        )
+        ? "BREAKEVEN_STOP"
+        : "STOP_LOSS"
+      : `TARGET_${
+          RESOLUTION_POLICY
+            .winningTarget
+        }`;
+
+  const normalizedOutcome =
+    exitReason ===
+      "BREAKEVEN_STOP"
+      ? "BREAKEVEN"
+      : outcome;
+
+  const resolvedTimestamp =
+    event.observedTimestamp;
+
+  const resolvedAt =
+    event.observedAt;
+
+  const profitPoints =
+    calculateProfitPoints(
+      preparedTrade.direction,
+      preparedTrade.entry,
+      exitPrice
+    );
+
+  const resultPercentage =
+    calculateResultPercentage(
+      preparedTrade.direction,
+      preparedTrade.entry,
+      exitPrice
+    );
+
+  const realizedR =
+    calculateRealizedR(
+      preparedTrade.direction,
+      preparedTrade.entry,
+      preparedTrade.stop,
+      exitPrice
+    );
+
+  const initialRisk =
+    calculateRiskPoints(
+      preparedTrade.entry,
+      preparedTrade.stop
+    );
+
+  const durationMinutes =
+    Math.max(
+      0,
+      (
+        resolvedTimestamp -
+        preparedTrade.openedTimestamp
+      ) /
+      60000
+    );
+
+  let highestTargetReached =
+    0;
+
+  for (
+    let targetIndex =
+      0;
+    targetIndex <
+      preparedTrade.targets.length;
+    targetIndex +=
+      1
+  ) {
+
+    if (
+      executionPriceTouchesTarget(
+        preparedTrade.direction,
+        execution.price,
+        preparedTrade.targets[
+          targetIndex
+        ]
+      )
+    ) {
+
+      highestTargetReached =
+        targetIndex +
+        1;
+
+    }
+
+  }
+
+  const resolution = {
+    resolved:
+      true,
+
+    eligible:
+      true,
+
+    sourceTradeKey:
+      preparedTrade.sourceTradeKey ||
+      null,
+
+    outcome:
+      normalizedOutcome,
+
+    exitPrice,
+    exitReason,
+
+    resolvedAt,
+    closedAt:
+      resolvedAt,
+
+    profitPoints,
+    resultPercentage,
+    realizedR,
+    initialRisk,
+    durationMinutes,
+    highestTargetReached,
+
+    evidenceType:
+      "EXECUTION_TICK",
+
+    sameCandleConflict:
+      false,
+
+    conflictPolicy:
+      null,
+
+    resolvingExecutionTick: {
+      id:
+        event.id,
+
+      evidenceHash:
+        event.evidenceHash,
+
+      timestamp:
+        event.observedTimestamp,
+
+      observedAt:
+        event.observedAt,
+
+      timeUtc:
+        event.observedAt,
+
+      timeMsc:
+        event.timeMsc,
+
+      pair:
+        event.pair,
+
+      brokerSymbol:
+        event.brokerSymbol,
+
+      bid:
+        event.bid,
+
+      ask:
+        event.ask,
+
+      executionSide:
+        execution.side,
+
+      executionPrice:
+        execution.price,
+
+      verified:
+        true,
+
+      firstDecisiveTouch:
+        true
+    },
+
+    marketSource:
+      event.source,
+
+    marketSourceName:
+      "execution-evidence",
+
+    sourceSelection: [
+      {
+        source:
+          "data/execution-evidence.json",
+
+        available:
+          true,
+
+        matched:
+          true,
+
+        evidenceId:
+          event.id
+      }
+    ],
+
+    executionEvidenceMatched:
+      true,
+
+    executionEvidenceAuthoritative:
+      true,
+
+    pathMetrics:
+      null
+  };
+
+  const integrity =
+    validateResolutionIntegrity(
+      preparedTrade,
+      resolution
+    );
+
+  if (
+    integrity.valid !==
+      true
+  ) {
+
+    return {
+      resolved:
+        false,
+
+      eligible:
+        false,
+
+      executionEvidenceMatched:
+        true,
+
+      executionEvidenceAuthoritative:
+        true,
+
+      reason:
+        "Execution evidence integrity validation failed",
+
+      errors:
+        integrity.errors,
+
+      executionEvidenceSelection:
+        selection
+    };
+
+  }
+
+  const resolutionEvidence =
+    buildResolutionEvidence(
+      preparedTrade,
+      resolution
+    );
+
+  return {
+    ...resolution,
+
+    integrity,
+
+    resolutionHash:
+      resolutionEvidence
+        .resolutionHash,
+
+    resolutionIdentity:
+      `resolution_${
+        resolutionEvidence
+          .resolutionHash
+      }`,
+
+    resolutionEvidence,
+
+    autonomousResolution:
+      resolutionEvidence,
+
+    executionEvidenceSelection:
+      selection
+  };
+
+}
+
 function validateResolutionIntegrity(
   preparedTrade,
   resolution,
@@ -5881,6 +7568,11 @@ function validateResolutionIntegrity(
 
   }
 
+  const evidenceType =
+    getExecutionEvidenceType(
+      resolution
+    );
+
   const resolvingCandle =
     isPlainObject(
       resolution.resolvingCandle
@@ -5889,98 +7581,353 @@ function validateResolutionIntegrity(
           .resolvingCandle
       : null;
 
-  if (!resolvingCandle) {
+  const resolvingExecutionTick =
+    isPlainObject(
+      resolution.resolvingExecutionTick
+    )
+      ? resolution
+          .resolvingExecutionTick
+      : null;
 
-    errors.push(
-      "Resolving candle evidence is missing"
-    );
-
-  } else {
-
-    const candleTimestamp =
-      toFiniteNumber(
-        resolvingCandle
-          .timestamp
-      );
-
-    const candleCloseTimestamp =
-      toFiniteNumber(
-        resolvingCandle
-          .closeTimestamp
-      );
+  if (
+    evidenceType ===
+      "MARKET_CANDLE"
+  ) {
 
     if (
-      candleTimestamp ===
-        null ||
-      candleCloseTimestamp ===
-        null ||
-      candleCloseTimestamp <=
-        candleTimestamp
+      resolvingExecutionTick
     ) {
 
       errors.push(
-        "Resolving candle timestamps are invalid"
+        "Market-candle resolution cannot also contain execution-tick evidence"
       );
 
     }
 
-    if (
-      closedTimestamp !==
-        null &&
-      candleCloseTimestamp !==
-        null &&
-      Math.abs(
-        closedTimestamp -
-        candleCloseTimestamp
-      ) >
-        1000
-    ) {
+    if (!resolvingCandle) {
 
       errors.push(
-        "Resolution timestamp does not equal the verified candle close boundary"
+        "Resolving candle evidence is missing"
       );
 
-    }
+    } else {
 
-    if (
-      exitReason ===
-        "STOP_LOSS" ||
-      exitReason ===
-        "BREAKEVEN_STOP"
-    ) {
+      const candleTimestamp =
+        toFiniteNumber(
+          resolvingCandle
+            .timestamp
+        );
+
+      const candleCloseTimestamp =
+        toFiniteNumber(
+          resolvingCandle
+            .closeTimestamp
+        );
 
       if (
-        !candleTouchesStop(
-          preparedTrade.direction,
-          resolvingCandle,
-          preparedTrade.stop
-        )
+        candleTimestamp ===
+          null ||
+        candleCloseTimestamp ===
+          null ||
+        candleCloseTimestamp <=
+          candleTimestamp
       ) {
 
         errors.push(
-          "Resolving candle does not prove the stop level was touched"
+          "Resolving candle timestamps are invalid"
         );
 
       }
 
-    } else if (
-      /^TARGET_\d+$/.test(
-        exitReason
-      ) &&
-      expectedExitPrice !==
-        null &&
-      !candleTouchesTarget(
-        preparedTrade.direction,
-        resolvingCandle,
-        expectedExitPrice
-      )
+      if (
+        closedTimestamp !==
+          null &&
+        candleCloseTimestamp !==
+          null &&
+        Math.abs(
+          closedTimestamp -
+          candleCloseTimestamp
+        ) >
+          1000
+      ) {
+
+        errors.push(
+          "Resolution timestamp does not equal the verified candle close boundary"
+        );
+
+      }
+
+      if (
+        exitReason ===
+          "STOP_LOSS" ||
+        exitReason ===
+          "BREAKEVEN_STOP"
+      ) {
+
+        if (
+          !candleTouchesStop(
+            preparedTrade.direction,
+            resolvingCandle,
+            preparedTrade.stop
+          )
+        ) {
+
+          errors.push(
+            "Resolving candle does not prove the stop level was touched"
+          );
+
+        }
+
+      } else if (
+        /^TARGET_\d+$/.test(
+          exitReason
+        ) &&
+        expectedExitPrice !==
+          null &&
+        !candleTouchesTarget(
+          preparedTrade.direction,
+          resolvingCandle,
+          expectedExitPrice
+        )
+      ) {
+
+        errors.push(
+          "Resolving candle does not prove the target level was touched"
+        );
+
+      }
+
+    }
+
+  } else if (
+    evidenceType ===
+      "EXECUTION_TICK"
+  ) {
+
+    if (
+      resolvingCandle
     ) {
 
       errors.push(
-        "Resolving candle does not prove the target level was touched"
+        "Execution-tick resolution cannot also contain resolving-candle evidence"
       );
 
     }
+
+    if (
+      !resolvingExecutionTick
+    ) {
+
+      errors.push(
+        "Resolving execution-tick evidence is missing"
+      );
+
+    } else {
+
+      const tickTimestamp =
+        toTimestamp(
+          resolvingExecutionTick
+            .observedAt ??
+          resolvingExecutionTick
+            .timeUtc ??
+          resolvingExecutionTick
+            .timestamp
+        );
+
+      const bid =
+        toFiniteNumber(
+          resolvingExecutionTick
+            .bid
+        );
+
+      const ask =
+        toFiniteNumber(
+          resolvingExecutionTick
+            .ask
+        );
+
+      if (
+        tickTimestamp ===
+          null
+      ) {
+
+        errors.push(
+          "Resolving execution tick timestamp is invalid"
+        );
+
+      } else {
+
+        if (
+          tickTimestamp <=
+            preparedTrade
+              .openedTimestamp
+        ) {
+
+          errors.push(
+            "Resolving execution tick does not occur after the trade open timestamp"
+          );
+
+        }
+
+        if (
+          closedTimestamp !==
+            null &&
+          Math.abs(
+            closedTimestamp -
+            tickTimestamp
+          ) >
+            1
+        ) {
+
+          errors.push(
+            "Resolution timestamp does not equal the verified execution tick timestamp"
+          );
+
+        }
+
+      }
+
+      if (
+        resolvingExecutionTick
+          .verified !==
+            true ||
+        resolvingExecutionTick
+          .firstDecisiveTouch !==
+            true
+      ) {
+
+        errors.push(
+          "Execution tick must be verified as the first decisive touch"
+        );
+
+      }
+
+      if (
+        bid ===
+          null ||
+        ask ===
+          null ||
+        bid <=
+          0 ||
+        ask <=
+          0 ||
+        ask <
+          bid
+      ) {
+
+        errors.push(
+          "Resolving execution tick contains invalid bid/ask prices"
+        );
+
+      }
+
+      const execution =
+        getExecutionPriceFromTick(
+          preparedTrade.direction,
+          resolvingExecutionTick
+        );
+
+      if (
+        !execution.side ||
+        execution.price ===
+          null
+      ) {
+
+        errors.push(
+          "Resolving execution tick does not contain the required executable price side"
+        );
+
+      } else {
+
+        const reportedSide =
+          normalizeUpperString(
+            resolvingExecutionTick
+              .executionSide
+          );
+
+        const reportedPrice =
+          toFiniteNumber(
+            resolvingExecutionTick
+              .executionPrice
+          );
+
+        if (
+          reportedSide &&
+          reportedSide !==
+            execution.side
+        ) {
+
+          errors.push(
+            "Resolving execution tick reports the wrong executable price side"
+          );
+
+        }
+
+        if (
+          reportedPrice !==
+            null &&
+          !approximatelyEqual(
+            reportedPrice,
+            execution.price,
+            1e-10
+          )
+        ) {
+
+          errors.push(
+            "Resolving execution tick executionPrice does not equal the required bid/ask side"
+          );
+
+        }
+
+        if (
+          exitReason ===
+            "STOP_LOSS" ||
+          exitReason ===
+            "BREAKEVEN_STOP"
+        ) {
+
+          if (
+            !executionPriceTouchesStop(
+              preparedTrade.direction,
+              execution.price,
+              preparedTrade.stop
+            )
+          ) {
+
+            errors.push(
+              "Resolving execution tick does not prove the stop level was touched"
+            );
+
+          }
+
+        } else if (
+          /^TARGET_\d+$/.test(
+            exitReason
+          ) &&
+          expectedExitPrice !==
+            null &&
+          !executionPriceTouchesTarget(
+            preparedTrade.direction,
+            execution.price,
+            expectedExitPrice
+          )
+        ) {
+
+          errors.push(
+            "Resolving execution tick does not prove the target level was touched"
+          );
+
+        }
+
+      }
+
+    }
+
+  } else {
+
+    errors.push(
+      "Resolution evidence type is unsupported"
+    );
 
   }
 
@@ -6104,6 +8051,11 @@ function buildResolutionEvidence(
       preparedTrade?.record
     );
 
+  const evidenceType =
+    getExecutionEvidenceType(
+      resolution
+    );
+
   const resolvingCandle =
     isPlainObject(
       resolution?.resolvingCandle
@@ -6112,12 +8064,23 @@ function buildResolutionEvidence(
           .resolvingCandle
       : null;
 
+  const resolvingExecutionTick =
+    isPlainObject(
+      resolution
+        ?.resolvingExecutionTick
+    )
+      ? resolution
+          .resolvingExecutionTick
+      : null;
+
   const evidencePayload = {
     schemaVersion:
       RESOLUTION_EVIDENCE_SCHEMA_VERSION,
 
     autonomousResolverVersion:
       AUTONOMOUS_RESOLVER_VERSION,
+
+    evidenceType,
 
     sourceTradeKey,
 
@@ -6263,6 +8226,93 @@ function buildResolutionEvidence(
           }
         : null,
 
+    resolvingExecutionTick:
+      resolvingExecutionTick
+        ? {
+            id:
+              toTrimmedString(
+                resolvingExecutionTick
+                  .id
+              ) ||
+              null,
+
+            evidenceHash:
+              toTrimmedString(
+                resolvingExecutionTick
+                  .evidenceHash
+              ) ||
+              null,
+
+            timestamp:
+              toFiniteNumber(
+                resolvingExecutionTick
+                  .timestamp
+              ),
+
+            observedAt:
+              toISOStringOrNull(
+                resolvingExecutionTick
+                  .observedAt ??
+                resolvingExecutionTick
+                  .timeUtc
+              ),
+
+            timeMsc:
+              toFiniteNumber(
+                resolvingExecutionTick
+                  .timeMsc
+              ),
+
+            pair:
+              normalizePairKey(
+                resolvingExecutionTick
+                  .pair
+              ),
+
+            brokerSymbol:
+              toTrimmedString(
+                resolvingExecutionTick
+                  .brokerSymbol
+              ) ||
+              null,
+
+            bid:
+              toFiniteNumber(
+                resolvingExecutionTick
+                  .bid
+              ),
+
+            ask:
+              toFiniteNumber(
+                resolvingExecutionTick
+                  .ask
+              ),
+
+            executionSide:
+              normalizeUpperString(
+                resolvingExecutionTick
+                  .executionSide
+              ) ||
+              null,
+
+            executionPrice:
+              toFiniteNumber(
+                resolvingExecutionTick
+                  .executionPrice
+              ),
+
+            verified:
+              resolvingExecutionTick
+                .verified ===
+              true,
+
+            firstDecisiveTouch:
+              resolvingExecutionTick
+                .firstDecisiveTouch ===
+              true
+          }
+        : null,
+
     pathMetrics:
       isPlainObject(
         resolution?.pathMetrics
@@ -6294,7 +8344,24 @@ function buildResolutionEvidence(
       true,
 
     candleCloseVerified:
-      true,
+      evidenceType ===
+        "MARKET_CANDLE",
+
+    executionTimestampVerified:
+      evidenceType ===
+        "EXECUTION_TICK",
+
+    executionSideVerified:
+      evidenceType ===
+        "EXECUTION_TICK",
+
+    firstDecisiveTouchVerified:
+      evidenceType ===
+        "EXECUTION_TICK"
+        ? resolvingExecutionTick
+            ?.firstDecisiveTouch ===
+          true
+        : false,
 
     correctionEligible:
       true,
@@ -6449,10 +8516,27 @@ function buildAutonomousFeedback(
           ?.marketSource ||
         null,
 
+      evidenceType:
+        evidence
+          ?.evidenceType ||
+        "MARKET_CANDLE",
+
       resolvingCandleCloseAt:
         evidence
           ?.resolvingCandle
           ?.closeTime ||
+        null,
+
+      resolvingExecutionAt:
+        evidence
+          ?.resolvingExecutionTick
+          ?.observedAt ||
+        null,
+
+      executionSide:
+        evidence
+          ?.resolvingExecutionTick
+          ?.executionSide ||
         null,
 
       sameCandleConflict:
@@ -6807,7 +8891,8 @@ function prepareRecordForResolution(
 
 function evaluatePreparedTrade(
   preparedTrade,
-  marketDataIndex
+  marketDataIndex,
+  executionEvidenceIndex = null
 ) {
 
   if (
@@ -6825,6 +8910,49 @@ function evaluatePreparedTrade(
 
       reason:
         "Prepared trade is invalid"
+    };
+
+  }
+
+  const executionEvaluation =
+    evaluateExecutionEvidenceForPreparedTrade(
+      preparedTrade,
+      executionEvidenceIndex
+    );
+
+  if (
+    executionEvaluation.resolved ===
+      true
+  ) {
+
+    return executionEvaluation;
+
+  }
+
+  if (
+    executionEvaluation.eligible ===
+      false
+  ) {
+
+    return executionEvaluation;
+
+  }
+
+  if (
+    executionEvaluation
+      .executionEvidenceAuthoritative ===
+        true
+  ) {
+
+    return {
+      ...executionEvaluation,
+
+      sourceTradeKey:
+        preparedTrade.sourceTradeKey ||
+        null,
+
+      pathMetrics:
+        null
     };
 
   }
@@ -7186,7 +9314,8 @@ function evaluatePreparedTrade(
 
 function evaluateHistoryRecord(
   record,
-  marketDataIndex
+  marketDataIndex,
+  executionEvidenceIndex = null
 ) {
 
   const preparation =
@@ -7223,7 +9352,8 @@ function evaluateHistoryRecord(
   return {
     ...evaluatePreparedTrade(
       preparation.trade,
-      marketDataIndex
+      marketDataIndex,
+      executionEvidenceIndex
     ),
 
     trade:
@@ -10676,7 +12806,8 @@ function deduplicateOpenRichRecords(
 
 function resolveAnalysisHistory(
   rawHistory,
-  marketDataIndex
+  marketDataIndex,
+  executionEvidenceIndex = null
 ) {
 
   let workingHistory =
@@ -10799,6 +12930,15 @@ function resolveAnalysisHistory(
   let legacyClosedAppendedCount =
     0;
 
+  let legacyClosedReplacedCount =
+    0;
+
+  let correctedResolutionCount =
+    0;
+
+  let executionEvidenceResolutionCount =
+    0;
+
   for (
     let index =
       0;
@@ -10829,7 +12969,8 @@ function resolveAnalysisHistory(
     const evaluation =
       evaluateHistoryRecord(
         originalRecord,
-        marketDataIndex
+        marketDataIndex,
+        executionEvidenceIndex
       );
 
     if (
@@ -10981,6 +13122,16 @@ function resolveAnalysisHistory(
     resolvedCount +=
       1;
 
+    if (
+      evaluation.evidenceType ===
+        "EXECUTION_TICK"
+    ) {
+
+      executionEvidenceResolutionCount +=
+        1;
+
+    }
+
     legacyOpenRemovedCount +=
       mutation
         .legacyOpenRemoved;
@@ -11088,6 +13239,237 @@ function resolveAnalysisHistory(
   }
 
   /*
+   * Reconcile previously resolved records only when a verified execution event
+   * explicitly identifies the same immutable trade. Candle data never rewrites
+   * an already resolved record. This turns the existing correction machinery
+   * into an auditable broker-evidence reconciliation path.
+   */
+  for (
+    const originalRecord of
+      originalRecords
+  ) {
+
+    if (
+      !isRecordAlreadyResolved(
+        originalRecord
+      )
+    ) {
+
+      continue;
+
+    }
+
+    const currentRecord =
+      asArray(
+        workingHistory.records
+      ).find(
+        record =>
+          recordsReferToSameTrade(
+            record,
+            originalRecord
+          )
+      ) ||
+      null;
+
+    if (!currentRecord) {
+
+      continue;
+
+    }
+
+    const preparedTrade =
+      buildPreparedTradeSnapshot(
+        currentRecord
+      );
+
+    if (!preparedTrade) {
+
+      continue;
+
+    }
+
+    const executionEvaluation =
+      evaluateExecutionEvidenceForPreparedTrade(
+        preparedTrade,
+        executionEvidenceIndex
+      );
+
+    if (
+      executionEvaluation.resolved !==
+        true
+    ) {
+
+      continue;
+
+    }
+
+    const existingResolutionHash =
+      toTrimmedString(
+        currentRecord.resolutionHash ??
+        currentRecord.resolutionEvidence
+          ?.resolutionHash ??
+        currentRecord.autonomousResolution
+          ?.resolutionHash
+      );
+
+    if (
+      existingResolutionHash &&
+      existingResolutionHash ===
+        executionEvaluation
+          .resolutionHash
+    ) {
+
+      continue;
+
+    }
+
+    const correctionEvaluation = {
+      ...executionEvaluation,
+
+      trade:
+        preparedTrade,
+
+      corrected:
+        true,
+
+      allowCorrection:
+        true,
+
+      correctionReason:
+        "VERIFIED_EXECUTION_EVIDENCE",
+
+      correction: {
+        approved:
+          true,
+
+        reason:
+          "VERIFIED_EXECUTION_EVIDENCE"
+      }
+    };
+
+    const mutation =
+      applyResolvedTradeToHistory(
+        workingHistory,
+        currentRecord,
+        correctionEvaluation
+      );
+
+    if (
+      mutation.changed !==
+        true
+    ) {
+
+      continue;
+
+    }
+
+    workingHistory =
+      mutation.history;
+
+    correctedResolutionCount +=
+      1;
+
+    executionEvidenceResolutionCount +=
+      1;
+
+    if (
+      mutation.legacyClosedReplaced
+    ) {
+
+      legacyClosedReplacedCount +=
+        1;
+
+    }
+
+    results.push({
+      id:
+        currentRecord.id ||
+        null,
+
+      fingerprint:
+        getRecordFingerprint(
+          currentRecord
+        ),
+
+      pair:
+        getRecordPairKey(
+          currentRecord
+        ),
+
+      engine:
+        getRecordEngine(
+          currentRecord
+        ),
+
+      direction:
+        getRecordDirection(
+          currentRecord
+        ),
+
+      resolved:
+        true,
+
+      corrected:
+        true,
+
+      eligible:
+        true,
+
+      outcome:
+        executionEvaluation.outcome,
+
+      exitPrice:
+        executionEvaluation.exitPrice,
+
+      exitReason:
+        executionEvaluation.exitReason,
+
+      resolvedAt:
+        executionEvaluation.resolvedAt,
+
+      marketSource:
+        executionEvaluation.marketSource,
+
+      evidenceType:
+        "EXECUTION_TICK",
+
+      sourceTradeKey:
+        executionEvaluation
+          .sourceTradeKey ||
+        mutation.resolvedRecord
+          ?.sourceTradeKey ||
+        null,
+
+      resolutionHash:
+        executionEvaluation
+          .resolutionHash ||
+        mutation.resolvedRecord
+          ?.resolutionHash ||
+        null,
+
+      resolutionRevision:
+        mutation.resolvedRecord
+          ?.resolutionRevision ||
+        null,
+
+      correctionReason:
+        "VERIFIED_EXECUTION_EVIDENCE",
+
+      integrityValid:
+        executionEvaluation
+          .integrity
+          ?.valid ===
+        true,
+
+      legacyClosedReplaced:
+        mutation
+          .legacyClosedReplaced ===
+        true
+    });
+
+  }
+
+  /*
    * Ensure aliases remain synchronized even when no trades resolve.
    */
   workingHistory = {
@@ -11150,6 +13532,7 @@ function resolveAnalysisHistory(
       duplicateRichRecordsRemovedCount >
         0 ||
       resolvedCount > 0 ||
+      correctedResolutionCount > 0 ||
       staleLegacyOpenRemovedCount >
         0 ||
       statisticsChanged,
@@ -11163,6 +13546,10 @@ function resolveAnalysisHistory(
 
       resolvedCount,
 
+      correctedResolutionCount,
+
+      executionEvidenceResolutionCount,
+
       unresolvedCount,
 
       ineligibleCount,
@@ -11172,6 +13559,8 @@ function resolveAnalysisHistory(
       staleLegacyOpenRemovedCount,
 
       legacyClosedAppendedCount,
+
+      legacyClosedReplacedCount,
 
       initialLegacyOpenCount:
         initialOpenInventory
@@ -12086,6 +14475,11 @@ function runTradeResolution() {
       marketDocuments
     );
 
+  const executionEvidenceIndex =
+    buildExecutionEvidenceIndex(
+      marketDocuments.execution
+    );
+
   logMarketDataSummary(
     marketDocuments,
     marketDataIndex
@@ -12094,7 +14488,8 @@ function runTradeResolution() {
   const resolutionRun =
   resolveAnalysisHistory(
     loadedHistory,
-    marketDataIndex
+    marketDataIndex,
+    executionEvidenceIndex
   );
 
   for (
@@ -12286,9 +14681,12 @@ module.exports = {
   ENGINE_VERSION,
   AUTONOMOUS_RESOLVER_VERSION,
   RESOLUTION_EVIDENCE_SCHEMA_VERSION,
+  EXECUTION_EVIDENCE_SCHEMA_VERSION,
   RESOLUTION_POLICY,
 
   loadAnalysisHistory,
+  loadExecutionEvidenceDocument,
+  buildExecutionEvidenceIndex,
   loadMarketDocuments,
   buildMarketDataIndex,
 
@@ -12301,6 +14699,12 @@ module.exports = {
   validateResolutionIntegrity,
   buildResolutionEvidence,
   buildAutonomousFeedback,
+  normalizeExecutionEvidenceEvent,
+  selectExecutionEvidenceForTrade,
+  evaluateExecutionEvidenceForPreparedTrade,
+  getExecutionSideForDirection,
+  executionPriceTouchesStop,
+  executionPriceTouchesTarget,
   candleTouchesStop,
   candleTouchesTarget,
   getHighestTargetReached,

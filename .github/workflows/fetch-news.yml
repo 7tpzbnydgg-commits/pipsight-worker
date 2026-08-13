@@ -112,47 +112,117 @@ jobs:
 
           if (
             parsed === null ||
-            (
-              typeof parsed !== "object" &&
-              !Array.isArray(parsed)
-            )
+            typeof parsed !== "object" ||
+            Array.isArray(parsed)
           ) {
             throw new Error(
-              `${filePath} must contain a valid JSON array or object.`
+              `${filePath} must contain the news producer object contract.`
             );
           }
 
-          const possibleItems =
-            Array.isArray(parsed)
-              ? parsed
-              : Array.isArray(parsed.items)
-                ? parsed.items
-                : Array.isArray(parsed.news)
-                  ? parsed.news
-                  : Array.isArray(parsed.articles)
-                    ? parsed.articles
-                    : Array.isArray(parsed.data)
-                      ? parsed.data
-                      : null;
-
           if (
-            possibleItems &&
-            possibleItems.some(
-              (item) =>
-                !item ||
-                typeof item !== "object"
+            !Number.isFinite(
+              Date.parse(parsed.updatedAt || "")
             )
           ) {
             throw new Error(
-              `${filePath} contains an invalid news item.`
+              `${filePath}.updatedAt must be a valid timestamp.`
             );
+          }
+
+          if (
+            !Number.isInteger(parsed.feedCount) ||
+            parsed.feedCount !== 3
+          ) {
+            throw new Error(
+              `${filePath}.feedCount must equal the configured producer feed count (3).`
+            );
+          }
+
+          if (
+            !Number.isInteger(parsed.itemCount) ||
+            parsed.itemCount < 0 ||
+            !Array.isArray(parsed.items) ||
+            parsed.itemCount !== parsed.items.length
+          ) {
+            throw new Error(
+              `${filePath} has an invalid itemCount/items contract.`
+            );
+          }
+
+          const validPairs =
+            new Set([
+              "XAU/USD",
+              "GBP/JPY"
+            ]);
+
+          const validImpacts =
+            new Set([
+              "high",
+              "normal"
+            ]);
+
+          for (
+            let index = 0;
+            index < parsed.items.length;
+            index++
+          ) {
+            const item =
+              parsed.items[index];
+
+            if (
+              item === null ||
+              typeof item !== "object" ||
+              Array.isArray(item)
+            ) {
+              throw new Error(
+                `${filePath}.items[${index}] must be a JSON object.`
+              );
+            }
+
+            if (!validPairs.has(item.pair)) {
+              throw new Error(
+                `${filePath}.items[${index}] has an unsupported pair.`
+              );
+            }
+
+            if (
+              typeof item.date !== "string" ||
+              !item.date.trim() ||
+              !Number.isFinite(
+                Date.parse(item.publishedAt || "")
+              )
+            ) {
+              throw new Error(
+                `${filePath}.items[${index}] has invalid publication metadata.`
+              );
+            }
+
+            if (
+              !Number.isFinite(item.sentiment) ||
+              item.sentiment < -20 ||
+              item.sentiment > 20
+            ) {
+              throw new Error(
+                `${filePath}.items[${index}] has invalid sentiment.`
+              );
+            }
+
+            if (
+              typeof item.source !== "string" ||
+              !item.source.trim() ||
+              typeof item.text !== "string" ||
+              !item.text.trim() ||
+              !validImpacts.has(item.impact)
+            ) {
+              throw new Error(
+                `${filePath}.items[${index}] has invalid news content fields.`
+              );
+            }
           }
 
           console.log(
-            `Validated ${filePath}`,
-            possibleItems
-              ? `with ${possibleItems.length} items.`
-              : "with a valid object structure."
+            `Validated ${filePath} with ${parsed.items.length} producer-contract items.`
           );
           NODE
 
@@ -171,12 +241,7 @@ jobs:
 
           const fs = require("fs");
 
-          const outputFiles = [
-            "data/signals.json",
-            "data/signal-log.json"
-          ];
-
-          for (const filePath of outputFiles) {
+          function readJson(filePath) {
             if (!fs.existsSync(filePath)) {
               throw new Error(
                 `Required output file was not created: ${filePath}`
@@ -195,30 +260,151 @@ jobs:
               );
             }
 
-            let parsed;
-
             try {
-              parsed =
-                JSON.parse(raw);
+              return JSON.parse(raw);
             } catch (error) {
               throw new Error(
                 `Output file contains invalid JSON: ${filePath}: ${error.message}`
               );
             }
+          }
+
+          const signalsPath =
+            "data/signals.json";
+
+          const logPath =
+            "data/signal-log.json";
+
+          const signals =
+            readJson(signalsPath);
+
+          const log =
+            readJson(logPath);
+
+          if (
+            signals === null ||
+            typeof signals !== "object" ||
+            Array.isArray(signals)
+          ) {
+            throw new Error(
+              `${signalsPath} must contain the signal-engine object contract.`
+            );
+          }
+
+          if (
+            !Number.isFinite(
+              Date.parse(signals.updatedAt || "")
+            ) ||
+            signals.engineVersion !== "2.1.0" ||
+            signals.strategyVersion !== "legacy-lockstep-2.1" ||
+            signals.pairCount !== 2 ||
+            signals.snapshotCount !== 4 ||
+            !Array.isArray(signals.errors) ||
+            !Number.isInteger(signals.errorCount) ||
+            signals.errorCount !== signals.errors.length ||
+            !Array.isArray(signals.signals) ||
+            signals.signals.length !== 4
+          ) {
+            throw new Error(
+              `${signalsPath} failed the current signal-engine output contract.`
+            );
+          }
+
+          const expectedSnapshots =
+            new Set([
+              "XAU/USD|daily",
+              "XAU/USD|weekly",
+              "GBP/JPY|daily",
+              "GBP/JPY|weekly"
+            ]);
+
+          const observedSnapshots =
+            new Set();
+
+          for (
+            let index = 0;
+            index < signals.signals.length;
+            index++
+          ) {
+            const snapshot =
+              signals.signals[index];
 
             if (
-              parsed === null ||
-              typeof parsed !== "object"
+              snapshot === null ||
+              typeof snapshot !== "object" ||
+              Array.isArray(snapshot)
             ) {
               throw new Error(
-                `${filePath} must contain valid JSON data.`
+                `${signalsPath}.signals[${index}] must be a JSON object.`
               );
             }
 
-            console.log(
-              `Validated ${filePath}`
+            const identity =
+              `${snapshot.pair}|${snapshot.mode}`;
+
+            if (
+              !expectedSnapshots.has(identity) ||
+              observedSnapshots.has(identity)
+            ) {
+              throw new Error(
+                `${signalsPath} contains an invalid or duplicate pair/mode snapshot: ${identity}`
+              );
+            }
+
+            if (
+              snapshot.engineVersion !== "2.1.0" ||
+              snapshot.strategyVersion !== "legacy-lockstep-2.1"
+            ) {
+              throw new Error(
+                `${signalsPath}.signals[${index}] has incompatible engine metadata.`
+              );
+            }
+
+            observedSnapshots.add(identity);
+          }
+
+          if (
+            observedSnapshots.size !== expectedSnapshots.size ||
+            [...expectedSnapshots].some(
+              identity => !observedSnapshots.has(identity)
+            )
+          ) {
+            throw new Error(
+              `${signalsPath} does not contain the exact 2-pair × daily/weekly snapshot set.`
             );
           }
+
+          if (!Array.isArray(log)) {
+            throw new Error(
+              `${logPath} must contain the signal-engine log array.`
+            );
+          }
+
+          if (log.length > 5000) {
+            throw new Error(
+              `${logPath} exceeds the signal-engine maximum of 5000 entries.`
+            );
+          }
+
+          for (
+            let index = 0;
+            index < log.length;
+            index++
+          ) {
+            if (
+              log[index] === null ||
+              typeof log[index] !== "object" ||
+              Array.isArray(log[index])
+            ) {
+              throw new Error(
+                `${logPath}[${index}] must be a JSON object.`
+              );
+            }
+          }
+
+          console.log(
+            `Validated ${signalsPath} with 4 exact snapshots and ${log.length} log entries.`
+          );
           NODE
 
       - name: Commit and push unified news and signals
@@ -257,9 +443,48 @@ jobs:
               break
             fi
 
-            echo "Push was rejected. Fetching and rebasing onto origin/main..."
+            if [[ -n "$(git status --porcelain)" ]]; then
+              echo "::error::The working tree is not clean after committing the validated news and signal snapshot."
+              git status --short
+              exit 1
+            fi
+
+            echo "Remote branch advanced. Verifying whether the new commits are safe to rebase across..."
 
             git fetch origin main
+
+            merge_base="$(git merge-base HEAD origin/main)"
+
+            if [[ -z "$merge_base" ]]; then
+              echo "::error::Unable to determine a common base with the updated remote branch."
+              exit 1
+            fi
+
+            mapfile -t remote_changed_files < <(
+              git diff --name-only "$merge_base" origin/main |
+                sed '/^$/d' |
+                sort -u
+            )
+
+            unsafe_remote_changes=()
+
+            for file in "${remote_changed_files[@]}"; do
+              case "$file" in
+                data/daily-ohlc.json|data/xau-usd-history.json|data/news-feed.json|data/signals.json|data/signal-log.json|fetch-news.js|fetch-signals.js|package.json|package-lock.json|.github/workflows/fetch-news.yml)
+                  unsafe_remote_changes+=("$file")
+                  ;;
+              esac
+            done
+
+            if [[ "${#unsafe_remote_changes[@]}" -gt 0 ]]; then
+              echo "::error::The branch changed in files that can affect the validated news/signal snapshot."
+              printf '::error::Unsafe remote change: %s\n' "${unsafe_remote_changes[@]}"
+              echo "::error::The stale generated snapshot was not merged, rebased, or force-pushed."
+              echo "::error::Re-run against the newest branch head so news/signals are regenerated from current input/code."
+              exit 1
+            fi
+
+            echo "Remote changes are unrelated to news/signal generation. Rebasing the validated commit."
 
             if ! git rebase origin/main; then
               echo "::error::Rebase failed while synchronizing news and signals."
@@ -271,7 +496,7 @@ jobs:
           done
 
           if [[ "${push_succeeded}" != "true" ]]; then
-            echo "::error::Unable to push news and signals after 5 attempts."
+            echo "::error::Unable to push news and signals after 5 safe attempts."
             exit 1
           fi
 

@@ -63,6 +63,24 @@ const ENGINE_NAME =
 const ENGINE_VERSION =
   "1.4.0";
 
+const REQUIRED_AI_MEMORY_ENGINE_NAME =
+  "PipSight Pro Adaptive AI Memory Engine";
+
+const REQUIRED_AI_MEMORY_ENGINE_VERSION =
+  "1.0.1";
+
+const REQUIRED_AI_MEMORY_STATE_VERSION =
+  1;
+
+const REQUIRED_AUTONOMOUS_MEMORY_ENGINE_NAME =
+  "PipSight Pro Autonomous Memory Extension";
+
+const REQUIRED_AUTONOMOUS_MEMORY_ENGINE_VERSION =
+  "1.4.0";
+
+const REQUIRED_AUTONOMOUS_MEMORY_SCHEMA_VERSION =
+  1;
+
 /*
  * State files produced by the verified 1.0.0 engine are structurally
  * compatible with schema version 1. Preserve their counters and timestamps
@@ -1211,20 +1229,58 @@ function normalizePerformanceMetric(
     totalTrades > 0
   ) {
 
-    const rateTotal =
-      winRate +
-      lossRate +
-      breakevenRate;
+    const decisiveTrades =
+      wins +
+      losses;
+
+    const expectedWinRate =
+      decisiveTrades > 0
+        ? (
+            wins /
+            decisiveTrades
+          ) * 100
+        : 0;
+
+    const expectedLossRate =
+      decisiveTrades > 0
+        ? (
+            losses /
+            decisiveTrades
+          ) * 100
+        : 0;
+
+    const expectedBreakevenRate =
+      (
+        breakevens /
+        totalTrades
+      ) * 100;
 
     if (
       Math.abs(
-        rateTotal -
-        100
+        winRate -
+        expectedWinRate
+      ) > 0.1 ||
+      Math.abs(
+        lossRate -
+        expectedLossRate
       ) > 0.1
     ) {
 
       warnings.push(
-        `${label} outcome rates do not total approximately 100%.`
+        `${label} decisive WIN/LOSS rates are inconsistent with outcome counts.`
+      );
+
+    }
+
+    if (
+      Math.abs(
+        breakevenRate -
+        expectedBreakevenRate
+      ) > 0.1
+    ) {
+
+      warnings.push(
+        `${label} breakevenRate is inconsistent with totalTrades.`
       );
 
     }
@@ -2572,6 +2628,65 @@ function normalizePairEngineDirectionKey(
 
 }
 
+
+function normalizePairTimeframeEngineDirectionKey(
+  value
+) {
+
+  const parts =
+    splitCombinationKey(
+      value,
+      4
+    );
+
+  if (
+    !parts
+  ) {
+
+    return null;
+
+  }
+
+  const pair =
+    normalizePair(
+      parts[0]
+    );
+
+  const timeframe =
+    normalizeTimeframe(
+      parts[1]
+    );
+
+  const engine =
+    normalizeEngine(
+      parts[2]
+    );
+
+  const direction =
+    normalizeDirection(
+      parts[3]
+    );
+
+  if (
+    !pair ||
+    !timeframe ||
+    !engine ||
+    !direction
+  ) {
+
+    return null;
+
+  }
+
+  return (
+    `${pair}::` +
+    `${timeframe}::` +
+    `${engine}::` +
+    `${direction}`
+  );
+
+}
+
 function normalizePairOptionalKey(
   value
 ) {
@@ -2810,6 +2925,486 @@ function normalizeCoverage(
 
 }
 
+
+/* =====================================================================
+   Autonomous Exact-Scope Normalization
+   ===================================================================== */
+
+function normalizeAutonomousOptimizerMetric(
+  value,
+  label
+) {
+
+  const errors =
+    [];
+
+  if (
+    !isPlainObject(
+      value
+    )
+  ) {
+
+    return {
+      valid: false,
+      metric: null,
+      errors: [
+        `${label} must be a JSON object.`
+      ]
+    };
+
+  }
+
+  const totalTrades =
+    toNonNegativeInteger(
+      value.totalTrades
+    );
+
+  const decisiveTrades =
+    toNonNegativeInteger(
+      value.decisiveTrades
+    );
+
+  const wins =
+    toNonNegativeInteger(
+      value.wins
+    );
+
+  const losses =
+    toNonNegativeInteger(
+      value.losses
+    );
+
+  const breakevens =
+    toNonNegativeInteger(
+      value.breakevens
+    );
+
+  for (
+    const [
+      fieldName,
+      fieldValue
+    ] of [
+      ["totalTrades", totalTrades],
+      ["decisiveTrades", decisiveTrades],
+      ["wins", wins],
+      ["losses", losses],
+      ["breakevens", breakevens]
+    ]
+  ) {
+
+    if (
+      fieldValue === null
+    ) {
+
+      errors.push(
+        `${label}.${fieldName} is invalid.`
+      );
+
+    }
+
+  }
+
+  if (
+    errors.length ===
+      0 &&
+    decisiveTrades !==
+      wins +
+      losses
+  ) {
+
+    errors.push(
+      `${label}.decisiveTrades must equal wins plus losses.`
+    );
+
+  }
+
+  if (
+    errors.length ===
+      0 &&
+    totalTrades !==
+      wins +
+      losses +
+      breakevens
+  ) {
+
+    errors.push(
+      `${label}.totalTrades must equal wins plus losses plus breakevens.`
+    );
+
+  }
+
+  const winRate =
+    clamp(
+      value.winRate,
+      0,
+      100
+    );
+
+  if (
+    winRate === null
+  ) {
+
+    errors.push(
+      `${label}.winRate is invalid.`
+    );
+
+  }
+
+  const reliability =
+    clamp(
+      value.quality
+        ?.reliability,
+      0,
+      1
+    );
+
+  if (
+    reliability === null
+  ) {
+
+    errors.push(
+      `${label}.quality.reliability is invalid.`
+    );
+
+  }
+
+  const action =
+    toTrimmedString(
+      value.evidence
+        ?.action
+    );
+
+  if (
+    ![
+      "OBSERVE",
+      "SUPPORT",
+      "SUPPRESS"
+    ].includes(
+      action
+    )
+  ) {
+
+    errors.push(
+      `${label}.evidence.action is invalid.`
+    );
+
+  }
+
+  const expectancyR =
+    value.expectancyR ===
+      null
+      ? null
+      : toFiniteNumber(
+          value.expectancyR
+        );
+
+  const weightedExpectancyR =
+    value.recencyWeightedExpectancyR ===
+      null
+      ? null
+      : toFiniteNumber(
+          value.recencyWeightedExpectancyR
+        );
+
+  const profitFactorR =
+    value.profitFactorR ===
+      null
+      ? null
+      : toFiniteNumber(
+          value.profitFactorR
+        );
+
+  if (
+    value.expectancyR !==
+      null &&
+    expectancyR ===
+      null
+  ) {
+
+    errors.push(
+      `${label}.expectancyR is invalid.`
+    );
+
+  }
+
+  if (
+    value.recencyWeightedExpectancyR !==
+      null &&
+    weightedExpectancyR ===
+      null
+  ) {
+
+    errors.push(
+      `${label}.recencyWeightedExpectancyR is invalid.`
+    );
+
+  }
+
+  if (
+    value.profitFactorR !==
+      null &&
+    profitFactorR ===
+      null
+  ) {
+
+    errors.push(
+      `${label}.profitFactorR is invalid.`
+    );
+
+  }
+
+  if (
+    errors.length >
+      0
+  ) {
+
+    return {
+      valid: false,
+      metric: null,
+      errors:
+        uniqueSortedStrings(
+          errors
+        )
+    };
+
+  }
+
+  return {
+    valid: true,
+
+    metric: {
+      totalTrades,
+      decisiveTrades,
+      wins,
+      losses,
+      breakevens,
+
+      winRate:
+        round(
+          winRate,
+          4
+        ),
+
+      expectancyR:
+        expectancyR ===
+          null
+          ? null
+          : round(
+              expectancyR,
+              8
+            ),
+
+      recencyWeightedExpectancyR:
+        weightedExpectancyR ===
+          null
+          ? null
+          : round(
+              weightedExpectancyR,
+              8
+            ),
+
+      profitFactorR:
+        profitFactorR ===
+          null
+          ? null
+          : round(
+              profitFactorR,
+              8
+            ),
+
+      reliability:
+        round(
+          reliability,
+          4
+        ),
+
+      action,
+
+      reason:
+        toNonEmptyStringOrNull(
+          value.evidence
+            ?.reason
+        )
+    },
+
+    errors: []
+  };
+
+}
+
+function normalizeAutonomousExactScopeMap(
+  section
+) {
+
+  const errors =
+    [];
+
+  const warnings =
+    [];
+
+  const normalized =
+    {};
+
+  if (
+    section === null ||
+    section === undefined
+  ) {
+
+    return {
+      valid: true,
+      value: {},
+      errors,
+      warnings: [
+        "AI Memory autonomous exact-scope evidence is unavailable."
+      ]
+    };
+
+  }
+
+  if (
+    !isPlainObject(
+      section
+    )
+  ) {
+
+    return {
+      valid: false,
+      value: {},
+      errors: [
+        "AI Memory autonomousMemory must be a JSON object."
+      ],
+      warnings
+    };
+
+  }
+
+  if (
+    section.version !==
+      REQUIRED_AUTONOMOUS_MEMORY_SCHEMA_VERSION ||
+    section.engineName !==
+      REQUIRED_AUTONOMOUS_MEMORY_ENGINE_NAME ||
+    section.engineVersion !==
+      REQUIRED_AUTONOMOUS_MEMORY_ENGINE_VERSION ||
+    section.advisoryOnly !==
+      true ||
+    section.liveAuthorityPermitted !==
+      false
+  ) {
+
+    errors.push(
+      "AI Memory autonomousMemory compatibility contract is invalid."
+    );
+
+  }
+
+  const sourceMap =
+    section.scopes
+      ?.pairTimeframeEngineDirection;
+
+  if (
+    !isPlainObject(
+      sourceMap
+    )
+  ) {
+
+    errors.push(
+      "AI Memory autonomous pairTimeframeEngineDirection scope map is missing."
+    );
+
+  } else {
+
+    for (
+      const sourceKey of
+      Object.keys(
+        sourceMap
+      ).sort()
+    ) {
+
+      const normalizedKey =
+        normalizePairTimeframeEngineDirectionKey(
+          sourceKey
+        );
+
+      if (
+        normalizedKey ===
+          null
+      ) {
+
+        errors.push(
+          `AI Memory autonomous exact scope key is invalid: ${sourceKey}.`
+        );
+
+        continue;
+
+      }
+
+      if (
+        Object.prototype.hasOwnProperty.call(
+          normalized,
+          normalizedKey
+        )
+      ) {
+
+        errors.push(
+          `AI Memory autonomous exact scope contains duplicate normalized key: ${normalizedKey}.`
+        );
+
+        continue;
+
+      }
+
+      const result =
+        normalizeAutonomousOptimizerMetric(
+          sourceMap[sourceKey],
+          (
+            "AI Memory autonomousMemory.scopes." +
+            `pairTimeframeEngineDirection.${normalizedKey}`
+          )
+        );
+
+      if (
+        !result.valid
+      ) {
+
+        errors.push(
+          ...result.errors
+        );
+
+        continue;
+
+      }
+
+      normalized[
+        normalizedKey
+      ] =
+        result.metric;
+
+    }
+
+  }
+
+  return {
+    valid:
+      errors.length === 0,
+
+    value:
+      sortForStableSerialization(
+        normalized
+      ),
+
+    errors:
+      uniqueSortedStrings(
+        errors
+      ),
+
+    warnings:
+      uniqueSortedStrings(
+        warnings
+      )
+  };
+
+}
+
 /* =====================================================================
    AI Memory Document Validation
    ===================================================================== */
@@ -2848,6 +3443,47 @@ function normalizeAIMemoryDocument(
 
     errors.push(
       "AI Memory schema version is unsupported."
+    );
+
+  }
+
+  if (
+    document.engineName !==
+      REQUIRED_AI_MEMORY_ENGINE_NAME
+  ) {
+
+    errors.push(
+      "AI Memory engine name is unsupported."
+    );
+
+  }
+
+  if (
+    document.engineVersion !==
+      REQUIRED_AI_MEMORY_ENGINE_VERSION
+  ) {
+
+    errors.push(
+      "AI Memory engine version is unsupported."
+    );
+
+  }
+
+  if (
+    !isPlainObject(
+      document.validation
+    ) ||
+    document.validation.valid !==
+      true ||
+    !Array.isArray(
+      document.validation.errors
+    ) ||
+    document.validation.errors.length >
+      0
+  ) {
+
+    errors.push(
+      "AI Memory document is not internally valid."
     );
 
   }
@@ -3092,6 +3728,19 @@ function normalizeAIMemoryDocument(
     ...coverageResult.errors
   );
 
+  const autonomousExactResult =
+    normalizeAutonomousExactScopeMap(
+      document.autonomousMemory
+    );
+
+  errors.push(
+    ...autonomousExactResult.errors
+  );
+
+  warnings.push(
+    ...autonomousExactResult.warnings
+  );
+
   if (
     errors.length > 0
   ) {
@@ -3185,6 +3834,9 @@ function normalizeAIMemoryDocument(
       coverage:
         coverageResult.value,
 
+      autonomousExactScopes:
+        autonomousExactResult.value,
+
       source:
         isPlainObject(
           document.source
@@ -3223,6 +3875,321 @@ function normalizeAIMemoryDocument(
 
 }
 
+
+/* =====================================================================
+   AI Memory State and Source-Pair Validation
+   ===================================================================== */
+
+function validateAIMemoryStateDocument(
+  state
+) {
+
+  const errors =
+    [];
+
+  if (
+    !isPlainObject(
+      state
+    )
+  ) {
+
+    return {
+      valid: false,
+      errors: [
+        "AI Memory state must be a JSON object."
+      ]
+    };
+
+  }
+
+  if (
+    state.version !==
+      REQUIRED_AI_MEMORY_STATE_VERSION
+  ) {
+
+    errors.push(
+      "AI Memory state schema version is unsupported."
+    );
+
+  }
+
+  if (
+    state.engineName !==
+      REQUIRED_AI_MEMORY_ENGINE_NAME
+  ) {
+
+    errors.push(
+      "AI Memory state engine name is unsupported."
+    );
+
+  }
+
+  if (
+    state.engineVersion !==
+      REQUIRED_AI_MEMORY_ENGINE_VERSION
+  ) {
+
+    errors.push(
+      "AI Memory state engine version is unsupported."
+    );
+
+  }
+
+  if (
+    !toISOStringOrNull(
+      state.lastSuccessfulRunAt
+    )
+  ) {
+
+    errors.push(
+      "AI Memory state lastSuccessfulRunAt is invalid."
+    );
+
+  }
+
+  if (
+    state.pendingTransaction !==
+      null
+  ) {
+
+    errors.push(
+      "AI Memory state contains a pending transaction."
+    );
+
+  }
+
+  if (
+    !isPlainObject(
+      state.lastRun
+    )
+  ) {
+
+    errors.push(
+      "AI Memory state lastRun section is missing."
+    );
+
+  } else {
+
+    if (
+      ![
+        "UPDATED",
+        "UNCHANGED"
+      ].includes(
+        state.lastRun.status
+      )
+    ) {
+
+      errors.push(
+        "AI Memory state last run was not successful."
+      );
+
+    }
+
+    if (
+      state.lastRun.stateWritten !==
+        true
+    ) {
+
+      errors.push(
+        "AI Memory state was not persisted successfully."
+      );
+
+    }
+
+    if (
+      state.lastRun.error !==
+        null
+    ) {
+
+      errors.push(
+        "AI Memory state contains a last-run error."
+      );
+
+    }
+
+  }
+
+  if (
+    !isPlainObject(
+      state.sourceHashes
+    ) ||
+    !toNonEmptyStringOrNull(
+      state.sourceHashes
+        ?.learningData
+    ) ||
+    !toNonEmptyStringOrNull(
+      state.sourceHashes
+        ?.confidenceData
+    )
+  ) {
+
+    errors.push(
+      "AI Memory state source hashes are incomplete."
+    );
+
+  }
+
+  return {
+    valid:
+      errors.length === 0,
+
+    errors:
+      uniqueSortedStrings(
+        errors
+      )
+  };
+
+}
+
+function validateAIMemorySourcePair({
+  document,
+  state
+}) {
+
+  const errors =
+    [];
+
+  if (
+    !isPlainObject(
+      document
+    ) ||
+    !isPlainObject(
+      state
+    )
+  ) {
+
+    return {
+      valid: false,
+      errors: [
+        "AI Memory document/state pair is unavailable."
+      ]
+    };
+
+  }
+
+  const source =
+    isPlainObject(
+      document.source
+    )
+      ? document.source
+      : null;
+
+  const stateHashes =
+    isPlainObject(
+      state.sourceHashes
+    )
+      ? state.sourceHashes
+      : null;
+
+  if (
+    source === null ||
+    stateHashes === null
+  ) {
+
+    return {
+      valid: false,
+      errors: [
+        "AI Memory document/state source hashes are unavailable."
+      ]
+    };
+
+  }
+
+  const pairs = [
+    [
+      "learningDataHash",
+      "learningData"
+    ],
+    [
+      "confidenceDataHash",
+      "confidenceData"
+    ],
+    [
+      "learningEnrichmentHash",
+      "learningEnrichment"
+    ]
+  ];
+
+  for (
+    const [
+      documentField,
+      stateField
+    ] of pairs
+  ) {
+
+    const documentHash =
+      toNonEmptyStringOrNull(
+        source[documentField]
+      );
+
+    const stateHash =
+      toNonEmptyStringOrNull(
+        stateHashes[stateField]
+      );
+
+    if (
+      documentHash === null &&
+      stateHash === null
+    ) {
+
+      continue;
+
+    }
+
+    if (
+      documentHash === null ||
+      stateHash === null ||
+      documentHash !==
+        stateHash
+    ) {
+
+      errors.push(
+        `AI Memory document/state source hash mismatch for ${stateField}.`
+      );
+
+    }
+
+  }
+
+  const generatedAt =
+    toISOStringOrNull(
+      document.generatedAt
+    );
+
+  const successfulAt =
+    toISOStringOrNull(
+      state.lastSuccessfulRunAt
+    );
+
+  if (
+    generatedAt &&
+    successfulAt &&
+    Date.parse(
+      generatedAt
+    ) >
+      Date.parse(
+        successfulAt
+      )
+  ) {
+
+    errors.push(
+      "AI Memory document is newer than the last successful AI Memory state."
+    );
+
+  }
+
+  return {
+    valid:
+      errors.length === 0,
+
+    errors:
+      uniqueSortedStrings(
+        errors
+      )
+  };
+
+}
+
 /* =====================================================================
    Optimization Scope Constants
    ===================================================================== */
@@ -3234,10 +4201,14 @@ const OPTIMIZATION_SCOPE_TYPES =
     "engine",
     "direction",
     "timeframe",
+    "session",
+    "pattern",
+    "marketRegime",
     "pairEngine",
     "pairDirection",
     "engineDirection",
     "pairEngineDirection",
+    "pairTimeframeEngineDirection",
     "pairSession",
     "pairPattern",
     "pairMarketRegime"
@@ -3328,6 +4299,139 @@ function isSupportedScopeType(
 
 }
 
+const SCOPE_ALLOWED_FIELDS =
+  Object.freeze({
+    overall: [],
+    pair: ["pair"],
+    engine: ["engine"],
+    direction: ["direction"],
+    timeframe: ["timeframe"],
+    session: ["session"],
+    pattern: ["pattern"],
+    marketRegime: ["marketRegime"],
+    pairEngine: ["pair", "engine"],
+    pairDirection: ["pair", "direction"],
+    engineDirection: ["engine", "direction"],
+    pairEngineDirection: [
+      "pair",
+      "engine",
+      "direction"
+    ],
+    pairTimeframeEngineDirection: [
+      "pair",
+      "timeframe",
+      "engine",
+      "direction"
+    ],
+    pairSession: ["pair", "session"],
+    pairPattern: ["pair", "pattern"],
+    pairMarketRegime: [
+      "pair",
+      "marketRegime"
+    ]
+  });
+
+function buildCanonicalScopeKey(
+  scope
+) {
+
+  if (
+    !isPlainObject(
+      scope
+    ) ||
+    !isSupportedScopeType(
+      scope.type
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const fields =
+    SCOPE_ALLOWED_FIELDS[
+      scope.type
+    ];
+
+  if (
+    !Array.isArray(
+      fields
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const allIdentityFields = [
+    "pair",
+    "engine",
+    "direction",
+    "timeframe",
+    "session",
+    "pattern",
+    "marketRegime"
+  ];
+
+  for (
+    const fieldName of
+    allIdentityFields
+  ) {
+
+    const value =
+      scope[fieldName];
+
+    if (
+      fields.includes(
+        fieldName
+      )
+    ) {
+
+      if (
+        value === null ||
+        value === undefined ||
+        value === ""
+      ) {
+
+        return null;
+
+      }
+
+    } else if (
+      value !== null &&
+      value !== undefined &&
+      value !== ""
+    ) {
+
+      return null;
+
+    }
+
+  }
+
+  if (
+    scope.type ===
+      "overall"
+  ) {
+
+    return "overall";
+
+  }
+
+  return fields
+    .map(
+      fieldName =>
+        toTrimmedString(
+          scope[fieldName]
+        )
+    )
+    .join(
+      "::"
+    ) ||
+    null;
+
+}
+
 function createScopeIdentity({
   type,
   key,
@@ -3361,7 +4465,7 @@ function createScopeIdentity({
 
   }
 
-  return {
+  const normalizedScope = {
     type:
       normalizedType,
 
@@ -3417,6 +4521,23 @@ function createScopeIdentity({
             marketRegime
           )
   };
+
+  const canonicalKey =
+    buildCanonicalScopeKey(
+      normalizedScope
+    );
+
+  if (
+    canonicalKey === null ||
+    canonicalKey !==
+      normalizedKey
+  ) {
+
+    return null;
+
+  }
+
+  return normalizedScope;
 
 }
 
@@ -4926,6 +6047,453 @@ function buildPairOptionalIdentity(
 
 }
 
+
+function buildPairTimeframeEngineDirectionIdentity(
+  key
+) {
+
+  const normalizedKey =
+    normalizePairTimeframeEngineDirectionKey(
+      key
+    );
+
+  if (
+    !normalizedKey
+  ) {
+
+    return null;
+
+  }
+
+  const parts =
+    splitCombinationKey(
+      normalizedKey,
+      4
+    );
+
+  if (
+    !parts
+  ) {
+
+    return null;
+
+  }
+
+  return {
+    pair:
+      parts[0],
+
+    timeframe:
+      parts[1],
+
+    engine:
+      parts[2],
+
+    direction:
+      parts[3]
+  };
+
+}
+
+function getExactScopeBaselineMetric(
+  aiMemory,
+  identity
+) {
+
+  if (
+    !isPlainObject(
+      aiMemory
+    ) ||
+    !isPlainObject(
+      identity
+    )
+  ) {
+
+    return null;
+
+  }
+
+  const pairEngineDirectionKey =
+    (
+      `${identity.pair}::` +
+      `${identity.engine}::` +
+      `${identity.direction}`
+    );
+
+  const candidates = [
+    aiMemory.combinations
+      ?.pairEngineDirection
+      ?.[pairEngineDirectionKey],
+
+    aiMemory.memory
+      ?.timeframes
+      ?.[identity.timeframe],
+
+    aiMemory.memory
+      ?.pairs
+      ?.[identity.pair],
+
+    aiMemory.summary
+  ];
+
+  return candidates.find(
+    isPlainObject
+  ) ||
+    null;
+
+}
+
+function buildAutonomousExactRecommendation({
+  scope,
+  autonomousMetric,
+  baselineMetric
+}) {
+
+  const normalizedScope =
+    createScopeIdentity(
+      scope
+    );
+
+  if (
+    normalizedScope === null ||
+    !isPlainObject(
+      autonomousMetric
+    )
+  ) {
+
+    return {
+      valid: false,
+      scope: null,
+      eligibility: {
+        eligible: false,
+        status:
+          OPTIMIZATION_STATUSES
+            .INVALID_METRIC,
+        totalTrades: 0,
+        requiredTrades:
+          MIN_RESOLVED_TRADES,
+        remainingTrades:
+          MIN_RESOLVED_TRADES,
+        reasons: [
+          "Autonomous exact-scope evidence is invalid."
+        ]
+      },
+      profitability: null,
+      confidenceRecommendation: null,
+      shadowOnly: true,
+      errors: [
+        "Autonomous exact-scope recommendation could not be built."
+      ],
+      warnings: []
+    };
+
+  }
+
+  const decisiveTrades =
+    toNonNegativeInteger(
+      autonomousMetric
+        .decisiveTrades
+    );
+
+  if (
+    decisiveTrades ===
+      null
+  ) {
+
+    return {
+      valid: false,
+      scope:
+        normalizedScope,
+      eligibility: {
+        eligible: false,
+        status:
+          OPTIMIZATION_STATUSES
+            .INVALID_METRIC,
+        totalTrades: 0,
+        requiredTrades:
+          MIN_RESOLVED_TRADES,
+        remainingTrades:
+          MIN_RESOLVED_TRADES,
+        reasons: [
+          "Autonomous decisive-trade count is invalid."
+        ]
+      },
+      profitability: null,
+      confidenceRecommendation: null,
+      shadowOnly: true,
+      errors: [
+        "Autonomous decisive-trade count is invalid."
+      ],
+      warnings: []
+    };
+
+  }
+
+  const remainingTrades =
+    Math.max(
+      0,
+      MIN_RESOLVED_TRADES -
+        decisiveTrades
+    );
+
+  const eligible =
+    decisiveTrades >=
+      MIN_RESOLVED_TRADES;
+
+  const eligibility = {
+    eligible,
+
+    status:
+      eligible
+        ? OPTIMIZATION_STATUSES
+            .ELIGIBLE
+        : OPTIMIZATION_STATUSES
+            .INSUFFICIENT_DATA,
+
+    totalTrades:
+      decisiveTrades,
+
+    requiredTrades:
+      MIN_RESOLVED_TRADES,
+
+    remainingTrades,
+
+    reasons: [
+      eligible
+        ? (
+            "Minimum exact pair/timeframe/engine/direction decisive-trade evidence is available."
+          )
+        : (
+            `Exact pair/timeframe/engine/direction scope has ${decisiveTrades} decisive trades; ` +
+            `${MIN_RESOLVED_TRADES} are required.`
+          )
+    ]
+  };
+
+  if (
+    !eligible
+  ) {
+
+    return {
+      valid: true,
+      scope:
+        normalizedScope,
+      eligibility,
+      profitability: null,
+      confidenceRecommendation: {
+        available: false,
+        baseline: null,
+        baselineSource: null,
+        requestedAdjustment: 0,
+        boundedAdjustment: 0,
+        recommendedConfidence: null,
+        reasons: [
+          "No optimization recommendation is produced before exact MTF evidence matures."
+        ]
+      },
+      shadowOnly: true,
+      errors: [],
+      warnings: []
+    };
+
+  }
+
+  const action =
+    autonomousMetric.action;
+
+  const classification =
+    action ===
+      "SUPPORT"
+      ? OPTIMIZATION_STATUSES
+          .SUPPORTIVE
+      : action ===
+          "SUPPRESS"
+        ? OPTIMIZATION_STATUSES
+            .CAUTION
+        : OPTIMIZATION_STATUSES
+            .NEUTRAL;
+
+  const profitability = {
+    valid: true,
+
+    classification,
+
+    score:
+      classification ===
+        OPTIMIZATION_STATUSES
+          .SUPPORTIVE
+        ? 1
+        : classification ===
+            OPTIMIZATION_STATUSES
+              .CAUTION
+          ? -1
+          : 0,
+
+    signals: [
+      `AUTONOMOUS_${action}`
+    ],
+
+    reasons: [
+      autonomousMetric.reason ||
+      "Autonomous exact-scope evidence was evaluated."
+    ],
+
+    metrics: {
+      sourceTotalTrades:
+        autonomousMetric
+          .totalTrades,
+
+      decisiveTrades,
+
+      winRate:
+        autonomousMetric
+          .winRate,
+
+      expectancyR:
+        autonomousMetric
+          .expectancyR,
+
+      recencyWeightedExpectancyR:
+        autonomousMetric
+          .recencyWeightedExpectancyR,
+
+      profitFactorR:
+        autonomousMetric
+          .profitFactorR,
+
+      reliability:
+        autonomousMetric
+          .reliability
+    }
+  };
+
+  const confidenceRecommendation =
+    buildConfidenceRecommendation({
+      metric:
+        baselineMetric,
+
+      profitabilityAssessment:
+        profitability
+    });
+
+  if (
+    confidenceRecommendation
+      .available ===
+      true
+  ) {
+
+    confidenceRecommendation
+      .baselineSource =
+      (
+        "exact-scope-fallback:" +
+        confidenceRecommendation
+          .baselineSource
+      );
+
+  }
+
+  return {
+    valid: true,
+    scope:
+      normalizedScope,
+    eligibility,
+    profitability,
+    confidenceRecommendation,
+    shadowOnly: true,
+    errors: [],
+    warnings: []
+  };
+
+}
+
+function addAutonomousExactRecommendations({
+  recommendations,
+  seenScopeIds,
+  aiMemory
+}) {
+
+  const exactScopes =
+    aiMemory
+      ?.autonomousExactScopes;
+
+  if (
+    !isPlainObject(
+      exactScopes
+    )
+  ) {
+
+    return;
+
+  }
+
+  for (
+    const key of
+    Object.keys(
+      exactScopes
+    ).sort()
+  ) {
+
+    const identity =
+      buildPairTimeframeEngineDirectionIdentity(
+        key
+      );
+
+    if (
+      !identity
+    ) {
+
+      continue;
+
+    }
+
+    const scope = {
+      type:
+        "pairTimeframeEngineDirection",
+
+      key,
+
+      ...identity
+    };
+
+    const scopeId =
+      `${scope.type}::${scope.key}`;
+
+    if (
+      seenScopeIds.has(
+        scopeId
+      )
+    ) {
+
+      continue;
+
+    }
+
+    const recommendation =
+      buildAutonomousExactRecommendation({
+        scope,
+
+        autonomousMetric:
+          exactScopes[key],
+
+        baselineMetric:
+          getExactScopeBaselineMetric(
+            aiMemory,
+            identity
+          )
+      });
+
+    recommendations.push(
+      recommendation
+    );
+
+    seenScopeIds.add(
+      scopeId
+    );
+
+  }
+
+}
+
 /* =====================================================================
    Full Recommendation Builder
    ===================================================================== */
@@ -4983,6 +6551,18 @@ function buildAllRecommendations(
 
     metric:
       aiMemory.summary
+  });
+
+  /*
+   * Exact pair/timeframe/engine/direction evidence from the current
+   * advisory Autonomous Memory Extension is emitted first as its own
+   * scope class. Execution still remains dry-run and never stacks it
+   * with broader recommendations.
+   */
+  addAutonomousExactRecommendations({
+    recommendations,
+    seenScopeIds,
+    aiMemory
   });
 
   /*
@@ -5099,7 +6679,7 @@ function buildAllRecommendations(
       aiMemory.memory?.sessions,
 
     scopeType:
-      "pairSession",
+      "session",
 
     identityBuilder:
       key => {
@@ -5124,7 +6704,7 @@ function buildAllRecommendations(
       aiMemory.memory?.patterns,
 
     scopeType:
-      "pairPattern",
+      "pattern",
 
     identityBuilder:
       key => {
@@ -5150,7 +6730,7 @@ function buildAllRecommendations(
         ?.marketRegimes,
 
     scopeType:
-      "pairMarketRegime",
+      "marketRegime",
 
     identityBuilder:
       key => {
@@ -5511,6 +7091,262 @@ function createEmptyOptimizationDocument(
    Optimization Output Validation
    ===================================================================== */
 
+
+function validateRecommendationSemantics(
+  recommendation,
+  label
+) {
+
+  const errors =
+    [];
+
+  const eligibility =
+    recommendation
+      ?.eligibility;
+
+  const profitability =
+    recommendation
+      ?.profitability;
+
+  const confidence =
+    recommendation
+      ?.confidenceRecommendation;
+
+  if (
+    !isPlainObject(
+      eligibility
+    ) ||
+    !isPlainObject(
+      confidence
+    )
+  ) {
+
+    return {
+      valid: false,
+      errors: [
+        `${label} recommendation semantics are incomplete.`
+      ]
+    };
+
+  }
+
+  const requestedAdjustment =
+    toFiniteNumber(
+      confidence
+        .requestedAdjustment
+    );
+
+  const boundedAdjustment =
+    toFiniteNumber(
+      confidence
+        .boundedAdjustment
+    );
+
+  if (
+    requestedAdjustment ===
+      null ||
+    boundedAdjustment ===
+      null
+  ) {
+
+    errors.push(
+      `${label} recommendation adjustments are invalid.`
+    );
+
+  }
+
+  if (
+    eligibility.eligible !==
+      true
+  ) {
+
+    if (
+      confidence.available !==
+        false ||
+      requestedAdjustment !==
+        0 ||
+      boundedAdjustment !==
+        0
+    ) {
+
+      errors.push(
+        `${label} ineligible scope must not expose a confidence adjustment.`
+      );
+
+    }
+
+    return {
+      valid:
+        errors.length === 0,
+
+      errors:
+        uniqueSortedStrings(
+          errors
+        )
+    };
+
+  }
+
+  if (
+    !isPlainObject(
+      profitability
+    ) ||
+    profitability.valid !==
+      true
+  ) {
+
+    errors.push(
+      `${label} eligible scope requires valid profitability evidence.`
+    );
+
+    return {
+      valid: false,
+      errors:
+        uniqueSortedStrings(
+          errors
+        )
+    };
+
+  }
+
+  const classification =
+    toTrimmedString(
+      profitability
+        .classification
+    );
+
+  const expectedAdjustment =
+    classification ===
+      OPTIMIZATION_STATUSES
+        .SUPPORTIVE
+      ? 1
+      : classification ===
+          OPTIMIZATION_STATUSES
+            .CAUTION
+        ? -1
+        : classification ===
+            OPTIMIZATION_STATUSES
+              .NEUTRAL
+          ? 0
+          : null;
+
+  if (
+    expectedAdjustment ===
+      null
+  ) {
+
+    errors.push(
+      `${label} profitability classification is invalid.`
+    );
+
+  } else if (
+    requestedAdjustment !==
+      expectedAdjustment
+  ) {
+
+    errors.push(
+      `${label} requested adjustment does not match profitability classification.`
+    );
+
+  }
+
+  if (
+    confidence.available ===
+      true
+  ) {
+
+    if (
+      boundedAdjustment !==
+        expectedAdjustment
+    ) {
+
+      errors.push(
+        `${label} bounded adjustment does not match profitability classification.`
+      );
+
+    }
+
+    const baseline =
+      clamp(
+        confidence.baseline,
+        MIN_RECOMMENDED_CONFIDENCE,
+        MAX_RECOMMENDED_CONFIDENCE
+      );
+
+    const recommendedConfidence =
+      clamp(
+        confidence
+          .recommendedConfidence,
+        MIN_RECOMMENDED_CONFIDENCE,
+        MAX_RECOMMENDED_CONFIDENCE
+      );
+
+    const expectedConfidence =
+      baseline ===
+        null
+        ? null
+        : clamp(
+            baseline +
+              expectedAdjustment,
+            MIN_RECOMMENDED_CONFIDENCE,
+            MAX_RECOMMENDED_CONFIDENCE
+          );
+
+    if (
+      baseline ===
+        null ||
+      recommendedConfidence ===
+        null ||
+      expectedConfidence ===
+        null ||
+      Math.abs(
+        recommendedConfidence -
+        expectedConfidence
+      ) > 1e-9
+    ) {
+
+      errors.push(
+        `${label} recommendedConfidence is inconsistent with baseline and bounded adjustment.`
+      );
+
+    }
+
+    if (
+      !toNonEmptyStringOrNull(
+        confidence
+          .baselineSource
+      )
+    ) {
+
+      errors.push(
+        `${label} baselineSource is missing.`
+      );
+
+    }
+
+  } else if (
+    boundedAdjustment !==
+      0
+  ) {
+
+    errors.push(
+      `${label} unavailable confidence recommendation must have bounded adjustment 0.`
+    );
+
+  }
+
+  return {
+    valid:
+      errors.length === 0,
+
+    errors:
+      uniqueSortedStrings(
+        errors
+      )
+  };
+
+}
+
 function validateRecommendationDocumentEntry(
   recommendation,
   index
@@ -5672,6 +7508,26 @@ function validateRecommendationDocumentEntry(
 
   }
 
+  const canonicalScope =
+    isPlainObject(
+      recommendation.scope
+    )
+      ? createScopeIdentity(
+          recommendation.scope
+        )
+      : null;
+
+  if (
+    canonicalScope ===
+      null
+  ) {
+
+    errors.push(
+      `${label}.scope key and identity fields are inconsistent.`
+    );
+
+  }
+
   const confidenceRecommendation =
     recommendation
       .confidenceRecommendation;
@@ -5760,6 +7616,16 @@ function validateRecommendationDocumentEntry(
     }
 
   }
+
+  const semanticResult =
+    validateRecommendationSemantics(
+      recommendation,
+      label
+    );
+
+  errors.push(
+    ...semanticResult.errors
+  );
 
   return {
     valid:
@@ -6751,6 +8617,32 @@ function hasGeneratedOutputChanged({
   generatedComparable.generatedAt =
     null;
 
+  if (
+    isPlainObject(
+      existingComparable.source
+    )
+  ) {
+
+    existingComparable
+      .source
+      .aiMemoryStateHash =
+      null;
+
+  }
+
+  if (
+    isPlainObject(
+      generatedComparable.source
+    )
+  ) {
+
+    generatedComparable
+      .source
+      .aiMemoryStateHash =
+      null;
+
+  }
+
   return (
     createHash(
       existingComparable
@@ -7181,9 +9073,49 @@ function runAdaptiveOptimizer() {
       !aiMemoryStateRead.ok
     ) {
 
-      runtimeWarnings.push(
+      throw new Error(
         aiMemoryStateRead.error ||
         "AI Memory state is unavailable."
+      );
+
+    }
+
+    const aiMemoryStateValidation =
+      validateAIMemoryStateDocument(
+        aiMemoryStateRead.value
+      );
+
+    if (
+      !aiMemoryStateValidation.valid
+    ) {
+
+      throw new Error(
+        aiMemoryStateValidation.errors.join(
+          " "
+        ) ||
+        "AI Memory state validation failed."
+      );
+
+    }
+
+    const aiMemoryPairValidation =
+      validateAIMemorySourcePair({
+        document:
+          aiMemoryRead.value,
+
+        state:
+          aiMemoryStateRead.value
+      });
+
+    if (
+      !aiMemoryPairValidation.valid
+    ) {
+
+      throw new Error(
+        aiMemoryPairValidation.errors.join(
+          " "
+        ) ||
+        "AI Memory document/state pairing failed."
       );
 
     }
@@ -7275,7 +9207,6 @@ function runAdaptiveOptimizer() {
 
     const mustWriteOutput =
       (
-        sourceChanged ||
         outputChanged ||
         !existingOutput.exists ||
         !existingOutput.valid

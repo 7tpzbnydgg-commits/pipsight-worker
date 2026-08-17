@@ -1692,10 +1692,80 @@
       height:420px;
     }
   }
+
+  /* =====================================================
+     PipSight Pro — Simple GitHub Pages Admin Gate
+     Client-side deterrent only; not server-side authentication.
+  ====================================================== */
+  body.auth-locked{overflow:hidden;}
+  body.auth-locked > :not(#authGate){display:none !important;}
+  .auth-gate{
+    position:fixed;inset:0;z-index:2147483000;
+    display:flex;align-items:center;justify-content:center;
+    padding:calc(24px + var(--safe-top)) calc(18px + var(--safe-right))
+      calc(24px + var(--safe-bottom)) calc(18px + var(--safe-left));
+    overflow:auto;
+    background:radial-gradient(circle at 50% 10%,rgba(201,162,76,.09),transparent 34%),var(--bg);
+  }
+  .auth-gate[hidden]{display:none !important;}
+  .auth-panel{
+    width:100%;max-width:390px;padding:28px;
+    border:1px solid var(--border);border-top:2px solid rgba(201,162,76,.65);
+    border-radius:var(--radius);background:var(--panel);
+    box-shadow:0 24px 70px rgba(0,0,0,.38);
+  }
+  .auth-eyebrow{margin:0 0 8px;color:var(--accent);font-family:"JetBrains Mono",monospace;font-size:10px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;}
+  .auth-title{margin:0;color:var(--text);font-family:"Fraunces",serif;font-size:28px;font-weight:600;line-height:1.2;}
+  .auth-subtitle{margin:9px 0 22px;color:var(--muted);font-size:12px;line-height:1.6;}
+  .auth-field{display:block;margin-top:14px;}
+  .auth-field-label{display:block;margin-bottom:6px;color:var(--muted-light);font-family:"JetBrains Mono",monospace;font-size:10px;letter-spacing:.05em;text-transform:uppercase;}
+  .auth-input{
+    width:100%;min-height:44px;padding:10px 12px;
+    border:1px solid var(--border-strong);border-radius:4px;outline:none;
+    background:var(--panel-soft);color:var(--text);font-family:"Inter",sans-serif;font-size:14px;
+  }
+  .auth-input:focus{border-color:rgba(201,162,76,.72);box-shadow:0 0 0 3px rgba(201,162,76,.08);}
+  .auth-input:disabled,.auth-submit:disabled{cursor:not-allowed;opacity:.55;}
+  .auth-submit{
+    width:100%;min-height:44px;margin-top:18px;padding:10px 14px;
+    border:1px solid rgba(201,162,76,.55);border-radius:4px;
+    background:var(--accent-bg);color:var(--accent);cursor:pointer;
+    font-family:"JetBrains Mono",monospace;font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;
+  }
+  .auth-submit:hover:not(:disabled){border-color:var(--accent);}
+  .auth-message{min-height:20px;margin-top:12px;color:var(--muted);font-family:"JetBrains Mono",monospace;font-size:10px;line-height:1.55;}
+  .auth-message.error{color:var(--sell);}
+  .auth-message.locked{color:var(--hold);}
+  .auth-logout{margin-left:6px;}
+  @media (max-width:480px){.auth-panel{padding:22px 18px;}.auth-title{font-size:25px;}}
+
 </style>
 </head>
 
-<body>
+<body class="auth-locked">
+
+<section class="auth-gate" id="authGate" aria-labelledby="authTitle">
+  <form class="auth-panel" id="authForm" autocomplete="on" novalidate>
+    <p class="auth-eyebrow">Restricted Access</p>
+    <h1 class="auth-title" id="authTitle">PipSight Pro Admin</h1>
+    <p class="auth-subtitle">Enter the administrator credentials to open the dashboard.</p>
+
+    <label class="auth-field">
+      <span class="auth-field-label">Username</span>
+      <input class="auth-input" id="authUsername" name="username" type="text"
+        autocomplete="username" autocapitalize="none" spellcheck="false" required />
+    </label>
+
+    <label class="auth-field">
+      <span class="auth-field-label">Password</span>
+      <input class="auth-input" id="authPassword" name="password" type="password"
+        autocomplete="current-password" required />
+    </label>
+
+    <button class="auth-submit" id="authSubmit" type="submit">Open Dashboard</button>
+    <div class="auth-message" id="authMessage" role="status" aria-live="polite"></div>
+  </form>
+</section>
 
 <header class="header">
   <div class="header-inner">
@@ -1717,6 +1787,15 @@
         style="margin-top:8px;"
       >
         📥 Backup Data
+      </button>
+
+      <button
+        class="iconbtn auth-logout"
+        type="button"
+        onclick="logoutAdminSession()"
+        style="margin-top:8px;"
+      >
+        Logout
       </button>
     </div>
   </div>
@@ -24363,6 +24442,206 @@ window.addEventListener(
   }
 );
 
+
+// ════════════════════════════════════════════════════════════════
+// SIMPLE GITHUB PAGES ADMIN GATE
+// Password is stored only as a salted PBKDF2-SHA256 verifier.
+// This is a client-side deterrent, not a server-side security boundary.
+// ════════════════════════════════════════════════════════════════
+const ADMIN_AUTH_CONFIG = Object.freeze({
+  username:"Wasim khan",
+  saltBase64:"17e0NaXd5PWK3L4lhyIkvQ==",
+  verifierBase64:"ynjveJ6lkP5NWHbLBM+Yf96g3Cxr0Q+TiSJ5BXChtes=",
+  iterations:210000,
+  maxAttempts:5,
+  lockoutMs:15*60*1000,
+  sessionMs:8*60*60*1000,
+  sessionKey:"pipsight.admin.session.v1",
+  failureKey:"pipsight.admin.failures.v1"
+});
+
+let ADMIN_APP_STARTED=false;
+let ADMIN_LOCK_TIMER=null;
+
+function adminBase64Bytes(value){
+  return Uint8Array.from(
+    atob(String(value||"")),
+    char=>char.charCodeAt(0)
+  );
+}
+
+function adminBytesEqual(left,right){
+  if(left.length!==right.length) return false;
+  let diff=0;
+  for(let i=0;i<left.length;i++) diff|=left[i]^right[i];
+  return diff===0;
+}
+
+async function adminPasswordMatches(password){
+  if(!window.crypto?.subtle) throw new Error("Web Crypto unavailable");
+  const encoder=new TextEncoder();
+  const key=await window.crypto.subtle.importKey(
+    "raw",encoder.encode(String(password??"")),"PBKDF2",false,["deriveBits"]
+  );
+  const bits=await window.crypto.subtle.deriveBits({
+    name:"PBKDF2",hash:"SHA-256",iterations:ADMIN_AUTH_CONFIG.iterations,
+    salt:adminBase64Bytes(ADMIN_AUTH_CONFIG.saltBase64)
+  },key,256);
+  return adminBytesEqual(
+    new Uint8Array(bits),
+    adminBase64Bytes(ADMIN_AUTH_CONFIG.verifierBase64)
+  );
+}
+
+function adminFailureState(){
+  const state=loadJSON(ADMIN_AUTH_CONFIG.failureKey,{count:0,lockedUntil:0});
+  return {
+    count:Number.isInteger(state?.count)&&state.count>=0?state.count:0,
+    lockedUntil:Number.isFinite(Number(state?.lockedUntil))?Number(state.lockedUntil):0
+  };
+}
+
+function adminIsLocked(now=Date.now()){
+  const state=adminFailureState();
+  if(state.lockedUntil>now) return true;
+  if(state.lockedUntil>0) removeStoredJSON(ADMIN_AUTH_CONFIG.failureKey);
+  return false;
+}
+
+function adminRecordFailure(now=Date.now()){
+  const next=adminFailureState().count+1;
+  if(next>=ADMIN_AUTH_CONFIG.maxAttempts){
+    saveJSON(ADMIN_AUTH_CONFIG.failureKey,{count:0,lockedUntil:now+ADMIN_AUTH_CONFIG.lockoutMs});
+    return {locked:true,remaining:0};
+  }
+  saveJSON(ADMIN_AUTH_CONFIG.failureKey,{count:next,lockedUntil:0});
+  return {locked:false,remaining:ADMIN_AUTH_CONFIG.maxAttempts-next};
+}
+
+function adminCreateSession(){
+  const now=Date.now();
+  saveJSON(ADMIN_AUTH_CONFIG.sessionKey,{authenticated:true,issuedAt:now,expiresAt:now+ADMIN_AUTH_CONFIG.sessionMs});
+}
+
+function adminSessionValid(now=Date.now()){
+  const session=loadJSON(ADMIN_AUTH_CONFIG.sessionKey,null);
+  const valid=!!(
+    session?.authenticated===true &&
+    Number.isFinite(Number(session.issuedAt)) &&
+    Number.isFinite(Number(session.expiresAt)) &&
+    Number(session.issuedAt)<=now && Number(session.expiresAt)>now &&
+    Number(session.expiresAt)-Number(session.issuedAt)<=ADMIN_AUTH_CONFIG.sessionMs+1000
+  );
+  if(!valid) removeStoredJSON(ADMIN_AUTH_CONFIG.sessionKey);
+  return valid;
+}
+
+function adminMessage(text,state=""){
+  const el=document.getElementById("authMessage");
+  if(!el) return;
+  el.textContent=String(text||"");
+  el.className=`auth-message${state?` ${state}`:""}`;
+}
+
+function adminDisableForm(disabled){
+  ["authUsername","authPassword","authSubmit"].forEach(id=>{
+    const el=document.getElementById(id);
+    if(el) el.disabled=!!disabled;
+  });
+}
+
+function adminRefreshLock(){
+  if(ADMIN_LOCK_TIMER!==null){clearInterval(ADMIN_LOCK_TIMER);ADMIN_LOCK_TIMER=null;}
+  const update=()=>{
+    const state=adminFailureState();
+    const remaining=Math.max(0,state.lockedUntil-Date.now());
+    if(!adminIsLocked()){
+      adminDisableForm(false);
+      adminMessage("");
+      if(ADMIN_LOCK_TIMER!==null){
+        clearInterval(ADMIN_LOCK_TIMER);
+        ADMIN_LOCK_TIMER=null;
+      }
+      return;
+    }
+    adminDisableForm(true);
+    const seconds=Math.ceil(remaining/1000);
+    adminMessage(`Too many failed attempts. Try again in ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,"0")}.`,"locked");
+  };
+  update();
+  if(adminIsLocked()) ADMIN_LOCK_TIMER=setInterval(update,1000);
+}
+
+async function adminStartDashboard(){
+  if(ADMIN_APP_STARTED) return;
+  ADMIN_APP_STARTED=true;
+  const gate=document.getElementById("authGate");
+  if(gate) gate.hidden=true;
+  document.body.classList.remove("auth-locked");
+  try{await initializeApp();}catch(error){ADMIN_APP_STARTED=false;throw error;}
+}
+
+async function adminHandleLogin(event){
+  event.preventDefault();
+  if(adminIsLocked()){adminRefreshLock();return;}
+
+  const userEl=document.getElementById("authUsername");
+  const passEl=document.getElementById("authPassword");
+  const submitEl=document.getElementById("authSubmit");
+  const username=String(userEl?.value||"").trim();
+  const password=String(passEl?.value||"");
+
+  if(!username||!password){adminMessage("Enter both username and password.","error");return;}
+  if(submitEl) submitEl.disabled=true;
+  adminMessage("Verifying credentials…");
+
+  let passwordOK=false;
+  try{passwordOK=await adminPasswordMatches(password);}
+  catch(error){
+    console.error("Admin credential verification failed:",error);
+    adminMessage("Authentication is unavailable in this browser.","error");
+    if(submitEl) submitEl.disabled=false;
+    return;
+  }
+
+  if(username===ADMIN_AUTH_CONFIG.username&&passwordOK){
+    removeStoredJSON(ADMIN_AUTH_CONFIG.failureKey);
+    adminCreateSession();
+    if(passEl) passEl.value="";
+    await adminStartDashboard();
+    return;
+  }
+
+  if(passEl){passEl.value="";passEl.focus();}
+  const failure=adminRecordFailure();
+  if(failure.locked){adminRefreshLock();return;}
+  adminMessage(`Invalid credentials. ${failure.remaining} attempt${failure.remaining===1?"":"s"} remaining before temporary lock.`,"error");
+  if(submitEl) submitEl.disabled=false;
+}
+
+function logoutAdminSession(){
+  removeStoredJSON(ADMIN_AUTH_CONFIG.sessionKey);
+  clearAppIntervals();
+  window.location.reload();
+}
+
+async function initializeAuthenticationGate(){
+  const form=document.getElementById("authForm");
+  if(!form){document.body.classList.add("auth-locked");return;}
+  form.addEventListener("submit",event=>{
+    adminHandleLogin(event).catch(error=>{
+      console.error("Admin login failed:",error);
+      adminMessage("Authentication failed. Please try again.","error");
+    });
+  });
+  if(adminSessionValid()){await adminStartDashboard();return;}
+  document.body.classList.add("auth-locked");
+  const gate=document.getElementById("authGate");
+  if(gate) gate.hidden=false;
+  adminRefreshLock();
+  if(!adminIsLocked()) document.getElementById("authUsername")?.focus();
+}
+
 // ════════════════════════════════════════════════════════════════
 // APPLICATION STARTUP
 // ════════════════════════════════════════════════════════════════
@@ -24405,14 +24684,14 @@ if(
   document.addEventListener(
     "DOMContentLoaded",
     ()=>{
-      initializeApp();
+      initializeAuthenticationGate();
     },
     {
       once:true
     }
   );
 }else{
-  initializeApp();
+  initializeAuthenticationGate();
 }
 
 // ════════════════════════════════════════════════════════════════

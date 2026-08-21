@@ -1,22 +1,24 @@
 {
-  "generatedAt": "2026-08-21T20:54:23.292Z",
+  "generatedAt": "2026-08-21T21:00:32.593Z",
   "engineVersion": "1.0.1",
   "strategyVersion": "scalp-professional-confluence-2.0.0",
   "professionalPipelineVersion": "2.0.0",
   "signals": [
     {
       "pair": "XAU/USD",
-      "signal": "WAIT",
-      "confidence": 0,
+      "signal": "SELL",
+      "confidence": 95,
       "reasons": [
-        "Generated ATR trade-plan geometry is invalid"
+        "SELL professional confluence passed at score 74.03 with edge 48.51",
+        "5M setup executed on 5M",
+        "Independent immutable Safety Gate approved the signal candidate."
       ],
       "steps": [
         {
           "name": "Data Availability",
           "pass": true,
           "status": "pass",
-          "detail": "1500 complete closed M5 candles available; latest 2026-08-21T20:45:00.000Z"
+          "detail": "1500 complete closed M5 candles available; latest 2026-08-21T20:55:00.000Z"
         },
         {
           "name": "EMA Trend",
@@ -31,16 +33,16 @@
           "name": "MACD",
           "pass": true,
           "status": "pass",
-          "detail": "SELL evidence 16/18. SELL MACD relation supportive; histogram supportive; acceleration supportive",
+          "detail": "SELL evidence 12/18. SELL MACD relation supportive; histogram supportive; acceleration not supportive",
           "direction": "SELL",
-          "score": 16,
+          "score": 12,
           "maximumScore": 18
         },
         {
           "name": "RSI",
           "pass": true,
           "status": "pass",
-          "detail": "SELL evidence 14/18. RSI 26.73; slope -3.88; three-bar momentum -6.72",
+          "detail": "SELL evidence 14/18. RSI 24.81; slope -1.89; three-bar momentum -5.8",
           "direction": "SELL",
           "score": 14,
           "maximumScore": 18
@@ -49,7 +51,7 @@
           "name": "ADX / DMI",
           "pass": true,
           "status": "pass",
-          "detail": "SELL evidence 16/16. ADX 37.11 (STRONG); +DI 8.99, -DI 41.77",
+          "detail": "SELL evidence 16/16. ADX 41.16 (STRONG); +DI 7.88, -DI 39.91",
           "direction": "SELL",
           "score": 16,
           "maximumScore": 16
@@ -82,7 +84,7 @@
           "name": "ATR Volatility",
           "pass": true,
           "status": "pass",
-          "detail": "ATR(14) 3.135119; 0.0681% of price; percentile 1.5; regime LOW"
+          "detail": "ATR(14) 3.083624; 0.067% of price; percentile 1.5; regime LOW"
         },
         {
           "name": "News",
@@ -92,22 +94,67 @@
         },
         {
           "name": "M5 Entry Execution",
-          "pass": false,
-          "status": "fail",
-          "detail": "Generated ATR trade-plan geometry is invalid"
+          "pass": true,
+          "status": "pass",
+          "detail": "DIRECTIONAL_FOLLOW_THROUGH confirmed on M5; execution-aware SL/TP passed"
+        },
+        {
+          "name": "Risk Reward",
+          "pass": true,
+          "status": "pass",
+          "detail": "Execution-aware plan passed: 2R TP1, 1.215 ATR stop on M5, regime LOW"
+        },
+        {
+          "name": "Confluence Decision",
+          "pass": true,
+          "status": "pass",
+          "detail": "SELL qualified: score 74.03, opposing score 25.52, edge 48.51"
         },
         {
           "name": "AI Autonomous Decision",
           "pass": true,
-          "status": "info",
-          "detail": "Autonomous AI evaluated the deterministic HOLD; no validated live direction activation was approved"
+          "status": "pass",
+          "detail": "AI AUTONOMOUS authority approved SELL; Safety Gate APPROVED"
         }
       ],
-      "tradePlan": null,
+      "tradePlan": {
+        "entry": 4603.32,
+        "stopLoss": 4607.07,
+        "target1": 4595.82,
+        "target2": 4592.44,
+        "target3": 4588.32,
+        "riskReward": 2,
+        "atr": 3.08,
+        "atrPeriod": 14,
+        "atrPercent": 0.066987,
+        "atrPercentile": 1.5,
+        "atrRegime": "LOW",
+        "riskModel": "ATR_REGIME_STRUCTURE",
+        "stopAtrMultiplier": 1.215,
+        "baseStopAtrMultiplier": 1.215,
+        "structureLevel": 4606.18,
+        "opposingLevel": 4591.98,
+        "roomToOpposingLevelR": 3.024,
+        "targetAtrMultipliers": {
+          "target1": 2.4322,
+          "target2": 3.5283,
+          "target3": 4.8644
+        },
+        "direction": "SELL",
+        "stop": 4607.07,
+        "targets": [
+          4595.82,
+          4592.44,
+          4588.32
+        ],
+        "risk": 3.75,
+        "requestedRiskPercent": null,
+        "source": null
+      },
       "professionalPipelineVersion": "2.0.0",
       "indicatorSnapshot": {
         "timeframe": "M5",
-        "analyzedCandleAt": "2026-08-21T20:45:00.000Z",
+        "analyzedCandleAt": "2026-08-21T20:55:00.000Z",
         "ema": {
           "available": true,
           "direction": null,
@@ -115,7 +162,7 @@
           "alignmentCount": 3,
           "fullAlignment": false,
           "partialAlignment": true,
-          "lastClose": 4604.99186,
+          "lastClose": 4603.3239,
           "periods": {
             "p20": 30,
             "p50": 60,
@@ -123,16 +170,16 @@
             "p200": 200
           },
           "values": {
-            "ema20": 4616.087655940797,
-            "ema50": 4614.55882540512,
-            "ema100": 4608.187249365374,
-            "ema200": 4590.006189857799
+            "ema20": 4614.593450953393,
+            "ema50": 4613.886521729433,
+            "ema100": 4608.02858134987,
+            "ema200": 4590.286158184763
           },
           "slopes": {
-            "ema20": -0.0004372220928556192,
-            "ema50": -0.00017191930915265717,
-            "ema100": -0.000015330868247659825,
-            "ema200": 0.00011275636810397124
+            "ema20": -0.0004908262687460636,
+            "ema50": -0.00021649738523170424,
+            "ema100": -0.00004849133818624847,
+            "ema200": 0.00009353635860466431
           },
           "bullishChecks": [
             false,
@@ -153,11 +200,11 @@
         },
         "macd": {
           "available": true,
-          "macd": -3.5869482822572536,
-          "signal": -2.2264673835724063,
-          "histogram": -1.3604808986848473,
-          "previousHistogram": -1.2626231806879464,
-          "histogramSlope": -0.0978577179969009,
+          "macd": -4.215856617570353,
+          "signal": -2.8906099809331094,
+          "histogram": -1.3252466366372433,
+          "previousHistogram": -1.3313237528055701,
+          "histogramSlope": 0.006077116168326846,
           "crossedBullish": false,
           "crossedBearish": false,
           "direction": "SELL"
@@ -165,10 +212,10 @@
         "rsi": {
           "available": true,
           "period": 14,
-          "current": 26.72916710997238,
-          "previous": 30.613432091000305,
-          "slope": -3.8842649810279255,
-          "momentum": -6.7162509166031725,
+          "current": 24.81425237887818,
+          "previous": 26.708933740648604,
+          "slope": -1.8946813617704237,
+          "momentum": -5.799179712122125,
           "crossedAbove50": false,
           "crossedBelow50": false,
           "overbought": false,
@@ -178,24 +225,24 @@
         "dmiAdx": {
           "available": true,
           "period": 14,
-          "plusDI": 8.992845489385243,
-          "minusDI": 41.77042046771206,
-          "adx": 37.1094000188949,
-          "previousAdx": 34.99708645925648,
-          "adxSlope": 2.112313559638423,
+          "plusDI": 7.883523846677993,
+          "minusDI": 39.914397529255794,
+          "adx": 41.15923473123782,
+          "previousAdx": 39.17047508661593,
+          "adxSlope": 1.9887596446218865,
           "direction": "SELL",
           "trendStrength": "STRONG"
         },
         "atr": {
           "available": true,
           "period": 14,
-          "value": 3.135118913187429,
-          "previous": 3.0797265218941257,
-          "slope": 0.05539239129330342,
-          "percent": 0.06808087850099759,
+          "value": 3.083623858819714,
+          "previous": 3.162961847959744,
+          "slope": -0.0793379891400301,
+          "percent": 0.06698689742035562,
           "percentile": 1.5,
-          "median": 5.3990774488077165,
-          "medianRatio": 0.5806767809711195,
+          "median": 5.290102977496149,
+          "medianRatio": 0.5829043162179084,
           "regime": "LOW"
         },
         "structure": {
@@ -205,1415 +252,1410 @@
           "radius": 3,
           "swingHighs": [
             {
-              "index": 4,
-              "date": "2026-08-16T16:10:00.000Z",
-              "price": 4375.79369
-            },
-            {
-              "index": 10,
+              "index": 8,
               "date": "2026-08-16T16:40:00.000Z",
               "price": 4375.79455
             },
             {
-              "index": 14,
+              "index": 12,
               "date": "2026-08-16T17:00:00.000Z",
               "price": 4375.79463
             },
             {
-              "index": 18,
+              "index": 16,
               "date": "2026-08-16T17:20:00.000Z",
               "price": 4375.79369
             },
             {
-              "index": 29,
+              "index": 27,
               "date": "2026-08-16T18:15:00.000Z",
               "price": 4375.81578
             },
             {
-              "index": 35,
+              "index": 33,
               "date": "2026-08-16T18:45:00.000Z",
               "price": 4375.80461
             },
             {
-              "index": 43,
+              "index": 41,
               "date": "2026-08-16T19:25:00.000Z",
               "price": 4375.80041
             },
             {
-              "index": 49,
+              "index": 47,
               "date": "2026-08-16T19:55:00.000Z",
               "price": 4375.80472
             },
             {
-              "index": 53,
+              "index": 51,
               "date": "2026-08-16T20:15:00.000Z",
               "price": 4375.80023
             },
             {
-              "index": 61,
+              "index": 59,
               "date": "2026-08-16T20:55:00.000Z",
               "price": 4375.84991
             },
             {
-              "index": 67,
+              "index": 65,
               "date": "2026-08-16T21:25:00.000Z",
               "price": 4375.79832
             },
             {
-              "index": 74,
+              "index": 72,
               "date": "2026-08-16T22:00:00.000Z",
               "price": 4381.54493
             },
             {
-              "index": 86,
+              "index": 84,
               "date": "2026-08-16T23:00:00.000Z",
               "price": 4386.15729
             },
             {
-              "index": 115,
+              "index": 113,
               "date": "2026-08-17T01:25:00.000Z",
               "price": 4415.05846
             },
             {
-              "index": 128,
+              "index": 126,
               "date": "2026-08-17T02:30:00.000Z",
               "price": 4397.344
             },
             {
-              "index": 134,
+              "index": 132,
               "date": "2026-08-17T03:00:00.000Z",
               "price": 4394.73942
             },
             {
-              "index": 148,
+              "index": 146,
               "date": "2026-08-17T04:10:00.000Z",
               "price": 4399.08499
             },
             {
-              "index": 155,
+              "index": 153,
               "date": "2026-08-17T04:45:00.000Z",
               "price": 4397.73077
             },
             {
-              "index": 164,
+              "index": 162,
               "date": "2026-08-17T05:30:00.000Z",
               "price": 4400.63369
             },
             {
-              "index": 171,
+              "index": 169,
               "date": "2026-08-17T06:05:00.000Z",
               "price": 4398.05943
             },
             {
-              "index": 180,
+              "index": 178,
               "date": "2026-08-17T06:50:00.000Z",
               "price": 4403.77593
             },
             {
-              "index": 199,
+              "index": 197,
               "date": "2026-08-17T08:25:00.000Z",
               "price": 4403.74346
             },
             {
-              "index": 208,
+              "index": 206,
               "date": "2026-08-17T09:10:00.000Z",
               "price": 4400.09419
             },
             {
-              "index": 224,
+              "index": 222,
               "date": "2026-08-17T10:30:00.000Z",
               "price": 4406.83165
             },
             {
-              "index": 238,
+              "index": 236,
               "date": "2026-08-17T11:40:00.000Z",
               "price": 4405.75411
             },
             {
-              "index": 246,
+              "index": 244,
               "date": "2026-08-17T12:20:00.000Z",
               "price": 4397.73077
             },
             {
-              "index": 256,
+              "index": 254,
               "date": "2026-08-17T13:10:00.000Z",
               "price": 4388.97733
             },
             {
-              "index": 265,
+              "index": 263,
               "date": "2026-08-17T13:55:00.000Z",
               "price": 4414.62123
             },
             {
-              "index": 271,
+              "index": 269,
               "date": "2026-08-17T14:25:00.000Z",
               "price": 4427.32545
             },
             {
-              "index": 284,
+              "index": 282,
               "date": "2026-08-17T15:30:00.000Z",
               "price": 4425.95379
             },
             {
-              "index": 291,
+              "index": 289,
               "date": "2026-08-17T16:05:00.000Z",
               "price": 4427.91357
             },
             {
-              "index": 303,
+              "index": 301,
               "date": "2026-08-17T17:05:00.000Z",
               "price": 4426.49759
             },
             {
-              "index": 312,
+              "index": 310,
               "date": "2026-08-17T17:50:00.000Z",
               "price": 4420.28025
             },
             {
-              "index": 324,
+              "index": 322,
               "date": "2026-08-17T18:50:00.000Z",
               "price": 4407.72319
             },
             {
-              "index": 338,
+              "index": 336,
               "date": "2026-08-17T20:00:00.000Z",
               "price": 4421.44012
             },
             {
-              "index": 347,
+              "index": 345,
               "date": "2026-08-17T20:45:00.000Z",
               "price": 4417.23168
             },
             {
-              "index": 362,
+              "index": 360,
               "date": "2026-08-17T22:00:00.000Z",
               "price": 4418.91295
             },
             {
-              "index": 372,
+              "index": 370,
               "date": "2026-08-17T22:50:00.000Z",
               "price": 4415.79087
             },
             {
-              "index": 399,
+              "index": 397,
               "date": "2026-08-18T01:05:00.000Z",
               "price": 4435.5801
             },
             {
-              "index": 414,
+              "index": 412,
               "date": "2026-08-18T02:20:00.000Z",
               "price": 4405.86862
             },
             {
-              "index": 422,
+              "index": 420,
               "date": "2026-08-18T03:00:00.000Z",
               "price": 4405.05589
             },
             {
-              "index": 445,
+              "index": 443,
               "date": "2026-08-18T04:55:00.000Z",
               "price": 4395.20224
             },
             {
-              "index": 450,
+              "index": 448,
               "date": "2026-08-18T05:20:00.000Z",
               "price": 4396.18518
             },
             {
-              "index": 456,
+              "index": 454,
               "date": "2026-08-18T05:50:00.000Z",
               "price": 4397.53738
             },
             {
-              "index": 464,
+              "index": 462,
               "date": "2026-08-18T06:30:00.000Z",
               "price": 4400.13156
             },
             {
-              "index": 476,
+              "index": 474,
               "date": "2026-08-18T07:30:00.000Z",
               "price": 4403.54045
             },
             {
-              "index": 490,
+              "index": 488,
               "date": "2026-08-18T08:40:00.000Z",
               "price": 4398.65776
             },
             {
-              "index": 501,
+              "index": 499,
               "date": "2026-08-18T09:35:00.000Z",
               "price": 4395.5284
             },
             {
-              "index": 506,
+              "index": 504,
               "date": "2026-08-18T10:00:00.000Z",
               "price": 4395.6044
             },
             {
-              "index": 515,
+              "index": 513,
               "date": "2026-08-18T10:45:00.000Z",
               "price": 4399.47206
             },
             {
-              "index": 534,
+              "index": 532,
               "date": "2026-08-18T12:20:00.000Z",
               "price": 4400.0528
             },
             {
-              "index": 543,
+              "index": 541,
               "date": "2026-08-18T13:05:00.000Z",
               "price": 4397.53738
             },
             {
-              "index": 554,
+              "index": 552,
               "date": "2026-08-18T14:00:00.000Z",
               "price": 4404.51022
             },
             {
-              "index": 558,
+              "index": 556,
               "date": "2026-08-18T14:20:00.000Z",
               "price": 4404.70422
             },
             {
-              "index": 580,
+              "index": 578,
               "date": "2026-08-18T16:10:00.000Z",
               "price": 4371.5847
             },
             {
-              "index": 589,
+              "index": 587,
               "date": "2026-08-18T16:55:00.000Z",
               "price": 4368.52912
             },
             {
-              "index": 593,
+              "index": 591,
               "date": "2026-08-18T17:15:00.000Z",
               "price": 4368.14747
             },
             {
-              "index": 617,
+              "index": 615,
               "date": "2026-08-18T19:15:00.000Z",
               "price": 4358.05805
             },
             {
-              "index": 622,
+              "index": 620,
               "date": "2026-08-18T19:40:00.000Z",
               "price": 4357.95169
             },
             {
-              "index": 645,
+              "index": 643,
               "date": "2026-08-18T21:35:00.000Z",
               "price": 4334.7225
             },
             {
-              "index": 652,
+              "index": 650,
               "date": "2026-08-18T22:10:00.000Z",
               "price": 4343.35203
             },
             {
-              "index": 663,
+              "index": 661,
               "date": "2026-08-18T23:05:00.000Z",
               "price": 4338.39479
             },
             {
-              "index": 678,
+              "index": 676,
               "date": "2026-08-19T00:20:00.000Z",
               "price": 4346.71064
             },
             {
-              "index": 682,
+              "index": 680,
               "date": "2026-08-19T00:40:00.000Z",
               "price": 4347.75561
             },
             {
-              "index": 704,
+              "index": 702,
               "date": "2026-08-19T02:30:00.000Z",
               "price": 4362.70139
             },
             {
-              "index": 717,
+              "index": 715,
               "date": "2026-08-19T03:35:00.000Z",
               "price": 4359.76806
             },
             {
-              "index": 734,
+              "index": 732,
               "date": "2026-08-19T05:00:00.000Z",
               "price": 4350.28494
             },
             {
-              "index": 740,
+              "index": 738,
               "date": "2026-08-19T05:30:00.000Z",
               "price": 4344.9924
             },
             {
-              "index": 750,
+              "index": 748,
               "date": "2026-08-19T06:20:00.000Z",
               "price": 4347.82609
             },
             {
-              "index": 765,
+              "index": 763,
               "date": "2026-08-19T07:35:00.000Z",
               "price": 4362.62106
             },
             {
-              "index": 773,
+              "index": 771,
               "date": "2026-08-19T08:15:00.000Z",
               "price": 4362.8114
             },
             {
-              "index": 779,
+              "index": 777,
               "date": "2026-08-19T08:45:00.000Z",
               "price": 4363.00175
             },
             {
-              "index": 800,
+              "index": 798,
               "date": "2026-08-19T10:30:00.000Z",
               "price": 4369.29261
             },
             {
-              "index": 809,
+              "index": 807,
               "date": "2026-08-19T11:15:00.000Z",
               "price": 4375.44645
             },
             {
-              "index": 832,
+              "index": 830,
               "date": "2026-08-19T13:10:00.000Z",
               "price": 4463.28944
             },
             {
-              "index": 836,
+              "index": 834,
               "date": "2026-08-19T13:30:00.000Z",
               "price": 4465.28243
             },
             {
-              "index": 850,
+              "index": 848,
               "date": "2026-08-19T14:40:00.000Z",
               "price": 4496.60506
             },
             {
-              "index": 869,
+              "index": 867,
               "date": "2026-08-19T16:15:00.000Z",
               "price": 4498.28809
             },
             {
-              "index": 878,
+              "index": 876,
               "date": "2026-08-19T17:00:00.000Z",
               "price": 4498.62792
             },
             {
-              "index": 886,
+              "index": 884,
               "date": "2026-08-19T17:40:00.000Z",
               "price": 4491.95939
             },
             {
-              "index": 891,
+              "index": 889,
               "date": "2026-08-19T18:05:00.000Z",
               "price": 4495.518
             },
             {
-              "index": 921,
+              "index": 919,
               "date": "2026-08-19T20:35:00.000Z",
               "price": 4523.04491
             },
             {
-              "index": 925,
+              "index": 923,
               "date": "2026-08-19T20:55:00.000Z",
               "price": 4524.47742
             },
             {
-              "index": 930,
+              "index": 928,
               "date": "2026-08-19T21:20:00.000Z",
               "price": 4523.10723
             },
             {
-              "index": 938,
+              "index": 936,
               "date": "2026-08-19T22:00:00.000Z",
               "price": 4527.83263
             },
             {
-              "index": 944,
+              "index": 942,
               "date": "2026-08-19T22:30:00.000Z",
               "price": 4522.02005
             },
             {
-              "index": 950,
+              "index": 948,
               "date": "2026-08-19T23:00:00.000Z",
               "price": 4525.76298
             },
             {
-              "index": 966,
+              "index": 964,
               "date": "2026-08-20T00:20:00.000Z",
               "price": 4521.85344
             },
             {
-              "index": 978,
+              "index": 976,
               "date": "2026-08-20T01:20:00.000Z",
               "price": 4502.88184
             },
             {
-              "index": 988,
+              "index": 986,
               "date": "2026-08-20T02:10:00.000Z",
               "price": 4499.64003
             },
             {
-              "index": 999,
+              "index": 997,
               "date": "2026-08-20T03:05:00.000Z",
               "price": 4497.63676
             },
             {
-              "index": 1009,
+              "index": 1007,
               "date": "2026-08-20T03:55:00.000Z",
               "price": 4500.85516
             },
             {
-              "index": 1023,
+              "index": 1021,
               "date": "2026-08-20T05:05:00.000Z",
               "price": 4493.2976
             },
             {
-              "index": 1037,
+              "index": 1035,
               "date": "2026-08-20T06:15:00.000Z",
               "price": 4495.59432
             },
             {
-              "index": 1043,
+              "index": 1041,
               "date": "2026-08-20T06:45:00.000Z",
               "price": 4495.65144
             },
             {
-              "index": 1054,
+              "index": 1052,
               "date": "2026-08-20T07:40:00.000Z",
               "price": 4493.52108
             },
             {
-              "index": 1062,
+              "index": 1060,
               "date": "2026-08-20T08:20:00.000Z",
               "price": 4499.16843
             },
             {
-              "index": 1073,
+              "index": 1071,
               "date": "2026-08-20T09:15:00.000Z",
               "price": 4493.77612
             },
             {
-              "index": 1079,
+              "index": 1077,
               "date": "2026-08-20T09:45:00.000Z",
               "price": 4490.14413
             },
             {
-              "index": 1088,
+              "index": 1086,
               "date": "2026-08-20T10:30:00.000Z",
               "price": 4495.12233
             },
             {
-              "index": 1094,
+              "index": 1092,
               "date": "2026-08-20T11:00:00.000Z",
               "price": 4491.71686
             },
             {
-              "index": 1099,
+              "index": 1097,
               "date": "2026-08-20T11:25:00.000Z",
               "price": 4489.94253
             },
             {
-              "index": 1118,
+              "index": 1116,
               "date": "2026-08-20T13:00:00.000Z",
               "price": 4483.90279
             },
             {
-              "index": 1130,
+              "index": 1128,
               "date": "2026-08-20T14:00:00.000Z",
               "price": 4491.47858
             },
             {
-              "index": 1146,
+              "index": 1144,
               "date": "2026-08-20T15:20:00.000Z",
               "price": 4544.49492
             },
             {
-              "index": 1154,
+              "index": 1152,
               "date": "2026-08-20T16:00:00.000Z",
               "price": 4525.27575
             },
             {
-              "index": 1166,
+              "index": 1164,
               "date": "2026-08-20T17:00:00.000Z",
               "price": 4512.83903
             },
             {
-              "index": 1179,
+              "index": 1177,
               "date": "2026-08-20T18:05:00.000Z",
               "price": 4522.27838
             },
             {
-              "index": 1193,
+              "index": 1191,
               "date": "2026-08-20T19:15:00.000Z",
               "price": 4529.23794
             },
             {
-              "index": 1201,
+              "index": 1199,
               "date": "2026-08-20T19:55:00.000Z",
               "price": 4532.26976
             },
             {
-              "index": 1212,
+              "index": 1210,
               "date": "2026-08-20T20:50:00.000Z",
               "price": 4521.86617
             },
             {
-              "index": 1220,
+              "index": 1218,
               "date": "2026-08-20T21:30:00.000Z",
               "price": 4519.49916
             },
             {
-              "index": 1226,
+              "index": 1224,
               "date": "2026-08-20T22:00:00.000Z",
               "price": 4521.20445
             },
             {
-              "index": 1242,
+              "index": 1240,
               "date": "2026-08-20T23:20:00.000Z",
               "price": 4532.50737
             },
             {
-              "index": 1250,
+              "index": 1248,
               "date": "2026-08-21T00:00:00.000Z",
               "price": 4528.20864
             },
             {
-              "index": 1269,
+              "index": 1267,
               "date": "2026-08-21T01:35:00.000Z",
               "price": 4539.17139
             },
             {
-              "index": 1284,
+              "index": 1282,
               "date": "2026-08-21T02:50:00.000Z",
               "price": 4543.18295
             },
             {
-              "index": 1293,
+              "index": 1291,
               "date": "2026-08-21T03:35:00.000Z",
               "price": 4537.83013
             },
             {
-              "index": 1304,
+              "index": 1302,
               "date": "2026-08-21T04:30:00.000Z",
               "price": 4547.99406
             },
             {
-              "index": 1332,
+              "index": 1330,
               "date": "2026-08-21T06:50:00.000Z",
               "price": 4567.87868
             },
             {
-              "index": 1337,
+              "index": 1335,
               "date": "2026-08-21T07:15:00.000Z",
               "price": 4567.67003
             },
             {
-              "index": 1343,
+              "index": 1341,
               "date": "2026-08-21T07:45:00.000Z",
               "price": 4567.1837
             },
             {
-              "index": 1361,
+              "index": 1359,
               "date": "2026-08-21T09:15:00.000Z",
               "price": 4601.08586
             },
             {
-              "index": 1370,
+              "index": 1368,
               "date": "2026-08-21T10:00:00.000Z",
               "price": 4589.26113
             },
             {
-              "index": 1378,
+              "index": 1376,
               "date": "2026-08-21T10:40:00.000Z",
               "price": 4593.68827
             },
             {
-              "index": 1389,
+              "index": 1387,
               "date": "2026-08-21T11:35:00.000Z",
               "price": 4606.17632
             },
             {
-              "index": 1409,
+              "index": 1407,
               "date": "2026-08-21T13:15:00.000Z",
               "price": 4587.78731
             },
             {
-              "index": 1413,
+              "index": 1411,
               "date": "2026-08-21T13:35:00.000Z",
               "price": 4591.36823
             },
             {
-              "index": 1423,
+              "index": 1421,
               "date": "2026-08-21T14:25:00.000Z",
               "price": 4603.20383
             },
             {
-              "index": 1443,
+              "index": 1441,
               "date": "2026-08-21T16:05:00.000Z",
               "price": 4618.19328
             },
             {
-              "index": 1456,
+              "index": 1454,
               "date": "2026-08-21T17:10:00.000Z",
               "price": 4631.91226
             },
             {
-              "index": 1468,
+              "index": 1466,
               "date": "2026-08-21T18:10:00.000Z",
               "price": 4627.94429
             },
             {
-              "index": 1478,
+              "index": 1476,
               "date": "2026-08-21T19:00:00.000Z",
               "price": 4625.61497
             },
             {
-              "index": 1488,
+              "index": 1486,
               "date": "2026-08-21T19:50:00.000Z",
               "price": 4623.42226
             }
           ],
           "swingLows": [
             {
-              "index": 8,
+              "index": 6,
               "date": "2026-08-16T16:30:00.000Z",
               "price": 4375.53278
             },
             {
-              "index": 12,
+              "index": 10,
               "date": "2026-08-16T16:50:00.000Z",
               "price": 4375.53219
             },
             {
-              "index": 16,
+              "index": 14,
               "date": "2026-08-16T17:10:00.000Z",
               "price": 4375.53261
             },
             {
-              "index": 23,
+              "index": 21,
               "date": "2026-08-16T17:45:00.000Z",
               "price": 4375.53279
             },
             {
-              "index": 31,
+              "index": 29,
               "date": "2026-08-16T18:25:00.000Z",
               "price": 4375.54207
             },
             {
-              "index": 37,
+              "index": 35,
               "date": "2026-08-16T18:55:00.000Z",
               "price": 4375.53866
             },
             {
-              "index": 41,
+              "index": 39,
               "date": "2026-08-16T19:15:00.000Z",
               "price": 4375.53795
             },
             {
-              "index": 45,
+              "index": 43,
               "date": "2026-08-16T19:35:00.000Z",
               "price": 4375.53638
             },
             {
-              "index": 51,
+              "index": 49,
               "date": "2026-08-16T20:05:00.000Z",
               "price": 4375.54247
             },
             {
-              "index": 55,
+              "index": 53,
               "date": "2026-08-16T20:25:00.000Z",
               "price": 4375.53219
             },
             {
-              "index": 64,
+              "index": 62,
               "date": "2026-08-16T21:10:00.000Z",
               "price": 4375.41019
             },
             {
-              "index": 70,
+              "index": 68,
               "date": "2026-08-16T21:40:00.000Z",
               "price": 4375.21876
             },
             {
-              "index": 74,
+              "index": 72,
               "date": "2026-08-16T22:00:00.000Z",
               "price": 4372.1581
             },
             {
-              "index": 79,
+              "index": 77,
               "date": "2026-08-16T22:25:00.000Z",
               "price": 4373.11409
             },
             {
-              "index": 93,
+              "index": 91,
               "date": "2026-08-16T23:35:00.000Z",
               "price": 4367.39807
             },
             {
-              "index": 98,
+              "index": 96,
               "date": "2026-08-17T00:00:00.000Z",
               "price": 4368.33828
             },
             {
-              "index": 120,
+              "index": 118,
               "date": "2026-08-17T01:50:00.000Z",
               "price": 4392.40406
             },
             {
-              "index": 126,
+              "index": 124,
               "date": "2026-08-17T02:20:00.000Z",
               "price": 4390.39382
             },
             {
-              "index": 133,
+              "index": 131,
               "date": "2026-08-17T02:55:00.000Z",
               "price": 4388.39822
             },
             {
-              "index": 137,
+              "index": 135,
               "date": "2026-08-17T03:15:00.000Z",
               "price": 4388.23785
             },
             {
-              "index": 152,
+              "index": 150,
               "date": "2026-08-17T04:30:00.000Z",
               "price": 4389.04494
             },
             {
-              "index": 161,
+              "index": 159,
               "date": "2026-08-17T05:15:00.000Z",
               "price": 4386.03674
             },
             {
-              "index": 174,
+              "index": 172,
               "date": "2026-08-17T06:20:00.000Z",
               "price": 4391.68075
             },
             {
-              "index": 179,
+              "index": 177,
               "date": "2026-08-17T06:45:00.000Z",
               "price": 4392.14978
             },
             {
-              "index": 187,
+              "index": 185,
               "date": "2026-08-17T07:25:00.000Z",
               "price": 4396.31251
             },
             {
-              "index": 195,
+              "index": 193,
               "date": "2026-08-17T08:05:00.000Z",
               "price": 4398.11761
             },
             {
-              "index": 205,
+              "index": 203,
               "date": "2026-08-17T08:55:00.000Z",
               "price": 4393.222
             },
             {
-              "index": 218,
+              "index": 216,
               "date": "2026-08-17T10:00:00.000Z",
               "price": 4393.47042
             },
             {
-              "index": 223,
+              "index": 221,
               "date": "2026-08-17T10:25:00.000Z",
               "price": 4391.74352
             },
             {
-              "index": 233,
+              "index": 231,
               "date": "2026-08-17T11:15:00.000Z",
               "price": 4397.73077
             },
             {
-              "index": 251,
+              "index": 249,
               "date": "2026-08-17T12:45:00.000Z",
               "price": 4377.70871
             },
             {
-              "index": 263,
+              "index": 261,
               "date": "2026-08-17T13:45:00.000Z",
               "price": 4385.38379
             },
             {
-              "index": 287,
+              "index": 285,
               "date": "2026-08-17T15:45:00.000Z",
               "price": 4418.207
             },
             {
-              "index": 296,
+              "index": 294,
               "date": "2026-08-17T16:30:00.000Z",
               "price": 4422.88991
             },
             {
-              "index": 310,
+              "index": 308,
               "date": "2026-08-17T17:40:00.000Z",
               "price": 4411.50521
             },
             {
-              "index": 321,
+              "index": 319,
               "date": "2026-08-17T18:35:00.000Z",
               "price": 4398.50451
             },
             {
-              "index": 327,
+              "index": 325,
               "date": "2026-08-17T19:05:00.000Z",
               "price": 4399.64859
             },
             {
-              "index": 346,
+              "index": 344,
               "date": "2026-08-17T20:40:00.000Z",
               "price": 4414.65896
             },
             {
-              "index": 363,
+              "index": 361,
               "date": "2026-08-17T22:05:00.000Z",
               "price": 4415.42626
             },
             {
-              "index": 368,
+              "index": 366,
               "date": "2026-08-17T22:30:00.000Z",
               "price": 4412.04857
             },
             {
-              "index": 373,
+              "index": 371,
               "date": "2026-08-17T22:55:00.000Z",
               "price": 4410.92144
             },
             {
-              "index": 386,
+              "index": 384,
               "date": "2026-08-18T00:00:00.000Z",
               "price": 4418.04763
             },
             {
-              "index": 412,
+              "index": 410,
               "date": "2026-08-18T02:10:00.000Z",
               "price": 4399.06153
             },
             {
-              "index": 418,
+              "index": 416,
               "date": "2026-08-18T02:40:00.000Z",
               "price": 4394.05923
             },
             {
-              "index": 427,
+              "index": 425,
               "date": "2026-08-18T03:25:00.000Z",
               "price": 4394.44542
             },
             {
-              "index": 435,
+              "index": 433,
               "date": "2026-08-18T04:05:00.000Z",
               "price": 4390.00834
             },
             {
-              "index": 441,
+              "index": 439,
               "date": "2026-08-18T04:35:00.000Z",
               "price": 4389.68192
             },
             {
-              "index": 448,
+              "index": 446,
               "date": "2026-08-18T05:10:00.000Z",
               "price": 4390.97216
             },
             {
-              "index": 452,
+              "index": 450,
               "date": "2026-08-18T05:30:00.000Z",
               "price": 4385.77255
             },
             {
-              "index": 459,
+              "index": 457,
               "date": "2026-08-18T06:05:00.000Z",
               "price": 4388.46711
             },
             {
-              "index": 465,
+              "index": 463,
               "date": "2026-08-18T06:35:00.000Z",
               "price": 4395.218
             },
             {
-              "index": 473,
+              "index": 471,
               "date": "2026-08-18T07:15:00.000Z",
               "price": 4396.649
             },
             {
-              "index": 477,
+              "index": 475,
               "date": "2026-08-18T07:35:00.000Z",
               "price": 4397.53738
             },
             {
-              "index": 486,
+              "index": 484,
               "date": "2026-08-18T08:20:00.000Z",
               "price": 4387.31189
             },
             {
-              "index": 503,
+              "index": 501,
               "date": "2026-08-18T09:45:00.000Z",
               "price": 4386.47555
             },
             {
-              "index": 511,
+              "index": 509,
               "date": "2026-08-18T10:25:00.000Z",
               "price": 4389.62293
             },
             {
-              "index": 525,
+              "index": 523,
               "date": "2026-08-18T11:35:00.000Z",
               "price": 4388.45275
             },
             {
-              "index": 548,
+              "index": 546,
               "date": "2026-08-18T13:30:00.000Z",
               "price": 4384.42652
             },
             {
-              "index": 552,
+              "index": 550,
               "date": "2026-08-18T13:50:00.000Z",
               "price": 4390.39382
             },
             {
-              "index": 571,
+              "index": 569,
               "date": "2026-08-18T15:25:00.000Z",
               "price": 4352.9562
             },
             {
-              "index": 588,
+              "index": 586,
               "date": "2026-08-18T16:50:00.000Z",
               "price": 4362.62403
             },
             {
-              "index": 603,
+              "index": 601,
               "date": "2026-08-18T18:05:00.000Z",
               "price": 4352.74658
             },
             {
-              "index": 612,
+              "index": 610,
               "date": "2026-08-18T18:50:00.000Z",
               "price": 4353.50457
             },
             {
-              "index": 619,
+              "index": 617,
               "date": "2026-08-18T19:25:00.000Z",
               "price": 4352.74658
             },
             {
-              "index": 625,
+              "index": 623,
               "date": "2026-08-18T19:55:00.000Z",
               "price": 4340.08941
             },
             {
-              "index": 630,
+              "index": 628,
               "date": "2026-08-18T20:20:00.000Z",
               "price": 4334.82162
             },
             {
-              "index": 636,
+              "index": 634,
               "date": "2026-08-18T20:50:00.000Z",
               "price": 4330.69161
             },
             {
-              "index": 644,
+              "index": 642,
               "date": "2026-08-18T21:30:00.000Z",
               "price": 4334.25798
             },
             {
-              "index": 650,
+              "index": 648,
               "date": "2026-08-18T22:00:00.000Z",
               "price": 4331.89673
             },
             {
-              "index": 654,
+              "index": 652,
               "date": "2026-08-18T22:20:00.000Z",
               "price": 4333.50667
             },
             {
-              "index": 661,
+              "index": 659,
               "date": "2026-08-18T22:55:00.000Z",
               "price": 4333.31889
             },
             {
-              "index": 668,
+              "index": 666,
               "date": "2026-08-18T23:30:00.000Z",
               "price": 4327.50563
             },
             {
-              "index": 681,
+              "index": 679,
               "date": "2026-08-19T00:35:00.000Z",
               "price": 4339.17647
             },
             {
-              "index": 687,
+              "index": 685,
               "date": "2026-08-19T01:05:00.000Z",
               "price": 4325.9749
             },
             {
-              "index": 725,
+              "index": 723,
               "date": "2026-08-19T04:15:00.000Z",
               "price": 4350.23716
             },
             {
-              "index": 747,
+              "index": 745,
               "date": "2026-08-19T06:05:00.000Z",
               "price": 4333.92267
             },
             {
-              "index": 753,
+              "index": 751,
               "date": "2026-08-19T06:35:00.000Z",
               "price": 4337.44454
             },
             {
-              "index": 770,
+              "index": 768,
               "date": "2026-08-19T08:00:00.000Z",
               "price": 4351.87518
             },
             {
-              "index": 777,
+              "index": 775,
               "date": "2026-08-19T08:35:00.000Z",
               "price": 4356.04669
             },
             {
-              "index": 781,
+              "index": 779,
               "date": "2026-08-19T08:55:00.000Z",
               "price": 4355.21101
             },
             {
-              "index": 805,
+              "index": 803,
               "date": "2026-08-19T10:55:00.000Z",
               "price": 4366.27329
             },
             {
-              "index": 814,
+              "index": 812,
               "date": "2026-08-19T11:40:00.000Z",
               "price": 4363.38249
             },
             {
-              "index": 818,
+              "index": 816,
               "date": "2026-08-19T12:00:00.000Z",
               "price": 4362.16753
             },
             {
-              "index": 840,
+              "index": 838,
               "date": "2026-08-19T13:50:00.000Z",
               "price": 4444.41982
             },
             {
-              "index": 852,
+              "index": 850,
               "date": "2026-08-19T14:50:00.000Z",
               "price": 4479.08268
             },
             {
-              "index": 859,
+              "index": 857,
               "date": "2026-08-19T15:25:00.000Z",
               "price": 4478.68148
             },
             {
-              "index": 872,
+              "index": 870,
               "date": "2026-08-19T16:30:00.000Z",
               "price": 4490.95073
             },
             {
-              "index": 884,
+              "index": 882,
               "date": "2026-08-19T17:30:00.000Z",
               "price": 4484.50603
             },
             {
-              "index": 889,
+              "index": 887,
               "date": "2026-08-19T17:55:00.000Z",
               "price": 4485.10944
             },
             {
-              "index": 896,
+              "index": 894,
               "date": "2026-08-19T18:30:00.000Z",
               "price": 4473.67244
             },
             {
-              "index": 917,
+              "index": 915,
               "date": "2026-08-19T20:15:00.000Z",
               "price": 4505.72227
             },
             {
-              "index": 934,
+              "index": 932,
               "date": "2026-08-19T21:40:00.000Z",
               "price": 4522.43126
             },
             {
-              "index": 940,
+              "index": 938,
               "date": "2026-08-19T22:10:00.000Z",
               "price": 4518.97168
             },
             {
-              "index": 946,
+              "index": 944,
               "date": "2026-08-19T22:40:00.000Z",
               "price": 4517.7321
             },
             {
-              "index": 950,
+              "index": 948,
               "date": "2026-08-19T23:00:00.000Z",
               "price": 4516.71989
             },
             {
-              "index": 961,
+              "index": 959,
               "date": "2026-08-19T23:55:00.000Z",
               "price": 4511.27006
             },
             {
-              "index": 970,
+              "index": 968,
               "date": "2026-08-20T00:40:00.000Z",
               "price": 4504.09873
             },
             {
-              "index": 975,
+              "index": 973,
               "date": "2026-08-20T01:05:00.000Z",
               "price": 4492.9685
             },
             {
-              "index": 985,
+              "index": 983,
               "date": "2026-08-20T01:55:00.000Z",
               "price": 4484.10385
             },
             {
-              "index": 990,
+              "index": 988,
               "date": "2026-08-20T02:20:00.000Z",
               "price": 4489.74094
             },
             {
-              "index": 996,
+              "index": 994,
               "date": "2026-08-20T02:50:00.000Z",
               "price": 4489.94253
             },
             {
-              "index": 1000,
+              "index": 998,
               "date": "2026-08-20T03:10:00.000Z",
               "price": 4487.11983
             },
             {
-              "index": 1018,
+              "index": 1016,
               "date": "2026-08-20T04:40:00.000Z",
               "price": 4486.42433
             },
             {
-              "index": 1029,
+              "index": 1027,
               "date": "2026-08-20T05:35:00.000Z",
               "price": 4478.4809
             },
             {
-              "index": 1033,
+              "index": 1031,
               "date": "2026-08-20T05:55:00.000Z",
               "price": 4478.64714
             },
             {
-              "index": 1052,
+              "index": 1050,
               "date": "2026-08-20T07:30:00.000Z",
               "price": 4483.90279
             },
             {
-              "index": 1064,
+              "index": 1062,
               "date": "2026-08-20T08:30:00.000Z",
               "price": 4487.12196
             },
             {
-              "index": 1068,
+              "index": 1066,
               "date": "2026-08-20T08:50:00.000Z",
               "price": 4487.81597
             },
             {
-              "index": 1082,
+              "index": 1080,
               "date": "2026-08-20T10:00:00.000Z",
               "price": 4480.88901
             },
             {
-              "index": 1097,
+              "index": 1095,
               "date": "2026-08-20T11:15:00.000Z",
               "price": 4480.88901
             },
             {
-              "index": 1107,
+              "index": 1105,
               "date": "2026-08-20T12:05:00.000Z",
               "price": 4451.3688
             },
             {
-              "index": 1113,
+              "index": 1111,
               "date": "2026-08-20T12:35:00.000Z",
               "price": 4452.9518
             },
             {
-              "index": 1123,
+              "index": 1121,
               "date": "2026-08-20T13:25:00.000Z",
               "price": 4470.72172
             },
             {
-              "index": 1151,
+              "index": 1149,
               "date": "2026-08-20T15:45:00.000Z",
               "price": 4510.11922
             },
             {
-              "index": 1160,
+              "index": 1158,
               "date": "2026-08-20T16:30:00.000Z",
               "price": 4503.89587
             },
             {
-              "index": 1166,
+              "index": 1164,
               "date": "2026-08-20T17:00:00.000Z",
               "price": 4507.30952
             },
             {
-              "index": 1181,
+              "index": 1179,
               "date": "2026-08-20T18:15:00.000Z",
               "price": 4509.18284
             },
             {
-              "index": 1197,
+              "index": 1195,
               "date": "2026-08-20T19:35:00.000Z",
               "price": 4522.78751
             },
             {
-              "index": 1209,
+              "index": 1207,
               "date": "2026-08-20T20:35:00.000Z",
               "price": 4517.11988
             },
             {
-              "index": 1220,
+              "index": 1218,
               "date": "2026-08-20T21:30:00.000Z",
               "price": 4518.85042
             },
             {
-              "index": 1228,
+              "index": 1226,
               "date": "2026-08-20T22:10:00.000Z",
               "price": 4517.52801
             },
             {
-              "index": 1245,
+              "index": 1243,
               "date": "2026-08-20T23:35:00.000Z",
               "price": 4521.40887
             },
             {
-              "index": 1262,
+              "index": 1260,
               "date": "2026-08-21T01:00:00.000Z",
               "price": 4509.73245
             },
             {
-              "index": 1270,
+              "index": 1268,
               "date": "2026-08-21T01:40:00.000Z",
               "price": 4523.65874
             },
             {
-              "index": 1276,
+              "index": 1274,
               "date": "2026-08-21T02:10:00.000Z",
               "price": 4518.48153
             },
             {
-              "index": 1294,
+              "index": 1292,
               "date": "2026-08-21T03:40:00.000Z",
               "price": 4526.73034
             },
             {
-              "index": 1315,
+              "index": 1313,
               "date": "2026-08-21T05:25:00.000Z",
               "price": 4531.03761
             },
             {
-              "index": 1324,
+              "index": 1322,
               "date": "2026-08-21T06:10:00.000Z",
               "price": 4545.86781
             },
             {
-              "index": 1336,
+              "index": 1334,
               "date": "2026-08-21T07:10:00.000Z",
               "price": 4558.71627
             },
             {
-              "index": 1347,
+              "index": 1345,
               "date": "2026-08-21T08:05:00.000Z",
               "price": 4559.56334
             },
             {
-              "index": 1368,
+              "index": 1366,
               "date": "2026-08-21T09:50:00.000Z",
               "price": 4580.60004
             },
             {
-              "index": 1372,
+              "index": 1370,
               "date": "2026-08-21T10:10:00.000Z",
               "price": 4578.75458
             },
             {
-              "index": 1382,
+              "index": 1380,
               "date": "2026-08-21T11:00:00.000Z",
               "price": 4586.50389
             },
             {
-              "index": 1390,
+              "index": 1388,
               "date": "2026-08-21T11:40:00.000Z",
               "price": 4591.9845
             },
             {
-              "index": 1402,
+              "index": 1400,
               "date": "2026-08-21T12:40:00.000Z",
               "price": 4564.75099
             },
             {
-              "index": 1413,
+              "index": 1411,
               "date": "2026-08-21T13:35:00.000Z",
               "price": 4574.35616
             },
             {
-              "index": 1417,
+              "index": 1415,
               "date": "2026-08-21T13:55:00.000Z",
               "price": 4577.07799
             },
             {
-              "index": 1427,
+              "index": 1425,
               "date": "2026-08-21T14:45:00.000Z",
               "price": 4579.94085
             },
             {
-              "index": 1444,
+              "index": 1442,
               "date": "2026-08-21T16:10:00.000Z",
               "price": 4608.7197
             },
             {
-              "index": 1459,
+              "index": 1457,
               "date": "2026-08-21T17:25:00.000Z",
               "price": 4615.28652
             },
             {
-              "index": 1463,
+              "index": 1461,
               "date": "2026-08-21T17:45:00.000Z",
               "price": 4616.80517
             },
             {
-              "index": 1474,
+              "index": 1472,
               "date": "2026-08-21T18:40:00.000Z",
               "price": 4619.151
             },
             {
-              "index": 1479,
+              "index": 1477,
               "date": "2026-08-21T19:05:00.000Z",
               "price": 4619.151
             },
             {
-              "index": 1486,
+              "index": 1484,
               "date": "2026-08-21T19:40:00.000Z",
               "price": 4615.09535
             }
           ],
           "latestHigh": {
-            "index": 1488,
+            "index": 1486,
             "date": "2026-08-21T19:50:00.000Z",
             "price": 4623.42226
           },
           "previousHigh": {
-            "index": 1478,
+            "index": 1476,
             "date": "2026-08-21T19:00:00.000Z",
             "price": 4625.61497
           },
           "latestLow": {
-            "index": 1486,
+            "index": 1484,
             "date": "2026-08-21T19:40:00.000Z",
             "price": 4615.09535
           },
           "previousLow": {
-            "index": 1479,
+            "index": 1477,
             "date": "2026-08-21T19:05:00.000Z",
             "price": 4619.151
           },
@@ -1649,7 +1691,7 @@
               "alignmentCount": 3,
               "fullAlignment": false,
               "partialAlignment": true,
-              "lastClose": 4608.17002,
+              "lastClose": 4603.3239,
               "periods": {
                 "p20": 30,
                 "p50": 60,
@@ -1657,16 +1699,16 @@
                 "p200": 200
               },
               "values": {
-                "ema20": 4609.908598039573,
-                "ema50": 4593.420998709488,
-                "ema100": 4573.653662392435,
-                "ema200": 4535.162811801443
+                "ema20": 4609.483778811214,
+                "ema50": 4593.745683997702,
+                "ema100": 4574.24119185001,
+                "ema200": 4535.841031584513
               },
               "slopes": {
-                "ema20": 0.00010177650103573026,
-                "ema50": 0.00042693423419499084,
-                "ema100": 0.0005168069257320832,
-                "ema200": 0.0005091005374970267
+                "ema20": -0.00009905311552760575,
+                "ema50": 0.00031459615081388324,
+                "ema100": 0.0004474502554393427,
+                "ema200": 0.00047458900088189556
               },
               "bullishChecks": [
                 false,
@@ -1682,28 +1724,28 @@
               ],
               "bullishCount": 3,
               "bearishCount": 1,
-              "bullishSlopeCount": 2,
-              "bearishSlopeCount": 0
+              "bullishSlopeCount": 1,
+              "bearishSlopeCount": 1
             },
             "macd": {
               "available": true,
               "direction": "SELL",
-              "macd": 4.504755158070111,
-              "signal": 7.454799039138237,
-              "histogram": -2.950043881068126
+              "macd": 3.1252492218136467,
+              "signal": 6.588889075673319,
+              "histogram": -3.4636398538596724
             },
             "rsi": {
               "available": true,
               "direction": "SELL",
-              "current": 46.6049018546103,
-              "slope": -3.010666675667835
+              "current": 42.34177929504245,
+              "slope": -4.263122559567847
             },
             "dmi": {
               "available": true,
               "direction": "SELL",
-              "adx": 23.392049225435425,
-              "plusDI": 20.05707170780128,
-              "minusDI": 23.591181800930336
+              "adx": 22.930902196930294,
+              "plusDI": 18.99927914233377,
+              "minusDI": 26.746837211423756
             },
             "structure": {
               "direction": null,
@@ -2231,9 +2273,9 @@
         "version": "2.0.0",
         "buy": {
           "direction": "BUY",
-          "rawScore": 20.5,
+          "rawScore": 24.5,
           "availableWeight": 96,
-          "score": 21.35,
+          "score": 25.52,
           "components": {
             "ema": {
               "available": true,
@@ -2245,13 +2287,13 @@
             },
             "macd": {
               "available": true,
-              "score": 0,
+              "score": 4,
               "weight": 18,
               "relation": false,
               "histogram": false,
-              "acceleration": false,
+              "acceleration": true,
               "crossed": false,
-              "detail": "BUY MACD relation opposed; histogram opposed; acceleration not supportive"
+              "detail": "BUY MACD relation opposed; histogram opposed; acceleration supportive"
             },
             "rsi": {
               "available": true,
@@ -2262,7 +2304,7 @@
               "momentumSupport": false,
               "crossed": false,
               "exhausted": false,
-              "detail": "RSI 26.73; slope -3.88; three-bar momentum -6.72"
+              "detail": "RSI 24.81; slope -1.89; three-bar momentum -5.8"
             },
             "dmiAdx": {
               "available": true,
@@ -2271,8 +2313,8 @@
               "directional": false,
               "trending": true,
               "rising": true,
-              "diGap": 32.77757497832681,
-              "detail": "ADX 37.11 (STRONG); +DI 8.99, -DI 41.77"
+              "diGap": 32.0308736825778,
+              "detail": "ADX 41.16 (STRONG); +DI 7.88, -DI 39.91"
             },
             "structure": {
               "available": true,
@@ -2296,9 +2338,9 @@
         },
         "sell": {
           "direction": "SELL",
-          "rawScore": 75.0714,
+          "rawScore": 71.0714,
           "availableWeight": 96,
-          "score": 78.2,
+          "score": 74.03,
           "components": {
             "ema": {
               "available": true,
@@ -2310,13 +2352,13 @@
             },
             "macd": {
               "available": true,
-              "score": 16,
+              "score": 12,
               "weight": 18,
               "relation": true,
               "histogram": true,
-              "acceleration": true,
+              "acceleration": false,
               "crossed": false,
-              "detail": "SELL MACD relation supportive; histogram supportive; acceleration supportive"
+              "detail": "SELL MACD relation supportive; histogram supportive; acceleration not supportive"
             },
             "rsi": {
               "available": true,
@@ -2327,7 +2369,7 @@
               "momentumSupport": true,
               "crossed": false,
               "exhausted": false,
-              "detail": "RSI 26.73; slope -3.88; three-bar momentum -6.72"
+              "detail": "RSI 24.81; slope -1.89; three-bar momentum -5.8"
             },
             "dmiAdx": {
               "available": true,
@@ -2336,8 +2378,8 @@
               "directional": true,
               "trending": true,
               "rising": true,
-              "diGap": 32.77757497832681,
-              "detail": "ADX 37.11 (STRONG); +DI 8.99, -DI 41.77"
+              "diGap": 32.0308736825778,
+              "detail": "ADX 41.16 (STRONG); +DI 7.88, -DI 39.91"
             },
             "structure": {
               "available": true,
@@ -2362,9 +2404,9 @@
         "selection": {
           "direction": "SELL",
           "qualified": true,
-          "winnerScore": 78.2,
-          "opposingScore": 21.35,
-          "edge": 56.85,
+          "winnerScore": 74.03,
+          "opposingScore": 25.52,
+          "edge": 48.51,
           "requiredScore": 63,
           "requiredEdge": 11,
           "config": {
@@ -2377,29 +2419,50 @@
         }
       },
       "riskDiagnostics": {
+        "baseMultiplier": 1.215,
+        "regimeMultiplier": 0.9,
+        "pairModifier": 1.08,
+        "baseRiskDistance": 3.7466029884659524,
+        "structureRiskDistance": 3.314963578822213,
+        "riskDistance": 3.7466029884659524,
+        "riskAtrMultiple": 1.215,
+        "structureLevel": 4606.17632,
+        "blockingLevel": 4591.9845,
+        "roomToLevelR": 3.0265816887750017,
         "setupMode": "M5",
         "executionTimeframe": "M5",
-        "entryModel": "PULLBACK_RESUMPTION_CONFIRMATION",
-        "triggerLevel": 4617.65792,
-        "executionAtr": 3.135118913187429,
-        "executionAtrRegime": "LOW"
+        "entryModel": "DIRECTIONAL_FOLLOW_THROUGH",
+        "triggerLevel": 4603.84,
+        "executionCandleAt": "2026-08-21T20:55:00.000Z",
+        "executionAtr": 3.083623858819714,
+        "executionAtrRegime": "LOW",
+        "setupStructureLevel": 4623.42226,
+        "nearestOpposingLevel": 4591.98,
+        "nearestOpposingRoomR": 3.0240000000000387,
+        "opposingLevels": [
+          4591.98,
+          4586.5
+        ],
+        "target2Level": 4591.98,
+        "target3Level": 4586.5
       },
       "timeframe": "M5",
-      "reason": "Generated ATR trade-plan geometry is invalid",
+      "reason": "5M setup executed on 5M",
       "setupTimeframe": "M5",
       "confirmationTimeframe": "M5",
       "executionTimeframe": "M5",
       "entryTimeframe": "M5",
-      "setupCandleAt": "2026-08-21T20:45:00.000Z",
-      "executionCandleAt": "2026-08-21T20:45:00.000Z",
+      "setupCandleAt": "2026-08-21T20:55:00.000Z",
+      "executionCandleAt": "2026-08-21T20:55:00.000Z",
+      "executionReason": "5M setup executed on 5M",
       "mode": "M5",
-      "generatedAt": "2026-08-21T20:54:23.292Z",
-      "analyzedCandleAt": "2026-08-21T20:45:00.000Z",
+      "generatedAt": "2026-08-21T21:00:32.593Z",
+      "analyzedCandleAt": "2026-08-21T20:55:00.000Z",
       "prepared": {
         "counts": {
           "m5": 1500,
-          "m15": 499,
-          "m30": 249,
+          "m15": 500,
+          "m30": 250,
           "h1": 900
         },
         "source": {
@@ -2407,7 +2470,7 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-21T20:54:23.044Z",
+          "m5": "2026-08-21T21:00:32.351Z",
           "h1": "2026-08-21T20:48:14.378Z"
         },
         "quality": {
@@ -2416,9 +2479,9 @@
             "rejectedRows": 0,
             "duplicateTimestamps": 0,
             "openCandlesRemoved": 0,
-            "firstDate": "2026-08-16T15:50:00.000Z",
-            "lastDate": "2026-08-21T20:45:00.000Z",
-            "ageMinutes": 9,
+            "firstDate": "2026-08-16T16:00:00.000Z",
+            "lastDate": "2026-08-21T20:55:00.000Z",
+            "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "hasOHLC": true,
             "stale": false
@@ -2430,7 +2493,7 @@
             "openCandlesRemoved": 0,
             "firstDate": "2026-07-15T08:00:00.000Z",
             "lastDate": "2026-08-21T19:00:00.000Z",
-            "ageMinutes": 114,
+            "ageMinutes": 120,
             "expectedIntervalMinutes": 60,
             "hasOHLC": true,
             "stale": false
@@ -2443,15 +2506,23 @@
         "configuredMode": "AUTONOMOUS",
         "authorityMode": "AUTONOMOUS",
         "rolloutSelected": true,
-        "baselineDecision": "HOLD",
-        "proposedDecision": "HOLD",
-        "finalDecision": "HOLD",
+        "baselineDecision": "SELL",
+        "proposedDecision": "SELL",
+        "finalDecision": "SELL",
         "activeLifecycleChangeDeferred": false,
         "unavailableReason": null,
         "changes": [],
         "blockedChanges": [],
         "policy": {
-          "baseline": null,
+          "baseline": {
+            "key": "pairTimeframeEngineDirection|XAUUSD|5m|scalp|SELL",
+            "scope": "pairTimeframeEngineDirection",
+            "action": "NEUTRAL",
+            "authorityLevel": "SHADOW_ONLY",
+            "decisiveTrades": 65,
+            "reliability": 0.532222,
+            "edgeScore": -0.729998
+          },
           "buy": {
             "key": "pairTimeframeEngineDirection|XAUUSD|5m|scalp|BUY",
             "scope": "pairTimeframeEngineDirection",
@@ -2477,8 +2548,8 @@
           "warnings": []
         },
         "safety": {
-          "status": "HOLD",
-          "signalApproved": false,
+          "status": "APPROVED",
+          "signalApproved": true,
           "failClosed": true,
           "blockerCount": 0,
           "blockers": []
@@ -2490,22 +2561,22 @@
       "signal": "WAIT",
       "confidence": 0,
       "reasons": [
-        "No qualified confluence: BUY 36.33, SELL 50.58, edge 14.25"
+        "No qualified confluence: BUY 32.84, SELL 54.07, edge 21.23"
       ],
       "steps": [
         {
           "name": "Data Availability",
           "pass": true,
           "status": "pass",
-          "detail": "499 complete closed M15 candles available; latest 2026-08-21T20:30:00.000Z"
+          "detail": "500 complete closed M15 candles available; latest 2026-08-21T20:45:00.000Z"
         },
         {
           "name": "EMA Trend",
           "pass": false,
           "status": "info",
-          "detail": "SELL evidence 4.5/24. SELL EMA checks 1/4; fast/medium slopes 0/2",
+          "detail": "SELL evidence 7.5/24. SELL EMA checks 1/4; fast/medium slopes 1/2",
           "direction": "SELL",
-          "score": 4.5,
+          "score": 7.5,
           "maximumScore": 24
         },
         {
@@ -2521,7 +2592,7 @@
           "name": "RSI",
           "pass": true,
           "status": "pass",
-          "detail": "SELL evidence 14/18. RSI 46.6; slope -3.01; three-bar momentum -11.22",
+          "detail": "SELL evidence 14/18. RSI 42.34; slope -4.26; three-bar momentum -13.54",
           "direction": "SELL",
           "score": 14,
           "maximumScore": 18
@@ -2530,7 +2601,7 @@
           "name": "ADX / DMI",
           "pass": true,
           "status": "pass",
-          "detail": "SELL evidence 9/16. ADX 23.39 (DEVELOPING); +DI 20.06, -DI 23.59",
+          "detail": "SELL evidence 9/16. ADX 22.93 (DEVELOPING); +DI 19, -DI 26.75",
           "direction": "SELL",
           "score": 9,
           "maximumScore": 16
@@ -2563,13 +2634,13 @@
           "name": "ATR Volatility",
           "pass": true,
           "status": "pass",
-          "detail": "ATR(14) 7.376493; 0.1601% of price; percentile 23.5; regime NORMAL"
+          "detail": "ATR(14) 7.230955; 0.1571% of price; percentile 19.5; regime LOW"
         },
         {
           "name": "Confluence Decision",
           "pass": false,
           "status": "fail",
-          "detail": "No qualified edge: BUY 36.33, SELL 50.58; winner requires score 61 and edge 11, observed edge 14.25"
+          "detail": "No qualified edge: BUY 32.84, SELL 54.07; winner requires score 61 and edge 11, observed edge 21.23"
         },
         {
           "name": "AI Autonomous Decision",
@@ -2582,7 +2653,7 @@
       "professionalPipelineVersion": "2.0.0",
       "indicatorSnapshot": {
         "timeframe": "M15",
-        "analyzedCandleAt": "2026-08-21T20:30:00.000Z",
+        "analyzedCandleAt": "2026-08-21T20:45:00.000Z",
         "ema": {
           "available": true,
           "direction": null,
@@ -2590,7 +2661,7 @@
           "alignmentCount": 3,
           "fullAlignment": false,
           "partialAlignment": true,
-          "lastClose": 4608.17002,
+          "lastClose": 4603.3239,
           "periods": {
             "p20": 30,
             "p50": 60,
@@ -2598,16 +2669,16 @@
             "p200": 200
           },
           "values": {
-            "ema20": 4609.908598039573,
-            "ema50": 4593.420998709488,
-            "ema100": 4573.653662392435,
-            "ema200": 4535.162811801443
+            "ema20": 4609.483778811214,
+            "ema50": 4593.745683997702,
+            "ema100": 4574.24119185001,
+            "ema200": 4535.841031584513
           },
           "slopes": {
-            "ema20": 0.00010177650103573026,
-            "ema50": 0.00042693423419499084,
-            "ema100": 0.0005168069257320832,
-            "ema200": 0.0005091005374970267
+            "ema20": -0.00009905311552760575,
+            "ema50": 0.00031459615081388324,
+            "ema100": 0.0004474502554393427,
+            "ema200": 0.00047458900088189556
           },
           "bullishChecks": [
             false,
@@ -2623,16 +2694,16 @@
           ],
           "bullishCount": 3,
           "bearishCount": 1,
-          "bullishSlopeCount": 2,
-          "bearishSlopeCount": 0
+          "bullishSlopeCount": 1,
+          "bearishSlopeCount": 1
         },
         "macd": {
           "available": true,
-          "macd": 4.504755158070111,
-          "signal": 7.454799039138237,
-          "histogram": -2.950043881068126,
-          "previousHistogram": -2.485750476813159,
-          "histogramSlope": -0.4642934042549669,
+          "macd": 3.1252492218136467,
+          "signal": 6.588889075673319,
+          "histogram": -3.4636398538596724,
+          "previousHistogram": -2.950043881068126,
+          "histogramSlope": -0.5135959727915465,
           "crossedBullish": false,
           "crossedBearish": false,
           "direction": "SELL"
@@ -2640,10 +2711,10 @@
         "rsi": {
           "available": true,
           "period": 14,
-          "current": 46.6049018546103,
-          "previous": 49.61556853027813,
-          "slope": -3.010666675667835,
-          "momentum": -11.21954052408173,
+          "current": 42.34177929504245,
+          "previous": 46.6049018546103,
+          "slope": -4.263122559567847,
+          "momentum": -13.53643094695358,
           "crossedAbove50": false,
           "crossedBelow50": false,
           "overbought": false,
@@ -2653,25 +2724,25 @@
         "dmiAdx": {
           "available": true,
           "period": 14,
-          "plusDI": 20.05707170780128,
-          "minusDI": 23.591181800930336,
-          "adx": 23.392049225435425,
-          "previousAdx": 24.568607157224374,
-          "adxSlope": -1.176557931788949,
+          "plusDI": 18.99927914233377,
+          "minusDI": 26.746837211423756,
+          "adx": 22.930902196930294,
+          "previousAdx": 23.392049225435425,
+          "adxSlope": -0.4611470285051311,
           "direction": "SELL",
           "trendStrength": "DEVELOPING"
         },
         "atr": {
           "available": true,
           "period": 14,
-          "value": 7.376492887985476,
-          "previous": 7.633351571676658,
-          "slope": -0.25685868369118214,
-          "percent": 0.16007423458706233,
-          "percentile": 23.5,
-          "median": 8.355133275219435,
-          "medianRatio": 0.8828695659306217,
-          "regime": "NORMAL"
+          "value": 7.230954824557945,
+          "previous": 7.376492887985476,
+          "slope": -0.14553806342753095,
+          "percent": 0.15708116529792623,
+          "percentile": 19.5,
+          "median": 8.340581950774776,
+          "medianRatio": 0.8669604671753444,
+          "regime": "LOW"
         },
         "structure": {
           "direction": null,
@@ -3198,8 +3269,8 @@
             4578.75458
           ],
           "resistances": [
-            4623.42226,
-            4627.94429
+            4606.17632,
+            4623.42226
           ]
         },
         "candlePattern": null,
@@ -3219,7 +3290,7 @@
               "alignmentCount": 4,
               "fullAlignment": true,
               "partialAlignment": false,
-              "lastClose": 4611.31534,
+              "lastClose": 4603.3239,
               "periods": {
                 "p20": 30,
                 "p50": 60,
@@ -3227,16 +3298,16 @@
                 "p200": 200
               },
               "values": {
-                "ema20": 4593.45235960619,
-                "ema50": 4564.705001626866,
-                "ema100": 4534.941605089655,
-                "ema200": 4478.7876832880875
+                "ema20": 4594.089233179984,
+                "ema50": 4565.971195016149,
+                "ema100": 4536.295709939365,
+                "ema200": 4480.026849623529
               },
               "slopes": {
-                "ema20": 0.0010933561482635687,
-                "ema50": 0.0011768832613349312,
-                "ema100": 0.0010915125729888601,
-                "ema200": 0.0009085866545350572
+                "ema20": 0.000805367486591193,
+                "ema50": 0.0010288635072790641,
+                "ema100": 0.0010044688857597588,
+                "ema200": 0.000867296767926117
               },
               "bullishChecks": [
                 true,
@@ -3258,22 +3329,22 @@
             "macd": {
               "available": true,
               "direction": "SELL",
-              "macd": 15.415501328270693,
-              "signal": 17.042638418534768,
-              "histogram": -1.6271370902640747
+              "macd": 13.480808928549777,
+              "signal": 16.33027252053777,
+              "histogram": -2.849463591987991
             },
             "rsi": {
               "available": true,
               "direction": null,
-              "current": 59.272647889574344,
-              "slope": -5.815355236591856
+              "current": 53.80339864310338,
+              "slope": -5.469249246470966
             },
             "dmi": {
               "available": true,
               "direction": "BUY",
-              "adx": 44.923571872421476,
-              "plusDI": 26.723465087090894,
-              "minusDI": 13.1279724746785
+              "adx": 43.167224732311595,
+              "plusDI": 25.36139492393828,
+              "minusDI": 16.790025096446687
             },
             "structure": {
               "direction": "BUY",
@@ -3541,17 +3612,17 @@
         "version": "2.0.0",
         "buy": {
           "direction": "BUY",
-          "rawScore": 31.2403,
+          "rawScore": 28.2403,
           "availableWeight": 86,
-          "score": 36.33,
+          "score": 32.84,
           "components": {
             "ema": {
               "available": true,
-              "score": 19.5,
+              "score": 16.5,
               "weight": 24,
               "alignedChecks": 3,
-              "supportiveSlopes": 2,
-              "detail": "BUY EMA checks 3/4; fast/medium slopes 2/2"
+              "supportiveSlopes": 1,
+              "detail": "BUY EMA checks 3/4; fast/medium slopes 1/2"
             },
             "macd": {
               "available": true,
@@ -3572,7 +3643,7 @@
               "momentumSupport": false,
               "crossed": false,
               "exhausted": false,
-              "detail": "RSI 46.6; slope -3.01; three-bar momentum -11.22"
+              "detail": "RSI 42.34; slope -4.26; three-bar momentum -13.54"
             },
             "dmiAdx": {
               "available": true,
@@ -3581,8 +3652,8 @@
               "directional": false,
               "trending": false,
               "rising": false,
-              "diGap": 3.5341100931290548,
-              "detail": "ADX 23.39 (DEVELOPING); +DI 20.06, -DI 23.59"
+              "diGap": 7.747558069089987,
+              "detail": "ADX 22.93 (DEVELOPING); +DI 19, -DI 26.75"
             },
             "structure": {
               "available": false,
@@ -3606,17 +3677,17 @@
         },
         "sell": {
           "direction": "SELL",
-          "rawScore": 43.5,
+          "rawScore": 46.5,
           "availableWeight": 86,
-          "score": 50.58,
+          "score": 54.07,
           "components": {
             "ema": {
               "available": true,
-              "score": 4.5,
+              "score": 7.5,
               "weight": 24,
               "alignedChecks": 1,
-              "supportiveSlopes": 0,
-              "detail": "SELL EMA checks 1/4; fast/medium slopes 0/2"
+              "supportiveSlopes": 1,
+              "detail": "SELL EMA checks 1/4; fast/medium slopes 1/2"
             },
             "macd": {
               "available": true,
@@ -3637,7 +3708,7 @@
               "momentumSupport": true,
               "crossed": false,
               "exhausted": false,
-              "detail": "RSI 46.6; slope -3.01; three-bar momentum -11.22"
+              "detail": "RSI 42.34; slope -4.26; three-bar momentum -13.54"
             },
             "dmiAdx": {
               "available": true,
@@ -3646,8 +3717,8 @@
               "directional": true,
               "trending": false,
               "rising": false,
-              "diGap": 3.5341100931290548,
-              "detail": "ADX 23.39 (DEVELOPING); +DI 20.06, -DI 23.59"
+              "diGap": 7.747558069089987,
+              "detail": "ADX 22.93 (DEVELOPING); +DI 19, -DI 26.75"
             },
             "structure": {
               "available": false,
@@ -3672,9 +3743,9 @@
         "selection": {
           "direction": null,
           "qualified": false,
-          "winnerScore": 50.58,
-          "opposingScore": 36.33,
-          "edge": 14.25,
+          "winnerScore": 54.07,
+          "opposingScore": 32.84,
+          "edge": 21.23,
           "requiredScore": 61,
           "requiredEdge": 11,
           "config": {
@@ -3693,16 +3764,16 @@
       "confirmationTimeframe": "M15",
       "executionTimeframe": "M5",
       "entryTimeframe": "M5",
-      "setupCandleAt": "2026-08-21T20:30:00.000Z",
-      "executionCandleAt": "2026-08-21T20:45:00.000Z",
+      "setupCandleAt": "2026-08-21T20:45:00.000Z",
+      "executionCandleAt": "2026-08-21T20:55:00.000Z",
       "mode": "M15",
-      "generatedAt": "2026-08-21T20:54:23.292Z",
-      "analyzedCandleAt": "2026-08-21T20:30:00.000Z",
+      "generatedAt": "2026-08-21T21:00:32.593Z",
+      "analyzedCandleAt": "2026-08-21T20:45:00.000Z",
       "prepared": {
         "counts": {
           "m5": 1500,
-          "m15": 499,
-          "m30": 249,
+          "m15": 500,
+          "m30": 250,
           "h1": 900
         },
         "source": {
@@ -3710,7 +3781,7 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-21T20:54:23.044Z",
+          "m5": "2026-08-21T21:00:32.351Z",
           "h1": "2026-08-21T20:48:14.378Z"
         },
         "quality": {
@@ -3719,9 +3790,9 @@
             "rejectedRows": 0,
             "duplicateTimestamps": 0,
             "openCandlesRemoved": 0,
-            "firstDate": "2026-08-16T15:50:00.000Z",
-            "lastDate": "2026-08-21T20:45:00.000Z",
-            "ageMinutes": 9,
+            "firstDate": "2026-08-16T16:00:00.000Z",
+            "lastDate": "2026-08-21T20:55:00.000Z",
+            "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "hasOHLC": true,
             "stale": false
@@ -3733,7 +3804,7 @@
             "openCandlesRemoved": 0,
             "firstDate": "2026-07-15T08:00:00.000Z",
             "lastDate": "2026-08-21T19:00:00.000Z",
-            "ageMinutes": 114,
+            "ageMinutes": 120,
             "expectedIntervalMinutes": 60,
             "hasOHLC": true,
             "stale": false
@@ -3800,7 +3871,7 @@
           "name": "Data Availability",
           "pass": true,
           "status": "pass",
-          "detail": "249 complete closed M30 candles available; latest 2026-08-21T20:00:00.000Z"
+          "detail": "250 complete closed M30 candles available; latest 2026-08-21T20:30:00.000Z"
         },
         {
           "name": "EMA Trend",
@@ -3824,7 +3895,7 @@
           "name": "RSI",
           "pass": false,
           "status": "info",
-          "detail": "BUY evidence 7/18. RSI 59.27; slope -5.82; three-bar momentum -10.05",
+          "detail": "BUY evidence 7/18. RSI 53.8; slope -5.47; three-bar momentum -11.35",
           "direction": "BUY",
           "score": 7,
           "maximumScore": 18
@@ -3833,7 +3904,7 @@
           "name": "ADX / DMI",
           "pass": true,
           "status": "pass",
-          "detail": "BUY evidence 14/16. ADX 44.92 (STRONG); +DI 26.72, -DI 13.13",
+          "detail": "BUY evidence 14/16. ADX 43.17 (STRONG); +DI 25.36, -DI 16.79",
           "direction": "BUY",
           "score": 14,
           "maximumScore": 16
@@ -3866,7 +3937,7 @@
           "name": "ATR Volatility",
           "pass": true,
           "status": "pass",
-          "detail": "ATR(14) 12.162172; 0.2637% of price; percentile 60.5; regime NORMAL"
+          "detail": "ATR(14) 11.899976; 0.2585% of price; percentile 57.5; regime NORMAL"
         },
         {
           "name": "News",
@@ -3891,7 +3962,7 @@
       "professionalPipelineVersion": "2.0.0",
       "indicatorSnapshot": {
         "timeframe": "M30",
-        "analyzedCandleAt": "2026-08-21T20:00:00.000Z",
+        "analyzedCandleAt": "2026-08-21T20:30:00.000Z",
         "ema": {
           "available": true,
           "direction": "BUY",
@@ -3899,7 +3970,7 @@
           "alignmentCount": 4,
           "fullAlignment": true,
           "partialAlignment": false,
-          "lastClose": 4611.31534,
+          "lastClose": 4603.3239,
           "periods": {
             "p20": 30,
             "p50": 60,
@@ -3907,16 +3978,16 @@
             "p200": 200
           },
           "values": {
-            "ema20": 4593.45235960619,
-            "ema50": 4564.705001626866,
-            "ema100": 4534.941605089655,
-            "ema200": 4478.7876832880875
+            "ema20": 4594.089233179984,
+            "ema50": 4565.971195016149,
+            "ema100": 4536.295709939365,
+            "ema200": 4480.026849623529
           },
           "slopes": {
-            "ema20": 0.0010933561482635687,
-            "ema50": 0.0011768832613349312,
-            "ema100": 0.0010915125729888601,
-            "ema200": 0.0009085866545350572
+            "ema20": 0.000805367486591193,
+            "ema50": 0.0010288635072790641,
+            "ema100": 0.0010044688857597588,
+            "ema200": 0.000867296767926117
           },
           "bullishChecks": [
             true,
@@ -3937,11 +4008,11 @@
         },
         "macd": {
           "available": true,
-          "macd": 15.415501328270693,
-          "signal": 17.042638418534768,
-          "histogram": -1.6271370902640747,
-          "previousHistogram": -0.6024497010527696,
-          "histogramSlope": -1.024687389211305,
+          "macd": 13.480808928549777,
+          "signal": 16.33027252053777,
+          "histogram": -2.849463591987991,
+          "previousHistogram": -1.6271370902640747,
+          "histogramSlope": -1.2223265017239164,
           "crossedBullish": false,
           "crossedBearish": false,
           "direction": "SELL"
@@ -3949,10 +4020,10 @@
         "rsi": {
           "available": true,
           "period": 14,
-          "current": 59.272647889574344,
-          "previous": 65.0880031261662,
-          "slope": -5.815355236591856,
-          "momentum": -10.054313444876982,
+          "current": 53.80339864310338,
+          "previous": 59.272647889574344,
+          "slope": -5.469249246470966,
+          "momentum": -11.35235850101472,
           "crossedAbove50": false,
           "crossedBelow50": false,
           "overbought": false,
@@ -3962,24 +4033,24 @@
         "dmiAdx": {
           "available": true,
           "period": 14,
-          "plusDI": 26.723465087090894,
-          "minusDI": 13.1279724746785,
-          "adx": 44.923571872421476,
-          "previousAdx": 45.75496675887003,
-          "adxSlope": -0.8313948864485567,
+          "plusDI": 25.36139492393828,
+          "minusDI": 16.790025096446687,
+          "adx": 43.167224732311595,
+          "previousAdx": 44.923571872421476,
+          "adxSlope": -1.756347140109881,
           "direction": "BUY",
           "trendStrength": "STRONG"
         },
         "atr": {
           "available": true,
           "period": 14,
-          "value": 12.162171934127148,
-          "previous": 12.429317467521505,
-          "slope": -0.2671455333943573,
-          "percent": 0.2637462640784646,
-          "percentile": 60.5,
+          "value": 11.899976081689498,
+          "previous": 12.162171934127148,
+          "slope": -0.26219585243764953,
+          "percent": 0.2585083374578421,
+          "percentile": 57.49999999999999,
           "median": 11.745860826304302,
-          "medianRatio": 1.0354432181667381,
+          "medianRatio": 1.0131208140181658,
           "regime": "NORMAL"
         },
         "structure": {
@@ -4247,6 +4318,7 @@
             4564.75099
           ],
           "resistances": [
+            4606.17632,
             4631.91226
           ]
         },
@@ -5150,7 +5222,7 @@
               "momentumSupport": false,
               "crossed": false,
               "exhausted": false,
-              "detail": "RSI 59.27; slope -5.82; three-bar momentum -10.05"
+              "detail": "RSI 53.8; slope -5.47; three-bar momentum -11.35"
             },
             "dmiAdx": {
               "available": true,
@@ -5159,8 +5231,8 @@
               "directional": true,
               "trending": true,
               "rising": false,
-              "diGap": 13.595492612412393,
-              "detail": "ADX 44.92 (STRONG); +DI 26.72, -DI 13.13"
+              "diGap": 8.571369827491594,
+              "detail": "ADX 43.17 (STRONG); +DI 25.36, -DI 16.79"
             },
             "structure": {
               "available": true,
@@ -5215,7 +5287,7 @@
               "momentumSupport": true,
               "crossed": false,
               "exhausted": false,
-              "detail": "RSI 59.27; slope -5.82; three-bar momentum -10.05"
+              "detail": "RSI 53.8; slope -5.47; three-bar momentum -11.35"
             },
             "dmiAdx": {
               "available": true,
@@ -5224,8 +5296,8 @@
               "directional": false,
               "trending": true,
               "rising": false,
-              "diGap": 13.595492612412393,
-              "detail": "ADX 44.92 (STRONG); +DI 26.72, -DI 13.13"
+              "diGap": 8.571369827491594,
+              "detail": "ADX 43.17 (STRONG); +DI 25.36, -DI 16.79"
             },
             "structure": {
               "available": true,
@@ -5267,8 +5339,8 @@
       "riskDiagnostics": {
         "setupMode": "M30",
         "executionTimeframe": "M5",
-        "executionCandleAt": "2026-08-21T20:45:00.000Z",
-        "executionAtr": 3.135118913187429,
+        "executionCandleAt": "2026-08-21T20:55:00.000Z",
+        "executionAtr": 3.083623858819714,
         "executionAtrRegime": "LOW",
         "blockedMomentumByVolatility": false,
         "evidence": {
@@ -5279,7 +5351,7 @@
           "directionalFollowThrough": false
         },
         "structureLevel": 4591.9845,
-        "breakoutLevel": 4617.65792
+        "breakoutLevel": 4606.17632
       },
       "timeframe": "M30",
       "reason": "Qualified setup is waiting for closed-M5 pullback resumption, structure rejection, engulfing, breakout, or directional follow-through confirmation",
@@ -5287,16 +5359,16 @@
       "confirmationTimeframe": "M30",
       "executionTimeframe": "M5",
       "entryTimeframe": "M5",
-      "setupCandleAt": "2026-08-21T20:00:00.000Z",
-      "executionCandleAt": "2026-08-21T20:45:00.000Z",
+      "setupCandleAt": "2026-08-21T20:30:00.000Z",
+      "executionCandleAt": "2026-08-21T20:55:00.000Z",
       "mode": "M30",
-      "generatedAt": "2026-08-21T20:54:23.292Z",
-      "analyzedCandleAt": "2026-08-21T20:00:00.000Z",
+      "generatedAt": "2026-08-21T21:00:32.593Z",
+      "analyzedCandleAt": "2026-08-21T20:30:00.000Z",
       "prepared": {
         "counts": {
           "m5": 1500,
-          "m15": 499,
-          "m30": 249,
+          "m15": 500,
+          "m30": 250,
           "h1": 900
         },
         "source": {
@@ -5304,7 +5376,7 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-21T20:54:23.044Z",
+          "m5": "2026-08-21T21:00:32.351Z",
           "h1": "2026-08-21T20:48:14.378Z"
         },
         "quality": {
@@ -5313,9 +5385,9 @@
             "rejectedRows": 0,
             "duplicateTimestamps": 0,
             "openCandlesRemoved": 0,
-            "firstDate": "2026-08-16T15:50:00.000Z",
-            "lastDate": "2026-08-21T20:45:00.000Z",
-            "ageMinutes": 9,
+            "firstDate": "2026-08-16T16:00:00.000Z",
+            "lastDate": "2026-08-21T20:55:00.000Z",
+            "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "hasOHLC": true,
             "stale": false
@@ -5327,7 +5399,7 @@
             "openCandlesRemoved": 0,
             "firstDate": "2026-07-15T08:00:00.000Z",
             "lastDate": "2026-08-21T19:00:00.000Z",
-            "ageMinutes": 114,
+            "ageMinutes": 120,
             "expectedIntervalMinutes": 60,
             "hasOHLC": true,
             "stale": false
@@ -5387,14 +5459,14 @@
       "signal": "WAIT",
       "confidence": 0,
       "reasons": [
-        "Nearest opposing level provides only 0.36R room; 2R is required"
+        "No qualified confluence: BUY 36.83, SELL 61.98, edge 25.15"
       ],
       "steps": [
         {
           "name": "Data Availability",
           "pass": true,
           "status": "pass",
-          "detail": "1500 complete closed M5 candles available; latest 2026-08-21T20:45:00.000Z"
+          "detail": "1500 complete closed M5 candles available; latest 2026-08-21T20:55:00.000Z"
         },
         {
           "name": "EMA Trend",
@@ -5409,25 +5481,25 @@
           "name": "MACD",
           "pass": true,
           "status": "pass",
-          "detail": "SELL evidence 16/18. SELL MACD relation supportive; histogram supportive; acceleration supportive",
+          "detail": "SELL evidence 12/18. SELL MACD relation supportive; histogram supportive; acceleration not supportive",
           "direction": "SELL",
-          "score": 16,
+          "score": 12,
           "maximumScore": 18
         },
         {
           "name": "RSI",
           "pass": true,
           "status": "pass",
-          "detail": "SELL evidence 14/18. RSI 30.9; slope -0.93; three-bar momentum -2.52",
+          "detail": "SELL evidence 11/18. RSI 36.73; slope -1.74; three-bar momentum 4.9",
           "direction": "SELL",
-          "score": 14,
+          "score": 11,
           "maximumScore": 18
         },
         {
           "name": "ADX / DMI",
           "pass": true,
           "status": "pass",
-          "detail": "SELL evidence 16/16. ADX 27.76 (TRENDING); +DI 9.53, -DI 26.88",
+          "detail": "SELL evidence 16/16. ADX 30.62 (TRENDING); +DI 8.35, -DI 24.56",
           "direction": "SELL",
           "score": 16,
           "maximumScore": 16
@@ -5443,11 +5515,11 @@
         },
         {
           "name": "Higher TF",
-          "pass": true,
-          "status": "pass",
-          "detail": "SELL evidence 8.57/10. HTF votes BUY 4, SELL 6; strength 60%",
+          "pass": false,
+          "status": "fail",
+          "detail": "SELL evidence 0/10. HTF votes BUY 5.5, SELL 4.5; strength 55%",
           "direction": "SELL",
-          "score": 8.57,
+          "score": 0,
           "maximumScore": 10
         },
         {
@@ -5460,19 +5532,13 @@
           "name": "ATR Volatility",
           "pass": true,
           "status": "pass",
-          "detail": "ATR(14) 0.034419; 0.0159% of price; percentile 13.5; regime LOW"
+          "detail": "ATR(14) 0.033861; 0.0156% of price; percentile 9.5; regime LOW"
         },
         {
-          "name": "News",
-          "pass": true,
-          "status": "pass",
-          "detail": "No conflicting high-impact news across 6 pair-specific item(s); net score 45"
-        },
-        {
-          "name": "M5 Entry Execution",
+          "name": "Confluence Decision",
           "pass": false,
           "status": "fail",
-          "detail": "Nearest opposing level provides only 0.36R room; 2R is required"
+          "detail": "No qualified edge: BUY 36.83, SELL 61.98; winner requires score 63 and edge 11, observed edge 25.15"
         },
         {
           "name": "AI Autonomous Decision",
@@ -5485,7 +5551,7 @@
       "professionalPipelineVersion": "2.0.0",
       "indicatorSnapshot": {
         "timeframe": "M5",
-        "analyzedCandleAt": "2026-08-21T20:45:00.000Z",
+        "analyzedCandleAt": "2026-08-21T20:55:00.000Z",
         "ema": {
           "available": true,
           "direction": null,
@@ -5493,7 +5559,7 @@
           "alignmentCount": 3,
           "fullAlignment": false,
           "partialAlignment": true,
-          "lastClose": 216.90695,
+          "lastClose": 216.92303,
           "periods": {
             "p20": 30,
             "p50": 60,
@@ -5501,16 +5567,16 @@
             "p200": 200
           },
           "values": {
-            "ema20": 216.9900849194181,
-            "ema50": 216.9520015003724,
-            "ema100": 216.8993073232393,
-            "ema200": 216.82432276280997
+            "ema20": 216.98236480461046,
+            "ema50": 216.9504759964516,
+            "ema100": 216.90044754779615,
+            "ema200": 216.82638390148475
           },
           "slopes": {
-            "ema20": -0.00006875833284612399,
-            "ema50": -0.000013953373494764891,
-            "ema100": 0.0000068738253076548155,
-            "ema200": 0.000013933704565065799
+            "ema20": -0.00006201995945812606,
+            "ema50": -0.000014072611031547584,
+            "ema100": 0.000005968117203497929,
+            "ema200": 0.000013329914147413055
           },
           "bullishChecks": [
             false,
@@ -5531,11 +5597,11 @@
         },
         "macd": {
           "available": true,
-          "macd": -0.024481079409952144,
-          "signal": -0.0105747573458741,
-          "histogram": -0.013906322064078044,
-          "previousHistogram": -0.013349365273798814,
-          "histogramSlope": -0.00055695679027923,
+          "macd": -0.026368278013677582,
+          "signal": -0.016076124720953548,
+          "histogram": -0.010292153292724034,
+          "previousHistogram": -0.011713316207593746,
+          "histogramSlope": 0.0014211629148697114,
           "crossedBullish": false,
           "crossedBearish": false,
           "direction": "SELL"
@@ -5543,10 +5609,10 @@
         "rsi": {
           "available": true,
           "period": 14,
-          "current": 30.901942922169084,
-          "previous": 31.833489423761435,
-          "slope": -0.9315465015923508,
-          "momentum": -2.5176805937793034,
+          "current": 36.72911520123919,
+          "previous": 38.4721812658807,
+          "slope": -1.7430660646415106,
+          "momentum": 4.895625777477754,
           "crossedAbove50": false,
           "crossedBelow50": false,
           "overbought": false,
@@ -5556,24 +5622,24 @@
         "dmiAdx": {
           "available": true,
           "period": 14,
-          "plusDI": 9.528168115109882,
-          "minusDI": 26.875147845403443,
-          "adx": 27.7636738374432,
-          "previousAdx": 26.23378746266771,
-          "adxSlope": 1.52988637477549,
+          "plusDI": 8.351101601907946,
+          "minusDI": 24.555006153496645,
+          "adx": 30.617037268575245,
+          "previousAdx": 29.18428261402044,
+          "adxSlope": 1.432754654554806,
           "direction": "SELL",
           "trendStrength": "TRENDING"
         },
         "atr": {
           "available": true,
           "period": 14,
-          "value": 0.03441922233907859,
-          "previous": 0.03430531636516171,
-          "slope": 0.00011390597391688212,
-          "percent": 0.015868197095150062,
-          "percentile": 13.5,
-          "median": 0.05454851347555707,
-          "medianRatio": 0.6309836904080196,
+          "value": 0.03386080905767539,
+          "previous": 0.03403856360057273,
+          "slope": -0.00017775454289734038,
+          "percent": 0.015609596204550245,
+          "percentile": 9.5,
+          "median": 0.05334540192535478,
+          "medianRatio": 0.6347465355131485,
           "regime": "LOW"
         },
         "structure": {
@@ -5583,1510 +5649,1510 @@
           "radius": 3,
           "swingHighs": [
             {
-              "index": 5,
+              "index": 3,
               "date": "2026-08-16T16:15:00.000Z",
               "price": 215.67225
             },
             {
-              "index": 9,
+              "index": 7,
               "date": "2026-08-16T16:35:00.000Z",
               "price": 215.63199
             },
             {
-              "index": 14,
+              "index": 12,
               "date": "2026-08-16T17:00:00.000Z",
               "price": 215.64805
             },
             {
-              "index": 18,
+              "index": 16,
               "date": "2026-08-16T17:20:00.000Z",
               "price": 215.69673
             },
             {
-              "index": 25,
+              "index": 23,
               "date": "2026-08-16T17:55:00.000Z",
               "price": 215.63102
             },
             {
-              "index": 40,
+              "index": 38,
               "date": "2026-08-16T19:10:00.000Z",
               "price": 215.68408
             },
             {
-              "index": 45,
+              "index": 43,
               "date": "2026-08-16T19:35:00.000Z",
               "price": 215.82621
             },
             {
-              "index": 50,
+              "index": 48,
               "date": "2026-08-16T20:00:00.000Z",
               "price": 215.86145
             },
             {
-              "index": 60,
+              "index": 58,
               "date": "2026-08-16T20:50:00.000Z",
               "price": 215.71555
             },
             {
-              "index": 69,
+              "index": 67,
               "date": "2026-08-16T21:35:00.000Z",
               "price": 215.81369
             },
             {
-              "index": 77,
+              "index": 75,
               "date": "2026-08-16T22:15:00.000Z",
               "price": 215.72465
             },
             {
-              "index": 90,
+              "index": 88,
               "date": "2026-08-16T23:20:00.000Z",
               "price": 215.67513
             },
             {
-              "index": 98,
+              "index": 96,
               "date": "2026-08-17T00:00:00.000Z",
               "price": 215.75133
             },
             {
-              "index": 108,
+              "index": 106,
               "date": "2026-08-17T00:50:00.000Z",
               "price": 215.62687
             },
             {
-              "index": 119,
+              "index": 117,
               "date": "2026-08-17T01:45:00.000Z",
               "price": 215.65059
             },
             {
-              "index": 134,
+              "index": 132,
               "date": "2026-08-17T03:00:00.000Z",
               "price": 215.56108
             },
             {
-              "index": 144,
+              "index": 142,
               "date": "2026-08-17T03:50:00.000Z",
               "price": 215.63421
             },
             {
-              "index": 152,
+              "index": 150,
               "date": "2026-08-17T04:30:00.000Z",
               "price": 215.67593
             },
             {
-              "index": 158,
+              "index": 156,
               "date": "2026-08-17T05:00:00.000Z",
               "price": 215.64852
             },
             {
-              "index": 168,
+              "index": 166,
               "date": "2026-08-17T05:50:00.000Z",
               "price": 215.64921
             },
             {
-              "index": 197,
+              "index": 195,
               "date": "2026-08-17T08:15:00.000Z",
               "price": 215.72483
             },
             {
-              "index": 202,
+              "index": 200,
               "date": "2026-08-17T08:40:00.000Z",
               "price": 215.78089
             },
             {
-              "index": 207,
+              "index": 205,
               "date": "2026-08-17T09:05:00.000Z",
               "price": 215.766
             },
             {
-              "index": 220,
+              "index": 218,
               "date": "2026-08-17T10:10:00.000Z",
               "price": 215.86432
             },
             {
-              "index": 224,
+              "index": 222,
               "date": "2026-08-17T10:30:00.000Z",
               "price": 215.88221
             },
             {
-              "index": 236,
+              "index": 234,
               "date": "2026-08-17T11:30:00.000Z",
               "price": 215.92324
             },
             {
-              "index": 261,
+              "index": 259,
               "date": "2026-08-17T13:35:00.000Z",
               "price": 216.09111
             },
             {
-              "index": 270,
+              "index": 268,
               "date": "2026-08-17T14:20:00.000Z",
               "price": 216.06226
             },
             {
-              "index": 298,
+              "index": 296,
               "date": "2026-08-17T16:40:00.000Z",
               "price": 216.17838
             },
             {
-              "index": 308,
+              "index": 306,
               "date": "2026-08-17T17:30:00.000Z",
               "price": 216.15941
             },
             {
-              "index": 319,
+              "index": 317,
               "date": "2026-08-17T18:25:00.000Z",
               "price": 216.09085
             },
             {
-              "index": 326,
+              "index": 324,
               "date": "2026-08-17T19:00:00.000Z",
               "price": 216.06483
             },
             {
-              "index": 338,
+              "index": 336,
               "date": "2026-08-17T20:00:00.000Z",
               "price": 216.02202
             },
             {
-              "index": 344,
+              "index": 342,
               "date": "2026-08-17T20:30:00.000Z",
               "price": 216.01421
             },
             {
-              "index": 350,
+              "index": 348,
               "date": "2026-08-17T21:00:00.000Z",
               "price": 216.03237
             },
             {
-              "index": 362,
+              "index": 360,
               "date": "2026-08-17T22:00:00.000Z",
               "price": 215.99679
             },
             {
-              "index": 396,
+              "index": 394,
               "date": "2026-08-18T00:50:00.000Z",
               "price": 216.1187
             },
             {
-              "index": 405,
+              "index": 403,
               "date": "2026-08-18T01:35:00.000Z",
               "price": 216.07486
             },
             {
-              "index": 410,
+              "index": 408,
               "date": "2026-08-18T02:00:00.000Z",
               "price": 216.10578
             },
             {
-              "index": 420,
+              "index": 418,
               "date": "2026-08-18T02:50:00.000Z",
               "price": 216.03461
             },
             {
-              "index": 440,
+              "index": 438,
               "date": "2026-08-18T04:30:00.000Z",
               "price": 216.22937
             },
             {
-              "index": 449,
+              "index": 447,
               "date": "2026-08-18T05:15:00.000Z",
               "price": 216.19987
             },
             {
-              "index": 453,
+              "index": 451,
               "date": "2026-08-18T05:35:00.000Z",
               "price": 216.19053
             },
             {
-              "index": 463,
+              "index": 461,
               "date": "2026-08-18T06:25:00.000Z",
               "price": 216.18725
             },
             {
-              "index": 478,
+              "index": 476,
               "date": "2026-08-18T07:40:00.000Z",
               "price": 216.1184
             },
             {
-              "index": 488,
+              "index": 486,
               "date": "2026-08-18T08:30:00.000Z",
               "price": 216.1054
             },
             {
-              "index": 494,
+              "index": 492,
               "date": "2026-08-18T09:00:00.000Z",
               "price": 216.08222
             },
             {
-              "index": 505,
+              "index": 503,
               "date": "2026-08-18T09:55:00.000Z",
               "price": 216.02033
             },
             {
-              "index": 516,
+              "index": 514,
               "date": "2026-08-18T10:50:00.000Z",
               "price": 216.07841
             },
             {
-              "index": 534,
+              "index": 532,
               "date": "2026-08-18T12:20:00.000Z",
               "price": 216.05668
             },
             {
-              "index": 548,
+              "index": 546,
               "date": "2026-08-18T13:30:00.000Z",
               "price": 216.14863
             },
             {
-              "index": 554,
+              "index": 552,
               "date": "2026-08-18T14:00:00.000Z",
               "price": 216.13175
             },
             {
-              "index": 558,
+              "index": 556,
               "date": "2026-08-18T14:20:00.000Z",
               "price": 216.107
             },
             {
-              "index": 565,
+              "index": 563,
               "date": "2026-08-18T14:55:00.000Z",
               "price": 216.14552
             },
             {
-              "index": 571,
+              "index": 569,
               "date": "2026-08-18T15:25:00.000Z",
               "price": 216.13186
             },
             {
-              "index": 585,
+              "index": 583,
               "date": "2026-08-18T16:35:00.000Z",
               "price": 216.19099
             },
             {
-              "index": 596,
+              "index": 594,
               "date": "2026-08-18T17:30:00.000Z",
               "price": 216.06189
             },
             {
-              "index": 609,
+              "index": 607,
               "date": "2026-08-18T18:35:00.000Z",
               "price": 216.06056
             },
             {
-              "index": 623,
+              "index": 621,
               "date": "2026-08-18T19:45:00.000Z",
               "price": 216.08974
             },
             {
-              "index": 641,
+              "index": 639,
               "date": "2026-08-18T21:15:00.000Z",
               "price": 216.11046
             },
             {
-              "index": 650,
+              "index": 648,
               "date": "2026-08-18T22:00:00.000Z",
               "price": 216.04727
             },
             {
-              "index": 661,
+              "index": 659,
               "date": "2026-08-18T22:55:00.000Z",
               "price": 216.00764
             },
             {
-              "index": 671,
+              "index": 669,
               "date": "2026-08-18T23:45:00.000Z",
               "price": 216.00488
             },
             {
-              "index": 680,
+              "index": 678,
               "date": "2026-08-19T00:30:00.000Z",
               "price": 215.94078
             },
             {
-              "index": 692,
+              "index": 690,
               "date": "2026-08-19T01:30:00.000Z",
               "price": 215.78816
             },
             {
-              "index": 701,
+              "index": 699,
               "date": "2026-08-19T02:15:00.000Z",
               "price": 215.81604
             },
             {
-              "index": 705,
+              "index": 703,
               "date": "2026-08-19T02:35:00.000Z",
               "price": 215.79351
             },
             {
-              "index": 718,
+              "index": 716,
               "date": "2026-08-19T03:40:00.000Z",
               "price": 215.87277
             },
             {
-              "index": 734,
+              "index": 732,
               "date": "2026-08-19T05:00:00.000Z",
               "price": 215.77906
             },
             {
-              "index": 751,
+              "index": 749,
               "date": "2026-08-19T06:25:00.000Z",
               "price": 215.80907
             },
             {
-              "index": 758,
+              "index": 756,
               "date": "2026-08-19T07:00:00.000Z",
               "price": 215.82067
             },
             {
-              "index": 773,
+              "index": 771,
               "date": "2026-08-19T08:15:00.000Z",
               "price": 215.80911
             },
             {
-              "index": 781,
+              "index": 779,
               "date": "2026-08-19T08:55:00.000Z",
               "price": 215.8225
             },
             {
-              "index": 785,
+              "index": 783,
               "date": "2026-08-19T09:15:00.000Z",
               "price": 215.85347
             },
             {
-              "index": 802,
+              "index": 800,
               "date": "2026-08-19T10:40:00.000Z",
               "price": 215.77908
             },
             {
-              "index": 821,
+              "index": 819,
               "date": "2026-08-19T12:15:00.000Z",
               "price": 215.73084
             },
             {
-              "index": 841,
+              "index": 839,
               "date": "2026-08-19T13:55:00.000Z",
               "price": 215.8898
             },
             {
-              "index": 856,
+              "index": 854,
               "date": "2026-08-19T15:10:00.000Z",
               "price": 215.6919
             },
             {
-              "index": 860,
+              "index": 858,
               "date": "2026-08-19T15:30:00.000Z",
               "price": 215.71577
             },
             {
-              "index": 864,
+              "index": 862,
               "date": "2026-08-19T15:50:00.000Z",
               "price": 215.65459
             },
             {
-              "index": 878,
+              "index": 876,
               "date": "2026-08-19T17:00:00.000Z",
               "price": 215.63783
             },
             {
-              "index": 888,
+              "index": 886,
               "date": "2026-08-19T17:50:00.000Z",
               "price": 215.63609
             },
             {
-              "index": 902,
+              "index": 900,
               "date": "2026-08-19T19:00:00.000Z",
               "price": 215.49079
             },
             {
-              "index": 911,
+              "index": 909,
               "date": "2026-08-19T19:45:00.000Z",
               "price": 215.37366
             },
             {
-              "index": 921,
+              "index": 919,
               "date": "2026-08-19T20:35:00.000Z",
               "price": 215.23942
             },
             {
-              "index": 926,
+              "index": 924,
               "date": "2026-08-19T21:00:00.000Z",
               "price": 215.27297
             },
             {
-              "index": 931,
+              "index": 929,
               "date": "2026-08-19T21:25:00.000Z",
               "price": 215.27508
             },
             {
-              "index": 937,
+              "index": 935,
               "date": "2026-08-19T21:55:00.000Z",
               "price": 215.22473
             },
             {
-              "index": 950,
+              "index": 948,
               "date": "2026-08-19T23:00:00.000Z",
               "price": 215.27205
             },
             {
-              "index": 964,
+              "index": 962,
               "date": "2026-08-20T00:10:00.000Z",
               "price": 215.40392
             },
             {
-              "index": 986,
+              "index": 984,
               "date": "2026-08-20T02:00:00.000Z",
               "price": 215.75391
             },
             {
-              "index": 999,
+              "index": 997,
               "date": "2026-08-20T03:05:00.000Z",
               "price": 215.64883
             },
             {
-              "index": 1008,
+              "index": 1006,
               "date": "2026-08-20T03:50:00.000Z",
               "price": 215.73219
             },
             {
-              "index": 1013,
+              "index": 1011,
               "date": "2026-08-20T04:15:00.000Z",
               "price": 215.75648
             },
             {
-              "index": 1021,
+              "index": 1019,
               "date": "2026-08-20T04:55:00.000Z",
               "price": 215.87833
             },
             {
-              "index": 1028,
+              "index": 1026,
               "date": "2026-08-20T05:30:00.000Z",
               "price": 215.93133
             },
             {
-              "index": 1055,
+              "index": 1053,
               "date": "2026-08-20T07:45:00.000Z",
               "price": 215.97514
             },
             {
-              "index": 1068,
+              "index": 1066,
               "date": "2026-08-20T08:50:00.000Z",
               "price": 216.19282
             },
             {
-              "index": 1095,
+              "index": 1093,
               "date": "2026-08-20T11:05:00.000Z",
               "price": 216.30834
             },
             {
-              "index": 1109,
+              "index": 1107,
               "date": "2026-08-20T12:15:00.000Z",
               "price": 216.44207
             },
             {
-              "index": 1118,
+              "index": 1116,
               "date": "2026-08-20T13:00:00.000Z",
               "price": 216.49955
             },
             {
-              "index": 1131,
+              "index": 1129,
               "date": "2026-08-20T14:05:00.000Z",
               "price": 216.64985
             },
             {
-              "index": 1153,
+              "index": 1151,
               "date": "2026-08-20T15:55:00.000Z",
               "price": 216.72811
             },
             {
-              "index": 1160,
+              "index": 1158,
               "date": "2026-08-20T16:30:00.000Z",
               "price": 216.81438
             },
             {
-              "index": 1165,
+              "index": 1163,
               "date": "2026-08-20T16:55:00.000Z",
               "price": 216.80088
             },
             {
-              "index": 1190,
+              "index": 1188,
               "date": "2026-08-20T19:00:00.000Z",
               "price": 216.90507
             },
             {
-              "index": 1196,
+              "index": 1194,
               "date": "2026-08-20T19:30:00.000Z",
               "price": 216.90623
             },
             {
-              "index": 1200,
+              "index": 1198,
               "date": "2026-08-20T19:50:00.000Z",
               "price": 216.90677
             },
             {
-              "index": 1206,
+              "index": 1204,
               "date": "2026-08-20T20:20:00.000Z",
               "price": 216.88423
             },
             {
-              "index": 1211,
+              "index": 1209,
               "date": "2026-08-20T20:45:00.000Z",
               "price": 216.88103
             },
             {
-              "index": 1215,
+              "index": 1213,
               "date": "2026-08-20T21:05:00.000Z",
               "price": 216.88262
             },
             {
-              "index": 1227,
+              "index": 1225,
               "date": "2026-08-20T22:05:00.000Z",
               "price": 216.85221
             },
             {
-              "index": 1245,
+              "index": 1243,
               "date": "2026-08-20T23:35:00.000Z",
               "price": 216.80312
             },
             {
-              "index": 1259,
+              "index": 1257,
               "date": "2026-08-21T00:45:00.000Z",
               "price": 217.04875
             },
             {
-              "index": 1280,
+              "index": 1278,
               "date": "2026-08-21T02:30:00.000Z",
               "price": 217.02363
             },
             {
-              "index": 1285,
+              "index": 1283,
               "date": "2026-08-21T02:55:00.000Z",
               "price": 217.02123
             },
             {
-              "index": 1292,
+              "index": 1290,
               "date": "2026-08-21T03:30:00.000Z",
               "price": 217.06927
             },
             {
-              "index": 1307,
+              "index": 1305,
               "date": "2026-08-21T04:45:00.000Z",
               "price": 217.00116
             },
             {
-              "index": 1314,
+              "index": 1312,
               "date": "2026-08-21T05:20:00.000Z",
               "price": 216.96875
             },
             {
-              "index": 1328,
+              "index": 1326,
               "date": "2026-08-21T06:30:00.000Z",
               "price": 216.94019
             },
             {
-              "index": 1334,
+              "index": 1332,
               "date": "2026-08-21T07:00:00.000Z",
               "price": 216.92352
             },
             {
-              "index": 1339,
+              "index": 1337,
               "date": "2026-08-21T07:25:00.000Z",
               "price": 216.9142
             },
             {
-              "index": 1351,
+              "index": 1349,
               "date": "2026-08-21T08:25:00.000Z",
               "price": 216.67496
             },
             {
-              "index": 1359,
+              "index": 1357,
               "date": "2026-08-21T09:05:00.000Z",
               "price": 216.67701
             },
             {
-              "index": 1372,
+              "index": 1370,
               "date": "2026-08-21T10:10:00.000Z",
               "price": 216.69294
             },
             {
-              "index": 1381,
+              "index": 1379,
               "date": "2026-08-21T10:55:00.000Z",
               "price": 216.78053
             },
             {
-              "index": 1385,
+              "index": 1383,
               "date": "2026-08-21T11:15:00.000Z",
               "price": 216.77087
             },
             {
-              "index": 1398,
+              "index": 1396,
               "date": "2026-08-21T12:20:00.000Z",
               "price": 216.79386
             },
             {
-              "index": 1415,
+              "index": 1413,
               "date": "2026-08-21T13:45:00.000Z",
               "price": 216.72361
             },
             {
-              "index": 1422,
+              "index": 1420,
               "date": "2026-08-21T14:20:00.000Z",
               "price": 216.71235
             },
             {
-              "index": 1428,
+              "index": 1426,
               "date": "2026-08-21T14:50:00.000Z",
               "price": 216.64107
             },
             {
-              "index": 1443,
+              "index": 1441,
               "date": "2026-08-21T16:05:00.000Z",
               "price": 216.86997
             },
             {
-              "index": 1450,
+              "index": 1448,
               "date": "2026-08-21T16:40:00.000Z",
               "price": 216.8788
             },
             {
-              "index": 1467,
+              "index": 1465,
               "date": "2026-08-21T18:05:00.000Z",
               "price": 217.10288
             },
             {
-              "index": 1477,
+              "index": 1475,
               "date": "2026-08-21T18:55:00.000Z",
               "price": 217.11672
             },
             {
-              "index": 1492,
+              "index": 1490,
               "date": "2026-08-21T20:10:00.000Z",
               "price": 217.01964
             }
           ],
           "swingLows": [
             {
-              "index": 14,
+              "index": 12,
               "date": "2026-08-16T17:00:00.000Z",
               "price": 215.53257
             },
             {
-              "index": 20,
+              "index": 18,
               "date": "2026-08-16T17:30:00.000Z",
               "price": 215.57064
             },
             {
-              "index": 26,
+              "index": 24,
               "date": "2026-08-16T18:00:00.000Z",
               "price": 215.55538
             },
             {
-              "index": 36,
+              "index": 34,
               "date": "2026-08-16T18:50:00.000Z",
               "price": 215.4743
             },
             {
-              "index": 45,
+              "index": 43,
               "date": "2026-08-16T19:35:00.000Z",
               "price": 215.25244
             },
             {
-              "index": 50,
+              "index": 48,
               "date": "2026-08-16T20:00:00.000Z",
               "price": 215.27178
             },
             {
-              "index": 58,
+              "index": 56,
               "date": "2026-08-16T20:40:00.000Z",
               "price": 215.59044
             },
             {
-              "index": 63,
+              "index": 61,
               "date": "2026-08-16T21:05:00.000Z",
               "price": 215.61046
             },
             {
-              "index": 74,
+              "index": 72,
               "date": "2026-08-16T22:00:00.000Z",
               "price": 215.59013
             },
             {
-              "index": 81,
+              "index": 79,
               "date": "2026-08-16T22:35:00.000Z",
               "price": 215.5987
             },
             {
-              "index": 86,
+              "index": 84,
               "date": "2026-08-16T23:00:00.000Z",
               "price": 215.54243
             },
             {
-              "index": 94,
+              "index": 92,
               "date": "2026-08-16T23:40:00.000Z",
               "price": 215.59715
             },
             {
-              "index": 103,
+              "index": 101,
               "date": "2026-08-17T00:25:00.000Z",
               "price": 215.5584
             },
             {
-              "index": 110,
+              "index": 108,
               "date": "2026-08-17T01:00:00.000Z",
               "price": 215.53292
             },
             {
-              "index": 116,
+              "index": 114,
               "date": "2026-08-17T01:30:00.000Z",
               "price": 215.53532
             },
             {
-              "index": 125,
+              "index": 123,
               "date": "2026-08-17T02:15:00.000Z",
               "price": 215.45797
             },
             {
-              "index": 129,
+              "index": 127,
               "date": "2026-08-17T02:35:00.000Z",
               "price": 215.48393
             },
             {
-              "index": 133,
+              "index": 131,
               "date": "2026-08-17T02:55:00.000Z",
               "price": 215.49717
             },
             {
-              "index": 139,
+              "index": 137,
               "date": "2026-08-17T03:25:00.000Z",
               "price": 215.52134
             },
             {
-              "index": 153,
+              "index": 151,
               "date": "2026-08-17T04:35:00.000Z",
               "price": 215.59231
             },
             {
-              "index": 157,
+              "index": 155,
               "date": "2026-08-17T04:55:00.000Z",
               "price": 215.59428
             },
             {
-              "index": 166,
+              "index": 164,
               "date": "2026-08-17T05:40:00.000Z",
               "price": 215.50544
             },
             {
-              "index": 177,
+              "index": 175,
               "date": "2026-08-17T06:35:00.000Z",
               "price": 215.52746
             },
             {
-              "index": 184,
+              "index": 182,
               "date": "2026-08-17T07:10:00.000Z",
               "price": 215.43027
             },
             {
-              "index": 191,
+              "index": 189,
               "date": "2026-08-17T07:45:00.000Z",
               "price": 215.53005
             },
             {
-              "index": 205,
+              "index": 203,
               "date": "2026-08-17T08:55:00.000Z",
               "price": 215.58262
             },
             {
-              "index": 211,
+              "index": 209,
               "date": "2026-08-17T09:25:00.000Z",
               "price": 215.66121
             },
             {
-              "index": 220,
+              "index": 218,
               "date": "2026-08-17T10:10:00.000Z",
               "price": 215.79895
             },
             {
-              "index": 230,
+              "index": 228,
               "date": "2026-08-17T11:00:00.000Z",
               "price": 215.77911
             },
             {
-              "index": 240,
+              "index": 238,
               "date": "2026-08-17T11:50:00.000Z",
               "price": 215.84619
             },
             {
-              "index": 247,
+              "index": 245,
               "date": "2026-08-17T12:25:00.000Z",
               "price": 215.86458
             },
             {
-              "index": 265,
+              "index": 263,
               "date": "2026-08-17T13:55:00.000Z",
               "price": 215.93171
             },
             {
-              "index": 276,
+              "index": 274,
               "date": "2026-08-17T14:50:00.000Z",
               "price": 215.81572
             },
             {
-              "index": 293,
+              "index": 291,
               "date": "2026-08-17T16:15:00.000Z",
               "price": 216.07192
             },
             {
-              "index": 305,
+              "index": 303,
               "date": "2026-08-17T17:15:00.000Z",
               "price": 216.06854
             },
             {
-              "index": 311,
+              "index": 309,
               "date": "2026-08-17T17:45:00.000Z",
               "price": 216.0142
             },
             {
-              "index": 322,
+              "index": 320,
               "date": "2026-08-17T18:40:00.000Z",
               "price": 215.99584
             },
             {
-              "index": 332,
+              "index": 330,
               "date": "2026-08-17T19:30:00.000Z",
               "price": 215.90434
             },
             {
-              "index": 349,
+              "index": 347,
               "date": "2026-08-17T20:55:00.000Z",
               "price": 215.91995
             },
             {
-              "index": 356,
+              "index": 354,
               "date": "2026-08-17T21:30:00.000Z",
               "price": 215.90197
             },
             {
-              "index": 361,
+              "index": 359,
               "date": "2026-08-17T21:55:00.000Z",
               "price": 215.88085
             },
             {
-              "index": 369,
+              "index": 367,
               "date": "2026-08-17T22:35:00.000Z",
               "price": 215.8994
             },
             {
-              "index": 376,
+              "index": 374,
               "date": "2026-08-17T23:10:00.000Z",
               "price": 215.86143
             },
             {
-              "index": 381,
+              "index": 379,
               "date": "2026-08-17T23:35:00.000Z",
               "price": 215.87963
             },
             {
-              "index": 386,
+              "index": 384,
               "date": "2026-08-18T00:00:00.000Z",
               "price": 215.86781
             },
             {
-              "index": 403,
+              "index": 401,
               "date": "2026-08-18T01:25:00.000Z",
               "price": 216.00244
             },
             {
-              "index": 407,
+              "index": 405,
               "date": "2026-08-18T01:45:00.000Z",
               "price": 215.99545
             },
             {
-              "index": 416,
+              "index": 414,
               "date": "2026-08-18T02:30:00.000Z",
               "price": 215.94605
             },
             {
-              "index": 426,
+              "index": 424,
               "date": "2026-08-18T03:20:00.000Z",
               "price": 215.92862
             },
             {
-              "index": 433,
+              "index": 431,
               "date": "2026-08-18T03:55:00.000Z",
               "price": 215.94768
             },
             {
-              "index": 446,
+              "index": 444,
               "date": "2026-08-18T05:00:00.000Z",
               "price": 216.12743
             },
             {
-              "index": 451,
+              "index": 449,
               "date": "2026-08-18T05:25:00.000Z",
               "price": 216.13628
             },
             {
-              "index": 459,
+              "index": 457,
               "date": "2026-08-18T06:05:00.000Z",
               "price": 215.97132
             },
             {
-              "index": 473,
+              "index": 471,
               "date": "2026-08-18T07:15:00.000Z",
               "price": 215.97707
             },
             {
-              "index": 483,
+              "index": 481,
               "date": "2026-08-18T08:05:00.000Z",
               "price": 216.01923
             },
             {
-              "index": 491,
+              "index": 489,
               "date": "2026-08-18T08:45:00.000Z",
               "price": 216.00172
             },
             {
-              "index": 502,
+              "index": 500,
               "date": "2026-08-18T09:40:00.000Z",
               "price": 215.94382
             },
             {
-              "index": 507,
+              "index": 505,
               "date": "2026-08-18T10:05:00.000Z",
               "price": 215.93662
             },
             {
-              "index": 519,
+              "index": 517,
               "date": "2026-08-18T11:05:00.000Z",
               "price": 215.98649
             },
             {
-              "index": 524,
+              "index": 522,
               "date": "2026-08-18T11:30:00.000Z",
               "price": 215.9663
             },
             {
-              "index": 531,
+              "index": 529,
               "date": "2026-08-18T12:05:00.000Z",
               "price": 215.98111
             },
             {
-              "index": 537,
+              "index": 535,
               "date": "2026-08-18T12:35:00.000Z",
               "price": 215.98734
             },
             {
-              "index": 553,
+              "index": 551,
               "date": "2026-08-18T13:55:00.000Z",
               "price": 215.98858
             },
             {
-              "index": 560,
+              "index": 558,
               "date": "2026-08-18T14:30:00.000Z",
               "price": 215.98601
             },
             {
-              "index": 566,
+              "index": 564,
               "date": "2026-08-18T15:00:00.000Z",
               "price": 215.99466
             },
             {
-              "index": 577,
+              "index": 575,
               "date": "2026-08-18T15:55:00.000Z",
               "price": 216.03195
             },
             {
-              "index": 581,
+              "index": 579,
               "date": "2026-08-18T16:15:00.000Z",
               "price": 216.09437
             },
             {
-              "index": 593,
+              "index": 591,
               "date": "2026-08-18T17:15:00.000Z",
               "price": 216.00561
             },
             {
-              "index": 597,
+              "index": 595,
               "date": "2026-08-18T17:35:00.000Z",
               "price": 216.01047
             },
             {
-              "index": 604,
+              "index": 602,
               "date": "2026-08-18T18:10:00.000Z",
               "price": 215.99066
             },
             {
-              "index": 614,
+              "index": 612,
               "date": "2026-08-18T19:00:00.000Z",
               "price": 215.99204
             },
             {
-              "index": 632,
+              "index": 630,
               "date": "2026-08-18T20:30:00.000Z",
               "price": 215.99551
             },
             {
-              "index": 640,
+              "index": 638,
               "date": "2026-08-18T21:10:00.000Z",
               "price": 215.97945
             },
             {
-              "index": 649,
+              "index": 647,
               "date": "2026-08-18T21:55:00.000Z",
               "price": 215.89338
             },
             {
-              "index": 657,
+              "index": 655,
               "date": "2026-08-18T22:35:00.000Z",
               "price": 215.97399
             },
             {
-              "index": 664,
+              "index": 662,
               "date": "2026-08-18T23:10:00.000Z",
               "price": 215.95193
             },
             {
-              "index": 668,
+              "index": 666,
               "date": "2026-08-18T23:30:00.000Z",
               "price": 215.95349
             },
             {
-              "index": 677,
+              "index": 675,
               "date": "2026-08-19T00:15:00.000Z",
               "price": 215.89547
             },
             {
-              "index": 690,
+              "index": 688,
               "date": "2026-08-19T01:20:00.000Z",
               "price": 215.70236
             },
             {
-              "index": 694,
+              "index": 692,
               "date": "2026-08-19T01:40:00.000Z",
               "price": 215.72138
             },
             {
-              "index": 703,
+              "index": 701,
               "date": "2026-08-19T02:25:00.000Z",
               "price": 215.69765
             },
             {
-              "index": 728,
+              "index": 726,
               "date": "2026-08-19T04:30:00.000Z",
               "price": 215.69366
             },
             {
-              "index": 733,
+              "index": 731,
               "date": "2026-08-19T04:55:00.000Z",
               "price": 215.69727
             },
             {
-              "index": 741,
+              "index": 739,
               "date": "2026-08-19T05:35:00.000Z",
               "price": 215.63254
             },
             {
-              "index": 749,
+              "index": 747,
               "date": "2026-08-19T06:15:00.000Z",
               "price": 215.64696
             },
             {
-              "index": 753,
+              "index": 751,
               "date": "2026-08-19T06:35:00.000Z",
               "price": 215.61662
             },
             {
-              "index": 765,
+              "index": 763,
               "date": "2026-08-19T07:35:00.000Z",
               "price": 215.6711
             },
             {
-              "index": 777,
+              "index": 775,
               "date": "2026-08-19T08:35:00.000Z",
               "price": 215.62817
             },
             {
-              "index": 789,
+              "index": 787,
               "date": "2026-08-19T09:35:00.000Z",
               "price": 215.67642
             },
             {
-              "index": 797,
+              "index": 795,
               "date": "2026-08-19T10:15:00.000Z",
               "price": 215.64467
             },
             {
-              "index": 806,
+              "index": 804,
               "date": "2026-08-19T11:00:00.000Z",
               "price": 215.64389
             },
             {
-              "index": 815,
+              "index": 813,
               "date": "2026-08-19T11:45:00.000Z",
               "price": 215.63874
             },
             {
-              "index": 826,
+              "index": 824,
               "date": "2026-08-19T12:40:00.000Z",
               "price": 214.96268
             },
             {
-              "index": 850,
+              "index": 848,
               "date": "2026-08-19T14:40:00.000Z",
               "price": 215.37813
             },
             {
-              "index": 863,
+              "index": 861,
               "date": "2026-08-19T15:45:00.000Z",
               "price": 215.54637
             },
             {
-              "index": 867,
+              "index": 865,
               "date": "2026-08-19T16:05:00.000Z",
               "price": 215.56546
             },
             {
-              "index": 876,
+              "index": 874,
               "date": "2026-08-19T16:50:00.000Z",
               "price": 215.53232
             },
             {
-              "index": 885,
+              "index": 883,
               "date": "2026-08-19T17:35:00.000Z",
               "price": 215.49238
             },
             {
-              "index": 898,
+              "index": 896,
               "date": "2026-08-19T18:40:00.000Z",
               "price": 215.3326
             },
             {
-              "index": 908,
+              "index": 906,
               "date": "2026-08-19T19:30:00.000Z",
               "price": 215.25662
             },
             {
-              "index": 914,
+              "index": 912,
               "date": "2026-08-19T20:00:00.000Z",
               "price": 215.14499
             },
             {
-              "index": 921,
+              "index": 919,
               "date": "2026-08-19T20:35:00.000Z",
               "price": 215.15474
             },
             {
-              "index": 926,
+              "index": 924,
               "date": "2026-08-19T21:00:00.000Z",
               "price": 215.04041
             },
             {
-              "index": 930,
+              "index": 928,
               "date": "2026-08-19T21:20:00.000Z",
               "price": 215.05842
             },
             {
-              "index": 938,
+              "index": 936,
               "date": "2026-08-19T22:00:00.000Z",
               "price": 215.03078
             },
             {
-              "index": 954,
+              "index": 952,
               "date": "2026-08-19T23:20:00.000Z",
               "price": 215.20535
             },
             {
-              "index": 958,
+              "index": 956,
               "date": "2026-08-19T23:40:00.000Z",
               "price": 215.20157
             },
             {
-              "index": 963,
+              "index": 961,
               "date": "2026-08-20T00:05:00.000Z",
               "price": 215.21289
             },
             {
-              "index": 968,
+              "index": 966,
               "date": "2026-08-20T00:30:00.000Z",
               "price": 215.32312
             },
             {
-              "index": 980,
+              "index": 978,
               "date": "2026-08-20T01:30:00.000Z",
               "price": 215.43096
             },
             {
-              "index": 994,
+              "index": 992,
               "date": "2026-08-20T02:40:00.000Z",
               "price": 215.52252
             },
             {
-              "index": 1001,
+              "index": 999,
               "date": "2026-08-20T03:15:00.000Z",
               "price": 215.56244
             },
             {
-              "index": 1015,
+              "index": 1013,
               "date": "2026-08-20T04:25:00.000Z",
               "price": 215.69748
             },
             {
-              "index": 1022,
+              "index": 1020,
               "date": "2026-08-20T05:00:00.000Z",
               "price": 215.77619
             },
             {
-              "index": 1033,
+              "index": 1031,
               "date": "2026-08-20T05:55:00.000Z",
               "price": 215.77944
             },
             {
-              "index": 1039,
+              "index": 1037,
               "date": "2026-08-20T06:25:00.000Z",
               "price": 215.62742
             },
             {
-              "index": 1048,
+              "index": 1046,
               "date": "2026-08-20T07:10:00.000Z",
               "price": 215.57072
             },
             {
-              "index": 1058,
+              "index": 1056,
               "date": "2026-08-20T08:00:00.000Z",
               "price": 215.87607
             },
             {
-              "index": 1074,
+              "index": 1072,
               "date": "2026-08-20T09:20:00.000Z",
               "price": 215.86735
             },
             {
-              "index": 1084,
+              "index": 1082,
               "date": "2026-08-20T10:10:00.000Z",
               "price": 216.00194
             },
             {
-              "index": 1091,
+              "index": 1089,
               "date": "2026-08-20T10:45:00.000Z",
               "price": 216.12238
             },
             {
-              "index": 1100,
+              "index": 1098,
               "date": "2026-08-20T11:30:00.000Z",
               "price": 216.21922
             },
             {
-              "index": 1116,
+              "index": 1114,
               "date": "2026-08-20T12:50:00.000Z",
               "price": 216.32911
             },
             {
-              "index": 1125,
+              "index": 1123,
               "date": "2026-08-20T13:35:00.000Z",
               "price": 216.34922
             },
             {
-              "index": 1134,
+              "index": 1132,
               "date": "2026-08-20T14:20:00.000Z",
               "price": 216.43945
             },
             {
-              "index": 1142,
+              "index": 1140,
               "date": "2026-08-20T15:00:00.000Z",
               "price": 216.3257
             },
             {
-              "index": 1154,
+              "index": 1152,
               "date": "2026-08-20T16:00:00.000Z",
               "price": 216.61279
             },
             {
-              "index": 1168,
+              "index": 1166,
               "date": "2026-08-20T17:10:00.000Z",
               "price": 216.6609
             },
             {
-              "index": 1189,
+              "index": 1187,
               "date": "2026-08-20T18:55:00.000Z",
               "price": 216.79853
             },
             {
-              "index": 1198,
+              "index": 1196,
               "date": "2026-08-20T19:40:00.000Z",
               "price": 216.84554
             },
             {
-              "index": 1202,
+              "index": 1200,
               "date": "2026-08-20T20:00:00.000Z",
               "price": 216.84485
             },
             {
-              "index": 1209,
+              "index": 1207,
               "date": "2026-08-20T20:35:00.000Z",
               "price": 216.83866
             },
             {
-              "index": 1214,
+              "index": 1212,
               "date": "2026-08-20T21:00:00.000Z",
               "price": 216.69711
             },
             {
-              "index": 1222,
+              "index": 1220,
               "date": "2026-08-20T21:40:00.000Z",
               "price": 216.78743
             },
             {
-              "index": 1231,
+              "index": 1229,
               "date": "2026-08-20T22:25:00.000Z",
               "price": 216.76939
             },
             {
-              "index": 1244,
+              "index": 1242,
               "date": "2026-08-20T23:30:00.000Z",
               "price": 216.71345
             },
             {
-              "index": 1248,
+              "index": 1246,
               "date": "2026-08-20T23:50:00.000Z",
               "price": 216.73134
             },
             {
-              "index": 1261,
+              "index": 1259,
               "date": "2026-08-21T00:55:00.000Z",
               "price": 216.95311
             },
             {
-              "index": 1270,
+              "index": 1268,
               "date": "2026-08-21T01:40:00.000Z",
               "price": 216.87702
             },
             {
-              "index": 1274,
+              "index": 1272,
               "date": "2026-08-21T02:00:00.000Z",
               "price": 216.86124
             },
             {
-              "index": 1282,
+              "index": 1280,
               "date": "2026-08-21T02:40:00.000Z",
               "price": 216.89291
             },
             {
-              "index": 1299,
+              "index": 1297,
               "date": "2026-08-21T04:05:00.000Z",
               "price": 216.90759
             },
             {
-              "index": 1311,
+              "index": 1309,
               "date": "2026-08-21T05:05:00.000Z",
               "price": 216.92064
             },
             {
-              "index": 1322,
+              "index": 1320,
               "date": "2026-08-21T06:00:00.000Z",
               "price": 216.74465
             },
             {
-              "index": 1335,
+              "index": 1333,
               "date": "2026-08-21T07:05:00.000Z",
               "price": 216.79204
             },
             {
-              "index": 1347,
+              "index": 1345,
               "date": "2026-08-21T08:05:00.000Z",
               "price": 216.55744
             },
             {
-              "index": 1354,
+              "index": 1352,
               "date": "2026-08-21T08:40:00.000Z",
               "price": 216.53303
             },
             {
-              "index": 1364,
+              "index": 1362,
               "date": "2026-08-21T09:30:00.000Z",
               "price": 216.48437
             },
             {
-              "index": 1376,
+              "index": 1374,
               "date": "2026-08-21T10:30:00.000Z",
               "price": 216.62392
             },
             {
-              "index": 1381,
+              "index": 1379,
               "date": "2026-08-21T10:55:00.000Z",
               "price": 216.58656
             },
             {
-              "index": 1390,
+              "index": 1388,
               "date": "2026-08-21T11:40:00.000Z",
               "price": 216.59291
             },
             {
-              "index": 1402,
+              "index": 1400,
               "date": "2026-08-21T12:40:00.000Z",
               "price": 216.55469
             },
             {
-              "index": 1408,
+              "index": 1406,
               "date": "2026-08-21T13:10:00.000Z",
               "price": 216.54075
             },
             {
-              "index": 1414,
+              "index": 1412,
               "date": "2026-08-21T13:40:00.000Z",
               "price": 216.58549
             },
             {
-              "index": 1418,
+              "index": 1416,
               "date": "2026-08-21T14:00:00.000Z",
               "price": 216.60767
             },
             {
-              "index": 1425,
+              "index": 1423,
               "date": "2026-08-21T14:35:00.000Z",
               "price": 216.52554
             },
             {
-              "index": 1429,
+              "index": 1427,
               "date": "2026-08-21T14:55:00.000Z",
               "price": 216.52732
             },
             {
-              "index": 1446,
+              "index": 1444,
               "date": "2026-08-21T16:20:00.000Z",
               "price": 216.75018
             },
             {
-              "index": 1452,
+              "index": 1450,
               "date": "2026-08-21T16:50:00.000Z",
               "price": 216.8084
             },
             {
-              "index": 1480,
+              "index": 1478,
               "date": "2026-08-21T19:10:00.000Z",
               "price": 217.03442
             },
             {
-              "index": 1489,
+              "index": 1487,
               "date": "2026-08-21T19:55:00.000Z",
               "price": 216.9699
             }
           ],
           "latestHigh": {
-            "index": 1492,
+            "index": 1490,
             "date": "2026-08-21T20:10:00.000Z",
             "price": 217.01964
           },
           "previousHigh": {
-            "index": 1477,
+            "index": 1475,
             "date": "2026-08-21T18:55:00.000Z",
             "price": 217.11672
           },
           "latestLow": {
-            "index": 1489,
+            "index": 1487,
             "date": "2026-08-21T19:55:00.000Z",
             "price": 216.9699
           },
           "previousLow": {
-            "index": 1480,
+            "index": 1478,
             "date": "2026-08-21T19:10:00.000Z",
             "price": 217.03442
           },
@@ -7097,23 +7163,23 @@
         },
         "supportResistance": {
           "supports": [
-            216.89291,
-            216.89244
+            216.92064,
+            216.91544
           ],
           "resistances": [
-            216.9142,
-            216.92352
+            216.92352,
+            216.94019
           ]
         },
         "candlePattern": null,
         "higherTimeframe": {
           "available": true,
-          "direction": "SELL",
-          "strength": 60,
-          "buyVotes": 4,
-          "sellVotes": 6,
+          "direction": "BUY",
+          "strength": 55.00000000000001,
+          "buyVotes": 5.5,
+          "sellVotes": 4.5,
           "possibleVotes": 10,
-          "detail": "HTF votes BUY 4, SELL 6; strength 60%",
+          "detail": "HTF votes BUY 5.5, SELL 4.5; strength 55%",
           "indicators": {
             "ema": {
               "available": true,
@@ -7122,7 +7188,7 @@
               "alignmentCount": 4,
               "fullAlignment": true,
               "partialAlignment": false,
-              "lastClose": 216.91384,
+              "lastClose": 216.92303,
               "periods": {
                 "p20": 30,
                 "p50": 60,
@@ -7130,16 +7196,16 @@
                 "p200": 200
               },
               "values": {
-                "ema20": 216.90925014969488,
-                "ema50": 216.83743096562418,
-                "ema100": 216.74810017460288,
-                "ema200": 216.51981474818768
+                "ema20": 216.9101391722952,
+                "ema50": 216.8402374913414,
+                "ema100": 216.75156413154144,
+                "ema200": 216.5238268402455
               },
               "slopes": {
-                "ema20": 0.00005444463970061807,
-                "ema50": 0.00006110969135694519,
-                "ema100": 0.0000614953318959026,
-                "ema200": 0.00006237411448283515
+                "ema20": 0.000030217954844155887,
+                "ema50": 0.00004857783577775017,
+                "ema100": 0.00005391790965868224,
+                "ema200": 0.00005855647693838231
               },
               "bullishChecks": [
                 true,
@@ -7161,22 +7227,22 @@
             "macd": {
               "available": true,
               "direction": "SELL",
-              "macd": 0.0613981487956039,
-              "signal": 0.0800987329459999,
-              "histogram": -0.018700584150395994
+              "macd": 0.05183991712124225,
+              "signal": 0.07444696978104837,
+              "histogram": -0.022607052659806115
             },
             "rsi": {
               "available": true,
-              "direction": "SELL",
-              "current": 49.19007500494936,
-              "slope": -9.780745821674323
+              "direction": "BUY",
+              "current": 50.31257435257533,
+              "slope": 1.1224993476259755
             },
             "dmi": {
               "available": true,
               "direction": "SELL",
-              "adx": 23.193117613871376,
-              "plusDI": 20.110581007865907,
-              "minusDI": 22.49617464846237
+              "adx": 22.07611264520443,
+              "plusDI": 19.31462083188065,
+              "minusDI": 22.47158906924334
             },
             "structure": {
               "direction": null,
@@ -7709,9 +7775,9 @@
         "version": "2.0.0",
         "buy": {
           "direction": "BUY",
-          "rawScore": 20.5,
+          "rawScore": 35.3571,
           "availableWeight": 96,
-          "score": 21.35,
+          "score": 36.83,
           "components": {
             "ema": {
               "available": true,
@@ -7723,24 +7789,24 @@
             },
             "macd": {
               "available": true,
-              "score": 0,
+              "score": 4,
               "weight": 18,
               "relation": false,
               "histogram": false,
-              "acceleration": false,
+              "acceleration": true,
               "crossed": false,
-              "detail": "BUY MACD relation opposed; histogram opposed; acceleration not supportive"
+              "detail": "BUY MACD relation opposed; histogram opposed; acceleration supportive"
             },
             "rsi": {
               "available": true,
-              "score": 0,
+              "score": 3,
               "weight": 18,
               "directionalZone": false,
               "slopeSupport": false,
-              "momentumSupport": false,
+              "momentumSupport": true,
               "crossed": false,
               "exhausted": false,
-              "detail": "RSI 30.9; slope -0.93; three-bar momentum -2.52"
+              "detail": "RSI 36.73; slope -1.74; three-bar momentum 4.9"
             },
             "dmiAdx": {
               "available": true,
@@ -7749,8 +7815,8 @@
               "directional": false,
               "trending": true,
               "rising": true,
-              "diGap": 17.34697973029356,
-              "detail": "ADX 27.76 (TRENDING); +DI 9.53, -DI 26.88"
+              "diGap": 16.2039045515887,
+              "detail": "ADX 30.62 (TRENDING); +DI 8.35, -DI 24.56"
             },
             "structure": {
               "available": true,
@@ -7761,8 +7827,8 @@
             "higherTimeframe": {
               "available": true,
               "weight": 10,
-              "score": 0,
-              "detail": "HTF votes BUY 4, SELL 6; strength 60%"
+              "score": 7.857142857142858,
+              "detail": "HTF votes BUY 5.5, SELL 4.5; strength 55%"
             },
             "candlePattern": {
               "available": false,
@@ -7774,9 +7840,9 @@
         },
         "sell": {
           "direction": "SELL",
-          "rawScore": 75.0714,
+          "rawScore": 59.5,
           "availableWeight": 96,
-          "score": 78.2,
+          "score": 61.98,
           "components": {
             "ema": {
               "available": true,
@@ -7788,24 +7854,24 @@
             },
             "macd": {
               "available": true,
-              "score": 16,
+              "score": 12,
               "weight": 18,
               "relation": true,
               "histogram": true,
-              "acceleration": true,
+              "acceleration": false,
               "crossed": false,
-              "detail": "SELL MACD relation supportive; histogram supportive; acceleration supportive"
+              "detail": "SELL MACD relation supportive; histogram supportive; acceleration not supportive"
             },
             "rsi": {
               "available": true,
-              "score": 14,
+              "score": 11,
               "weight": 18,
               "directionalZone": true,
               "slopeSupport": true,
-              "momentumSupport": true,
+              "momentumSupport": false,
               "crossed": false,
               "exhausted": false,
-              "detail": "RSI 30.9; slope -0.93; three-bar momentum -2.52"
+              "detail": "RSI 36.73; slope -1.74; three-bar momentum 4.9"
             },
             "dmiAdx": {
               "available": true,
@@ -7814,8 +7880,8 @@
               "directional": true,
               "trending": true,
               "rising": true,
-              "diGap": 17.34697973029356,
-              "detail": "ADX 27.76 (TRENDING); +DI 9.53, -DI 26.88"
+              "diGap": 16.2039045515887,
+              "detail": "ADX 30.62 (TRENDING); +DI 8.35, -DI 24.56"
             },
             "structure": {
               "available": true,
@@ -7826,8 +7892,8 @@
             "higherTimeframe": {
               "available": true,
               "weight": 10,
-              "score": 8.571428571428571,
-              "detail": "HTF votes BUY 4, SELL 6; strength 60%"
+              "score": 0,
+              "detail": "HTF votes BUY 5.5, SELL 4.5; strength 55%"
             },
             "candlePattern": {
               "available": false,
@@ -7838,11 +7904,11 @@
           }
         },
         "selection": {
-          "direction": "SELL",
-          "qualified": true,
-          "winnerScore": 78.2,
-          "opposingScore": 21.35,
-          "edge": 56.85,
+          "direction": null,
+          "qualified": false,
+          "winnerScore": 61.98,
+          "opposingScore": 36.83,
+          "edge": 25.15,
           "requiredScore": 63,
           "requiredEdge": 11,
           "config": {
@@ -7854,30 +7920,23 @@
           }
         }
       },
-      "riskDiagnostics": {
-        "setupMode": "M5",
-        "executionTimeframe": "M5",
-        "entryModel": "STRUCTURE_REJECTION_CONFIRMATION",
-        "triggerLevel": 216.9142,
-        "executionAtr": 0.03441922233907859,
-        "executionAtrRegime": "LOW"
-      },
+      "riskDiagnostics": null,
       "timeframe": "M5",
-      "reason": "Nearest opposing level provides only 0.36R room; 2R is required",
+      "reason": null,
       "setupTimeframe": "M5",
       "confirmationTimeframe": "M5",
       "executionTimeframe": "M5",
       "entryTimeframe": "M5",
-      "setupCandleAt": "2026-08-21T20:45:00.000Z",
-      "executionCandleAt": "2026-08-21T20:45:00.000Z",
+      "setupCandleAt": "2026-08-21T20:55:00.000Z",
+      "executionCandleAt": "2026-08-21T20:55:00.000Z",
       "mode": "M5",
-      "generatedAt": "2026-08-21T20:54:23.292Z",
-      "analyzedCandleAt": "2026-08-21T20:45:00.000Z",
+      "generatedAt": "2026-08-21T21:00:32.593Z",
+      "analyzedCandleAt": "2026-08-21T20:55:00.000Z",
       "prepared": {
         "counts": {
           "m5": 1500,
-          "m15": 499,
-          "m30": 249,
+          "m15": 500,
+          "m30": 250,
           "h1": 900
         },
         "source": {
@@ -7885,7 +7944,7 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-21T20:54:23.044Z",
+          "m5": "2026-08-21T21:00:32.351Z",
           "h1": "2026-08-21T20:48:14.378Z"
         },
         "quality": {
@@ -7894,9 +7953,9 @@
             "rejectedRows": 0,
             "duplicateTimestamps": 0,
             "openCandlesRemoved": 0,
-            "firstDate": "2026-08-16T15:50:00.000Z",
-            "lastDate": "2026-08-21T20:45:00.000Z",
-            "ageMinutes": 9,
+            "firstDate": "2026-08-16T16:00:00.000Z",
+            "lastDate": "2026-08-21T20:55:00.000Z",
+            "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "hasOHLC": true,
             "stale": false
@@ -7908,7 +7967,7 @@
             "openCandlesRemoved": 0,
             "firstDate": "2026-07-15T08:00:00.000Z",
             "lastDate": "2026-08-21T19:00:00.000Z",
-            "ageMinutes": 114,
+            "ageMinutes": 120,
             "expectedIntervalMinutes": 60,
             "hasOHLC": true,
             "stale": false
@@ -7968,67 +8027,67 @@
       "signal": "WAIT",
       "confidence": 0,
       "reasons": [
-        "No qualified confluence: BUY 41.86, SELL 50, edge 8.14"
+        "No qualified confluence: BUY 59.3, SELL 32.56, edge 26.74"
       ],
       "steps": [
         {
           "name": "Data Availability",
           "pass": true,
           "status": "pass",
-          "detail": "499 complete closed M15 candles available; latest 2026-08-21T20:30:00.000Z"
+          "detail": "500 complete closed M15 candles available; latest 2026-08-21T20:45:00.000Z"
         },
         {
           "name": "EMA Trend",
-          "pass": false,
-          "status": "fail",
-          "detail": "SELL evidence 0/24. SELL EMA checks 0/4; fast/medium slopes 0/2",
-          "direction": "SELL",
-          "score": 0,
+          "pass": true,
+          "status": "pass",
+          "detail": "BUY evidence 24/24. BUY EMA checks 4/4; fast/medium slopes 2/2",
+          "direction": "BUY",
+          "score": 24,
           "maximumScore": 24
         },
         {
           "name": "MACD",
-          "pass": true,
-          "status": "pass",
-          "detail": "SELL evidence 16/18. SELL MACD relation supportive; histogram supportive; acceleration supportive",
-          "direction": "SELL",
-          "score": 16,
+          "pass": false,
+          "status": "fail",
+          "detail": "BUY evidence 0/18. BUY MACD relation opposed; histogram opposed; acceleration not supportive",
+          "direction": "BUY",
+          "score": 0,
           "maximumScore": 18
         },
         {
           "name": "RSI",
           "pass": true,
           "status": "pass",
-          "detail": "SELL evidence 18/18. RSI 49.19; slope -9.78; three-bar momentum -11.26",
-          "direction": "SELL",
-          "score": 18,
+          "detail": "BUY evidence 15/18. RSI 50.31; slope 1.12; three-bar momentum -9.6",
+          "direction": "BUY",
+          "score": 15,
           "maximumScore": 18
         },
         {
           "name": "ADX / DMI",
-          "pass": true,
-          "status": "pass",
-          "detail": "SELL evidence 9/16. ADX 23.19 (DEVELOPING); +DI 20.11, -DI 22.5",
-          "direction": "SELL",
-          "score": 9,
+          "pass": false,
+          "status": "info",
+          "detail": "BUY evidence 2/16. ADX 22.08 (DEVELOPING); +DI 19.31, -DI 22.47",
+          "direction": "BUY",
+          "score": 2,
           "maximumScore": 16
         },
         {
           "name": "Market Structure",
           "pass": null,
           "status": "na",
-          "detail": "SELL evidence 0/10. Mixed market structure",
-          "direction": "SELL",
+          "detail": "BUY evidence 0/10. Mixed market structure",
+          "direction": "BUY",
           "score": 0,
           "maximumScore": 10
         },
         {
           "name": "Higher TF",
-          "pass": false,
-          "status": "fail",
-          "detail": "SELL evidence 0/10. HTF votes BUY 9.5, SELL 0; strength 86.36%",
-          "direction": "SELL",
-          "score": 0,
+          "pass": true,
+          "status": "pass",
+          "detail": "BUY evidence 10/10. HTF votes BUY 9.5, SELL 0; strength 86.36%",
+          "direction": "BUY",
+          "score": 10,
           "maximumScore": 10
         },
         {
@@ -8041,13 +8100,13 @@
           "name": "ATR Volatility",
           "pass": true,
           "status": "pass",
-          "detail": "ATR(14) 0.07108; 0.0328% of price; percentile 7.5; regime LOW"
+          "detail": "ATR(14) 0.068723; 0.0317% of price; percentile 6.5; regime LOW"
         },
         {
           "name": "Confluence Decision",
           "pass": false,
           "status": "fail",
-          "detail": "No qualified edge: BUY 41.86, SELL 50; winner requires score 61 and edge 11, observed edge 8.14"
+          "detail": "No qualified edge: BUY 59.3, SELL 32.56; winner requires score 61 and edge 11, observed edge 26.74"
         },
         {
           "name": "AI Autonomous Decision",
@@ -8060,7 +8119,7 @@
       "professionalPipelineVersion": "2.0.0",
       "indicatorSnapshot": {
         "timeframe": "M15",
-        "analyzedCandleAt": "2026-08-21T20:30:00.000Z",
+        "analyzedCandleAt": "2026-08-21T20:45:00.000Z",
         "ema": {
           "available": true,
           "direction": "BUY",
@@ -8068,7 +8127,7 @@
           "alignmentCount": 4,
           "fullAlignment": true,
           "partialAlignment": false,
-          "lastClose": 216.91384,
+          "lastClose": 216.92303,
           "periods": {
             "p20": 30,
             "p50": 60,
@@ -8076,16 +8135,16 @@
             "p200": 200
           },
           "values": {
-            "ema20": 216.90925014969488,
-            "ema50": 216.83743096562418,
-            "ema100": 216.74810017460288,
-            "ema200": 216.51981474818768
+            "ema20": 216.9101391722952,
+            "ema50": 216.8402374913414,
+            "ema100": 216.75156413154144,
+            "ema200": 216.5238268402455
           },
           "slopes": {
-            "ema20": 0.00005444463970061807,
-            "ema50": 0.00006110969135694519,
-            "ema100": 0.0000614953318959026,
-            "ema200": 0.00006237411448283515
+            "ema20": 0.000030217954844155887,
+            "ema50": 0.00004857783577775017,
+            "ema100": 0.00005391790965868224,
+            "ema200": 0.00005855647693838231
           },
           "bullishChecks": [
             true,
@@ -8106,11 +8165,11 @@
         },
         "macd": {
           "available": true,
-          "macd": 0.0613981487956039,
-          "signal": 0.0800987329459999,
-          "histogram": -0.018700584150395994,
-          "previousHistogram": -0.011133305742463295,
-          "histogramSlope": -0.007567278407932698,
+          "macd": 0.05183991712124225,
+          "signal": 0.07444696978104837,
+          "histogram": -0.022607052659806115,
+          "previousHistogram": -0.018700584150395994,
+          "histogramSlope": -0.0039064685094101215,
           "crossedBullish": false,
           "crossedBearish": false,
           "direction": "SELL"
@@ -8118,37 +8177,37 @@
         "rsi": {
           "available": true,
           "period": 14,
-          "current": 49.19007500494936,
-          "previous": 58.97082082662368,
-          "slope": -9.780745821674323,
-          "momentum": -11.259081867358923,
-          "crossedAbove50": false,
-          "crossedBelow50": true,
+          "current": 50.31257435257533,
+          "previous": 49.19007500494936,
+          "slope": 1.1224993476259755,
+          "momentum": -9.597536472741652,
+          "crossedAbove50": true,
+          "crossedBelow50": false,
           "overbought": false,
           "oversold": false,
-          "direction": "SELL"
+          "direction": "BUY"
         },
         "dmiAdx": {
           "available": true,
           "period": 14,
-          "plusDI": 20.110581007865907,
-          "minusDI": 22.49617464846237,
-          "adx": 23.193117613871376,
-          "previousAdx": 24.546503803592124,
-          "adxSlope": -1.353386189720748,
+          "plusDI": 19.31462083188065,
+          "minusDI": 22.47158906924334,
+          "adx": 22.07611264520443,
+          "previousAdx": 23.193117613871376,
+          "adxSlope": -1.1170049686669472,
           "direction": "SELL",
           "trendStrength": "DEVELOPING"
         },
         "atr": {
           "available": true,
           "period": 14,
-          "value": 0.07108016624920946,
-          "previous": 0.07025017903760948,
-          "slope": 0.0008299872115999779,
-          "percent": 0.03276884787490253,
-          "percentile": 7.5,
-          "median": 0.08213205390533225,
-          "medianRatio": 0.8654375833719986,
+          "value": 0.06872301151712364,
+          "previous": 0.07108016624920946,
+          "slope": -0.0023571547320858227,
+          "percent": 0.031680827765094205,
+          "percentile": 6.5,
+          "median": 0.0815239699576997,
+          "medianRatio": 0.8429792066404753,
           "regime": "LOW"
         },
         "structure": {
@@ -8702,7 +8761,7 @@
               "alignmentCount": 4,
               "fullAlignment": true,
               "partialAlignment": false,
-              "lastClose": 216.9865,
+              "lastClose": 216.92303,
               "periods": {
                 "p20": 30,
                 "p50": 60,
@@ -8710,16 +8769,16 @@
                 "p200": 200
               },
               "values": {
-                "ema20": 216.83520392294247,
-                "ema50": 216.69598998277883,
-                "ema100": 216.51705964978885,
-                "ema200": 216.2411629956942
+                "ema20": 216.8408701214623,
+                "ema50": 216.70343391776967,
+                "ema100": 216.5250986666247,
+                "ema200": 216.2479477420057
               },
               "slopes": {
-                "ema20": 0.00017603273352000993,
-                "ema50": 0.00015138058399350533,
-                "ema100": 0.00014006581638207463,
-                "ema200": 0.000107730490055897
+                "ema20": 0.00012878435613414247,
+                "ema50": 0.00012819573490979887,
+                "ema100": 0.00012630143719281504,
+                "ema200": 0.00010114682746757114
               },
               "bullishChecks": [
                 true,
@@ -8741,22 +8800,22 @@
             "macd": {
               "available": true,
               "direction": "BUY",
-              "macd": 0.08480139026022471,
-              "signal": 0.055376372673885496,
-              "histogram": 0.02942501758633921
+              "macd": 0.07744972516852044,
+              "signal": 0.05979104317281249,
+              "histogram": 0.017658681995707956
             },
             "rsi": {
               "available": true,
               "direction": null,
-              "current": 59.72297098056524,
-              "slope": -0.777251398223811
+              "current": 54.85263495915365,
+              "slope": -4.870336021411596
             },
             "dmi": {
               "available": true,
               "direction": "BUY",
-              "adx": 22.82756460720021,
-              "plusDI": 26.041665270545135,
-              "minusDI": 18.218154109685482
+              "adx": 21.726132406885196,
+              "plusDI": 24.516872639245925,
+              "minusDI": 21.135189811917684
             },
             "structure": {
               "direction": "BUY",
@@ -9039,9 +9098,9 @@
         "version": "2.0.0",
         "buy": {
           "direction": "BUY",
-          "rawScore": 36,
+          "rawScore": 51,
           "availableWeight": 86,
-          "score": 41.86,
+          "score": 59.3,
           "components": {
             "ema": {
               "available": true,
@@ -9063,14 +9122,14 @@
             },
             "rsi": {
               "available": true,
-              "score": 0,
+              "score": 15,
               "weight": 18,
-              "directionalZone": false,
-              "slopeSupport": false,
+              "directionalZone": true,
+              "slopeSupport": true,
               "momentumSupport": false,
-              "crossed": false,
+              "crossed": true,
               "exhausted": false,
-              "detail": "RSI 49.19; slope -9.78; three-bar momentum -11.26"
+              "detail": "RSI 50.31; slope 1.12; three-bar momentum -9.6"
             },
             "dmiAdx": {
               "available": true,
@@ -9079,8 +9138,8 @@
               "directional": false,
               "trending": false,
               "rising": false,
-              "diGap": 2.385593640596465,
-              "detail": "ADX 23.19 (DEVELOPING); +DI 20.11, -DI 22.5"
+              "diGap": 3.1569682373626904,
+              "detail": "ADX 22.08 (DEVELOPING); +DI 19.31, -DI 22.47"
             },
             "structure": {
               "available": false,
@@ -9104,9 +9163,9 @@
         },
         "sell": {
           "direction": "SELL",
-          "rawScore": 43,
+          "rawScore": 28,
           "availableWeight": 86,
-          "score": 50,
+          "score": 32.56,
           "components": {
             "ema": {
               "available": true,
@@ -9128,14 +9187,14 @@
             },
             "rsi": {
               "available": true,
-              "score": 18,
+              "score": 3,
               "weight": 18,
-              "directionalZone": true,
-              "slopeSupport": true,
+              "directionalZone": false,
+              "slopeSupport": false,
               "momentumSupport": true,
-              "crossed": true,
+              "crossed": false,
               "exhausted": false,
-              "detail": "RSI 49.19; slope -9.78; three-bar momentum -11.26"
+              "detail": "RSI 50.31; slope 1.12; three-bar momentum -9.6"
             },
             "dmiAdx": {
               "available": true,
@@ -9144,8 +9203,8 @@
               "directional": true,
               "trending": false,
               "rising": false,
-              "diGap": 2.385593640596465,
-              "detail": "ADX 23.19 (DEVELOPING); +DI 20.11, -DI 22.5"
+              "diGap": 3.1569682373626904,
+              "detail": "ADX 22.08 (DEVELOPING); +DI 19.31, -DI 22.47"
             },
             "structure": {
               "available": false,
@@ -9170,9 +9229,9 @@
         "selection": {
           "direction": null,
           "qualified": false,
-          "winnerScore": 50,
-          "opposingScore": 41.86,
-          "edge": 8.14,
+          "winnerScore": 59.3,
+          "opposingScore": 32.56,
+          "edge": 26.74,
           "requiredScore": 61,
           "requiredEdge": 11,
           "config": {
@@ -9191,16 +9250,16 @@
       "confirmationTimeframe": "M15",
       "executionTimeframe": "M5",
       "entryTimeframe": "M5",
-      "setupCandleAt": "2026-08-21T20:30:00.000Z",
-      "executionCandleAt": "2026-08-21T20:45:00.000Z",
+      "setupCandleAt": "2026-08-21T20:45:00.000Z",
+      "executionCandleAt": "2026-08-21T20:55:00.000Z",
       "mode": "M15",
-      "generatedAt": "2026-08-21T20:54:23.292Z",
-      "analyzedCandleAt": "2026-08-21T20:30:00.000Z",
+      "generatedAt": "2026-08-21T21:00:32.593Z",
+      "analyzedCandleAt": "2026-08-21T20:45:00.000Z",
       "prepared": {
         "counts": {
           "m5": 1500,
-          "m15": 499,
-          "m30": 249,
+          "m15": 500,
+          "m30": 250,
           "h1": 900
         },
         "source": {
@@ -9208,7 +9267,7 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-21T20:54:23.044Z",
+          "m5": "2026-08-21T21:00:32.351Z",
           "h1": "2026-08-21T20:48:14.378Z"
         },
         "quality": {
@@ -9217,9 +9276,9 @@
             "rejectedRows": 0,
             "duplicateTimestamps": 0,
             "openCandlesRemoved": 0,
-            "firstDate": "2026-08-16T15:50:00.000Z",
-            "lastDate": "2026-08-21T20:45:00.000Z",
-            "ageMinutes": 9,
+            "firstDate": "2026-08-16T16:00:00.000Z",
+            "lastDate": "2026-08-21T20:55:00.000Z",
+            "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "hasOHLC": true,
             "stale": false
@@ -9231,7 +9290,7 @@
             "openCandlesRemoved": 0,
             "firstDate": "2026-07-15T08:00:00.000Z",
             "lastDate": "2026-08-21T19:00:00.000Z",
-            "ageMinutes": 114,
+            "ageMinutes": 120,
             "expectedIntervalMinutes": 60,
             "hasOHLC": true,
             "stale": false
@@ -9298,7 +9357,7 @@
           "name": "Data Availability",
           "pass": true,
           "status": "pass",
-          "detail": "249 complete closed M30 candles available; latest 2026-08-21T20:00:00.000Z"
+          "detail": "250 complete closed M30 candles available; latest 2026-08-21T20:30:00.000Z"
         },
         {
           "name": "EMA Trend",
@@ -9322,7 +9381,7 @@
           "name": "RSI",
           "pass": false,
           "status": "info",
-          "detail": "BUY evidence 7/18. RSI 59.72; slope -0.78; three-bar momentum -9.59",
+          "detail": "BUY evidence 7/18. RSI 54.85; slope -4.87; three-bar momentum -9.37",
           "direction": "BUY",
           "score": 7,
           "maximumScore": 18
@@ -9331,7 +9390,7 @@
           "name": "ADX / DMI",
           "pass": true,
           "status": "pass",
-          "detail": "BUY evidence 9/16. ADX 22.83 (DEVELOPING); +DI 26.04, -DI 18.22",
+          "detail": "BUY evidence 9/16. ADX 21.73 (DEVELOPING); +DI 24.52, -DI 21.14",
           "direction": "BUY",
           "score": 9,
           "maximumScore": 16
@@ -9364,7 +9423,7 @@
           "name": "ATR Volatility",
           "pass": true,
           "status": "pass",
-          "detail": "ATR(14) 0.111562; 0.0514% of price; percentile 3.5; regime LOW"
+          "detail": "ATR(14) 0.110036; 0.0507% of price; percentile 1.5; regime LOW"
         },
         {
           "name": "News",
@@ -9389,7 +9448,7 @@
       "professionalPipelineVersion": "2.0.0",
       "indicatorSnapshot": {
         "timeframe": "M30",
-        "analyzedCandleAt": "2026-08-21T20:00:00.000Z",
+        "analyzedCandleAt": "2026-08-21T20:30:00.000Z",
         "ema": {
           "available": true,
           "direction": "BUY",
@@ -9397,7 +9456,7 @@
           "alignmentCount": 4,
           "fullAlignment": true,
           "partialAlignment": false,
-          "lastClose": 216.9865,
+          "lastClose": 216.92303,
           "periods": {
             "p20": 30,
             "p50": 60,
@@ -9405,16 +9464,16 @@
             "p200": 200
           },
           "values": {
-            "ema20": 216.83520392294247,
-            "ema50": 216.69598998277883,
-            "ema100": 216.51705964978885,
-            "ema200": 216.2411629956942
+            "ema20": 216.8408701214623,
+            "ema50": 216.70343391776967,
+            "ema100": 216.5250986666247,
+            "ema200": 216.2479477420057
           },
           "slopes": {
-            "ema20": 0.00017603273352000993,
-            "ema50": 0.00015138058399350533,
-            "ema100": 0.00014006581638207463,
-            "ema200": 0.000107730490055897
+            "ema20": 0.00012878435613414247,
+            "ema50": 0.00012819573490979887,
+            "ema100": 0.00012630143719281504,
+            "ema200": 0.00010114682746757114
           },
           "bullishChecks": [
             true,
@@ -9435,11 +9494,11 @@
         },
         "macd": {
           "available": true,
-          "macd": 0.08480139026022471,
-          "signal": 0.055376372673885496,
-          "histogram": 0.02942501758633921,
-          "previousHistogram": 0.03846879520525391,
-          "histogramSlope": -0.0090437776189147,
+          "macd": 0.07744972516852044,
+          "signal": 0.05979104317281249,
+          "histogram": 0.017658681995707956,
+          "previousHistogram": 0.02942501758633921,
+          "histogramSlope": -0.011766335590631255,
           "crossedBullish": false,
           "crossedBearish": false,
           "direction": "BUY"
@@ -9447,10 +9506,10 @@
         "rsi": {
           "available": true,
           "period": 14,
-          "current": 59.72297098056524,
-          "previous": 60.500222378789054,
-          "slope": -0.777251398223811,
-          "momentum": -9.585893806564066,
+          "current": 54.85263495915365,
+          "previous": 59.72297098056524,
+          "slope": -4.870336021411596,
+          "momentum": -9.37376385510349,
           "crossedAbove50": false,
           "crossedBelow50": false,
           "overbought": false,
@@ -9460,24 +9519,24 @@
         "dmiAdx": {
           "available": true,
           "period": 14,
-          "plusDI": 26.041665270545135,
-          "minusDI": 18.218154109685482,
-          "adx": 22.82756460720021,
-          "previousAdx": 23.22381352223775,
-          "adxSlope": -0.39624891503754256,
+          "plusDI": 24.516872639245925,
+          "minusDI": 21.135189811917684,
+          "adx": 21.726132406885196,
+          "previousAdx": 22.82756460720021,
+          "adxSlope": -1.1014322003150134,
           "direction": "BUY",
           "trendStrength": "DEVELOPING"
         },
         "atr": {
           "available": true,
           "period": 14,
-          "value": 0.11156230308294064,
-          "previous": 0.11585786485855083,
-          "slope": -0.0042955617756101905,
-          "percent": 0.051414398168983154,
-          "percentile": 3.5000000000000004,
-          "median": 0.14269464477925461,
-          "medianRatio": 0.7818254374964456,
+          "value": 0.11003642429130275,
+          "previous": 0.11156230308294064,
+          "slope": -0.0015258787916378885,
+          "percent": 0.05072602217076847,
+          "percentile": 1.5,
+          "median": 0.14218829724157678,
+          "medianRatio": 0.77387820535154,
           "regime": "LOW"
         },
         "structure": {
@@ -10819,7 +10878,7 @@
               "momentumSupport": false,
               "crossed": false,
               "exhausted": false,
-              "detail": "RSI 59.72; slope -0.78; three-bar momentum -9.59"
+              "detail": "RSI 54.85; slope -4.87; three-bar momentum -9.37"
             },
             "dmiAdx": {
               "available": true,
@@ -10828,8 +10887,8 @@
               "directional": true,
               "trending": false,
               "rising": false,
-              "diGap": 7.823511160859653,
-              "detail": "ADX 22.83 (DEVELOPING); +DI 26.04, -DI 18.22"
+              "diGap": 3.381682827328241,
+              "detail": "ADX 21.73 (DEVELOPING); +DI 24.52, -DI 21.14"
             },
             "structure": {
               "available": true,
@@ -10884,7 +10943,7 @@
               "momentumSupport": true,
               "crossed": false,
               "exhausted": false,
-              "detail": "RSI 59.72; slope -0.78; three-bar momentum -9.59"
+              "detail": "RSI 54.85; slope -4.87; three-bar momentum -9.37"
             },
             "dmiAdx": {
               "available": true,
@@ -10893,8 +10952,8 @@
               "directional": false,
               "trending": false,
               "rising": false,
-              "diGap": 7.823511160859653,
-              "detail": "ADX 22.83 (DEVELOPING); +DI 26.04, -DI 18.22"
+              "diGap": 3.381682827328241,
+              "detail": "ADX 21.73 (DEVELOPING); +DI 24.52, -DI 21.14"
             },
             "structure": {
               "available": true,
@@ -10936,8 +10995,8 @@
       "riskDiagnostics": {
         "setupMode": "M30",
         "executionTimeframe": "M5",
-        "executionCandleAt": "2026-08-21T20:45:00.000Z",
-        "executionAtr": 0.03441922233907859,
+        "executionCandleAt": "2026-08-21T20:55:00.000Z",
+        "executionAtr": 0.03386080905767539,
         "executionAtrRegime": "LOW",
         "blockedMomentumByVolatility": false,
         "evidence": {
@@ -10947,8 +11006,8 @@
           "freshBreakoutConfirmed": false,
           "directionalFollowThrough": false
         },
-        "structureLevel": 216.89291,
-        "breakoutLevel": 216.9142
+        "structureLevel": 216.92064,
+        "breakoutLevel": 216.94019
       },
       "timeframe": "M30",
       "reason": "Qualified setup is waiting for closed-M5 pullback resumption, structure rejection, engulfing, breakout, or directional follow-through confirmation",
@@ -10956,16 +11015,16 @@
       "confirmationTimeframe": "M30",
       "executionTimeframe": "M5",
       "entryTimeframe": "M5",
-      "setupCandleAt": "2026-08-21T20:00:00.000Z",
-      "executionCandleAt": "2026-08-21T20:45:00.000Z",
+      "setupCandleAt": "2026-08-21T20:30:00.000Z",
+      "executionCandleAt": "2026-08-21T20:55:00.000Z",
       "mode": "M30",
-      "generatedAt": "2026-08-21T20:54:23.292Z",
-      "analyzedCandleAt": "2026-08-21T20:00:00.000Z",
+      "generatedAt": "2026-08-21T21:00:32.593Z",
+      "analyzedCandleAt": "2026-08-21T20:30:00.000Z",
       "prepared": {
         "counts": {
           "m5": 1500,
-          "m15": 499,
-          "m30": 249,
+          "m15": 500,
+          "m30": 250,
           "h1": 900
         },
         "source": {
@@ -10973,7 +11032,7 @@
           "h1": "intraday-h1.json"
         },
         "updatedAt": {
-          "m5": "2026-08-21T20:54:23.044Z",
+          "m5": "2026-08-21T21:00:32.351Z",
           "h1": "2026-08-21T20:48:14.378Z"
         },
         "quality": {
@@ -10982,9 +11041,9 @@
             "rejectedRows": 0,
             "duplicateTimestamps": 0,
             "openCandlesRemoved": 0,
-            "firstDate": "2026-08-16T15:50:00.000Z",
-            "lastDate": "2026-08-21T20:45:00.000Z",
-            "ageMinutes": 9,
+            "firstDate": "2026-08-16T16:00:00.000Z",
+            "lastDate": "2026-08-21T20:55:00.000Z",
+            "ageMinutes": 5,
             "expectedIntervalMinutes": 5,
             "hasOHLC": true,
             "stale": false
@@ -10996,7 +11055,7 @@
             "openCandlesRemoved": 0,
             "firstDate": "2026-07-15T08:00:00.000Z",
             "lastDate": "2026-08-21T19:00:00.000Z",
-            "ageMinutes": 114,
+            "ageMinutes": 120,
             "expectedIntervalMinutes": 60,
             "hasOHLC": true,
             "stale": false

@@ -2,17 +2,17 @@
   "version": 1,
   "engineName": "PipSight Pro Autonomous AI Decision Engine",
   "engineVersion": "1.4.0",
-  "evaluatedAt": "2026-09-04T23:15:48.751Z",
-  "decisionId": "live|1.4.0|GBPJPY|weekly|D1|HOLD|none|2026-09-04T00:00:00.000Z",
-  "decisionHash": "13a10c36b93d0505ff51a4baf1f46e07bddeb1ad61249a01f511b264fb06f1ee",
+  "evaluatedAt": "2026-09-04T23:26:18.351Z",
+  "decisionId": "live|1.4.0|GBPJPY|daily|1H|HOLD|none|2026-09-04T23:00:00.000Z",
+  "decisionHash": "acb4a9787a04066ac3b6ad9648a96bfcf5b3c6ec1d4346aa6ffb1e2ddae15f16",
   "context": {
     "pair": "GBPJPY",
-    "timeframe": "D1",
-    "engine": "weekly",
-    "marketRegime": "WEAK_HIGH",
+    "timeframe": "1H",
+    "engine": "daily",
+    "marketRegime": "TRENDING_NORMAL",
     "session": null,
     "pattern": null,
-    "marketDataAt": "2026-09-04T00:00:00.000Z"
+    "marketDataAt": "2026-09-04T23:00:00.000Z"
   },
   "deployment": {
     "configuredMode": "AUTONOMOUS",
@@ -22,7 +22,7 @@
     "rollout": {
       "percent": 100,
       "selected": true,
-      "bucket": 48.05,
+      "bucket": 6.08,
       "identityStable": true,
       "reason": "Decision is inside the deterministic autonomous rollout cohort."
     }
@@ -55,57 +55,64 @@
   "blockedChanges": [],
   "evidence": {
     "baselinePolicy": null,
-    "buyPolicy": null,
+    "buyPolicy": {
+      "key": "pairTimeframeEngineDirection|GBPJPY|1H|daily|BUY",
+      "scope": "pairTimeframeEngineDirection",
+      "dimensions": {
+        "pair": "GBPJPY",
+        "timeframe": "1H",
+        "engine": "daily",
+        "direction": "BUY"
+      },
+      "action": "OBSERVE",
+      "actionReason": "Only 1 decisive trades are available; 30 are required.",
+      "authorityLevel": "SHADOW_ONLY",
+      "decisiveTrades": 1,
+      "reliability": 0.140372,
+      "edgeScore": -0.603466,
+      "shrunkExpectancyR": -0.1344792,
+      "outOfSamplePassed": false,
+      "negativeEdgeConfirmed": false,
+      "averagePlannedRiskReward": 2
+    },
     "sellPolicy": null,
     "baselineMatchAttempts": [],
     "buyMatchAttempts": [
       {
         "scope": "pairTimeframeEngineDirectionRegime",
-        "signature": "pairTimeframeEngineDirectionRegime|GBPJPY|D1|weekly|BUY|weak_high",
+        "signature": "pairTimeframeEngineDirectionRegime|GBPJPY|1H|daily|BUY|trending_normal",
         "matched": false,
         "reason": "No policy bucket matched."
       },
       {
         "scope": "pairTimeframeEngineDirection",
-        "signature": "pairTimeframeEngineDirection|GBPJPY|D1|weekly|BUY",
-        "matched": false,
-        "reason": "No policy bucket matched."
-      },
-      {
-        "scope": "pairEngineDirection",
-        "signature": "pairEngineDirection|GBPJPY|weekly|BUY",
-        "matched": false,
-        "reason": "No policy bucket matched."
-      },
-      {
-        "scope": "pairTimeframeDirection",
-        "signature": "pairTimeframeDirection|GBPJPY|D1|BUY",
-        "matched": false,
-        "reason": "No policy bucket matched."
+        "signature": "pairTimeframeEngineDirection|GBPJPY|1H|daily|BUY",
+        "matched": true,
+        "reason": null
       }
     ],
     "sellMatchAttempts": [
       {
         "scope": "pairTimeframeEngineDirectionRegime",
-        "signature": "pairTimeframeEngineDirectionRegime|GBPJPY|D1|weekly|SELL|weak_high",
+        "signature": "pairTimeframeEngineDirectionRegime|GBPJPY|1H|daily|SELL|trending_normal",
         "matched": false,
         "reason": "No policy bucket matched."
       },
       {
         "scope": "pairTimeframeEngineDirection",
-        "signature": "pairTimeframeEngineDirection|GBPJPY|D1|weekly|SELL",
+        "signature": "pairTimeframeEngineDirection|GBPJPY|1H|daily|SELL",
         "matched": false,
         "reason": "No policy bucket matched."
       },
       {
         "scope": "pairEngineDirection",
-        "signature": "pairEngineDirection|GBPJPY|weekly|SELL",
+        "signature": "pairEngineDirection|GBPJPY|daily|SELL",
         "matched": false,
         "reason": "No policy bucket matched."
       },
       {
         "scope": "pairTimeframeDirection",
-        "signature": "pairTimeframeDirection|GBPJPY|D1|SELL",
+        "signature": "pairTimeframeDirection|GBPJPY|1H|SELL",
         "matched": false,
         "reason": "No policy bucket matched."
       }
@@ -114,7 +121,7 @@
       {
         "engine": "daily",
         "decision": "HOLD",
-        "confidence": 34,
+        "confidence": 69,
         "active": true,
         "tradePlan": null,
         "source": "data/intraday-h1.json"

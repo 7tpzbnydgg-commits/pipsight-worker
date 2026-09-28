@@ -1,8 +1,8 @@
 {
-  "updatedAt": "2026-09-27T22:44:06.774Z",
+  "updatedAt": "2026-09-28T16:06:06.524Z",
   "engineVersion": "2.1.0",
   "strategyVersion": "legacy-lockstep-2.1",
-  "durationMs": 18,
+  "durationMs": 26,
   "pairCount": 2,
   "snapshotCount": 4,
   "errorCount": 0,
@@ -14,7 +14,7 @@
       "mode": "daily",
       "decimals": 2,
       "lastClose": 4286.21,
-      "lastDate": "2026-09-26",
+      "lastDate": "2026-09-27",
       "signal": "HOLD",
       "suppressionReason": "NO TRADE — no confirmed trend direction yet",
       "tradePlan": null,
@@ -22,10 +22,10 @@
       "passCount": 0,
       "gatedCount": 1,
       "trendLabel": "Partial bearish lean only (3/4) — not enough to qualify",
-      "structure": "Bearish structure — lower highs & lower lows",
+      "structure": "Mixed structure — no clear HH/HL or LH/LL sequence",
       "structureDetails": {
-        "label": "Bearish structure — lower highs & lower lows",
-        "score": -15,
+        "label": "Mixed structure — no clear HH/HL or LH/LL sequence",
+        "score": 0,
         "source": "OHLC"
       },
       "sr": {
@@ -55,31 +55,31 @@
             "fullStack": true
           },
           "values": {
-            "ema20": 4339.848021736087,
-            "ema50": 4347.164357144581,
-            "ema100": 4345.098410604132,
-            "ema200": 4361.55598184146,
-            "close": 4286.21452
+            "ema20": 4334.740044427888,
+            "ema50": 4344.774157256559,
+            "ema100": 4343.932387819892,
+            "ema200": 4360.8063129674165,
+            "close": 4286.21426
           },
           "bullCount": 1,
           "bearCount": 3
         },
         "macd": {
           "ready": true,
-          "macd": -27.156444353990082,
-          "signal": -21.38117047776118,
-          "histogram": -5.775273876228901
+          "macd": -27.9245207090471,
+          "signal": -22.689840524018365,
+          "histogram": -5.234680185028736
         },
         "rsi": {
           "period": 14,
-          "value": 41.72673876673307
+          "value": 41.726710218766165
         },
         "volatility": {
           "type": "ATR",
           "period": 14,
-          "atr": 64.07097016941474,
-          "percent": 0.014948148271732962,
-          "buffer": 32.03548508470737
+          "atr": 59.586315157313656,
+          "percent": 0.013901851737414933,
+          "buffer": 29.793157578656828
         }
       },
       "pipeline": [
@@ -151,11 +151,11 @@
       ],
       "data": {
         "source": "daily-ohlc.json",
-        "validRows": 563,
-        "rejectedRows": 1,
+        "validRows": 564,
+        "rejectedRows": 0,
         "duplicateDates": 0,
         "firstDate": "2025-02-11",
-        "lastDate": "2026-09-26",
+        "lastDate": "2026-09-27",
         "ageDays": 1,
         "stale": false,
         "hasOHLC": true
@@ -167,15 +167,15 @@
       "pair": "XAU/USD",
       "mode": "weekly",
       "decimals": 2,
-      "lastClose": 4380.13,
-      "lastDate": "2026-09-20",
+      "lastClose": 4286.21,
+      "lastDate": "2026-09-27",
       "signal": "HOLD",
       "suppressionReason": "NO TRADE — no confirmed trend direction yet",
       "tradePlan": null,
       "confidence": null,
       "passCount": 0,
       "gatedCount": 1,
-      "trendLabel": "Partial bullish lean only (3/4) — not enough to qualify (adaptive periods — full EMA200 needs more history)",
+      "trendLabel": "Mixed EMA alignment — no clear trend (adaptive periods — full EMA200 needs more history)",
       "structure": "Bearish structure — lower highs & lower lows",
       "structureDetails": {
         "label": "Bearish structure — lower highs & lower lows",
@@ -195,314 +195,6 @@
       },
       "candlePattern": {
         "available": true,
-        "direction": "BUY",
-        "pattern": "Bullish Pin Bar",
-        "detail": "Long lower wick indicates rejection of lower prices"
-      },
-      "indicators": {
-        "ema": {
-          "periods": {
-            "p20": 12,
-            "p50": 24,
-            "p100": 41,
-            "p200": 83,
-            "fullStack": false
-          },
-          "values": {
-            "ema20": 4354.579486128461,
-            "ema50": 4373.572734675847,
-            "ema100": 4316.223249572997,
-            "ema200": 3997.330609313543,
-            "close": 4380.13345
-          },
-          "bullCount": 3,
-          "bearCount": 1
-        },
-        "macd": {
-          "ready": true,
-          "macd": -18.833841660572944,
-          "signal": -38.828865471190966,
-          "histogram": 19.995023810618022
-        },
-        "rsi": {
-          "period": 14,
-          "value": 50.30012241498946
-        },
-        "volatility": {
-          "type": "ATR",
-          "period": 14,
-          "atr": 232.50743378416374,
-          "percent": 0.0530822716792256,
-          "buffer": 116.25371689208187
-        }
-      },
-      "pipeline": [
-        {
-          "name": "Trend",
-          "status": "fail",
-          "detail": "Partial bullish lean only (3/4) — not enough to qualify (adaptive periods — full EMA200 needs more history)"
-        },
-        {
-          "name": "EMA Alignment",
-          "status": "skip",
-          "detail": "Not reached — an earlier required step failed"
-        },
-        {
-          "name": "ADX > 25?",
-          "status": "na",
-          "detail": "OHLC data is available, but ADX remains informationally disabled here to preserve the existing decision engine"
-        },
-        {
-          "name": "Volume Confirmed?",
-          "status": "na",
-          "detail": "Not available — spot FX/gold has no centralized exchange volume feed"
-        },
-        {
-          "name": "MACD Confirmation",
-          "status": "skip",
-          "detail": "Not reached — an earlier required step failed"
-        },
-        {
-          "name": "RSI Confirmation",
-          "status": "skip",
-          "detail": "Not reached — an earlier required step failed"
-        },
-        {
-          "name": "Multi-Timeframe Confirmation",
-          "status": "skip",
-          "detail": "Not reached — an earlier required step failed"
-        },
-        {
-          "name": "Candle Pattern",
-          "status": "info",
-          "detail": "Bullish Pin Bar: Long lower wick indicates rejection of lower prices"
-        },
-        {
-          "name": "High-Impact News Filter",
-          "status": "skip",
-          "detail": "Not reached — an earlier required step failed"
-        },
-        {
-          "name": "Support/Resistance",
-          "status": "skip",
-          "detail": "Not reached — an earlier required step failed"
-        },
-        {
-          "name": "ATR Stop Loss",
-          "status": "skip",
-          "detail": "No confirmed trend direction yet"
-        },
-        {
-          "name": "Risk:Reward ≥ 1:2",
-          "status": "skip",
-          "detail": "Not reached — an earlier required step failed"
-        },
-        {
-          "name": "Confidence Score",
-          "status": "info",
-          "detail": "No confirmed trend direction yet to score"
-        }
-      ],
-      "data": {
-        "source": "daily-ohlc.json",
-        "validRows": 563,
-        "rejectedRows": 1,
-        "duplicateDates": 0,
-        "firstDate": "2025-02-11",
-        "lastDate": "2026-09-26",
-        "ageDays": 1,
-        "stale": false,
-        "hasOHLC": true
-      },
-      "engineVersion": "2.1.0",
-      "strategyVersion": "legacy-lockstep-2.1"
-    },
-    {
-      "pair": "GBP/JPY",
-      "mode": "daily",
-      "decimals": 3,
-      "lastClose": 208.372,
-      "lastDate": "2026-09-26",
-      "signal": "HOLD",
-      "suppressionReason": "NO TRADE — no confirmed trend direction yet",
-      "tradePlan": null,
-      "confidence": null,
-      "passCount": 0,
-      "gatedCount": 1,
-      "trendLabel": "Partial bearish lean only (3/4) — not enough to qualify",
-      "structure": "Bearish structure — lower highs & lower lows",
-      "structureDetails": {
-        "label": "Bearish structure — lower highs & lower lows",
-        "score": -15,
-        "source": "OHLC"
-      },
-      "sr": {
-        "resistances": [
-          208.94066,
-          209.77807
-        ],
-        "supports": [
-          208.1626,
-          207.762905
-        ],
-        "source": "OHLC swing levels"
-      },
-      "candlePattern": {
-        "available": true,
-        "direction": null,
-        "pattern": "Doji",
-        "detail": "Doji shows indecision and does not confirm either direction"
-      },
-      "indicators": {
-        "ema": {
-          "periods": {
-            "p20": 20,
-            "p50": 50,
-            "p100": 100,
-            "p200": 200,
-            "fullStack": true
-          },
-          "values": {
-            "ema20": 209.89249573132903,
-            "ema50": 211.7787061384238,
-            "ema100": 212.99082843224838,
-            "ema200": 212.58968620945026,
-            "close": 208.37184
-          },
-          "bullCount": 1,
-          "bearCount": 3
-        },
-        "macd": {
-          "ready": true,
-          "macd": -0.9428961825135787,
-          "signal": -1.122689083941597,
-          "histogram": 0.1797929014280184
-        },
-        "rsi": {
-          "period": 14,
-          "value": 36.13031827833023
-        },
-        "volatility": {
-          "type": "ATR",
-          "period": 14,
-          "atr": 1.2678860116305823,
-          "percent": 0.006084728203343515,
-          "buffer": 0.6339430058152912
-        }
-      },
-      "pipeline": [
-        {
-          "name": "Trend",
-          "status": "fail",
-          "detail": "Partial bearish lean only (3/4) — not enough to qualify"
-        },
-        {
-          "name": "EMA Alignment",
-          "status": "skip",
-          "detail": "Not reached — an earlier required step failed"
-        },
-        {
-          "name": "ADX > 25?",
-          "status": "na",
-          "detail": "OHLC data is available, but ADX remains informationally disabled here to preserve the existing decision engine"
-        },
-        {
-          "name": "Volume Confirmed?",
-          "status": "na",
-          "detail": "Not available — spot FX/gold has no centralized exchange volume feed"
-        },
-        {
-          "name": "MACD Confirmation",
-          "status": "skip",
-          "detail": "Not reached — an earlier required step failed"
-        },
-        {
-          "name": "RSI Confirmation",
-          "status": "skip",
-          "detail": "Not reached — an earlier required step failed"
-        },
-        {
-          "name": "Multi-Timeframe Confirmation",
-          "status": "skip",
-          "detail": "Not reached — an earlier required step failed"
-        },
-        {
-          "name": "Candle Pattern",
-          "status": "info",
-          "detail": "Doji: Doji shows indecision and does not confirm either direction"
-        },
-        {
-          "name": "High-Impact News Filter",
-          "status": "skip",
-          "detail": "Not reached — an earlier required step failed"
-        },
-        {
-          "name": "Support/Resistance",
-          "status": "skip",
-          "detail": "Not reached — an earlier required step failed"
-        },
-        {
-          "name": "ATR Stop Loss",
-          "status": "skip",
-          "detail": "No confirmed trend direction yet"
-        },
-        {
-          "name": "Risk:Reward ≥ 1:2",
-          "status": "skip",
-          "detail": "Not reached — an earlier required step failed"
-        },
-        {
-          "name": "Confidence Score",
-          "status": "info",
-          "detail": "No confirmed trend direction yet to score"
-        }
-      ],
-      "data": {
-        "source": "daily-ohlc.json",
-        "validRows": 563,
-        "rejectedRows": 1,
-        "duplicateDates": 0,
-        "firstDate": "2025-01-22",
-        "lastDate": "2026-09-26",
-        "ageDays": 1,
-        "stale": false,
-        "hasOHLC": true
-      },
-      "engineVersion": "2.1.0",
-      "strategyVersion": "legacy-lockstep-2.1"
-    },
-    {
-      "pair": "GBP/JPY",
-      "mode": "weekly",
-      "decimals": 3,
-      "lastClose": 210.102,
-      "lastDate": "2026-09-20",
-      "signal": "HOLD",
-      "suppressionReason": "NO TRADE — no confirmed trend direction yet",
-      "tradePlan": null,
-      "confidence": null,
-      "passCount": 0,
-      "gatedCount": 1,
-      "trendLabel": "Partial bullish lean only (3/4) — not enough to qualify (adaptive periods — full EMA200 needs more history)",
-      "structure": "Bearish structure — lower highs & lower lows",
-      "structureDetails": {
-        "label": "Bearish structure — lower highs & lower lows",
-        "score": -15,
-        "source": "OHLC"
-      },
-      "sr": {
-        "resistances": [
-          215.01404,
-          215.61649
-        ],
-        "supports": [
-          209.561925,
-          207.25193
-        ],
-        "source": "OHLC swing levels"
-      },
-      "candlePattern": {
-        "available": true,
         "direction": null,
         "pattern": "No strong pattern",
         "detail": "No qualifying engulfing, pin-bar or doji confirmation"
@@ -512,43 +204,43 @@
           "periods": {
             "p20": 12,
             "p50": 25,
-            "p100": 43,
-            "p200": 86,
+            "p100": 42,
+            "p200": 84,
             "fullStack": false
           },
           "values": {
-            "ema20": 212.98759345958803,
-            "ema50": 212.87629131816098,
-            "ema100": 210.86664793405257,
-            "ema200": 204.26317560946273,
-            "close": 210.10181
+            "ema20": 4344.061759031775,
+            "ema50": 4366.975092825866,
+            "ema100": 4308.100155141584,
+            "ema200": 3999.5693873530845,
+            "close": 4286.21426
           },
-          "bullCount": 3,
-          "bearCount": 1
+          "bullCount": 2,
+          "bearCount": 2
         },
         "macd": {
           "ready": true,
-          "macd": 0.18749865246545028,
-          "signal": 1.1601380716449075,
-          "histogram": -0.9726394191794572
+          "macd": -22.892378550664034,
+          "signal": -35.64156808708558,
+          "histogram": 12.749189536421547
         },
         "rsi": {
           "period": 14,
-          "value": 44.795744878875354
+          "value": 47.02451353990405
         },
         "volatility": {
           "type": "ATR",
           "period": 14,
-          "atr": 3.472448728391728,
-          "percent": 0.016527457466414628,
-          "buffer": 1.736224364195864
+          "atr": 225.986129228152,
+          "percent": 0.05272394600921141,
+          "buffer": 112.993064614076
         }
       },
       "pipeline": [
         {
           "name": "Trend",
           "status": "fail",
-          "detail": "Partial bullish lean only (3/4) — not enough to qualify (adaptive periods — full EMA200 needs more history)"
+          "detail": "Mixed EMA alignment — no clear trend (adaptive periods — full EMA200 needs more history)"
         },
         {
           "name": "EMA Alignment",
@@ -613,11 +305,319 @@
       ],
       "data": {
         "source": "daily-ohlc.json",
-        "validRows": 563,
-        "rejectedRows": 1,
+        "validRows": 564,
+        "rejectedRows": 0,
+        "duplicateDates": 0,
+        "firstDate": "2025-02-11",
+        "lastDate": "2026-09-27",
+        "ageDays": 1,
+        "stale": false,
+        "hasOHLC": true
+      },
+      "engineVersion": "2.1.0",
+      "strategyVersion": "legacy-lockstep-2.1"
+    },
+    {
+      "pair": "GBP/JPY",
+      "mode": "daily",
+      "decimals": 3,
+      "lastClose": 208.097,
+      "lastDate": "2026-09-27",
+      "signal": "HOLD",
+      "suppressionReason": "NO TRADE — no confirmed trend direction yet",
+      "tradePlan": null,
+      "confidence": null,
+      "passCount": 0,
+      "gatedCount": 1,
+      "trendLabel": "Partial bearish lean only (3/4) — not enough to qualify",
+      "structure": "Bearish structure — lower highs & lower lows",
+      "structureDetails": {
+        "label": "Bearish structure — lower highs & lower lows",
+        "score": -15,
+        "source": "OHLC"
+      },
+      "sr": {
+        "resistances": [
+          208.94066,
+          209.77807
+        ],
+        "supports": [
+          208.03497375,
+          207.25193
+        ],
+        "source": "OHLC swing levels"
+      },
+      "candlePattern": {
+        "available": true,
+        "direction": null,
+        "pattern": "No strong pattern",
+        "detail": "No qualifying engulfing, pin-bar or doji confirmation"
+      },
+      "indicators": {
+        "ema": {
+          "periods": {
+            "p20": 20,
+            "p50": 50,
+            "p100": 100,
+            "p200": 200,
+            "fullStack": true
+          },
+          "values": {
+            "ema20": 209.72149994739294,
+            "ema50": 211.63432707417186,
+            "ema100": 212.8939217306197,
+            "ema200": 212.54498326209256,
+            "close": 208.09704
+          },
+          "bullCount": 1,
+          "bearCount": 3
+        },
+        "macd": {
+          "ready": true,
+          "macd": -0.9765780652850822,
+          "signal": -1.093466880210294,
+          "histogram": 0.11688881492521186
+        },
+        "rsi": {
+          "period": 14,
+          "value": 34.828487598896814
+        },
+        "volatility": {
+          "type": "ATR",
+          "period": 14,
+          "atr": 1.206976296514113,
+          "percent": 0.005800064703054465,
+          "buffer": 0.6034881482570565
+        }
+      },
+      "pipeline": [
+        {
+          "name": "Trend",
+          "status": "fail",
+          "detail": "Partial bearish lean only (3/4) — not enough to qualify"
+        },
+        {
+          "name": "EMA Alignment",
+          "status": "skip",
+          "detail": "Not reached — an earlier required step failed"
+        },
+        {
+          "name": "ADX > 25?",
+          "status": "na",
+          "detail": "OHLC data is available, but ADX remains informationally disabled here to preserve the existing decision engine"
+        },
+        {
+          "name": "Volume Confirmed?",
+          "status": "na",
+          "detail": "Not available — spot FX/gold has no centralized exchange volume feed"
+        },
+        {
+          "name": "MACD Confirmation",
+          "status": "skip",
+          "detail": "Not reached — an earlier required step failed"
+        },
+        {
+          "name": "RSI Confirmation",
+          "status": "skip",
+          "detail": "Not reached — an earlier required step failed"
+        },
+        {
+          "name": "Multi-Timeframe Confirmation",
+          "status": "skip",
+          "detail": "Not reached — an earlier required step failed"
+        },
+        {
+          "name": "Candle Pattern",
+          "status": "info",
+          "detail": "No strong pattern: No qualifying engulfing, pin-bar or doji confirmation"
+        },
+        {
+          "name": "High-Impact News Filter",
+          "status": "skip",
+          "detail": "Not reached — an earlier required step failed"
+        },
+        {
+          "name": "Support/Resistance",
+          "status": "skip",
+          "detail": "Not reached — an earlier required step failed"
+        },
+        {
+          "name": "ATR Stop Loss",
+          "status": "skip",
+          "detail": "No confirmed trend direction yet"
+        },
+        {
+          "name": "Risk:Reward ≥ 1:2",
+          "status": "skip",
+          "detail": "Not reached — an earlier required step failed"
+        },
+        {
+          "name": "Confidence Score",
+          "status": "info",
+          "detail": "No confirmed trend direction yet to score"
+        }
+      ],
+      "data": {
+        "source": "daily-ohlc.json",
+        "validRows": 564,
+        "rejectedRows": 0,
         "duplicateDates": 0,
         "firstDate": "2025-01-22",
-        "lastDate": "2026-09-26",
+        "lastDate": "2026-09-27",
+        "ageDays": 1,
+        "stale": false,
+        "hasOHLC": true
+      },
+      "engineVersion": "2.1.0",
+      "strategyVersion": "legacy-lockstep-2.1"
+    },
+    {
+      "pair": "GBP/JPY",
+      "mode": "weekly",
+      "decimals": 3,
+      "lastClose": 208.097,
+      "lastDate": "2026-09-27",
+      "signal": "HOLD",
+      "suppressionReason": "NO TRADE — no confirmed trend direction yet",
+      "tradePlan": null,
+      "confidence": null,
+      "passCount": 0,
+      "gatedCount": 1,
+      "trendLabel": "Mixed EMA alignment — no clear trend (adaptive periods — full EMA200 needs more history)",
+      "structure": "Bearish structure — lower highs & lower lows",
+      "structureDetails": {
+        "label": "Bearish structure — lower highs & lower lows",
+        "score": -15,
+        "source": "OHLC"
+      },
+      "sr": {
+        "resistances": [
+          215.01404,
+          215.61649
+        ],
+        "supports": [
+          207.25193,
+          206.28983
+        ],
+        "source": "OHLC swing levels"
+      },
+      "candlePattern": {
+        "available": true,
+        "direction": null,
+        "pattern": "No strong pattern",
+        "detail": "No qualifying engulfing, pin-bar or doji confirmation"
+      },
+      "indicators": {
+        "ema": {
+          "periods": {
+            "p20": 12,
+            "p50": 25,
+            "p100": 43,
+            "p200": 87,
+            "fullStack": false
+          },
+          "values": {
+            "ema20": 212.2352006196514,
+            "ema50": 212.50865660137936,
+            "ema100": 210.7407566643229,
+            "ema200": 204.28318020689656,
+            "close": 208.09704
+          },
+          "bullCount": 2,
+          "bearCount": 2
+        },
+        "macd": {
+          "ready": true,
+          "macd": -0.21651975731396078,
+          "signal": 0.8848065058531338,
+          "histogram": -1.1013262631670946
+        },
+        "rsi": {
+          "period": 14,
+          "value": 41.521152019906275
+        },
+        "volatility": {
+          "type": "ATR",
+          "period": 14,
+          "atr": 3.4293116763637466,
+          "percent": 0.016479387099229026,
+          "buffer": 1.7146558381818733
+        }
+      },
+      "pipeline": [
+        {
+          "name": "Trend",
+          "status": "fail",
+          "detail": "Mixed EMA alignment — no clear trend (adaptive periods — full EMA200 needs more history)"
+        },
+        {
+          "name": "EMA Alignment",
+          "status": "skip",
+          "detail": "Not reached — an earlier required step failed"
+        },
+        {
+          "name": "ADX > 25?",
+          "status": "na",
+          "detail": "OHLC data is available, but ADX remains informationally disabled here to preserve the existing decision engine"
+        },
+        {
+          "name": "Volume Confirmed?",
+          "status": "na",
+          "detail": "Not available — spot FX/gold has no centralized exchange volume feed"
+        },
+        {
+          "name": "MACD Confirmation",
+          "status": "skip",
+          "detail": "Not reached — an earlier required step failed"
+        },
+        {
+          "name": "RSI Confirmation",
+          "status": "skip",
+          "detail": "Not reached — an earlier required step failed"
+        },
+        {
+          "name": "Multi-Timeframe Confirmation",
+          "status": "skip",
+          "detail": "Not reached — an earlier required step failed"
+        },
+        {
+          "name": "Candle Pattern",
+          "status": "info",
+          "detail": "No strong pattern: No qualifying engulfing, pin-bar or doji confirmation"
+        },
+        {
+          "name": "High-Impact News Filter",
+          "status": "skip",
+          "detail": "Not reached — an earlier required step failed"
+        },
+        {
+          "name": "Support/Resistance",
+          "status": "skip",
+          "detail": "Not reached — an earlier required step failed"
+        },
+        {
+          "name": "ATR Stop Loss",
+          "status": "skip",
+          "detail": "No confirmed trend direction yet"
+        },
+        {
+          "name": "Risk:Reward ≥ 1:2",
+          "status": "skip",
+          "detail": "Not reached — an earlier required step failed"
+        },
+        {
+          "name": "Confidence Score",
+          "status": "info",
+          "detail": "No confirmed trend direction yet to score"
+        }
+      ],
+      "data": {
+        "source": "daily-ohlc.json",
+        "validRows": 564,
+        "rejectedRows": 0,
+        "duplicateDates": 0,
+        "firstDate": "2025-01-22",
+        "lastDate": "2026-09-27",
         "ageDays": 1,
         "stale": false,
         "hasOHLC": true

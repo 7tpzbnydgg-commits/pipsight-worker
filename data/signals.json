@@ -1,8 +1,8 @@
 {
-  "updatedAt": "2026-09-28T22:00:09.083Z",
+  "updatedAt": "2026-09-29T08:23:03.875Z",
   "engineVersion": "2.1.0",
   "strategyVersion": "legacy-lockstep-2.1",
-  "durationMs": 24,
+  "durationMs": 19,
   "pairCount": 2,
   "snapshotCount": 4,
   "errorCount": 0,
@@ -13,15 +13,15 @@
       "pair": "XAU/USD",
       "mode": "daily",
       "decimals": 2,
-      "lastClose": 4286.21,
-      "lastDate": "2026-09-27",
+      "lastClose": 4115.08,
+      "lastDate": "2026-09-28",
       "signal": "HOLD",
-      "suppressionReason": "NO TRADE — no confirmed trend direction yet",
+      "suppressionReason": "NO TRADE — stopped at \"RSI Confirmation\"",
       "tradePlan": null,
-      "confidence": null,
-      "passCount": 0,
-      "gatedCount": 1,
-      "trendLabel": "Partial bearish lean only (3/4) — not enough to qualify",
+      "confidence": 44,
+      "passCount": 3,
+      "gatedCount": 4,
+      "trendLabel": "Bearish — full EMA stack 20<50<100<200",
       "structure": "Mixed structure — no clear HH/HL or LH/LL sequence",
       "structureDetails": {
         "label": "Mixed structure — no clear HH/HL or LH/LL sequence",
@@ -30,20 +30,20 @@
       },
       "sr": {
         "resistances": [
-          4351.379725000001,
-          4359.95814
+          4117.946155,
+          4132.42981
         ],
         "supports": [
-          4281.13645,
-          4268.69498
+          4104.81533,
+          4040.59968
         ],
         "source": "OHLC swing levels"
       },
       "candlePattern": {
         "available": true,
         "direction": null,
-        "pattern": "Doji",
-        "detail": "Doji shows indecision and does not confirm either direction"
+        "pattern": "No strong pattern",
+        "detail": "No qualifying engulfing, pin-bar or doji confirmation"
       },
       "indicators": {
         "ema": {
@@ -55,43 +55,43 @@
             "fullStack": true
           },
           "values": {
-            "ema20": 4334.740044427888,
-            "ema50": 4344.774157256559,
-            "ema100": 4343.932387819892,
-            "ema200": 4360.8063129674165,
-            "close": 4286.21426
+            "ema20": 4313.819581149041,
+            "ema50": 4335.766354226891,
+            "ema100": 4339.400561922468,
+            "ema200": 4358.361227067243,
+            "close": 4115.07518
           },
-          "bullCount": 1,
-          "bearCount": 3
+          "bullCount": 0,
+          "bearCount": 4
         },
         "macd": {
           "ready": true,
-          "macd": -27.9245207090471,
-          "signal": -22.689840524018365,
-          "histogram": -5.234680185028736
+          "macd": -41.8601821187458,
+          "signal": -26.523908842963856,
+          "histogram": -15.336273275781942
         },
         "rsi": {
           "period": 14,
-          "value": 41.726710218766165
+          "value": 28.099227299847414
         },
         "volatility": {
           "type": "ATR",
           "period": 14,
-          "atr": 59.586315157313656,
-          "percent": 0.013901851737414933,
-          "buffer": 29.793157578656828
+          "atr": 67.87340621750549,
+          "percent": 0.016493843550509688,
+          "buffer": 33.936703108752745
         }
       },
       "pipeline": [
         {
           "name": "Trend",
-          "status": "fail",
-          "detail": "Partial bearish lean only (3/4) — not enough to qualify"
+          "status": "pass",
+          "detail": "Bearish — full EMA stack 20<50<100<200"
         },
         {
           "name": "EMA Alignment",
-          "status": "skip",
-          "detail": "Not reached — an earlier required step failed"
+          "status": "pass",
+          "detail": "Full EMA stack confirms bearish alignment"
         },
         {
           "name": "ADX > 25?",
@@ -105,13 +105,13 @@
         },
         {
           "name": "MACD Confirmation",
-          "status": "skip",
-          "detail": "Not reached — an earlier required step failed"
+          "status": "pass",
+          "detail": "MACD -41.8602 vs signal -26.5239 — confirms SELL"
         },
         {
           "name": "RSI Confirmation",
-          "status": "skip",
-          "detail": "Not reached — an earlier required step failed"
+          "status": "fail",
+          "detail": "RSI(14) = 28.1 — outside the 35–55 confirmation band"
         },
         {
           "name": "Multi-Timeframe Confirmation",
@@ -121,7 +121,7 @@
         {
           "name": "Candle Pattern",
           "status": "info",
-          "detail": "Doji: Doji shows indecision and does not confirm either direction"
+          "detail": "No strong pattern: No qualifying engulfing, pin-bar or doji confirmation"
         },
         {
           "name": "High-Impact News Filter",
@@ -136,7 +136,7 @@
         {
           "name": "ATR Stop Loss",
           "status": "skip",
-          "detail": "No confirmed trend direction yet"
+          "detail": "Not reached — an earlier required step failed"
         },
         {
           "name": "Risk:Reward ≥ 1:2",
@@ -146,16 +146,16 @@
         {
           "name": "Confidence Score",
           "status": "info",
-          "detail": "No confirmed trend direction yet to score"
+          "detail": "44% — composite of pipeline pass-rate, market structure, news alignment, candle context and multi-timeframe agreement. It does not override the legacy gate."
         }
       ],
       "data": {
         "source": "daily-ohlc.json",
-        "validRows": 564,
-        "rejectedRows": 1,
+        "validRows": 565,
+        "rejectedRows": 0,
         "duplicateDates": 0,
         "firstDate": "2025-02-11",
-        "lastDate": "2026-09-27",
+        "lastDate": "2026-09-28",
         "ageDays": 1,
         "stale": false,
         "hasOHLC": true
@@ -305,11 +305,11 @@
       ],
       "data": {
         "source": "daily-ohlc.json",
-        "validRows": 564,
-        "rejectedRows": 1,
+        "validRows": 565,
+        "rejectedRows": 0,
         "duplicateDates": 0,
         "firstDate": "2025-02-11",
-        "lastDate": "2026-09-27",
+        "lastDate": "2026-09-28",
         "ageDays": 1,
         "stale": false,
         "hasOHLC": true
@@ -321,8 +321,8 @@
       "pair": "GBP/JPY",
       "mode": "daily",
       "decimals": 3,
-      "lastClose": 208.097,
-      "lastDate": "2026-09-27",
+      "lastClose": 208.613,
+      "lastDate": "2026-09-28",
       "signal": "HOLD",
       "suppressionReason": "NO TRADE — no confirmed trend direction yet",
       "tradePlan": null,
@@ -363,31 +363,31 @@
             "fullStack": true
           },
           "values": {
-            "ema20": 209.72149994739294,
-            "ema50": 211.63432707417186,
-            "ema100": 212.8939217306197,
-            "ema200": 212.54498326209256,
-            "close": 208.09704
+            "ema20": 209.6159666190698,
+            "ema50": 211.51585934577298,
+            "ema100": 212.80915892407276,
+            "ema200": 212.50586303062897,
+            "close": 208.6134
           },
           "bullCount": 1,
           "bearCount": 3
         },
         "macd": {
           "ready": true,
-          "macd": -0.9765780652850822,
-          "signal": -1.093466880210294,
-          "histogram": 0.11688881492521186
+          "macd": -0.9506467989062628,
+          "signal": -1.064902863949488,
+          "histogram": 0.11425606504322516
         },
         "rsi": {
           "period": 14,
-          "value": 34.828487598896814
+          "value": 39.257395709920786
         },
         "volatility": {
           "type": "ATR",
           "period": 14,
-          "atr": 1.206976296514113,
-          "percent": 0.005800064703054465,
-          "buffer": 0.6034881482570565
+          "atr": 1.2174687039059624,
+          "percent": 0.0058360043214192485,
+          "buffer": 0.6087343519529812
         }
       },
       "pipeline": [
@@ -459,11 +459,11 @@
       ],
       "data": {
         "source": "daily-ohlc.json",
-        "validRows": 564,
-        "rejectedRows": 1,
+        "validRows": 565,
+        "rejectedRows": 0,
         "duplicateDates": 0,
         "firstDate": "2025-01-22",
-        "lastDate": "2026-09-27",
+        "lastDate": "2026-09-28",
         "ageDays": 1,
         "stale": false,
         "hasOHLC": true
@@ -613,11 +613,11 @@
       ],
       "data": {
         "source": "daily-ohlc.json",
-        "validRows": 564,
-        "rejectedRows": 1,
+        "validRows": 565,
+        "rejectedRows": 0,
         "duplicateDates": 0,
         "firstDate": "2025-01-22",
-        "lastDate": "2026-09-27",
+        "lastDate": "2026-09-28",
         "ageDays": 1,
         "stale": false,
         "hasOHLC": true

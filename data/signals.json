@@ -1,8 +1,8 @@
 {
-  "updatedAt": "2026-10-03T22:40:20.220Z",
+  "updatedAt": "2026-10-04T08:10:13.549Z",
   "engineVersion": "2.1.0",
   "strategyVersion": "legacy-lockstep-2.1",
-  "durationMs": 24,
+  "durationMs": 14,
   "pairCount": 2,
   "snapshotCount": 4,
   "errorCount": 0,
@@ -13,14 +13,14 @@
       "pair": "XAU/USD",
       "mode": "daily",
       "decimals": 2,
-      "lastClose": 4141.53,
-      "lastDate": "2026-10-02",
+      "lastClose": 4137.61,
+      "lastDate": "2026-10-03",
       "signal": "HOLD",
-      "suppressionReason": "NO TRADE — stopped at \"Multi-Timeframe Confirmation\"",
+      "suppressionReason": "NO TRADE — stopped at \"RSI Confirmation\"",
       "tradePlan": null,
-      "confidence": 59,
-      "passCount": 4,
-      "gatedCount": 5,
+      "confidence": 56,
+      "passCount": 3,
+      "gatedCount": 4,
       "trendLabel": "Bearish — full EMA stack 20<50<100<200",
       "structure": "Bearish structure — lower highs & lower lows",
       "structureDetails": {
@@ -55,31 +55,31 @@
             "fullStack": true
           },
           "values": {
-            "ema20": 4264.093758851838,
-            "ema50": 4310.344952972733,
-            "ema100": 4325.922904787073,
-            "ema200": 4350.749276768377,
-            "close": 4141.52795
+            "ema20": 4252.047824675473,
+            "ema50": 4303.571090111057,
+            "ema100": 4322.193965088319,
+            "ema200": 4348.628502372672,
+            "close": 4137.61145
           },
           "bullCount": 0,
           "bearCount": 4
         },
         "macd": {
           "ready": true,
-          "macd": -58.3397530487764,
-          "signal": -42.77626565022448,
-          "histogram": -15.56348739855192
+          "macd": -60.99600611064034,
+          "signal": -46.42021374230765,
+          "histogram": -14.575792368332685
         },
         "rsi": {
           "period": 14,
-          "value": 35.06378693814139
+          "value": 34.78199213409094
         },
         "volatility": {
           "type": "ATR",
           "period": 14,
-          "atr": 69.73194751062512,
-          "percent": 0.016837251457067947,
-          "buffer": 34.86597375531256
+          "atr": 65.1999284027233,
+          "percent": 0.015757866389973205,
+          "buffer": 32.59996420136165
         }
       },
       "pipeline": [
@@ -106,17 +106,17 @@
         {
           "name": "MACD Confirmation",
           "status": "pass",
-          "detail": "MACD -58.3398 vs signal -42.7763 — confirms SELL"
+          "detail": "MACD -60.9960 vs signal -46.4202 — confirms SELL"
         },
         {
           "name": "RSI Confirmation",
-          "status": "pass",
-          "detail": "RSI(14) = 35.1 — inside the 35–55 confirmation band"
+          "status": "fail",
+          "detail": "RSI(14) = 34.8 — outside the 35–55 confirmation band"
         },
         {
           "name": "Multi-Timeframe Confirmation",
-          "status": "fail",
-          "detail": "Higher-timeframe weekly trend is not clearly aligned yet"
+          "status": "skip",
+          "detail": "Not reached — an earlier required step failed"
         },
         {
           "name": "Candle Pattern",
@@ -146,16 +146,16 @@
         {
           "name": "Confidence Score",
           "status": "info",
-          "detail": "59% — composite of pipeline pass-rate, market structure, news alignment, candle context and multi-timeframe agreement. It does not override the legacy gate."
+          "detail": "56% — composite of pipeline pass-rate, market structure, news alignment, candle context and multi-timeframe agreement. It does not override the legacy gate."
         }
       ],
       "data": {
         "source": "daily-ohlc.json",
-        "validRows": 569,
-        "rejectedRows": 1,
+        "validRows": 570,
+        "rejectedRows": 0,
         "duplicateDates": 0,
         "firstDate": "2025-02-11",
-        "lastDate": "2026-10-02",
+        "lastDate": "2026-10-03",
         "ageDays": 1,
         "stale": false,
         "hasOHLC": true
@@ -305,11 +305,11 @@
       ],
       "data": {
         "source": "daily-ohlc.json",
-        "validRows": 569,
-        "rejectedRows": 1,
+        "validRows": 570,
+        "rejectedRows": 0,
         "duplicateDates": 0,
         "firstDate": "2025-02-11",
-        "lastDate": "2026-10-02",
+        "lastDate": "2026-10-03",
         "ageDays": 1,
         "stale": false,
         "hasOHLC": true
@@ -321,8 +321,8 @@
       "pair": "GBP/JPY",
       "mode": "daily",
       "decimals": 3,
-      "lastClose": 209.013,
-      "lastDate": "2026-10-02",
+      "lastClose": 209.034,
+      "lastDate": "2026-10-03",
       "signal": "HOLD",
       "suppressionReason": "NO TRADE — no confirmed trend direction yet",
       "tradePlan": null,
@@ -330,15 +330,15 @@
       "passCount": 0,
       "gatedCount": 1,
       "trendLabel": "Partial bearish lean only (3/4) — not enough to qualify",
-      "structure": "Bearish structure — lower highs & lower lows",
+      "structure": "Mixed structure — no clear HH/HL or LH/LL sequence",
       "structureDetails": {
-        "label": "Bearish structure — lower highs & lower lows",
-        "score": -15,
+        "label": "Mixed structure — no clear HH/HL or LH/LL sequence",
+        "score": 0,
         "source": "OHLC"
       },
       "sr": {
         "resistances": [
-          209.77807,
+          209.889465,
           210.92032
         ],
         "supports": [
@@ -349,9 +349,9 @@
       },
       "candlePattern": {
         "available": true,
-        "direction": "BUY",
-        "pattern": "Bullish Engulfing",
-        "detail": "Bullish engulfing candle confirms buying pressure"
+        "direction": null,
+        "pattern": "Doji",
+        "detail": "Doji shows indecision and does not confirm either direction"
       },
       "indicators": {
         "ema": {
@@ -363,31 +363,31 @@
             "fullStack": true
           },
           "values": {
-            "ema20": 209.30055232615933,
-            "ema50": 211.09080517964676,
-            "ema100": 212.48824072024092,
-            "ema200": 212.3539692924585,
-            "close": 209.01289
+            "ema20": 209.27515210462033,
+            "ema50": 211.01014027064102,
+            "ema100": 212.4198369436025,
+            "ema200": 212.32093327959822,
+            "close": 209.03385
           },
           "bullCount": 1,
           "bearCount": 3
         },
         "macd": {
           "ready": true,
-          "macd": -0.7862203854665779,
-          "signal": -0.9447351262356296,
-          "histogram": 0.1585147407690517
+          "macd": -0.7171608932396225,
+          "signal": -0.8992202796364281,
+          "histogram": 0.18205938639680563
         },
         "rsi": {
           "period": 14,
-          "value": 44.51578212246167
+          "value": 44.68822359173622
         },
         "volatility": {
           "type": "ATR",
           "period": 14,
-          "atr": 1.3373564986531181,
-          "percent": 0.006398440300275826,
-          "buffer": 0.6686782493265591
+          "atr": 1.363488177320751,
+          "percent": 0.006522810431519828,
+          "buffer": 0.6817440886603755
         }
       },
       "pipeline": [
@@ -429,7 +429,7 @@
         {
           "name": "Candle Pattern",
           "status": "info",
-          "detail": "Bullish Engulfing: Bullish engulfing candle confirms buying pressure"
+          "detail": "Doji: Doji shows indecision and does not confirm either direction"
         },
         {
           "name": "High-Impact News Filter",
@@ -459,11 +459,11 @@
       ],
       "data": {
         "source": "daily-ohlc.json",
-        "validRows": 569,
-        "rejectedRows": 1,
+        "validRows": 570,
+        "rejectedRows": 0,
         "duplicateDates": 0,
         "firstDate": "2025-01-22",
-        "lastDate": "2026-10-02",
+        "lastDate": "2026-10-03",
         "ageDays": 1,
         "stale": false,
         "hasOHLC": true
@@ -613,11 +613,11 @@
       ],
       "data": {
         "source": "daily-ohlc.json",
-        "validRows": 569,
-        "rejectedRows": 1,
+        "validRows": 570,
+        "rejectedRows": 0,
         "duplicateDates": 0,
         "firstDate": "2025-01-22",
-        "lastDate": "2026-10-02",
+        "lastDate": "2026-10-03",
         "ageDays": 1,
         "stale": false,
         "hasOHLC": true

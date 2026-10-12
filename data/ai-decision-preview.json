@@ -2,17 +2,17 @@
   "version": 1,
   "engineName": "PipSight Pro Autonomous AI Decision Engine",
   "engineVersion": "1.4.0",
-  "evaluatedAt": "2026-10-12T05:00:17.177Z",
-  "decisionId": "live|1.4.0|GBPJPY|daily|1H|HOLD|none|2026-10-12T01:00:00.000Z",
-  "decisionHash": "f49c4ec8e15603a811dcc102efe604ee2dbb628919464ccc49b8930db35c2fef",
+  "evaluatedAt": "2026-10-12T05:08:00.785Z",
+  "decisionId": "live|1.4.0|GBPJPY|daily|1H|HOLD|none|2026-10-12T05:00:00.000Z",
+  "decisionHash": "444d3325a724eace587ce74643c67aa97e2f2cdc552415c0e7eec2676f604008",
   "context": {
     "pair": "GBPJPY",
     "timeframe": "1H",
     "engine": "daily",
-    "marketRegime": "TRENDING_NORMAL",
+    "marketRegime": "DEVELOPING_NORMAL",
     "session": null,
     "pattern": null,
-    "marketDataAt": "2026-10-12T01:00:00.000Z"
+    "marketDataAt": "2026-10-12T05:00:00.000Z"
   },
   "deployment": {
     "configuredMode": "AUTONOMOUS",
@@ -22,7 +22,7 @@
     "rollout": {
       "percent": 100,
       "selected": true,
-      "bucket": 64.66,
+      "bucket": 13.65,
       "identityStable": true,
       "reason": "Decision is inside the deterministic autonomous rollout cohort."
     }
@@ -56,21 +56,22 @@
   "evidence": {
     "baselinePolicy": null,
     "buyPolicy": {
-      "key": "pairTimeframeEngineDirection|GBPJPY|1H|daily|BUY",
-      "scope": "pairTimeframeEngineDirection",
+      "key": "pairTimeframeEngineDirectionRegime|GBPJPY|1H|daily|BUY|DEVELOPING_NORMAL",
+      "scope": "pairTimeframeEngineDirectionRegime",
       "dimensions": {
         "pair": "GBPJPY",
         "timeframe": "1H",
         "engine": "daily",
-        "direction": "BUY"
+        "direction": "BUY",
+        "marketRegime": "DEVELOPING_NORMAL"
       },
       "action": "OBSERVE",
-      "actionReason": "Only 2 decisive trades are available; 30 are required.",
+      "actionReason": "Only 1 decisive trades are available; 30 are required.",
       "authorityLevel": "SHADOW_ONLY",
-      "decisiveTrades": 2,
-      "reliability": 0.251973,
-      "edgeScore": -0.632003,
-      "shrunkExpectancyR": -0.16567246,
+      "decisiveTrades": 1,
+      "reliability": 0.137041,
+      "edgeScore": -0.607441,
+      "shrunkExpectancyR": -0.13875866,
       "outOfSamplePassed": false,
       "negativeEdgeConfirmed": false,
       "averagePlannedRiskReward": 2
@@ -99,13 +100,7 @@
     "buyMatchAttempts": [
       {
         "scope": "pairTimeframeEngineDirectionRegime",
-        "signature": "pairTimeframeEngineDirectionRegime|GBPJPY|1H|daily|BUY|trending_normal",
-        "matched": false,
-        "reason": "No policy bucket matched."
-      },
-      {
-        "scope": "pairTimeframeEngineDirection",
-        "signature": "pairTimeframeEngineDirection|GBPJPY|1H|daily|BUY",
+        "signature": "pairTimeframeEngineDirectionRegime|GBPJPY|1H|daily|BUY|developing_normal",
         "matched": true,
         "reason": null
       }
@@ -113,7 +108,7 @@
     "sellMatchAttempts": [
       {
         "scope": "pairTimeframeEngineDirectionRegime",
-        "signature": "pairTimeframeEngineDirectionRegime|GBPJPY|1H|daily|SELL|trending_normal",
+        "signature": "pairTimeframeEngineDirectionRegime|GBPJPY|1H|daily|SELL|developing_normal",
         "matched": false,
         "reason": "No policy bucket matched."
       },
@@ -128,7 +123,7 @@
       {
         "engine": "daily",
         "decision": "HOLD",
-        "confidence": 36,
+        "confidence": 69,
         "active": true,
         "tradePlan": null,
         "source": "data/intraday-h1.json"

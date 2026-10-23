@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-10-23T02:02:32.357Z",
+  "updatedAt": "2026-10-23T13:03:56.676Z",
   "engineVersion": "2.1.0",
   "strategyVersion": "legacy-lockstep-2.1",
   "durationMs": 16,
@@ -13,14 +13,14 @@
       "pair": "XAU/USD",
       "mode": "daily",
       "decimals": 2,
-      "lastClose": 4134.54,
-      "lastDate": "2026-10-21",
+      "lastClose": 4026.14,
+      "lastDate": "2026-10-22",
       "signal": "HOLD",
-      "suppressionReason": "NO TRADE — stopped at \"MACD Confirmation\"",
+      "suppressionReason": "NO TRADE — stopped at \"RSI Confirmation\"",
       "tradePlan": null,
-      "confidence": 56,
-      "passCount": 2,
-      "gatedCount": 3,
+      "confidence": 53,
+      "passCount": 3,
+      "gatedCount": 4,
       "trendLabel": "Bearish — full EMA stack 20<50<100<200",
       "structure": "Mixed structure — no clear HH/HL or LH/LL sequence",
       "structureDetails": {
@@ -30,12 +30,12 @@
       },
       "sr": {
         "resistances": [
-          4166.41992,
-          4187.29399
+          4046,
+          4059.34009
         ],
         "supports": [
-          4123.07007,
-          4110.9502
+          4022.71688875,
+          4004.68994
         ],
         "source": "OHLC swing levels"
       },
@@ -55,31 +55,31 @@
             "fullStack": true
           },
           "values": {
-            "ema20": 4167.673924940388,
-            "ema50": 4226.207994955515,
-            "ema100": 4271.158972409845,
-            "ema200": 4316.636377446346,
-            "close": 4134.54213
+            "ema20": 4154.1947482793985,
+            "ema50": 4218.362292016082,
+            "ema100": 4266.307162461136,
+            "ema200": 4313.745891800114,
+            "close": 4026.14257
           },
           "bullCount": 0,
           "bearCount": 4
         },
         "macd": {
           "ready": true,
-          "macd": -30.4638023750058,
-          "signal": -34.94644048944295,
-          "histogram": 4.482638114437151
+          "macd": -38.21209743516283,
+          "signal": -35.59957187858693,
+          "histogram": -2.6125255565759034
         },
         "rsi": {
           "period": 14,
-          "value": 42.06126930756921
+          "value": 31.267975396327216
         },
         "volatility": {
           "type": "ATR",
           "period": 14,
-          "atr": 50.176267179436124,
-          "percent": 0.012135870333829716,
-          "buffer": 25.088133589718062
+          "atr": 55.28925309519068,
+          "percent": 0.01373256215693094,
+          "buffer": 27.64462654759534
         }
       },
       "pipeline": [
@@ -105,13 +105,13 @@
         },
         {
           "name": "MACD Confirmation",
-          "status": "fail",
-          "detail": "MACD -30.4638 vs signal -34.9464 — does not confirm SELL"
+          "status": "pass",
+          "detail": "MACD -38.2121 vs signal -35.5996 — confirms SELL"
         },
         {
           "name": "RSI Confirmation",
-          "status": "skip",
-          "detail": "Not reached — an earlier required step failed"
+          "status": "fail",
+          "detail": "RSI(14) = 31.3 — outside the 35–55 confirmation band"
         },
         {
           "name": "Multi-Timeframe Confirmation",
@@ -146,17 +146,17 @@
         {
           "name": "Confidence Score",
           "status": "info",
-          "detail": "56% — composite of pipeline pass-rate, market structure, news alignment, candle context and multi-timeframe agreement. It does not override the legacy gate."
+          "detail": "53% — composite of pipeline pass-rate, market structure, news alignment, candle context and multi-timeframe agreement. It does not override the legacy gate."
         }
       ],
       "data": {
         "source": "daily-ohlc.json",
-        "validRows": 588,
+        "validRows": 589,
         "rejectedRows": 0,
         "duplicateDates": 0,
         "firstDate": "2025-02-11",
-        "lastDate": "2026-10-21",
-        "ageDays": 2,
+        "lastDate": "2026-10-22",
+        "ageDays": 1,
         "stale": false,
         "hasOHLC": true
       },
@@ -305,12 +305,12 @@
       ],
       "data": {
         "source": "daily-ohlc.json",
-        "validRows": 588,
+        "validRows": 589,
         "rejectedRows": 0,
         "duplicateDates": 0,
         "firstDate": "2025-02-11",
-        "lastDate": "2026-10-21",
-        "ageDays": 2,
+        "lastDate": "2026-10-22",
+        "ageDays": 1,
         "stale": false,
         "hasOHLC": true
       },
@@ -321,8 +321,8 @@
       "pair": "GBP/JPY",
       "mode": "daily",
       "decimals": 3,
-      "lastClose": 211.895,
-      "lastDate": "2026-10-21",
+      "lastClose": 210.19,
+      "lastDate": "2026-10-22",
       "signal": "HOLD",
       "suppressionReason": "NO TRADE — no confirmed trend direction yet",
       "tradePlan": null,
@@ -338,20 +338,20 @@
       },
       "sr": {
         "resistances": [
-          212.11859249999998,
-          213.64196015624998
+          210.23472,
+          210.946575
         ],
         "supports": [
-          211.50564625,
-          210.8575898223877
+          209.3746125,
+          208.2600784375
         ],
         "source": "OHLC swing levels"
       },
       "candlePattern": {
         "available": true,
-        "direction": "BUY",
-        "pattern": "Bullish Pin Bar",
-        "detail": "Long lower wick indicates rejection of lower prices"
+        "direction": "SELL",
+        "pattern": "Bearish Engulfing",
+        "detail": "Bearish engulfing candle confirms selling pressure"
       },
       "indicators": {
         "ema": {
@@ -363,31 +363,31 @@
             "fullStack": true
           },
           "values": {
-            "ema20": 210.16320018048222,
-            "ema50": 210.5337003063759,
-            "ema100": 211.68740060914004,
-            "ema200": 211.93128985948252,
-            "close": 211.89539
+            "ema20": 210.16574873472203,
+            "ema50": 210.52022029436117,
+            "ema100": 211.65774831985016,
+            "ema200": 211.91396319421403,
+            "close": 210.18996
           },
           "bullCount": 1,
           "bearCount": 3
         },
         "macd": {
           "ready": true,
-          "macd": 0.43290952832231255,
-          "signal": 0.1062698550493737,
-          "histogram": 0.32663967327293886
+          "macd": 0.37433733328686003,
+          "signal": 0.15988335069687098,
+          "histogram": 0.21445398258998905
         },
         "rsi": {
           "period": 14,
-          "value": 65.09206733233873
+          "value": 50.657035005725774
         },
         "volatility": {
           "type": "ATR",
           "period": 14,
-          "atr": 1.0863796870647324,
-          "percent": 0.00512696235186963,
-          "buffer": 0.5431898435323662
+          "atr": 1.1875454237029661,
+          "percent": 0.0056498674993941955,
+          "buffer": 0.5937727118514831
         }
       },
       "pipeline": [
@@ -429,7 +429,7 @@
         {
           "name": "Candle Pattern",
           "status": "info",
-          "detail": "Bullish Pin Bar: Long lower wick indicates rejection of lower prices"
+          "detail": "Bearish Engulfing: Bearish engulfing candle confirms selling pressure"
         },
         {
           "name": "High-Impact News Filter",
@@ -459,12 +459,12 @@
       ],
       "data": {
         "source": "daily-ohlc.json",
-        "validRows": 588,
+        "validRows": 589,
         "rejectedRows": 0,
         "duplicateDates": 0,
         "firstDate": "2025-01-22",
-        "lastDate": "2026-10-21",
-        "ageDays": 2,
+        "lastDate": "2026-10-22",
+        "ageDays": 1,
         "stale": false,
         "hasOHLC": true
       },
@@ -613,12 +613,12 @@
       ],
       "data": {
         "source": "daily-ohlc.json",
-        "validRows": 588,
+        "validRows": 589,
         "rejectedRows": 0,
         "duplicateDates": 0,
         "firstDate": "2025-01-22",
-        "lastDate": "2026-10-21",
-        "ageDays": 2,
+        "lastDate": "2026-10-22",
+        "ageDays": 1,
         "stale": false,
         "hasOHLC": true
       },
